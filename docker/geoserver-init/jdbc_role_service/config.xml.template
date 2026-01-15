@@ -1,0 +1,20 @@
+<jdbcroleservice>
+  <id>${GS_ROLE_SERVICE_ID}</id>
+  <name>${GS_ROLE_SERVICE_NAME}</name>
+  <className>org.geoserver.security.jdbc.JDBCRoleService</className>
+
+  <propertyFileNameDDL>rolesddl.xml</propertyFileNameDDL>
+  <propertyFileNameDML>rolesdml.xml</propertyFileNameDML>
+
+  <jndi>false</jndi>
+  <driverClassName>org.postgresql.Driver</driverClassName>
+
+  <connectURL>${GS_JDBC_URL}</connectURL>
+  <userName>${PG_GS_USER}</userName>
+  <password>${PG_GS_PASSWORD}</password>
+
+  <creatingTables>true</creatingTables>
+
+  <adminRoleName>${GS_ADMIN_ROLE}</adminRoleName>
+  <groupAdminRoleName>${GS_GROUP_ADMIN_ROLE}</groupAdminRoleName>
+</jdbcroleservice>

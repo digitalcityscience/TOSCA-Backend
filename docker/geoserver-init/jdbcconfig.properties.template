@@ -1,0 +1,17 @@
+enabled=true
+initdb=true
+import=true
+repopulate=true
+
+jdbcUrl=${GS_JDBC_URL}
+driverClassName=org.postgresql.Driver
+username=${PG_GS_USER}
+password=${PG_GS_PASSWORD}
+
+pool.maxActive=10
+pool.minIdle=4
+pool.testOnBorrow=true
+pool.validationQuery=SELECT 1
+
+initScript=/opt/geoserver/data_dir/jdbcconfig/scripts/initdb.postgres.sql
+debugMode=false

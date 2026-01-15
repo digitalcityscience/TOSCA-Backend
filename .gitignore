@@ -1,0 +1,26 @@
+git_ignore/
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Environments
+.env
+.env.dev
+.env.prod
+.env.test
+.venv/
+dcs-api/
+
+# Django
+staticfiles/
+media/
+
+# Editors
+.vscode/
+.idea/
+.DS_Store

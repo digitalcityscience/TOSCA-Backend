@@ -1,0 +1,31 @@
+<openIdConnectAuthentication>
+  <id>2d55e9a8:19b368d5b13:-7ffb</id>
+  <name>keycloak-auth</name>
+  <className>org.geoserver.security.oauth2.OpenIdConnectAuthenticationFilter</className>
+  <roleSource class="org.geoserver.security.oauth2.OpenIdConnectFilterConfig$OpenIdRoleSource">AccessToken</roleSource>
+  <cliendId>geoserver</cliendId>
+  <clientSecret>kdiPeHpRHCy5VRQJugM77QlXa7jo2SA1</clientSecret>
+  <accessTokenUri>https://auth.dcs.hcu-hamburg.de/realms/geoserver-realm/protocol/openid-connect/token</accessTokenUri>
+  <userAuthorizationUri>https://auth.dcs.hcu-hamburg.de/realms/geoserver-realm/protocol/openid-connect/auth</userAuthorizationUri>
+  <redirectUri>http://localhost:8080/geoserver/</redirectUri>
+  <checkTokenEndpointUrl>https://auth.dcs.hcu-hamburg.de/realms/geoserver-realm/protocol/openid-connect/userinfo</checkTokenEndpointUrl>
+  <introspectionEndpointUrl>https://auth.dcs.hcu-hamburg.de/realms/geoserver-realm/protocol/openid-connect/token/introspect</introspectionEndpointUrl>
+  <logoutUri>https://auth.dcs.hcu-hamburg.de/realms/geoserver-realm/protocol/openid-connect/logout</logoutUri>
+  <scopes>openid profile email</scopes>
+  <enableRedirectAuthenticationEntryPoint>false</enableRedirectAuthenticationEntryPoint>
+  <forceAccessTokenUriHttps>true</forceAccessTokenUriHttps>
+  <forceUserAuthorizationUriHttps>true</forceUserAuthorizationUriHttps>
+  <loginEndpoint>/j_spring_oauth2_openid_connect_login</loginEndpoint>
+  <logoutEndpoint>/j_spring_oauth2_openid_connect_logout</logoutEndpoint>
+  <allowUnSecureLogging>false</allowUnSecureLogging>
+  <principalKey>preferred_username</principalKey>
+  <jwkURI>https://auth.dcs.hcu-hamburg.de/realms/geoserver-realm/protocol/openid-connect/certs</jwkURI>
+  <tokenRolesClaim>realm_access.roles</tokenRolesClaim>
+  <responseMode>form_post</responseMode>
+  <postLogoutRedirectUri>http://localhost:8080/geoserver/</postLogoutRedirectUri>
+  <sendClientSecret>true</sendClientSecret>
+  <allowBearerTokens>true</allowBearerTokens>
+  <usePKCE>true</usePKCE>
+  <enforceTokenValidation>true</enforceTokenValidation>
+  <cacheAuthentication>false</cacheAuthentication>
+</openIdConnectAuthentication>

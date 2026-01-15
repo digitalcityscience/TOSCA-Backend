@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: tosca-db
+    environment:
+      POSTGRES_DB: ${PG_DATABASE}
+      POSTGRES_USER: ${PG_SUPERUSER}
+      POSTGRES_PASSWORD: ${PG_SUPERPASS}
+      PG_API_USER: ${PG_API_USER}
+      PG_API_PASSWORD: ${PG_API_PASSWORD}
+      PG_GS_USER: ${PG_GS_USER}
+      PG_GS_PASSWORD: ${PG_GS_PASSWORD}
+    ports:
+      - "${PG_PORT}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d
+
+    restart: unless-stopped
+
+volumes:
+  pg_data:
