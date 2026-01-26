@@ -1,0 +1,3 @@
+[submodule "docker/geoserver_docker"]
+	path = docker/geoserver_docker
+	url = https://github.com/digitalcityscience/geoserver_docker.git

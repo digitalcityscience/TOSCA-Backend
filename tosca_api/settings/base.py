@@ -114,10 +114,10 @@ DATABASES = {
             "USER": env("PG_API_USER"),
             "PASSWORD": env("PG_API_PASSWORD"),
             "HOST": env("PG_HOST"),
-            "PORT": env("PG_PORT"),
+            "PORT": env("PG_DOCKER_PORT"),
             "OPTIONS": {
                 # optional: schema search_path for Django connections
-                "options": f"-c search_path={env('DJANGO_DB_SCHEMA', default='public')},public"
+                "options": f"-c search_path={env('PG_SCHEMA_API', default='public')},public"
             },
         }
     }
