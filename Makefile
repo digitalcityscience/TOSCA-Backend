@@ -101,17 +101,16 @@ initialize-project: which-env
 	@echo "$(COLOR_GREEN)✅ Project initialized!$(COLOR_RESET)"
 	@echo ""
 	@sleep 2
-	@docker compose \
-		--env-file $(ENV_FILE) \
-		-f $(COMPOSE_FILE) \
-		logs -f django
-
+	@echo "$(COLOR_RED)📋 Please initialize PostgreSQL schemas and roles before proceeding. 
+	run  "make jdbc-settings-activation"$(COLOR_RESET)"
 # Run GeoServer JDBC settings activation script
 jdbc-settings-activation: which-env
 	@echo "Activating GeoServer JDBC settings with ENV_FILE=$(ENV_FILE)"
 	@cd docker/geoserver_docker && \
 	ENV_FILE="$(abspath $(ENV_FILE))" \
 	./scripts/activate_jdbcS_settings.sh
+	@echo "$(COLOR_GREEN)✅ If you want to see the all system log " make logs" only for django "make django-logs"$(COLOR_RESET)"
+
 
 # -------------------------------------------------
 # Helpers
