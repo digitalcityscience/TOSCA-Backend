@@ -43,3 +43,7 @@ target-version = "py312"
 [tool.setuptools.packages.find]
 include = ["tosca_api*"]
 exclude = ["docker*"]
+
+
+[tool.uv]
+python-preference = "managed"

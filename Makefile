@@ -86,6 +86,12 @@ help:
 	@echo "  make jdbc-settings-activation - Run GeoServer JDBC settings activation script"
 	@echo "$(COLOR_GREEN)Environment:$(COLOR_RESET) ENV=$(ENV)"
 	@echo ""
+	@echo "  make test                     # Run full pytest suite"
+	@echo "  make test APP=authentication  # Run tests for a single app"
+	@echo "  make test PATH=path/to/tests  # Run tests for a specific path"
+	@echo ""
+
+	
 # -------------------------------------------------
 # Project Initialization
 # -------------------------------------------------
@@ -215,6 +221,22 @@ rmvolumes: which-env
 		down -v
 	@echo "$(COLOR_GREEN)✅ Volumes removed$(COLOR_RESET)"
 
+
+# -------------------------------------------------
+# Pytest via uv inside container
+# Usage:
+#   make test
+#   make test app=authentication
+#   make test path=tosca_api/apps/authentication/tests
+# -------------------------------------------------
+test:
+	@if [ -n "$(app)" ]; then \
+		docker exec -it tosca-django bash -lc "uv run pytest tosca_api/apps/$(app)"; \
+	elif [ -n "$(path)" ]; then \
+		docker exec -it tosca-django bash -lc "uv run pytest $(path)"; \
+	else \
+		docker exec -it tosca-django bash -lc "uv run pytest"; \
+	fi
 # -------------------------------------------------
 # Django-specific Commands
 # -------------------------------------------------
