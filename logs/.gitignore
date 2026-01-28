@@ -1,0 +1,9 @@
+# Log files should not be committed to Git
+# They contain runtime data and can grow large
+
+*.log
+*.log.*
+*.out
+security.log*
+tosca_api.log*
+errors.log*

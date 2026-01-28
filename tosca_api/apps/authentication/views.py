@@ -7,6 +7,9 @@ from django.contrib.auth import get_user_model
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+import logging
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -78,13 +81,19 @@ class AutoSignupView(View):
         # Get pending sociallogin from session
         data = request.session.get("socialaccount_sociallogin")
         if not data:
-            print("[AutoSignupView] No pending sociallogin in session")
+            logger.warning("No pending sociallogin in session", extra={
+                'action': 'manual_signup_blocked',
+                'session_id': request.session.session_key
+            })
             return redirect('/accounts/login/')
         
         try:
             sociallogin = SocialLogin.deserialize(data)
         except (ValueError, KeyError) as e:
-            print(f"[AutoSignupView] Failed to deserialize sociallogin: {e}")
+            logger.error("Failed to deserialize sociallogin", extra={
+                'error': str(e),
+                'session_id': request.session.session_key
+            })
             return redirect('/accounts/login/')
         
         # Get user data from sociallogin
@@ -99,10 +108,12 @@ class AutoSignupView(View):
         last_name = userinfo.get("family_name") or id_token.get("family_name", "")
         sub = userinfo.get("sub") or id_token.get("sub")  # Keycloak unique ID
         
-        print(f"[AutoSignupView] Creating user: {username}, email: {email}, sub: {sub}")
-        
         if not username:
-            print("[AutoSignupView] No username found")
+            logger.warning("No username found in sociallogin", extra={
+                'email': email,
+                'sub': sub,
+                'action': 'user_creation_failed'
+            })
             return redirect('/accounts/login/')
         
         # Get or create user
@@ -116,9 +127,18 @@ class AutoSignupView(View):
         )
         
         if created:
-            print(f"[AutoSignupView] Created new user: {username}")
+            logger.info("Created new user from manual signup", extra={
+                'user_id': user.id,
+                'username': username,
+                'email': email,
+                'sub': sub
+            })
         else:
-            print(f"[AutoSignupView] Found existing user: {username}")
+            logger.info("Updated existing user from manual signup", extra={
+                'user_id': user.id,
+                'username': username,
+                'email': email
+            })
             # Update user info
             user.email = email
             user.first_name = first_name
@@ -139,7 +159,13 @@ class AutoSignupView(View):
         # Login the user
         login(request, user, backend='allauth.account.auth_backends.AuthenticationBackend')
         
-        print(f"[AutoSignupView] User logged in: {username}, is_staff: {user.is_staff}")
+        logger.info("User logged in via manual signup", extra={
+            'user_id': user.id,
+            'username': user.username,
+            'is_staff': user.is_staff,
+            'is_superuser': user.is_superuser,
+            'redirect_target': '/admin/' if user.is_staff else '/welcome/'
+        })
         
         # Redirect based on role
         if user.is_staff:
@@ -158,7 +184,9 @@ class AutoSignupView(View):
     
     def _apply_permissions(self, user, roles):
         """Apply roles to Django user permissions."""
-        print(f"[AutoSignupView] Applying roles: {roles}")
+        old_staff = user.is_staff
+        old_superuser = user.is_superuser
+        
         if "SUPERADMIN" in roles:
             user.is_superuser = True
             user.is_staff = True
@@ -168,6 +196,16 @@ class AutoSignupView(View):
         else:
             user.is_superuser = False
             user.is_staff = False
+        
+        if user.is_staff != old_staff or user.is_superuser != old_superuser:
+            logger.info("User permissions updated in views", extra={
+                'user_id': user.id,
+                'username': user.username,
+                'roles': sorted(list(roles)),
+                'is_staff': user.is_staff,
+                'is_superuser': user.is_superuser,
+                'changed': True
+            })
 
 
 @api_view(['GET'])

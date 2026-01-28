@@ -161,7 +161,12 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         email = userinfo.get("email") or (id_token.get("email") if isinstance(id_token, dict) else None)
         username = userinfo.get("preferred_username") or (id_token.get("preferred_username") if isinstance(id_token, dict) else None)
         
-        print(f"[KeycloakAdapter] pre_social_login - username: {username}, email: {email}, is_existing: {sociallogin.is_existing}")
+        logger.info("Processing social login", extra={
+            'username': username,
+            'email': email,
+            'is_existing': sociallogin.is_existing,
+            'provider': sociallogin.account.provider
+        })
         
         if sociallogin.is_existing:
             # Existing social account - just update permissions
@@ -178,7 +183,11 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         if username:
             try:
                 existing_user = User.objects.get(username=username)
-                print(f"[KeycloakAdapter] Found existing user by username: {username}")
+                logger.info("Connected existing user by username", extra={
+                    'user_id': existing_user.id,
+                    'username': username,
+                    'connection_method': 'username_match'
+                })
             except User.DoesNotExist:
                 pass
         
@@ -186,11 +195,21 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         if not existing_user and email:
             try:
                 existing_user = User.objects.get(email__iexact=email)
-                print(f"[KeycloakAdapter] Found existing user by email: {email}")
+                logger.info("Connected existing user by email", extra={
+                    'user_id': existing_user.id,
+                    'username': existing_user.username,
+                    'email': email,
+                    'connection_method': 'email_match'
+                })
             except User.DoesNotExist:
                 pass
             except User.MultipleObjectsReturned:
-                print(f"[KeycloakAdapter] Multiple users with email: {email}")
+                logger.error("Email conflict detected during login", extra={
+                    'email': email,
+                    'keycloak_username': username,
+                    'action': 'auto_link_blocked',
+                    'security_risk': True
+                })
         
         if existing_user:
             # Connect social account to existing user
@@ -200,7 +219,6 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         
         # No existing user - create one now to bypass signup form
         if username:
-            print(f"[KeycloakAdapter] Creating new user: {username}")
             first_name = userinfo.get("given_name") or (id_token.get("given_name") if isinstance(id_token, dict) else "")
             last_name = userinfo.get("family_name") or (id_token.get("family_name") if isinstance(id_token, dict) else "")
             
@@ -214,16 +232,22 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
             
             # Connect sociallogin to the new user
             sociallogin.user = new_user
-            print(f"[KeycloakAdapter] Created and connected new user: {username}")
+            logger.info("Created new user from social login", extra={
+                'user_id': new_user.id,
+                'username': username,
+                'email': email,
+                'provider': sociallogin.account.provider
+            })
         else:
-            print("[KeycloakAdapter] No username found, cannot create user")
+            logger.warning("No username found, cannot create user", extra={
+                'email': email,
+                'provider': sociallogin.account.provider
+            })
 
     def _extract_roles(self, extra_data):
         """Extract roles from Keycloak token."""
         roles = set()
-        
-        print(f"[KeycloakAdapter] extra_data keys: {extra_data.keys()}")
-        print(f"[KeycloakAdapter] id_token type: {type(extra_data.get('id_token'))}")
+        role_sources = []
         
         # Try to get roles from different locations
         # 1. Try realm_access (standard location)
@@ -231,68 +255,90 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         if realm_access:
             realm_roles = realm_access.get("roles", [])
             roles.update(realm_roles)
-            print(f"[KeycloakAdapter] Found roles in realm_access: {realm_roles}")
+            if realm_roles:
+                role_sources.append(f"realm_access({len(realm_roles)})")
         
         # 2. Try to decode id_token if it's a JWT string
         id_token = extra_data.get("id_token")
         if id_token:
             if isinstance(id_token, str):
-                logger.debug("[KeycloakAdapter] id_token is string, attempting decode (verified)")
                 try:
                     decoded_token = verify_and_decode_token(id_token)
-                    logger.debug("[KeycloakAdapter] Decoded id_token successfully; keys=%s", list(decoded_token.keys()))
-
                     id_realm_access = decoded_token.get("realm_access", {})
                     if id_realm_access:
                         id_roles = id_realm_access.get("roles", [])
                         roles.update(id_roles)
-                        logger.debug("[KeycloakAdapter] Found roles in id_token.realm_access: %s", id_roles)
+                        if id_roles:
+                            role_sources.append(f"id_token({len(id_roles)})")
                 except Exception as e:
-                    logger.warning("[KeycloakAdapter] Failed to decode/verify id_token: %s", e)
+                    logger.warning("Failed to decode id_token for role extraction", extra={
+                        'error': str(e),
+                        'token_present': bool(id_token)
+                    })
             elif isinstance(id_token, dict):
-                logger.debug("[KeycloakAdapter] id_token is already dict; keys=%s", list(id_token.keys()))
                 # Already decoded
                 id_realm_access = id_token.get("realm_access", {})
                 if id_realm_access:
                     id_roles = id_realm_access.get("roles", [])
                     roles.update(id_roles)
-                    logger.debug("[KeycloakAdapter] Found roles in id_token.realm_access: %s", id_roles)
-            else:
-                logger.debug("[KeycloakAdapter] id_token is unexpected type: %s", type(id_token))
+                    if id_roles:
+                        role_sources.append(f"id_token_dict({len(id_roles)})")
         
         # 3. Try userinfo
         userinfo = extra_data.get("userinfo", {})
         if userinfo and isinstance(userinfo, dict):
-            print(f"[KeycloakAdapter] userinfo keys: {userinfo.keys()}")
             ui_realm_access = userinfo.get("realm_access", {})
             if ui_realm_access:
                 ui_roles = ui_realm_access.get("roles", [])
                 roles.update(ui_roles)
-                print(f"[KeycloakAdapter] Found roles in userinfo.realm_access: {ui_roles}")
+                if ui_roles:
+                    role_sources.append(f"userinfo({len(ui_roles)})")
         
-        print(f"[KeycloakAdapter] Final extracted roles: {roles}")
+        logger.info("Extracted roles from Keycloak token", extra={
+            'roles_count': len(roles),
+            'roles': sorted(list(roles)),
+            'sources': role_sources
+        })
         return roles
     
     def _apply_permissions(self, user, roles):
         """
         Apply roles to Django user permissions.
         """
-        # Debug logging
-        print(f"[KeycloakAdapter] User: {user.username}, Roles from Keycloak: {roles}")
+        old_staff = user.is_staff
+        old_superuser = user.is_superuser
         
         if "SUPERADMIN" in roles:
             user.is_superuser = True
             user.is_staff = True
-            print("[KeycloakAdapter] Applied SUPERADMIN permissions: is_staff=True, is_superuser=True")
+            permission_level = "SUPERADMIN"
         elif "ADMIN" in roles:
             user.is_superuser = False
             user.is_staff = True
-            print("[KeycloakAdapter] Applied ADMIN permissions: is_staff=True, is_superuser=False")
+            permission_level = "ADMIN"
         else:
             user.is_superuser = False
             user.is_staff = False
-            print("[KeycloakAdapter] No admin roles, setting is_staff=False, is_superuser=False")
+            permission_level = "USER"
         
-        user.save()
-        print(f"[KeycloakAdapter] Saved user {user.username}: is_staff={user.is_staff}, is_superuser={user.is_superuser}")
+        # Only save if permissions changed
+        if user.is_staff != old_staff or user.is_superuser != old_superuser:
+            user.save()
+            logger.info("User permissions updated", extra={
+                'user_id': user.id,
+                'username': user.username,
+                'permission_level': permission_level,
+                'is_staff': user.is_staff,
+                'is_superuser': user.is_superuser,
+                'roles': sorted(list(roles)),
+                'changed': True
+            })
+        else:
+            logger.info("User permissions unchanged", extra={
+                'user_id': user.id,
+                'username': user.username,
+                'permission_level': permission_level,
+                'roles': sorted(list(roles)),
+                'changed': False
+            })
         
