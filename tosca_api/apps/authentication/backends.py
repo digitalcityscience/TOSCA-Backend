@@ -3,8 +3,13 @@ from allauth.account.adapter import DefaultAccountAdapter
 from django.contrib.auth import get_user_model
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
+from jwt import PyJWKClient
 import jwt
+from django.conf import settings
+import logging
+from tosca_api.apps.core.jwt_utils import verify_and_decode_token
 
+logger = logging.getLogger(__name__)
 User = get_user_model()
 
 
@@ -43,35 +48,15 @@ class KeycloakTokenAuthentication(BaseAuthentication):
         auth_header = request.headers.get('Authorization')
         if not auth_header or not auth_header.startswith('Bearer '):
             return None
-        
+
         token = auth_header.split(' ')[1]
-        
+
         try:
-            # Decode without verification (trust HTTPS connection)
-            # In production, you should verify the signature with Keycloak's public key
-            """
-            #pip install PyJWT
-            from jwt import PyJWKClient
-            from django.conf import settings
-            
-            jwks_client = PyJWKClient(settings.KEYCLOAK_JWKS_URL)
-            
-            signing_key = jwks_client.get_signing_key_from_jwt(token)
-            
-            decoded_token = jwt.decode(
-                token,
-                signing_key.key,
-                algorithms=["RS256"],
-                audience=settings.KEYCLOAK_CLIENT_ID,
-                issuer=settings.KEYCLOAK_ISSUER,
-            )
-            """
-            decoded_token = jwt.decode(token, options={"verify_signature": False})
-            
+            decoded_token = verify_and_decode_token(token)
             username = decoded_token.get('preferred_username')
             if not username:
                 raise AuthenticationFailed('Token does not contain username')
-        
+
             # Get or create user
             user, created = User.objects.get_or_create(
                 username=username,
@@ -81,17 +66,15 @@ class KeycloakTokenAuthentication(BaseAuthentication):
                     'last_name': decoded_token.get('family_name', ''),
                 }
             )
-            
+
             # Sync roles from token
             roles = self._extract_roles_from_token(decoded_token)
             self._apply_permissions(user, roles)
-            
-            return (user, token)
-            
-        except jwt.ExpiredSignatureError:
-            raise AuthenticationFailed('Token has expired')
-        except jwt.InvalidTokenError as e:
-            raise AuthenticationFailed(f'Invalid token: {str(e)}')
+
+            # return decoded token as request.auth for downstream use
+            return (user, decoded_token)
+        except AuthenticationFailed:
+            raise
         except Exception as e:
             raise AuthenticationFailed(f'Authentication failed: {str(e)}')
     
@@ -257,32 +240,28 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         id_token = extra_data.get("id_token")
         if id_token:
             if isinstance(id_token, str):
-                print("[KeycloakAdapter] id_token is string, attempting decode...")
-                print(f"[KeycloakAdapter] id_token preview: {id_token[:50]}...")
+                logger.debug("[KeycloakAdapter] id_token is string, attempting decode (verified)")
                 try:
-                    # Decode without verification (we trust it came from Keycloak via HTTPS)
-                    decoded_token = jwt.decode(id_token, options={"verify_signature": False})
-                    print("[KeycloakAdapter] Decoded id_token successfully")
-                    print(f"[KeycloakAdapter] Decoded token keys: {decoded_token.keys()}")
-                    
+                    decoded_token = verify_and_decode_token(id_token)
+                    logger.debug("[KeycloakAdapter] Decoded id_token successfully; keys=%s", list(decoded_token.keys()))
+
                     id_realm_access = decoded_token.get("realm_access", {})
                     if id_realm_access:
                         id_roles = id_realm_access.get("roles", [])
                         roles.update(id_roles)
-                        print(f"[KeycloakAdapter] Found roles in id_token.realm_access: {id_roles}")
+                        logger.debug("[KeycloakAdapter] Found roles in id_token.realm_access: %s", id_roles)
                 except Exception as e:
-                    print(f"[KeycloakAdapter] Failed to decode id_token: {e}")
+                    logger.warning("[KeycloakAdapter] Failed to decode/verify id_token: %s", e)
             elif isinstance(id_token, dict):
-                print("[KeycloakAdapter] id_token is already dict")
-                print(f"[KeycloakAdapter] id_token keys: {id_token.keys()}")
+                logger.debug("[KeycloakAdapter] id_token is already dict; keys=%s", list(id_token.keys()))
                 # Already decoded
                 id_realm_access = id_token.get("realm_access", {})
                 if id_realm_access:
                     id_roles = id_realm_access.get("roles", [])
                     roles.update(id_roles)
-                    print(f"[KeycloakAdapter] Found roles in id_token.realm_access: {id_roles}")
+                    logger.debug("[KeycloakAdapter] Found roles in id_token.realm_access: %s", id_roles)
             else:
-                print(f"[KeycloakAdapter] id_token is unexpected type: {type(id_token)}")
+                logger.debug("[KeycloakAdapter] id_token is unexpected type: %s", type(id_token))
         
         # 3. Try userinfo
         userinfo = extra_data.get("userinfo", {})

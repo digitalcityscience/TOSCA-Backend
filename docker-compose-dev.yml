@@ -60,20 +60,20 @@ services:
     env_file:
       - .env.dev
     environment:
-      - DJANGO_SETTINGS_MODULE=tosca_api.settings.development
-      - DATABASE_URL=postgresql://${PG_API_USER}:${PG_API_PASSWORD}@db:5432/${PG_DATABASE}
-    ports:
-      - "${DJANGO_PORT:-8000}:8000"
+      DJANGO_SETTINGS_MODULE: tosca_api.settings.development
+      DATABASE_URL: postgresql://${PG_API_USER}:${PG_API_PASSWORD}@db:5432/${PG_DATABASE}
     volumes:
       - .:/app
+    ports:
+      - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
+    entrypoint: bash docker/django/entrypoint.sh
     command: uv run python manage.py runserver 0.0.0.0:8000
     stdin_open: true
     tty: true
     restart: unless-stopped
-
 volumes:
   pg_data:
   geoserver_data:

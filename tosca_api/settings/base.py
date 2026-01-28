@@ -187,6 +187,10 @@ KEYCLOAK_SERVER_URL = env("KEYCLOAK_SERVER_URL", default="https://auth.dcs.hcu-h
 KEYCLOAK_REALM = env("KEYCLOAK_REALM", default="prod-realm")
 KEYCLOAK_CLIENT_ID = env("KEYCLOAK_CLIENT_ID", default="django-dev")
 
+# JWKS / issuer used to verify access/id tokens
+KEYCLOAK_JWKS_URL = env("KEYCLOAK_JWKS_URL", default=f"{KEYCLOAK_SERVER_URL}realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs")
+KEYCLOAK_ISSUER = env("KEYCLOAK_ISSUER", default=f"{KEYCLOAK_SERVER_URL}realms/{KEYCLOAK_REALM}")
+
 # Allow tokens from multiple clients (geoserver, tosca-web, mobile-app)
 ALLOWED_TOKEN_AUDIENCES = ["django-dev", "geoserver", "account"]
 ALLOWED_TOKEN_CLIENTS = ["django-dev", "geoserver", "tosca-web"]
