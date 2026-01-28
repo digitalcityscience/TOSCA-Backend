@@ -1,4 +1,3 @@
-import token
 import jwt
 from jwt import PyJWKClient
 from django.conf import settings

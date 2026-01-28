@@ -47,3 +47,8 @@ exclude = ["docker*"]
 
 [tool.uv]
 python-preference = "managed"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.7",
+]
