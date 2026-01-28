@@ -3,9 +3,6 @@ from allauth.account.adapter import DefaultAccountAdapter
 from django.contrib.auth import get_user_model
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
-from jwt import PyJWKClient
-import jwt
-from django.conf import settings
 import logging
 from tosca_api.apps.core.jwt_utils import verify_and_decode_token
 
