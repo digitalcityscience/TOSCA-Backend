@@ -98,6 +98,7 @@ help:
 # Builds all Docker images, starts all services, runs Django migrations, and restarts only the Django container.
 initialize-project: which-env
 	@echo "$(COLOR_GREEN)🚀 Initializing project: build, up, migrate, restart Django...$(COLOR_RESET)"
+	cp docker-compose.yml $(COMPOSE_FILE)
 	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) build
 	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) up -d
 	@echo "$(COLOR_BLUE)📦 Running Django migrations...$(COLOR_RESET)"
@@ -108,7 +109,9 @@ initialize-project: which-env
 	@echo ""
 	@sleep 2
 	@echo "$(COLOR_RED)📋 Please initialize PostgreSQL schemas and roles before proceeding. 
-	run  "make jdbc-settings-activation"$(COLOR_RESET)"
+	@echo "make jdbc-settings-activation"$(COLOR_RESET)"
+
+# -------------------------------------------------
 # Run GeoServer JDBC settings activation script
 jdbc-settings-activation: which-env
 	@echo "Activating GeoServer JDBC settings with ENV_FILE=$(ENV_FILE)"

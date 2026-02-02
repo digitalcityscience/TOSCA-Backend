@@ -2,6 +2,8 @@ services:
   db:
     image: postgis/postgis:16-3.4
     container_name: tosca-db
+    env_file:
+      - ${ENV_FILE}
     environment:
       POSTGRES_DB: ${PG_DATABASE}
       POSTGRES_USER: ${PG_SUPERUSER}
@@ -10,13 +12,68 @@ services:
       PG_API_PASSWORD: ${PG_API_PASSWORD}
       PG_GS_USER: ${PG_GS_USER}
       PG_GS_PASSWORD: ${PG_GS_PASSWORD}
+      PG_SCHEMA_API: ${PG_SCHEMA_API}
+      PG_SCHEMA_GEOSERVER: ${PG_SCHEMA_GEOSERVER}
+      PG_SCHEMA_GIS: ${PG_SCHEMA_GIS}
     ports:
       - "${PG_PORT}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./docker/initdb:/docker-entrypoint-initdb.d
-
+      - ./docker/postgis/initdb:/docker-entrypoint-initdb.d
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${PG_SUPERUSER} -d ${PG_DATABASE} -h 127.0.0.1 -p 5432",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
     restart: unless-stopped
 
+  geoserver:
+    image: ghcr.io/digitalcityscience/tosca-geoserver:latest
+    container_name: tosca-geoserver
+    env_file:
+      - ${ENV_FILE}
+    ports:
+      - "${GEOSERVER_PORT}:8080"
+    volumes:
+      - geoserver_data:/geoserver_data/data
+      # add to local data into container
+      # /home/user/geoserver_data:/mnt/geoserver_data
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/geoserver/web"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  django:
+    build:
+      context: .
+      dockerfile: docker/django/Dockerfile
+    container_name: tosca-django
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      DJANGO_SETTINGS_MODULE: tosca_api.settings.${ENV_TYPE}
+      DATABASE_URL: postgresql://${PG_API_USER}:${PG_API_PASSWORD}@db:5432/${PG_DATABASE}
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: bash docker/django/entrypoint.sh
+    command: uv run python manage.py runserver 0.0.0.0:8000
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
 volumes:
   pg_data:
+  geoserver_data:
