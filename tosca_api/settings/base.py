@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "django.contrib.sites",
+    "django.contrib.gis",  # GeoDjango for PostGIS support
     # Local apps that override third-party templates
     "tosca_api.apps.authentication",  # Override allauth templates
     # Third-party
@@ -109,7 +110,7 @@ ASGI_APPLICATION = "tosca_api.asgi.application"
 
 DATABASES = {
         "default": {
-            "ENGINE": "django.db.backends.postgresql",
+            "ENGINE": "django.contrib.gis.db.backends.postgis",
             "NAME": env("PG_DATABASE"),
             "USER": env("PG_API_USER"),
             "PASSWORD": env("PG_API_PASSWORD"),
