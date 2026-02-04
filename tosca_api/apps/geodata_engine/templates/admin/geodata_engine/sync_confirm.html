@@ -1,0 +1,124 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <style>
+        .sync-container {
+            max-width: 600px;
+            margin: 20px auto;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .sync-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .sync-icon {
+            font-size: 48px;
+            color: #28a745;
+            margin-bottom: 10px;
+        }
+        .sync-description {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 6px;
+            margin: 20px 0;
+            border-left: 4px solid #007bff;
+        }
+        .sync-warning {
+            background: #fff3cd;
+            color: #856404;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+            border: 1px solid #ffeaa7;
+        }
+        .sync-actions {
+            text-align: center;
+            margin-top: 30px;
+        }
+        .sync-actions .button {
+            margin: 0 10px;
+            padding: 10px 20px;
+        }
+        .button-sync {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .button-sync:hover {
+            background-color: #218838;
+        }
+        .button-cancel {
+            background-color: #6c757d;
+            color: white;
+            text-decoration: none;
+        }
+        .button-cancel:hover {
+            background-color: #545b62;
+            color: white;
+        }
+    </style>
+{% endblock %}
+
+{% block content %}
+<div class="sync-container">
+    <div class="sync-header">
+        <div class="sync-icon">🔄</div>
+        <h1>Sync with GeoServer</h1>
+        <h2>{{ engine.name }}</h2>
+    </div>
+
+    <div class="sync-description">
+        <h3>🎯 What will happen:</h3>
+        <ul>
+            <li><strong>Pull Workspaces</strong> from GeoServer → Create missing ones in Django</li>
+            <li><strong>Pull Data Stores</strong> from GeoServer → Create missing ones in Django</li>
+            <li><strong>Pull Layers</strong> from GeoServer → Create missing ones in Django</li>
+            <li><strong>Update metadata</strong> for existing resources</li>
+        </ul>
+    </div>
+
+    <div class="sync-warning">
+        <strong>⚠️ Important:</strong>
+        <ul>
+            <li>GeoServer is the <strong>Single Source of Truth</strong></li>
+            <li>This will NOT delete anything from GeoServer</li>
+            <li>Django DB will be updated to match GeoServer state</li>
+            <li>Existing Django records will be preserved (not overwritten)</li>
+        </ul>
+    </div>
+
+    <div class="sync-description">
+        <h3>🔌 Connection Details:</h3>
+        <ul>
+            <li><strong>URL:</strong> {{ engine.base_url }}</li>
+            <li><strong>Username:</strong> {{ engine.admin_username }}</li>
+            <li><strong>Status:</strong> 
+                {% if engine.is_active %}
+                    <span style="color: #28a745;">✅ Active</span>
+                {% else %}
+                    <span style="color: #dc3545;">❌ Inactive</span>
+                {% endif %}
+            </li>
+        </ul>
+    </div>
+
+    <form method="post">
+        {% csrf_token %}
+        <div class="sync-actions">
+            <button type="submit" class="button button-sync">
+                🔄 Start Sync
+            </button>
+            <a href="{% url 'admin:geodata_engine_manage' engine.id %}" class="button button-cancel">
+                Cancel
+            </a>
+        </div>
+    </form>
+</div>
+{% endblock %}

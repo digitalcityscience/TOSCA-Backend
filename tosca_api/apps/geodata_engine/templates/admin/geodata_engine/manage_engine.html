@@ -1,0 +1,291 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_list %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <style>
+        .engine-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .engine-status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status-active { background-color: #28a745; color: white; }
+        .status-inactive { background-color: #dc3545; color: white; }
+        .status-default { background-color: #007bff; color: white; }
+        .tab-container {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .tab-nav {
+            background-color: #f8f9fa;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+        }
+        .tab-nav button {
+            background: none;
+            border: none;
+            padding: 12px 24px;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+        }
+        .tab-nav button.active {
+            background-color: white;
+            border-bottom-color: #007bff;
+            color: #007bff;
+        }
+        .tab-nav button:hover {
+            background-color: #e9ecef;
+        }
+        .tab-content {
+            display: none;
+            padding: 20px;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .quick-actions {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .quick-actions .button {
+            padding: 8px 16px;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .stat-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .stat-label {
+            color: #6c757d;
+            font-size: 14px;
+        }
+    </style>
+{% endblock %}
+
+{% block content %}
+<div class="engine-header">
+    <h1>
+        🏭 {{ engine.name }}
+        {% if engine.is_active %}
+            <span class="engine-status status-active">Active</span>
+        {% else %}
+            <span class="engine-status status-inactive">Inactive</span>
+        {% endif %}
+        {% if engine.is_default %}
+            <span class="engine-status status-default">Default</span>
+        {% endif %}
+    </h1>
+    <p>{{ engine.description|default:"GeoServer instance management" }}</p>
+    <p><strong>URL:</strong> {{ engine.base_url }}</p>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-number">{{ workspaces.count }}</div>
+        <div class="stat-label">Workspaces</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-number">{{ stores.count }}</div>
+        <div class="stat-label">Data Stores</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-number">{{ layers.count }}</div>
+        <div class="stat-label">Layers</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-number">{{ layers|length|add:0 }}</div>
+        <div class="stat-label">Published</div>
+    </div>
+</div>
+
+<div class="tab-container">
+    <div class="tab-nav">
+        <button class="tab-button active" onclick="showTab(event, 'workspaces')">📁 Workspaces</button>
+        <button class="tab-button" onclick="showTab(event, 'stores')">🗃️ Data Stores</button>
+        <button class="tab-button" onclick="showTab(event, 'layers')">📊 Layers</button>
+    </div>
+
+    <!-- Workspaces Tab -->
+    <div id="workspaces" class="tab-content active">
+        <div class="quick-actions">
+            <a href="{% url 'admin:geodata_engine_sync' engine.id %}" class="button default" style="background-color: #28a745; color: white;">🔄 Sync with GeoServer</a>
+            <a href="{% url 'admin:geodata_engine_add_workspace' engine.id %}" class="button default">+ Add Workspace</a>
+        </div>
+        
+        {% if workspaces %}
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Layers</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for workspace in workspaces %}
+                    <tr>
+                        <td><strong>{{ workspace.name }}</strong></td>
+                        <td>{{ workspace.description|truncatewords:10 }}</td>
+                        <td>{{ workspace.layers.count }} layers</td>
+                        <td>{{ workspace.created_at|date:"M d, Y" }}</td>
+                        <td>
+                            <a href="/admin/geodata_engine/workspace/{{ workspace.id }}/change/">Edit</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>No workspaces found. <a href="{% url 'admin:geodata_engine_add_workspace' engine.id %}">Create your first workspace</a>.</p>
+        {% endif %}
+    </div>
+
+    <!-- Stores Tab -->
+    <div id="stores" class="tab-content">
+        <div class="quick-actions">
+            <a href="{% url 'admin:geodata_engine_add_store' engine.id %}" class="button default">+ Add Data Store</a>
+        </div>
+        
+        {% if stores %}
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Connection</th>
+                        <th>Schema</th>
+                        <th>Layers</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for store in stores %}
+                    <tr>
+                        <td><strong>{{ store.name }}</strong></td>
+                        <td>{{ store.host }}:{{ store.port }}/{{ store.database }}</td>
+                        <td>{{ store.schema }}</td>
+                        <td>{{ store.layers.count }} layers</td>
+                        <td>{{ store.created_at|date:"M d, Y" }}</td>
+                        <td>
+                            <a href="/admin/geodata_engine/store/{{ store.id }}/change/">Edit</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>No data stores found. <a href="{% url 'admin:geodata_engine_add_store' engine.id %}">Create your first data store</a>.</p>
+        {% endif %}
+    </div>
+
+    <!-- Layers Tab -->
+    <div id="layers" class="tab-content">
+        <div class="quick-actions">
+            <a href="{% url 'admin:geodata_engine_upload_layer' engine.id %}" class="button default">📤 Upload Layer</a>
+        </div>
+        
+        {% if layers %}
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Workspace</th>
+                        <th>Store</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for layer in layers %}
+                    <tr>
+                        <td><strong>{{ layer.name }}</strong></td>
+                        <td>{{ layer.workspace.name }}</td>
+                        <td>{{ layer.store.name }}</td>
+                        <td>{{ layer.geometry_type }}</td>
+                        <td>
+                            {% if layer.publishing_state == 'published' %}
+                                <span class="engine-status status-active">Published</span>
+                            {% elif layer.publishing_state == 'error' %}
+                                <span class="engine-status status-inactive">Error</span>
+                            {% else %}
+                                <span class="engine-status">Unpublished</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ layer.created_at|date:"M d, Y" }}</td>
+                        <td>
+                            <a href="/admin/geodata_engine/layer/{{ layer.id }}/change/">Edit</a>
+                            {% if layer.publishing_state == 'unpublished' %}
+                                <a href="#" onclick="publishLayer('{{ layer.id }}')">Publish</a>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>No layers found. <a href="{% url 'admin:geodata_engine_upload_layer' engine.id %}">Upload your first layer</a>.</p>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+function showTab(evt, tabName) {
+    var i, tabcontent, tabbuttons;
+    
+    // Hide all tab contents
+    tabcontent = document.getElementsByClassName("tab-content");
+    for (i = 0; i < tabcontent.length; i++) {
+        tabcontent[i].classList.remove("active");
+    }
+    
+    // Remove active class from all tab buttons
+    tabbuttons = document.getElementsByClassName("tab-button");
+    for (i = 0; i < tabbuttons.length; i++) {
+        tabbuttons[i].classList.remove("active");
+    }
+    
+    // Show the current tab and mark button as active
+    document.getElementById(tabName).classList.add("active");
+    evt.currentTarget.classList.add("active");
+}
+
+function publishLayer(layerId) {
+    if (confirm('Are you sure you want to publish this layer to GeoServer?')) {
+        // TODO: Implement AJAX call to publish layer
+        alert('Publishing functionality will be implemented soon!');
+    }
+}
+</script>
+{% endblock %}

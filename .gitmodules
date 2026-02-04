@@ -1,3 +1,6 @@
 [submodule "docker/geoserver_docker"]
 	path = docker/geoserver_docker
 	url = https://github.com/digitalcityscience/geoserver_docker.git
+[submodule "tosca_api/apps/geodata_engine/geoserver/geoserver-rest"]
+	path = tosca_api/apps/geodata_engine/geoserver/geoserver-rest
+	url = https://github.com/orttak/geoserver-rest.git

@@ -1,0 +1,122 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <style>
+        .form-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .breadcrumb {
+            background-color: #f8f9fa;
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .breadcrumb a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        .breadcrumb a:hover {
+            text-decoration: underline;
+        }
+        .form-row {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        input, textarea, select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        .full-width {
+            grid-column: span 2;
+        }
+        .file-upload {
+            border: 2px dashed #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            background: #f8f9fa;
+        }
+        .submit-row {
+            padding: 10px 0;
+            border-top: 1px solid #eee;
+            text-align: right;
+        }
+    </style>
+{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+    <a href="{% url 'admin:geodata_engine_geodataengine_changelist' %}">GeoServer Instances</a> &raquo;
+    <a href="{% url 'admin:geodata_engine_manage' engine.id %}">{{ engine.name }}</a> &raquo;
+    Upload Layer
+</div>
+
+<h1>Upload Layer to {{ engine.name }}</h1>
+
+<div class="form-container">
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        
+        <div class="form-grid">
+            <div class="form-row">
+                <label for="{{ form.workspace.id_for_label }}">Workspace:</label>
+                {{ form.workspace }}
+            </div>
+            
+            <div class="form-row">
+                <label for="{{ form.store.id_for_label }}">Data Store:</label>
+                {{ form.store }}
+            </div>
+        </div>
+        
+        <div class="form-grid">
+            <div class="form-row">
+                <label for="{{ form.layer_name.id_for_label }}">Layer Name:</label>
+                {{ form.layer_name }}
+            </div>
+            
+            <div class="form-row">
+                <label for="{{ form.title.id_for_label }}">Title (Optional):</label>
+                {{ form.title }}
+            </div>
+        </div>
+        
+        <div class="form-row full-width">
+            <label for="{{ form.description.id_for_label }}">Description (Optional):</label>
+            {{ form.description }}
+        </div>
+        
+        <div class="form-row full-width">
+            <label for="{{ form.file.id_for_label }}">Upload File:</label>
+            <div class="file-upload">
+                {{ form.file }}
+                <p>{{ form.file.help_text }}</p>
+            </div>
+        </div>
+        
+        <div class="submit-row">
+            <input type="submit" value="Upload Layer" class="default" />
+            <a href="{% url 'admin:geodata_engine_manage' engine.id %}" class="button cancel-link">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

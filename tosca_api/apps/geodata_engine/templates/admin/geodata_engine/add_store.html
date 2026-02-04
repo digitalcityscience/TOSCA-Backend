@@ -1,0 +1,124 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <style>
+        .form-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .breadcrumb {
+            background-color: #f8f9fa;
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .breadcrumb a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        .breadcrumb a:hover {
+            text-decoration: underline;
+        }
+        .form-row {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        .full-width {
+            grid-column: span 2;
+        }
+        .submit-row {
+            padding: 10px 0;
+            border-top: 1px solid #eee;
+            text-align: right;
+        }
+    </style>
+{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+    <a href="{% url 'admin:geodata_engine_geodataengine_changelist' %}">GeoServer Instances</a> &raquo;
+    <a href="{% url 'admin:geodata_engine_manage' engine.id %}">{{ engine.name }}</a> &raquo;
+    Add Data Store
+</div>
+
+<h1>Add Data Store to {{ engine.name }}</h1>
+
+<div class="form-container">
+    <form method="post">
+        {% csrf_token %}
+        
+        <div class="form-row full-width">
+            <label for="{{ form.name.id_for_label }}">Store Name:</label>
+            {{ form.name }}
+        </div>
+        
+        <div class="form-row full-width">
+            <label for="{{ form.description.id_for_label }}">Description:</label>
+            {{ form.description }}
+        </div>
+        
+        <div class="form-grid">
+            <div class="form-row">
+                <label for="{{ form.host.id_for_label }}">Host:</label>
+                {{ form.host }}
+            </div>
+            
+            <div class="form-row">
+                <label for="{{ form.port.id_for_label }}">Port:</label>
+                {{ form.port }}
+            </div>
+        </div>
+        
+        <div class="form-grid">
+            <div class="form-row">
+                <label for="{{ form.database.id_for_label }}">Database:</label>
+                {{ form.database }}
+            </div>
+            
+            <div class="form-row">
+                <label for="{{ form.schema.id_for_label }}">Schema:</label>
+                {{ form.schema }}
+            </div>
+        </div>
+        
+        <div class="form-grid">
+            <div class="form-row">
+                <label for="{{ form.username.id_for_label }}">Username:</label>
+                {{ form.username }}
+            </div>
+            
+            <div class="form-row">
+                <label for="{{ form.password.id_for_label }}">Password:</label>
+                {{ form.password }}
+            </div>
+        </div>
+        
+        <div class="submit-row">
+            <input type="submit" value="Create Data Store" class="default" />
+            <a href="{% url 'admin:geodata_engine_manage' engine.id %}" class="button cancel-link">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

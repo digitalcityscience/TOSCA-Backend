@@ -1,0 +1,144 @@
+{% extends "admin/base_site.html" %} {% load i18n admin_urls static admin_modify
+%} {% block title %}{{ title|default:"Upload Layer" }}{% endblock %} {% block
+breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+  &rsaquo;
+  <a href="{% url 'admin:app_list' app_label=opts.app_label %}"
+    >{{ opts.app_config.verbose_name }}</a
+  >
+  &rsaquo;
+  <a href="{% url 'admin:geodata_engine_layer_changelist' %}"
+    >{{ opts.verbose_name_plural|capfirst }}</a
+  >
+  &rsaquo; Upload Layer
+</div>
+{% endblock %} {% block content %}
+<div id="content-main">
+  <div class="module aligned">
+    <h1>Upload Layer</h1>
+    <p class="help">
+      Upload GeoJSON (.geojson, .json) or GeoPackage (.gpkg) files to create new
+      layers. Data will be imported to PostGIS and registered in the geodata
+      engine.
+    </p>
+
+    <form method="post" enctype="multipart/form-data" novalidate>
+      {% csrf_token %}
+
+      <fieldset class="module">
+        <h2>Layer Information</h2>
+
+        <div class="form-row">
+          <div class="field-box">
+            {{ form.workspace.label_tag }} {{ form.workspace }} {% if
+            form.workspace.help_text %}
+            <p class="help">{{ form.workspace.help_text }}</p>
+            {% endif %} {% for error in form.workspace.errors %}
+            <p class="errornote">{{ error }}</p>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="field-box">
+            {{ form.store.label_tag }} {{ form.store }} {% if
+            form.store.help_text %}
+            <p class="help">{{ form.store.help_text }}</p>
+            {% endif %} {% for error in form.store.errors %}
+            <p class="errornote">{{ error }}</p>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="field-box">
+            {{ form.layer_name.label_tag }} {{ form.layer_name }} {% if
+            form.layer_name.help_text %}
+            <p class="help">{{ form.layer_name.help_text }}</p>
+            {% endif %} {% for error in form.layer_name.errors %}
+            <p class="errornote">{{ error }}</p>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="field-box">
+            {{ form.title.label_tag }} {{ form.title }} {% if
+            form.title.help_text %}
+            <p class="help">{{ form.title.help_text }}</p>
+            {% endif %} {% for error in form.title.errors %}
+            <p class="errornote">{{ error }}</p>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="field-box">
+            {{ form.description.label_tag }} {{ form.description }} {% if
+            form.description.help_text %}
+            <p class="help">{{ form.description.help_text }}</p>
+            {% endif %} {% for error in form.description.errors %}
+            <p class="errornote">{{ error }}</p>
+            {% endfor %}
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="module">
+        <h2>File Upload</h2>
+
+        <div class="form-row">
+          <div class="field-box">
+            {{ form.file.label_tag }} {{ form.file }} {% if form.file.help_text
+            %}
+            <p class="help">{{ form.file.help_text }}</p>
+            {% endif %} {% for error in form.file.errors %}
+            <p class="errornote">{{ error }}</p>
+            {% endfor %}
+          </div>
+        </div>
+      </fieldset>
+
+      <div class="submit-row">
+        <input type="submit" value="Upload and Import" class="default" />
+        <a
+          href="{% url 'admin:geodata_engine_layer_changelist' %}"
+          class="button"
+          >Cancel</a
+        >
+      </div>
+    </form>
+  </div>
+</div>
+
+<style>
+  .field-box {
+    margin-bottom: 15px;
+  }
+  .field-box label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 5px;
+  }
+  .field-box input,
+  .field-box select,
+  .field-box textarea {
+    width: 300px;
+    padding: 5px;
+  }
+  .field-box textarea {
+    height: 60px;
+  }
+  .help {
+    color: #666;
+    font-size: 11px;
+    margin-top: 5px;
+  }
+  .errornote {
+    color: red;
+    font-size: 11px;
+    margin-top: 5px;
+  }
+</style>
+{% endblock %}

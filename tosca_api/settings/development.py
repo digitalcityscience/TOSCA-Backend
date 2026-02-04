@@ -30,3 +30,10 @@ for logger_config in LOGGING['loggers'].values():  # noqa: F405
     if 'security_file' in logger_config.get('handlers', []):
         logger_config['handlers'] = [h for h in logger_config['handlers'] if 'security_file' not in h]
 
+
+# -------------------------------------------------
+# Docker Development Overrides
+# -------------------------------------------------
+# Override GeoServer host for Docker Compose
+GEOSERVER_HOST = env("GEOSERVER_HOST", default="geoserver")  # Use container name instead of localhost
+

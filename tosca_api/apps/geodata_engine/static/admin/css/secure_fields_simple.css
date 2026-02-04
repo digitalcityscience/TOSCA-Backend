@@ -1,0 +1,74 @@
+/* Simple Secure Fields Styling */
+
+.field-toggle {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 3px;
+    padding: 4px 8px;
+    margin-left: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    vertical-align: middle;
+    transition: all 0.2s ease;
+}
+
+.field-toggle:hover {
+    background: #e9ecef;
+    border-color: #adb5bd;
+    transform: translateY(-1px);
+}
+
+.secure-field-text.masked,
+.secure-field-number.masked {
+    background-color: #f8f9fa !important;
+    color: #6c757d !important;
+    font-family: 'Courier New', monospace !important;
+    letter-spacing: 2px !important;
+    cursor: not-allowed;
+}
+
+.secure-field-password {
+    font-family: 'Courier New', monospace;
+}
+
+/* Add security indicators */
+.form-row:has(.secure-field-text) .form-row label,
+.form-row:has(.secure-field-password) .form-row label,
+.form-row:has(.secure-field-number) .form-row label {
+    position: relative;
+}
+
+.form-row:has(.secure-field-text) .form-row label:after,
+.form-row:has(.secure-field-password) .form-row label:after,
+.form-row:has(.secure-field-number) .form-row label:after {
+    content: ' 🔒';
+    color: #e74c3c;
+    font-size: 11px;
+}
+
+/* Field container styling */
+.secure-fieldset {
+    border: 2px solid #e74c3c;
+    border-radius: 5px;
+    background-color: #fdf2f2;
+    padding: 15px;
+    margin: 10px 0;
+}
+
+.secure-fieldset h2 {
+    background-color: #e74c3c;
+    color: white;
+    padding: 8px 12px;
+    margin: -15px -15px 15px -15px;
+    border-radius: 3px 3px 0 0;
+}
+
+.secure-fieldset .description {
+    color: #c0392b;
+    font-style: italic;
+    font-size: 11px;
+    background-color: #fadbd8;
+    padding: 5px 10px;
+    border-radius: 3px;
+    margin-bottom: 10px;
+}

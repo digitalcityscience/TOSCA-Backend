@@ -1,0 +1,29 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+<h1>Copy Store Configuration</h1>
+
+<p>You are about to copy the store: <strong>{{ store.name }}</strong></p>
+
+<form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="copy_store_to_workspaces">
+    <input type="hidden" name="confirm_copy" value="yes">
+    
+    {% for obj in queryset %}
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ obj.pk }}">
+    {% endfor %}
+    
+    <h3>Select workspaces:</h3>
+    {% for workspace in workspaces %}
+    <div>
+        <input type="checkbox" name="target_workspaces" value="{{ workspace.id }}">
+        {{ workspace.name }}
+    </div>
+    {% endfor %}
+    
+    <button type="submit">Copy Store</button>
+    <a href="{% url 'admin:geodata_engine_store_changelist' %}">Cancel</a>
+</form>
+{% endblock %}

@@ -65,6 +65,7 @@ INSTALLED_APPS = [
     # Local apps
     "tosca_api.apps.core",
     "tosca_api.apps.tosca_web",
+    "tosca_api.apps.geodata_engine",
 ]
 
 SITE_ID = 1
@@ -291,3 +292,12 @@ LOGGING = {
         },
     },
 }
+
+
+# -------------------------------------------------
+# GeoServer Configuration for Geodata Engine
+# -------------------------------------------------
+GEOSERVER_HOST = env("GEOSERVER_HOST", default="localhost")
+GEOSERVER_PORT = env("GEOSERVER_PORT", default="8080")
+GEOSERVER_ADMIN_USER = env("GEOSERVER_ADMIN_USER", default="admin2")
+GEOSERVER_ADMIN_PASSWORD = env("GEOSERVER_ADMIN_PASSWORD", default="geoserver2")
