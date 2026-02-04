@@ -67,6 +67,7 @@ INSTALLED_APPS = [
     "tosca_api.apps.tosca_web",
     "tosca_api.apps.campaigns",
     "tosca_api.apps.geocontext",
+    "tosca_api.apps.layerrefs",
 ]
 
 SITE_ID = 1
