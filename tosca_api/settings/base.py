@@ -65,6 +65,7 @@ INSTALLED_APPS = [
     # Local apps
     "tosca_api.apps.core",
     "tosca_api.apps.tosca_web",
+    "tosca_api.apps.campaigns",
 ]
 
 SITE_ID = 1
