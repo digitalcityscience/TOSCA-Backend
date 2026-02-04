@@ -15,6 +15,7 @@ from django.conf import settings
 from django.db import models
 
 from tosca_api.apps.core.models import TimeStampedModel
+from tosca_api.apps.core.sanitization import sanitize_content
 
 
 class GeoContext(TimeStampedModel):
@@ -57,3 +58,8 @@ class GeoContext(TimeStampedModel):
         # Return first 50 chars of content or a placeholder
         preview = self.content[:50] if self.content else "(empty)"
         return f"GeoContext: {preview}..."
+
+    def save(self, *args, **kwargs) -> None:
+        """Override save to sanitize content before persistence."""
+        self.content = sanitize_content(self.content, self.content_type)
+        super().save(*args, **kwargs)

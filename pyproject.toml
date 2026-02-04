@@ -19,6 +19,7 @@ dependencies = [
     "dj-rest-auth>=7.0.1",
     "ruff>=0.14.7",
     "python-json-logger>=4.0.0",
+    "nh3>=0.3.2",
 ]
 
 [project.optional-dependencies]

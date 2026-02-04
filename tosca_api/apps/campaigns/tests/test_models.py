@@ -72,3 +72,24 @@ def test_campaign_visibility_choices(test_user):
         created_by=test_user,
     )
     assert campaign.visibility == "public"
+
+
+@pytest.mark.django_db
+def test_campaign_sanitization(test_user):
+    """Test that campaign fields are sanitized."""
+    unsafe_title = "My <b>Campaign</b><script>alert(1)</script>"
+    unsafe_summary = "A summary with <script>bad</script> tags."
+    
+    campaign = Campaign.objects.create(
+        title=unsafe_title,
+        summary=unsafe_summary,
+        created_by=test_user,
+    )
+    
+    # Simple sanitization strips ALL tags
+    assert "<script>" not in campaign.title
+    assert "<b>" not in campaign.title
+    assert campaign.title == "My Campaign"
+    
+    assert "<script>" not in campaign.summary
+    assert campaign.summary == "A summary with  tags."

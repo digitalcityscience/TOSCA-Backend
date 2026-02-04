@@ -13,13 +13,14 @@ from django.conf import settings
 from django.db import models
 
 from tosca_api.apps.core.models import TimeStampedModel
+from tosca_api.apps.core.sanitization import sanitize_simple
 
 
 class Campaign(TimeStampedModel):
     """
     Campaign model for grouping features (stories, events, feedback) under a
     thematic initiative.
-
+    
     Attributes:
         id: UUID primary key
         title: Campaign name (required)
@@ -66,3 +67,9 @@ class Campaign(TimeStampedModel):
 
     def __str__(self) -> str:
         return self.title
+
+    def save(self, *args, **kwargs) -> None:
+        """Override save to sanitize text fields enforce Zero Trust."""
+        self.title = sanitize_simple(self.title)
+        self.summary = sanitize_simple(self.summary)
+        super().save(*args, **kwargs)

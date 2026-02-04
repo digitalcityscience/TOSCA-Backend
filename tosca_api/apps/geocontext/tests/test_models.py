@@ -62,3 +62,29 @@ def test_geocontext_rich_content_type(test_user):
         created_by=test_user,
     )
     assert ctx.content_type == "rich"
+
+
+@pytest.mark.django_db
+def test_geocontext_sanitization_integration(test_user):
+    """Test that content is sanitized upon saving."""
+    # Test simple content (should lose all tags)
+    unsafe_simple = "<b>Bold</b><script>alert(1)</script>"
+    ctx_simple = GeoContext.objects.create(
+        content=unsafe_simple,
+        content_type=GeoContext.ContentType.SIMPLE,
+        created_by=test_user,
+    )
+    assert "<script>" not in ctx_simple.content
+    assert "<b>" not in ctx_simple.content
+    assert ctx_simple.content == "Bold"
+    # nh3 removes script tags and their content entirely, ensuring safety.
+    
+    # Test rich content (should allow formatting but strip script)
+    unsafe_rich = "<h1>Title</h1><script>alert(1)</script>"
+    ctx_rich = GeoContext.objects.create(
+        content=unsafe_rich,
+        content_type=GeoContext.ContentType.RICH,
+        created_by=test_user,
+    )
+    assert "<h1>Title</h1>" in ctx_rich.content
+    assert "<script>" not in ctx_rich.content
