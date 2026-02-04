@@ -2,6 +2,7 @@
 from .base import *  # noqa: F401,F403
 
 # Use SQLite for tests to avoid PostgreSQL dependency
+# NOTE: For PostGIS tests, use --ds=tosca_api.settings.base to run against the dev database.
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
