@@ -39,12 +39,8 @@ window.addEventListener('load', function() {
         });
 
         $(document).on('formset:removed', function(event, $row, formsetName) {
-            // Determine prefix. $row is the removed row (might be detached already, but prefix is string)
-            // event.target might be the row acting as target, but prefix is simpler.
-            // In 'removed', checking the DOM for remaining rows is what matters.
-            
-            // We can try to guess prefix if not provided, but usually we know it's 'geostorylayer_set'
-            // or we can just run the update for our known set if we find any rows.
+            // Verify functionality by checking if the specific formset exists,
+            // fallback to default 'geostorylayer_set' if prefix is missing.
             
             var prefix = formsetName || 'geostorylayer_set';
             
