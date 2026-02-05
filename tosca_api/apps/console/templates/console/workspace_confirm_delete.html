@@ -1,0 +1,54 @@
+{% extends 'console/base.html' %}
+
+{% block title %}Delete Workspace{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Delete Workspace</h1>
+    <p class="subtitle">Confirm workspace deletion</p>
+</div>
+
+<div class="card">
+    <div class="card-header danger">
+        <div>
+            <div class="card-title">Delete Workspace</div>
+            <div class="card-subtitle">This action cannot be undone</div>
+        </div>
+    </div>
+    
+    {% if object %}
+        <div class="confirmation-details">
+            <p><strong>Workspace:</strong> {{ object.name }}</p>
+            <p><strong>Engine:</strong> {{ object.engine_name }}</p>
+            {% if object.description %}
+                <p><strong>Description:</strong> {{ object.description }}</p>
+            {% endif %}
+            {% if object.is_default %}
+                <div class="alert warning">
+                    <p><strong>Warning:</strong> This is a default workspace and cannot be deleted.</p>
+                </div>
+            {% else %}
+                <div class="alert warning">
+                    <p><strong>Warning:</strong> Deleting this workspace will:</p>
+                    <ul>
+                        <li>Remove the workspace from GeoServer</li>
+                        <li>Remove all associated stores and layers from GeoServer</li>
+                        <li>Remove all Django records for this workspace</li>
+                    </ul>
+                    <p>This action cannot be undone.</p>
+                </div>
+            {% endif %}
+        </div>
+    {% endif %}
+    
+    <div class="form-actions">
+        {% if not object.is_default %}
+            <form method="post" style="display:inline;">
+                {% csrf_token %}
+                <button type="submit" class="btn danger">Delete Workspace</button>
+            </form>
+        {% endif %}
+        <a href="{% url 'console:workspaces' %}" class="btn secondary">Cancel</a>
+    </div>
+</div>
+{% endblock content %}

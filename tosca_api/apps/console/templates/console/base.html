@@ -112,6 +112,73 @@
             gap: 12px;
         }
         
+        .engine-selector {
+            position: relative;
+        }
+        
+        .engine-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            margin-top: 4px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+            display: none;
+            min-width: 250px;
+        }
+        
+        .engine-dropdown.show {
+            display: block;
+        }
+        
+        .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 16px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-bottom: 1px solid #f7fafc;
+        }
+        
+        .dropdown-item:last-child {
+            border-bottom: none;
+        }
+        
+        .dropdown-item:hover {
+            background: #f7fafc;
+        }
+        
+        .dropdown-item.active {
+            background: #edf2f7;
+            color: #2b6cb0;
+        }
+        
+        .dropdown-item .engine-status {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #48bb78;
+        }
+        
+        .dropdown-item .engine-info {
+            flex: 1;
+        }
+        
+        .dropdown-item .engine-name {
+            font-weight: 600;
+            color: #2d3748;
+        }
+        
+        .dropdown-item .engine-url {
+            font-size: 12px;
+            color: #718096;
+        }
+        
         .engine-btn {
             display: flex;
             align-items: center;
@@ -137,6 +204,31 @@
             height: 8px;
             border-radius: 50%;
             background: #48bb78;
+        }
+        
+        .show-all-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #4a5568;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        
+        .show-all-toggle:hover {
+            background: #edf2f7;
+        }
+        
+        .show-all-toggle input {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
         }
         
         .topbar-actions {
@@ -379,8 +471,29 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"></path>
                     </svg>
                     Engines
+                </a>                
+                <div class="nav-divider"></div>
+                
+                <a href="{% url 'console:workspaces' %}{% if nav_params %}?{{ nav_params }}{% endif %}" class="nav-item {% if current_section == 'workspaces' %}active{% endif %}">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+                    </svg>
+                    Workspaces
                 </a>
-            </nav>
+                
+                <a href="{% url 'console:stores' %}{% if nav_params %}?{{ nav_params }}{% endif %}" class="nav-item {% if current_section == 'stores' %}active{% endif %}">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path>
+                    </svg>
+                    Stores
+                </a>
+                
+                <a href="{% url 'console:layers' %}{% if nav_params %}?{{ nav_params }}{% endif %}" class="nav-item {% if current_section == 'layers' %}active{% endif %}">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"></path>
+                    </svg>
+                    Layers
+                </a>            </nav>
         </div>
         
         <!-- Main Content -->
@@ -388,12 +501,50 @@
             <!-- Top Bar -->
             <div class="topbar">
                 <div class="engine-context">
-                    {% if engines.first %}
-                        <button class="engine-btn">
-                            <span class="engine-status"></span>
-                            <span>{{ engines.first.name }}</span>
-                        </button>
-                    {% endif %}
+                    <div class="engine-selector">
+                        {% if default_engine %}
+                            <button class="engine-btn" onclick="toggleEngineMenu()">
+                                <span class="engine-status"></span>
+                                <span>{{ default_engine.name }}</span>
+                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </button>
+                        {% elif engines.first %}
+                            <button class="engine-btn" onclick="toggleEngineMenu()">
+                                <span class="engine-status"></span>
+                                <span>{{ engines.first.name }}</span>
+                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </button>
+                        {% endif %}
+                        
+                        <!-- Dropdown Menu -->
+                        <div class="engine-dropdown" id="engineDropdown">
+                            {% for engine in engines %}
+                                <div class="dropdown-item {% if engine.is_default or default_engine.id == engine.id %}active{% endif %}" 
+                                     onclick="selectEngine('{{ engine.id }}', '{{ engine.name }}')">
+                                    <span class="engine-status"></span>
+                                    <div class="engine-info">
+                                        <div class="engine-name">{{ engine.name }}</div>
+                                        <div class="engine-url">{{ engine.base_url }}</div>
+                                    </div>
+                                </div>
+                            {% empty %}
+                                <div class="dropdown-item">
+                                    <div class="engine-info">
+                                        <div class="engine-name">No engines available</div>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    
+                    <label class="show-all-toggle">
+                        <input type="checkbox" id="showAll">
+                        <span>Show all engines</span>
+                    </label>
                 </div>
                 
                 <div class="topbar-actions">
@@ -402,14 +553,31 @@
                         <span>Ready</span>
                     </div>
                     
-                    <form method="post" action="{% url 'console:sync_engines' %}" style="display:inline;">
-                        {% csrf_token %}
-                        <button type="submit" class="btn-icon" title="Sync all">
-                            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                            </svg>
-                        </button>
-                    </form>
+                    {% if current_section == 'workspaces' %}
+                        <form method="post" action="{% url 'console:sync_workspaces' %}" style="display:inline;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn-icon" title="Sync workspaces">
+                                <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                </svg>
+                            </button>
+                        </form>
+                    {% else %}
+                        <form method="post" action="{% url 'console:sync_engines' %}" style="display:inline;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn-icon" title="Sync engines">
+                                <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                </svg>
+                            </button>
+                        </form>
+                    {% endif %}
+                    
+                    <button class="btn-icon" title="Notifications">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path>
+                        </svg>
+                    </button>
                 </div>
             </div>
             
@@ -433,5 +601,139 @@
     </div>
     
     {% block extra_js %}{% endblock %}
+    
+    <script>
+        function toggleEngineMenu() {
+            const dropdown = document.getElementById('engineDropdown');
+            dropdown.classList.toggle('show');
+        }
+        
+        function selectEngine(engineId, engineName) {
+            // Close dropdown
+            document.getElementById('engineDropdown').classList.remove('show');
+            
+            // Update the current engine button text
+            const engineBtn = document.querySelector('.engine-btn span:nth-child(2)');
+            if (engineBtn) {
+                engineBtn.textContent = engineName;
+            }
+            
+            // Store selected engine in session/localStorage for persistence
+            localStorage.setItem('selectedEngine', JSON.stringify({
+                id: engineId,
+                name: engineName
+            }));
+            
+            // Reload page with engine parameter to filter data
+            const url = new URL(window.location);
+            url.searchParams.set('engine', engineId);
+            window.location.href = url.toString();
+        }
+        
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(e) {
+            const selector = document.querySelector('.engine-selector');
+            const dropdown = document.getElementById('engineDropdown');
+            
+            if (!selector.contains(e.target)) {
+                dropdown.classList.remove('show');
+            }
+        });
+        
+        // Show all engines checkbox handler
+        document.addEventListener('DOMContentLoaded', function() {
+            // Restore engine selection from URL parameter on page load
+            const urlParams = new URLSearchParams(window.location.search);
+            const engineParam = urlParams.get('engine');
+            const showAllParam = urlParams.get('show_all');
+            
+            // If no parameters, redirect to default engine
+            if (!engineParam && showAllParam !== 'true') {
+                const defaultEngine = document.querySelector('.dropdown-item.active');
+                if (defaultEngine) {
+                    const onclick = defaultEngine.getAttribute('onclick');
+                    const match = onclick.match(/selectEngine\('([^']+)',\s*'([^']+)'\)/);
+                    if (match) {
+                        const url = new URL(window.location);
+                        url.searchParams.set('engine', match[1]);
+                        window.history.replaceState({}, '', url.toString());
+                    }
+                }
+            }
+            
+            if (engineParam) {
+                // Find engine name from dropdown items
+                const dropdownItems = document.querySelectorAll('.dropdown-item');
+                dropdownItems.forEach(item => {
+                    const onclick = item.getAttribute('onclick');
+                    if (onclick && onclick.includes(engineParam)) {
+                        const match = onclick.match(/selectEngine\('([^']+)',\s*'([^']+)'\)/);
+                        if (match) {
+                            const engineId = match[1];
+                            const engineName = match[2];
+                            
+                            // Update button text
+                            const engineBtn = document.querySelector('.engine-btn span:nth-child(2)');
+                            if (engineBtn) {
+                                engineBtn.textContent = engineName;
+                            }
+                            
+                            // Store in localStorage
+                            localStorage.setItem('selectedEngine', JSON.stringify({
+                                id: engineId,
+                                name: engineName
+                            }));
+                            
+                            // Mark as active
+                            item.classList.add('active');
+                        }
+                    }
+                });
+            } else if (showAllParam === 'true') {
+                // Showing all engines - clear any stored selection
+                localStorage.removeItem('selectedEngine');
+            }
+            
+            const showAllCheckbox = document.getElementById('showAll');
+            if (showAllCheckbox) {
+                showAllCheckbox.addEventListener('change', function(e) {
+                    const currentUrl = new URL(window.location);
+                    
+                    if (e.target.checked) {
+                        // Show all engines - remove engine parameter and add show_all=true
+                        currentUrl.searchParams.delete('engine');
+                        currentUrl.searchParams.set('show_all', 'true');
+                        localStorage.removeItem('selectedEngine');
+                    } else {
+                        // Show specific engine - remove show_all and add engine parameter
+                        currentUrl.searchParams.delete('show_all');
+                        
+                        const selectedEngine = localStorage.getItem('selectedEngine');
+                        if (selectedEngine) {
+                            const engine = JSON.parse(selectedEngine);
+                            currentUrl.searchParams.set('engine', engine.id);
+                        } else {
+                            // Find default engine or first engine
+                            const defaultEngine = document.querySelector('.dropdown-item.active');
+                            if (defaultEngine) {
+                                const onclick = defaultEngine.getAttribute('onclick');
+                                const match = onclick.match(/selectEngine\('([^']+)',\s*'([^']+)'\)/);
+                                if (match) {
+                                    currentUrl.searchParams.set('engine', match[1]);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Reload page with new parameters
+                    window.location.href = currentUrl.toString();
+                });
+                
+                // Set checkbox state based on URL parameter
+                const hasShowAllParam = urlParams.get('show_all') === 'true';
+                showAllCheckbox.checked = hasShowAllParam; // Checked only when show_all=true
+            }
+        });
+    </script>
 </body>
 </html>
