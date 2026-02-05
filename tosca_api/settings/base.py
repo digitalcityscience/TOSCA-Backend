@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     "tosca_api.apps.authentication",  # Override allauth templates
     # Third-party
     "rest_framework",
+    "drf_spectacular",
     "rest_framework.authtoken",
     "allauth",
     "allauth.account",
@@ -154,6 +155,14 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PAGINATION_CLASS": "tosca_api.apps.core.pagination.StandardResultsSetPagination",
     "PAGE_SIZE": 20,
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "TOSCA API",
+    "DESCRIPTION": "Backend API for TOSCA Geospatial Platform",
+    "VERSION": "0.1.0",
+    "SERVE_INCLUDE_SCHEMA": False,
 }
 
 AUTHENTICATION_BACKENDS = [
