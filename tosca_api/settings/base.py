@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     "tosca_api.apps.authentication",  # Override allauth templates
     # Third-party
     "rest_framework",
+    "rest_framework_gis",
     "drf_spectacular",
     "rest_framework.authtoken",
     "allauth",
