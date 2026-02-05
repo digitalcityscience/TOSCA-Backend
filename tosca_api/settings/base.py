@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     "tosca_api.apps.layerrefs",
     "tosca_api.apps.geostories",
     "tosca_api.apps.featurelinks",
+    "tosca_api.apps.events",
 ]
 
 SITE_ID = 1
