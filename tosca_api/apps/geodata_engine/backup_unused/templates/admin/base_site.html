@@ -1,0 +1,10 @@
+{% extends "admin/base.html" %}
+{% load engine_tags %}
+
+{% block nav-global %}
+    {% show_engine_selector as should_show %}
+    {% if should_show %}
+        {% engine_selector %}
+    {% endif %}
+    {{ block.super }}
+{% endblock %}

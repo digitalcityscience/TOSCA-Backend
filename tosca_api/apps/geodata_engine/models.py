@@ -9,44 +9,66 @@ logger = logging.getLogger(__name__)
 
 class GeodataEngine(models.Model, EncryptedCharField):
     """
-    GeoServer-powered Geodata Engine 
-    Contains GeoServer connection details and manages workspaces, stores, layers
+    Multi-engine Geodata Engine 
+    Supports GeoServer, Martin, pg_tileserv and other geodata engines
     """
+    ENGINE_TYPES = [
+        ('geoserver', 'GeoServer'),
+        ('martin', 'Martin Tiles'),
+        ('pg_tileserv', 'PostGIS TileServer'),
+        ('mapproxy', 'MapProxy'),
+    ]
+    
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(
         max_length=100, 
         unique=True, 
-        help_text="Engine name (e.g., 'Default GeoServer', 'Production Instance')"
+        help_text="Engine name (e.g., 'Default GeoServer', 'Production Martin')"
     )
     description = models.TextField(
         blank=True, 
-        help_text="Description of this GeoServer instance"
+        help_text="Description of this geodata engine instance"
     )
     
-    # GeoServer connection details
+    # Engine type and connection details
+    engine_type = models.CharField(
+        max_length=50,
+        choices=ENGINE_TYPES,
+        default='geoserver',
+        help_text="Type of geodata engine"
+    )
     base_url = models.CharField(
         max_length=255,
-        help_text="Full URL to GeoServer (e.g., 'http://geoserver:8080/geoserver')"
+        help_text="Full URL to the engine (e.g., 'http://geoserver:8080/geoserver')"
     )
     admin_username = models.CharField(
         max_length=100,
         default='admin2',
-        help_text="GeoServer admin username"
+        blank=True,
+        help_text="Admin username (if applicable)"
     )
     admin_password = models.CharField(
         max_length=100,
         default='geoserver2',
-        help_text="GeoServer admin password"
+        blank=True,
+        help_text="Admin password (if applicable)"
+    )
+    
+    # Additional connection fields for different engine types
+    api_key = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="API key for engines that require it"
     )
     
     # Status
     is_active = models.BooleanField(
         default=True, 
-        help_text="Is this GeoServer instance active?"
+        help_text="Is this engine instance active?"
     )
     is_default = models.BooleanField(
         default=False, 
-        help_text="Is this the default GeoServer instance?"
+        help_text="Is this the default engine instance?"
     )
     
     # Metadata
@@ -127,6 +149,32 @@ class Workspace(models.Model):
             logger.info(f"Created workspace {self.name} in GeoServer: {result}")
         except Exception as e:
             logger.error(f"Failed to create workspace {self.name} in GeoServer: {e}")
+    
+    def delete(self, *args, **kwargs):
+        """Delete workspace from GeoServer before deleting from Django"""
+        workspace_name = self.name
+        geodata_engine = self.geodata_engine
+        
+        # Delete from GeoServer FIRST
+        if workspace_name and geodata_engine:
+            self._delete_from_geoserver(workspace_name, geodata_engine)
+        
+        # Then delete from Django
+        super().delete(*args, **kwargs)
+    
+    def _delete_from_geoserver(self, workspace_name, geodata_engine):
+        """Delete workspace from GeoServer"""
+        try:
+            from .geoserver.client import GeoServerClient
+            client = GeoServerClient(
+                url=geodata_engine.geoserver_url,
+                username=geodata_engine.admin_username,
+                password=geodata_engine.decrypted_admin_password
+            )
+            result = client.delete_workspace(workspace_name)
+            logger.info(f"Deleted workspace {workspace_name} from GeoServer: {result}")
+        except Exception as e:
+            logger.error(f"Failed to delete workspace {workspace_name} from GeoServer: {e}")
 
 
 class Store(models.Model, EncryptedCharField):
@@ -198,6 +246,33 @@ class Store(models.Model, EncryptedCharField):
             logger.info(f"Created store {self.name} in GeoServer: {result}")
         except Exception as e:
             logger.error(f"Failed to create store {self.name} in GeoServer: {e}")
+    
+    def delete(self, *args, **kwargs):
+        """Delete store from GeoServer before deleting from Django"""
+        store_name = self.name
+        workspace_name = self.workspace.name if self.workspace else None
+        geodata_engine = self.geodata_engine
+        
+        # Delete from GeoServer FIRST
+        if store_name and workspace_name and geodata_engine:
+            self._delete_from_geoserver(workspace_name, store_name, geodata_engine)
+        
+        # Then delete from Django
+        super().delete(*args, **kwargs)
+    
+    def _delete_from_geoserver(self, workspace_name, store_name, geodata_engine):
+        """Delete store from GeoServer"""
+        try:
+            from .geoserver.client import GeoServerClient
+            client = GeoServerClient(
+                url=geodata_engine.geoserver_url,
+                username=geodata_engine.admin_username,
+                password=geodata_engine.decrypted_admin_password
+            )
+            result = client.delete_store(workspace=workspace_name, store=store_name)
+            logger.info(f"Deleted store {store_name} from GeoServer workspace {workspace_name}: {result}")
+        except Exception as e:
+            logger.error(f"Failed to delete store {store_name} from GeoServer workspace {workspace_name}: {e}")
     
     @property 
     def decrypted_password(self):
@@ -276,3 +351,31 @@ class Layer(models.Model):
     def is_published(self):
         """Check if layer is currently published"""
         return self.publishing_state == 'published'
+    
+    def delete(self, *args, **kwargs):
+        """Delete layer from GeoServer before deleting from Django"""
+        layer_name = self.name
+        workspace_name = self.workspace.name if self.workspace else None
+        geodata_engine = self.workspace.geodata_engine if self.workspace else None
+        is_published = self.is_published
+        
+        # Delete from GeoServer FIRST (only if published)
+        if layer_name and workspace_name and geodata_engine and is_published:
+            self._delete_from_geoserver(workspace_name, layer_name, geodata_engine)
+        
+        # Then delete from Django
+        super().delete(*args, **kwargs)
+    
+    def _delete_from_geoserver(self, workspace_name, layer_name, geodata_engine):
+        """Delete layer from GeoServer"""
+        try:
+            from .geoserver.client import GeoServerClient
+            client = GeoServerClient(
+                url=geodata_engine.geoserver_url,
+                username=geodata_engine.admin_username,
+                password=geodata_engine.decrypted_admin_password
+            )
+            result = client.delete_layer(workspace=workspace_name, layer=layer_name)
+            logger.info(f"Deleted layer {layer_name} from GeoServer workspace {workspace_name}: {result}")
+        except Exception as e:
+            logger.error(f"Failed to delete layer {layer_name} from GeoServer workspace {workspace_name}: {e}")

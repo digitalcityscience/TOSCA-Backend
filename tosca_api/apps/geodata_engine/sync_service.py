@@ -319,17 +319,7 @@ class GeoServerSyncService:
     def _get_geoserver_workspaces(self) -> List[str]:
         """Get workspace names from GeoServer"""
         try:
-            workspaces = self.client._client.get_workspaces()
-            logger.info(f"GeoServer workspaces response: {workspaces}")
-            
-            if isinstance(workspaces, dict) and 'workspaces' in workspaces:
-                ws_list = workspaces['workspaces'].get('workspace', [])
-                if isinstance(ws_list, dict):  # Single workspace
-                    ws_list = [ws_list]
-                return [ws['name'] for ws in ws_list if isinstance(ws, dict) and 'name' in ws]
-            elif isinstance(workspaces, list):
-                return [ws['name'] for ws in workspaces if isinstance(ws, dict) and 'name' in ws]
-            return []
+            return self.client.get_workspaces()
         except Exception as e:
             logger.error(f"Failed to get workspaces from GeoServer: {e}")
             return []
@@ -337,45 +327,15 @@ class GeoServerSyncService:
     def _get_geoserver_stores(self, workspace: str) -> List[Dict]:
         """Get datastore info from GeoServer"""
         try:
-            stores = self.client._client.get_datastores(workspace)
-            logger.info(f"GeoServer stores response for {workspace}: {stores}")
-            
-            if isinstance(stores, dict) and 'dataStores' in stores:
-                store_data = stores['dataStores']
-                # Handle empty dataStores
-                if store_data == '' or store_data is None:
-                    return []
-                
-                store_list = store_data.get('dataStore', [])
-                if isinstance(store_list, dict):  # Single store
-                    store_list = [store_list]
-                return [{'name': store['name']} for store in store_list if isinstance(store, dict) and 'name' in store]
-            elif isinstance(stores, list):
-                return [{'name': store['name']} for store in stores if isinstance(store, dict) and 'name' in store]
-            return []
+            return self.client.get_datastores(workspace)
         except Exception as e:
-            logger.error(f"Failed to get stores for workspace {workspace}: {e}")
+            logger.error(f"Failed to get stores from workspace {workspace}: {e}")
             return []
     
     def _get_geoserver_layers(self, workspace: str) -> List[Dict]:
         """Get layer info from GeoServer"""
         try:
-            layers = self.client._client.get_layers(workspace)
-            logger.info(f"GeoServer layers response for {workspace}: {layers}")
-            
-            if isinstance(layers, dict) and 'layers' in layers:
-                layer_data = layers['layers']
-                # Handle empty layers
-                if layer_data == '' or layer_data is None:
-                    return []
-                    
-                layer_list = layer_data.get('layer', [])
-                if isinstance(layer_list, dict):  # Single layer
-                    layer_list = [layer_list]
-                return [{'name': layer['name']} for layer in layer_list if isinstance(layer, dict) and 'name' in layer]
-            elif isinstance(layers, list):
-                return [{'name': layer['name']} for layer in layers if isinstance(layer, dict) and 'name' in layer]
-            return []
+            return self.client.get_layers(workspace)
         except Exception as e:
-            logger.error(f"Failed to get layers for workspace {workspace}: {e}")
+            logger.error(f"Failed to get layers from workspace {workspace}: {e}")
             return []

@@ -1,16 +1,16 @@
 from django.contrib import admin
 from django import forms
-from django.urls import path, reverse
 from django.utils.html import format_html
-from django.shortcuts import get_object_or_404, render
-from django.http import HttpResponseRedirect, JsonResponse
 from django.contrib import messages
+from django.contrib.admin import SimpleListFilter
 from .models import GeodataEngine, Workspace, Store, Layer
-from .services import GeodataEngineService
-from .sync_service import GeoServerSyncService
+from .middleware import get_active_engine
+from .actions import get_actions_for_model, sync_with_active_engine, test_active_engine_connection
+from .plugins import plugin_registry
 import json
 
-# Forms for hierarchical admin
+
+# Admin Forms with Plugin Support
 class GeodataEngineForm(forms.ModelForm):
     class Meta:
         model = GeodataEngine
@@ -19,64 +19,50 @@ class GeodataEngineForm(forms.ModelForm):
             'admin_password': forms.PasswordInput(render_value=True),
             'base_url': forms.TextInput(attrs={'size': 60}),
             'description': forms.Textarea(attrs={'rows': 3}),
+            'api_key': forms.PasswordInput(render_value=True),
         }
-
-class WorkspaceForm(forms.ModelForm):
-    class Meta:
-        model = Workspace
-        fields = ['name', 'description']
-        widgets = {
-            'description': forms.Textarea(attrs={'rows': 3}),
-        }
-
-class StoreForm(forms.ModelForm):
-    class Meta:
-        model = Store
-        fields = ['name', 'description', 'host', 'port', 'database', 'username', 'password', 'schema']
-        widgets = {
-            'description': forms.Textarea(attrs={'rows': 3}),
-            'password': forms.PasswordInput(render_value=True),
-        }
-
-class LayerUploadForm(forms.Form):
-    workspace = forms.ModelChoiceField(queryset=Workspace.objects.none())
-    store = forms.ModelChoiceField(queryset=Store.objects.none())
-    layer_name = forms.CharField(max_length=100)
-    title = forms.CharField(max_length=200, required=False)
-    description = forms.CharField(widget=forms.Textarea(attrs={'rows': 3}), required=False)
-    file = forms.FileField(
-        help_text="Upload GeoJSON or GeoPackage file",
-        widget=forms.FileInput(attrs={'accept': '.geojson,.json,.gpkg'})
-    )
     
     def __init__(self, *args, **kwargs):
-        workspaces = kwargs.pop('workspaces', Workspace.objects.none())
-        stores = kwargs.pop('stores', Store.objects.none())
         super().__init__(*args, **kwargs)
-        self.fields['workspace'].queryset = workspaces
-        self.fields['store'].queryset = stores
+        # Set engine type choices from plugin registry
+        self.fields['engine_type'].choices = plugin_registry.get_engine_choices()
 
-# GeodataEngine Admin - Main hierarchical container
+
+class ActiveEngineFilter(SimpleListFilter):
+    """Filter to show only resources for active engine"""
+    title = 'geodata engine'
+    parameter_name = 'engine'
+    
+    def lookups(self, request, model_admin):
+        engines = GeodataEngine.objects.filter(is_active=True)
+        return [(str(engine.id), engine.name) for engine in engines]
+    
+    def queryset(self, request, queryset):
+        if self.value():
+            return queryset.filter(geodata_engine_id=self.value())
+        return queryset
+
+
+# GeodataEngine Admin - Engine Management
 @admin.register(GeodataEngine)
 class GeodataEngineAdmin(admin.ModelAdmin):
     form = GeodataEngineForm
-    list_display = ['name', 'base_url', 'admin_username', 'is_active', 'is_default', 'manage_button', 'created_at']
-    list_filter = ['is_active', 'is_default', 'created_at']
+    list_display = ['name', 'engine_type', 'base_url', 'is_active', 'is_default', 'connection_status', 'created_at']
+    list_filter = ['engine_type', 'is_active', 'is_default', 'created_at']
     search_fields = ['name', 'description', 'base_url']
-    readonly_fields = ['id', 'geoserver_url', 'created_at', 'updated_at']
-    
-    # No inlines - we'll use custom detail view instead
+    readonly_fields = ['id', 'geoserver_url', 'connection_status', 'created_at', 'updated_at']
+    actions = [sync_with_active_engine, test_active_engine_connection, 'check_all_connections']
     
     fieldsets = (
         ('Basic Information', {
-            'fields': ('name', 'description')
+            'fields': ('name', 'description', 'engine_type')
         }),
-        ('GeoServer Connection', {
-            'fields': ('base_url', 'admin_username', 'admin_password'),
-            'description': 'Connection details for GeoServer instance'
+        ('Connection Details', {
+            'fields': ('base_url', 'admin_username', 'admin_password', 'api_key'),
+            'description': 'Connection details vary by engine type'
         }),
         ('Status', {
-            'fields': ('is_active', 'is_default')
+            'fields': ('is_active', 'is_default', 'connection_status')
         }),
         ('Metadata', {
             'fields': ('id', 'geoserver_url', 'created_at', 'updated_at'),
@@ -84,224 +70,242 @@ class GeodataEngineAdmin(admin.ModelAdmin):
         })
     )
     
-    fieldsets = (
-        ('Basic Information', {
-            'fields': ('name', 'description')
-        }),
-        ('GeoServer Connection', {
-            'fields': ('base_url', 'admin_username', 'admin_password')
-        }),
-        ('Status', {
-            'fields': ('is_active', 'is_default')
-        }),
-        ('Metadata', {
-            'fields': ('id', 'geoserver_url', 'created_at', 'updated_at'),
-            'classes': ('collapse',)
-        })
-    )
+    def connection_status(self, obj):
+        """Show connection status with real-time check"""
+        plugin = plugin_registry.get_plugin(obj.engine_type or 'geoserver')
+        if plugin:
+            result = plugin.validate_connection(obj)
+            if result['valid']:
+                return format_html('<span style="color: green; font-weight: bold;">✅ Online</span>')
+            else:
+                return format_html('<span style="color: red; font-weight: bold;">❌ Offline</span><br/><small style="color: #666;">{}</small>', result['message'][:50])
+        return format_html('<span style="color: orange;">❓ Unknown</span>')
+    connection_status.short_description = 'Connection Status'
+    
+    @admin.action(description="🔍 Check connection status of all engines")
+    def check_all_connections(self, request, queryset):
+        """Auto-check all selected engines' connection status"""
+        checked_count = 0
+        online_count = 0
+        offline_count = 0
+        
+        for engine in queryset:
+            plugin = plugin_registry.get_plugin(engine.engine_type or 'geoserver')
+            if plugin:
+                result = plugin.validate_connection(engine)
+                checked_count += 1
+                if result['valid']:
+                    online_count += 1
+                else:
+                    offline_count += 1
+        
+        messages.info(request, f"📊 Connection Check Results: {checked_count} engines checked, {online_count} online, {offline_count} offline")
     
     def save_model(self, request, obj, form, change):
-        if not change:  # If creating new object
+        if not change:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
     
-    def manage_button(self, obj):
-        """Button to manage this GeoServer instance"""
-        url = reverse('admin:geodata_engine_manage', args=[obj.pk])
-        return format_html('<a class="button" href="{}">Manage</a>', url)
-    manage_button.short_description = 'Actions'
+    def get_exclude(self, request, obj=None):
+        """Hide created_by field from form"""
+        return ['created_by']
     
-    def get_urls(self):
-        urls = super().get_urls()
-        custom_urls = [
-            path('<uuid:engine_id>/manage/', self.admin_site.admin_view(self.manage_engine_view), name='geodata_engine_manage'),
-            path('<uuid:engine_id>/sync/', self.admin_site.admin_view(self.sync_geoserver_view), name='geodata_engine_sync'),
-            path('<uuid:engine_id>/workspace/add/', self.admin_site.admin_view(self.add_workspace_view), name='geodata_engine_add_workspace'),
-            path('<uuid:engine_id>/store/add/', self.admin_site.admin_view(self.add_store_view), name='geodata_engine_add_store'),
-            path('<uuid:engine_id>/layer/upload/', self.admin_site.admin_view(self.upload_layer_view), name='geodata_engine_upload_layer'),
-        ]
-        return custom_urls + urls
-    
-    def manage_engine_view(self, request, engine_id):
-        """Custom view for managing a specific GeoServer engine"""
-        engine = get_object_or_404(GeodataEngine, pk=engine_id)
+    def get_actions(self, request):
+        """Dynamic actions based on plugins"""
+        actions = super().get_actions(request)
         
-        # Get related objects
-        workspaces = engine.workspaces.all().order_by('name')
-        stores = engine.stores.all().order_by('name')
-        layers = Layer.objects.filter(workspace__geodata_engine=engine).order_by('workspace__name', 'name')
+        # Add plugin-specific actions
+        for plugin in plugin_registry.get_all_plugins().values():
+            plugin_actions = plugin.get_admin_actions()
+            for action_name, action_func in plugin_actions.items():
+                actions[action_name] = (action_func, action_name, action_func.__doc__ or action_name)
         
-        context = {
-            'title': f'Manage {engine.name}',
-            'engine': engine,
-            'workspaces': workspaces,
-            'stores': stores,
-            'layers': layers,
-            'opts': self.model._meta,
-            'has_view_permission': True,
-            'has_change_permission': self.has_change_permission(request),
-            'has_add_permission': self.has_add_permission(request),
-        }
-        
-        return render(request, 'admin/geodata_engine/manage_engine.html', context)
-    
-    def add_workspace_view(self, request, engine_id):
-        """View to add workspace to specific engine"""
-        engine = get_object_or_404(GeodataEngine, pk=engine_id)
-        
-        if request.method == 'POST':
-            form = WorkspaceForm(request.POST)
-            if form.is_valid():
-                workspace = form.save(commit=False)
-                workspace.geodata_engine = engine
-                workspace.created_by = request.user
-                workspace.save()
-                messages.success(request, f'Workspace "{workspace.name}" created successfully.')
-                return HttpResponseRedirect(reverse('admin:geodata_engine_manage', args=[engine_id]))
-        else:
-            form = WorkspaceForm()
-        
-        context = {
-            'title': f'Add Workspace to {engine.name}',
-            'form': form,
-            'engine': engine,
-            'opts': Workspace._meta,
-        }
-        return render(request, 'admin/geodata_engine/add_workspace.html', context)
-    
-    def add_store_view(self, request, engine_id):
-        """View to add store to specific engine"""
-        engine = get_object_or_404(GeodataEngine, pk=engine_id)
-        
-        if request.method == 'POST':
-            form = StoreForm(request.POST)
-            if form.is_valid():
-                store = form.save(commit=False)
-                store.geodata_engine = engine
-                store.created_by = request.user
-                store.save()
-                messages.success(request, f'Store "{store.name}" created successfully.')
-                return HttpResponseRedirect(reverse('admin:geodata_engine_manage', args=[engine_id]))
-        else:
-            form = StoreForm()
-        
-        context = {
-            'title': f'Add Store to {engine.name}',
-            'form': form,
-            'engine': engine,
-            'opts': Store._meta,
-        }
-        return render(request, 'admin/geodata_engine/add_store.html', context)
-    
-    def upload_layer_view(self, request, engine_id):
-        """View to upload layer to specific engine"""
-        engine = get_object_or_404(GeodataEngine, pk=engine_id)
-        workspaces = engine.workspaces.all()
-        stores = engine.stores.all()
-        
-        if request.method == 'POST':
-            form = LayerUploadForm(request.POST, request.FILES, workspaces=workspaces, stores=stores)
-            if form.is_valid():
-                try:
-                    service = GeodataEngineService()
-                    layer = service.upload_and_import_layer(
-                        workspace_id=form.cleaned_data['workspace'].id,
-                        layer_name=form.cleaned_data['layer_name'],
-                        uploaded_file=form.cleaned_data['file'],
-                        store_id=form.cleaned_data['store'].id,
-                        user=request.user,
-                        title=form.cleaned_data['title'],
-                        description=form.cleaned_data['description']
-                    )
-                    messages.success(request, f'Layer "{layer.name}" uploaded successfully.')
-                    return HttpResponseRedirect(reverse('admin:geodata_engine_manage', args=[engine_id]))
-                except Exception as e:
-                    messages.error(request, f'Failed to upload layer: {e}')
-        else:
-            form = LayerUploadForm(workspaces=workspaces, stores=stores)
-        
-        context = {
-            'title': f'Upload Layer to {engine.name}',
-            'form': form,
-            'engine': engine,
-            'opts': Layer._meta,
-        }
-        return render(request, 'admin/geodata_engine/upload_layer.html', context)
-    
-    def sync_geoserver_view(self, request, engine_id):
-        """Sync Django DB with GeoServer resources - Direct sync without confirmation"""
-        engine = get_object_or_404(GeodataEngine, pk=engine_id)
-        
-        # Direct sync for both GET and POST requests - no confirmation needed
-        try:
-            sync_service = GeoServerSyncService(engine)
-            results = sync_service.sync_all_resources(created_by=request.user)
-            
-            if results.get('success'):
-                messages.success(request, f"""
-                    🎯 Sync completed successfully!
-                    
-                    📁 Workspaces: {results['workspaces']['synced']} synced, {results['workspaces']['created']} created, {results['workspaces']['deleted']} deleted
-                    🗃️ Stores: {results['stores']['synced']} synced, {results['stores']['created']} created, {results['stores']['deleted']} deleted  
-                    📊 Layers: {results['layers']['synced']} synced, {results['layers']['created']} created, {results['layers']['deleted']} deleted
-                    
-                    ✅ Django now matches GeoServer exactly!
-                """)
-            else:
-                messages.error(request, f"Sync failed: {results.get('error', 'Unknown error')}")
-            
-            return HttpResponseRedirect(reverse('admin:geodata_engine_manage', args=[engine_id]))
-            
-        except Exception as e:
-            messages.error(request, f'Sync failed: {e}')
-            return HttpResponseRedirect(reverse('admin:geodata_engine_manage', args=[engine_id]))
+        return actions
 
-# Hidden admin classes - only accessible through GeodataEngine management
-# These are hidden from main admin but still available for direct access if needed
 
+# Session-Filtered Workspace Admin
+@admin.register(Workspace)
 class WorkspaceAdmin(admin.ModelAdmin):
-    list_display = ['name', 'geodata_engine', 'created_at']
-    list_filter = ['geodata_engine']
+    list_display = ['name', 'geodata_engine', 'description', 'created_at']
+    list_filter = [ActiveEngineFilter, 'created_at']
     search_fields = ['name', 'description']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    fields = ['geodata_engine', 'name', 'description']  # Explicitly specify fields
+    actions = [sync_with_active_engine]
     
-    def has_module_permission(self, request):
-        return False  # Hide from main admin
+    def get_readonly_fields(self, request, obj=None):
+        """Make geodata_engine readonly when editing existing workspace"""
+        readonly = list(self.readonly_fields)
+        if obj:  # Editing existing object
+            readonly.append('geodata_engine')
+        return readonly    
+    def get_queryset(self, request):
+        """Filter by active engine from session"""
+        qs = super().get_queryset(request)
+        active_engine = get_active_engine(request)
+        if active_engine:
+            return qs.filter(geodata_engine=active_engine)
+        return qs
+    
+    def get_form(self, request, obj=None, **kwargs):
+        """Configure geodata_engine field: selectable when adding, readonly when editing"""
+        form = super().get_form(request, obj, **kwargs)
+        
+        # Filter geodata_engine choices to active engines only
+        if 'geodata_engine' in form.base_fields:
+            form.base_fields['geodata_engine'].queryset = GeodataEngine.objects.filter(is_active=True).order_by('name')
+            
+            if not obj:  # Adding new workspace
+                active_engine = get_active_engine(request)
+                if active_engine:
+                    form.base_fields['geodata_engine'].initial = active_engine
+                    # Keep it visible and selectable for new objects
+        # For editing: geodata_engine will be readonly (handled by get_readonly_fields)
+        
+        return form
     
     def save_model(self, request, obj, form, change):
         if not change:
             obj.created_by = request.user
+            # Always set geodata_engine to active engine
+            active_engine = get_active_engine(request)
+            if active_engine:
+                obj.geodata_engine = active_engine
         super().save_model(request, obj, form, change)
+    
+    def delete_model(self, request, obj):
+        """Custom delete method to also delete from GeoServer"""
+        obj.delete()  # This will call our custom model delete method
+    
+    def delete_queryset(self, request, queryset):
+        """Custom bulk delete method to also delete from GeoServer"""
+        for obj in queryset:
+            obj.delete()  # Call individual delete for each object
+    
+    def get_actions(self, request):
+        """Get actions for workspace model"""
+        actions = super().get_actions(request)
+        dynamic_actions = get_actions_for_model('Workspace', request)
+        for action in dynamic_actions:
+            actions[action.__name__] = (action, action.__name__, action.__doc__ or action.__name__)
+        return actions
 
+
+# Session-Filtered Store Admin  
+@admin.register(Store)
 class StoreAdmin(admin.ModelAdmin):
-    list_display = ['name', 'geodata_engine', 'host', 'database', 'schema', 'created_at']
-    list_filter = ['geodata_engine', 'host', 'schema']
+    list_display = ['name', 'workspace', 'geodata_engine', 'host', 'database', 'schema', 'created_at']
+    list_filter = [ActiveEngineFilter, 'workspace', 'host', 'schema', 'created_at']
     search_fields = ['name', 'description', 'host', 'database']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    fields = ['geodata_engine', 'workspace', 'name', 'host', 'port', 'database', 'username', 'password', 'schema', 'description']  # Explicitly specify fields
+    actions = [sync_with_active_engine]
     
-    def has_module_permission(self, request):
-        return False  # Hide from main admin
+    def get_readonly_fields(self, request, obj=None):
+        """Make geodata_engine readonly when editing existing store"""
+        readonly = list(self.readonly_fields)
+        if obj:  # Editing existing object
+            readonly.append('geodata_engine')
+        return readonly    
+    def get_queryset(self, request):
+        """Filter by active engine from session"""
+        qs = super().get_queryset(request)
+        active_engine = get_active_engine(request)
+        if active_engine:
+            return qs.filter(geodata_engine=active_engine)
+        return qs
+    
+    def get_form(self, request, obj=None, **kwargs):
+        """Configure geodata_engine and workspace fields: selectable when adding, readonly when editing"""
+        form = super().get_form(request, obj, **kwargs)
+        active_engine = get_active_engine(request)
+        
+        if active_engine:
+            # Always filter workspace choices by active engine
+            if 'workspace' in form.base_fields:
+                form.base_fields['workspace'].queryset = Workspace.objects.filter(geodata_engine=active_engine)
+            
+            # Filter geodata_engine choices to active engines only  
+            if 'geodata_engine' in form.base_fields:
+                form.base_fields['geodata_engine'].queryset = GeodataEngine.objects.filter(is_active=True).order_by('name')
+                
+                if not obj:  # Adding new store
+                    form.base_fields['geodata_engine'].initial = active_engine
+                    # Keep it visible and selectable for new objects
+        # For editing: geodata_engine will be readonly (handled by get_readonly_fields)
+        
+        return form
     
     def save_model(self, request, obj, form, change):
         if not change:
             obj.created_by = request.user
+            # Always set geodata_engine to active engine
+            active_engine = get_active_engine(request)
+            if active_engine:
+                obj.geodata_engine = active_engine
         super().save_model(request, obj, form, change)
 
+
+# Session-Filtered Layer Admin
+@admin.register(Layer)
 class LayerAdmin(admin.ModelAdmin):
-    list_display = ['name', 'workspace', 'store', 'publishing_state', 'geometry_type', 'created_at']
-    list_filter = ['workspace__geodata_engine', 'workspace', 'store', 'publishing_state', 'geometry_type']
+    list_display = ['name', 'workspace', 'store', 'active_engine_indicator', 'publishing_state', 'geometry_type', 'srid', 'created_at']
+    list_filter = [ActiveEngineFilter, 'workspace', 'store', 'publishing_state', 'geometry_type', 'created_at']
     search_fields = ['name', 'title', 'description', 'table_name']
-    readonly_fields = ['id', 'full_table_name', 'published_url', 'created_at', 'updated_at']
+    readonly_fields = ['id', 'active_engine_indicator', 'full_table_name', 'published_url', 'created_at', 'updated_at']
+    exclude = ['created_by']  # Hide created_by field (Layer doesn't have geodata_engine)
+    actions = [sync_with_active_engine]
     
-    def has_module_permission(self, request):
-        return False  # Hide from main admin
+    # Form fields - exclude geodata_engine (auto-set from active engine)
+    fields = ['workspace', 'store', 'name', 'title', 'description', 'table_name', 
+              'geometry_column', 'geometry_type', 'srid', 'publishing_state']
+    
+    def active_engine_indicator(self, obj):
+        """Show which engine this layer belongs to"""
+        if obj.workspace and obj.workspace.geodata_engine:
+            return format_html(
+                '<div style="display: inline-block;">'
+                '<span style="background: linear-gradient(135deg, #417690, #5a9bc4); color: white; padding: 4px 10px; '
+                'border-radius: 12px; font-size: 0.85em; font-weight: 500; text-shadow: 0 1px 2px rgba(0,0,0,0.1); '
+                'box-shadow: 0 2px 4px rgba(0,0,0,0.1);">{}</span>'
+                '</div>',
+                obj.workspace.geodata_engine.name
+            )
+        return format_html('<span style="color: #999; font-style: italic;">No Engine</span>')
+    active_engine_indicator.short_description = 'Engine'
+    active_engine_indicator.admin_order_field = 'workspace__geodata_engine'
+    
+    def get_queryset(self, request):
+        """Filter by active engine from session"""
+        qs = super().get_queryset(request)
+        active_engine = get_active_engine(request)
+        if active_engine:
+            return qs.filter(workspace__geodata_engine=active_engine)
+        return qs
+    
+    def get_form(self, request, obj=None, **kwargs):
+        """Filter workspace and store choices by active engine"""
+        form = super().get_form(request, obj, **kwargs)
+        active_engine = get_active_engine(request)
+        
+        if active_engine:
+            if 'workspace' in form.base_fields:
+                form.base_fields['workspace'].queryset = Workspace.objects.filter(geodata_engine=active_engine)
+            if 'store' in form.base_fields:
+                form.base_fields['store'].queryset = Store.objects.filter(geodata_engine=active_engine)
+            
+            # Note: Layer doesn't have direct geodata_engine field, it's through workspace
+        return form
     
     def save_model(self, request, obj, form, change):
         if not change:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
-
-# Register hidden admins
-admin.site.register(Workspace, WorkspaceAdmin)
-admin.site.register(Store, StoreAdmin)
-admin.site.register(Layer, LayerAdmin)
+    
+    def get_actions(self, request):
+        """Get actions for layer model"""
+        actions = super().get_actions(request)
+        dynamic_actions = get_actions_for_model('Layer', request)
+        for action in dynamic_actions:
+            actions[action.__name__] = (action, action.__name__, action.__doc__ or action.__name__)
+        return actions

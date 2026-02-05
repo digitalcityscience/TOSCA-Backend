@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoData Console</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+            background: #fafafa;
+            color: #2d3748;
+            font-size: 15px;
+        }
+        
+        /* Layout */
+        .app {
+            display: flex;
+            height: 100vh;
+        }
+        
+        /* Sidebar */
+        .sidebar {
+            width: 220px;
+            background: #ffffff;
+            border-right: 1px solid #e2e8f0;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .logo {
+            padding: 24px 20px;
+            font-size: 20px;
+            font-weight: 700;
+            color: #1a202c;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        
+        .nav {
+            flex: 1;
+            padding: 16px 0;
+            overflow-y: auto;
+        }
+        
+        .nav-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 20px;
+            color: #4a5568;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 15px;
+            font-weight: 500;
+        }
+        
+        .nav-item:hover {
+            background: #f7fafc;
+            color: #2d3748;
+        }
+        
+        .nav-item.active {
+            background: #edf2f7;
+            color: #2b6cb0;
+            border-right: 3px solid #2b6cb0;
+        }
+        
+        .nav-item svg {
+            width: 20px;
+            height: 20px;
+            margin-right: 12px;
+        }
+        
+        .nav-divider {
+            height: 1px;
+            background: #e2e8f0;
+            margin: 12px 0;
+        }
+        
+        /* Main Content */
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        /* Top Bar */
+        .topbar {
+            background: white;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 0 32px;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .engine-context {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .engine-selector {
+            position: relative;
+        }
+        
+        .engine-btn {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 10px 18px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #2d3748;
+        }
+        
+        .engine-btn:hover {
+            border-color: #cbd5e0;
+            background: #f7fafc;
+        }
+        
+        .engine-status {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #48bb78;
+        }
+        
+        .show-all-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #4a5568;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        
+        .show-all-toggle:hover {
+            background: #edf2f7;
+        }
+        
+        .show-all-toggle input {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+        
+        .topbar-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        
+        .sync-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            background: #f0fff4;
+            border: 1px solid #9ae6b4;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #22543d;
+            font-weight: 500;
+        }
+        
+        .sync-status.warning {
+            background: #fffaf0;
+            border-color: #fbd38d;
+            color: #744210;
+        }
+        
+        .btn-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            border: none;
+            background: white;
+            border: 1px solid #e2e8f0;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        
+        .btn-icon:hover {
+            background: #f7fafc;
+            border-color: #cbd5e0;
+        }
+        
+        /* Content Area */
+        .content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 32px;
+        }
+        
+        .content-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 28px;
+        }
+        
+        .content-title h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 6px;
+        }
+        
+        .content-title p {
+            color: #718096;
+            font-size: 14px;
+        }
+        
+        .btn-add {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #2b6cb0;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            padding: 12px 24px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 2px 8px rgba(43, 108, 176, 0.2);
+        }
+        
+        .btn-add:hover {
+            background: #2c5282;
+            box-shadow: 0 4px 12px rgba(43, 108, 176, 0.3);
+            transform: translateY(-1px);
+        }
+        
+        /* Cards Grid */
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+            gap: 20px;
+        }
+        
+        .card {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 24px;
+            transition: all 0.25s ease;
+            cursor: pointer;
+        }
+        
+        .card:hover {
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+            transform: translateY(-4px);
+            border-color: #cbd5e0;
+        }
+        
+        .card-top {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        
+        .card-title-area {
+            flex: 1;
+        }
+        
+        .card-name {
+            font-size: 18px;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 6px;
+        }
+        
+        .card-subtitle {
+            font-size: 13px;
+            color: #718096;
+        }
+        
+        .card-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        
+        .card-status.synced {
+            background: #f0fff4;
+            color: #22543d;
+        }
+        
+        .card-status.drift {
+            background: #fffaf0;
+            color: #744210;
+        }
+        
+        .card-status.error {
+            background: #fff5f5;
+            color: #742a2a;
+        }
+        
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+        }
+        
+        .status-dot.synced { background: #48bb78; }
+        .status-dot.drift { background: #ed8936; }
+        .status-dot.error { background: #f56565; }
+        
+        .card-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 20px;
+            padding: 16px;
+            background: #f7fafc;
+            border-radius: 12px;
+        }
+        
+        .stat {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .stat-label {
+            font-size: 11px;
+            color: #718096;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            font-weight: 600;
+        }
+        
+        .stat-value {
+            font-size: 16px;
+            font-weight: 700;
+            color: #2d3748;
+        }
+        
+        .card-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .card-btn {
+            flex: 1;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+        }
+        
+        .card-btn.primary {
+            background: #edf2f7;
+            color: #2b6cb0;
+        }
+        
+        .card-btn.primary:hover {
+            background: #e2e8f0;
+        }
+        
+        .card-btn.secondary {
+            background: transparent;
+            color: #718096;
+            border: 1px solid #e2e8f0;
+        }
+        
+        .card-btn.secondary:hover {
+            background: #f7fafc;
+            border-color: #cbd5e0;
+        }
+        
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+            background: white;
+            border-radius: 16px;
+            border: 2px dashed #e2e8f0;
+        }
+        
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+        
+        .empty-state h3 {
+            font-size: 20px;
+            color: #2d3748;
+            margin-bottom: 8px;
+        }
+        
+        .empty-state p {
+            color: #718096;
+            margin-bottom: 24px;
+        }
+        
+        /* Quick Stats Bar */
+        .quick-stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+        
+        .quick-stat {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .quick-stat-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+        }
+        
+        .quick-stat-icon.blue { background: #ebf8ff; }
+        .quick-stat-icon.green { background: #f0fff4; }
+        .quick-stat-icon.orange { background: #fffaf0; }
+        .quick-stat-icon.purple { background: #faf5ff; }
+        
+        .quick-stat-content h4 {
+            font-size: 24px;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 4px;
+        }
+        
+        .quick-stat-content p {
+            font-size: 12px;
+            color: #718096;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="logo">⚡ GeoConsole</div>
+            
+            <nav class="nav">
+                <div class="nav-item" onclick="showPage('engines')">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                    </svg>
+                    Engines
+                </div>
+                
+                <div class="nav-divider"></div>
+                
+                <div class="nav-item active" onclick="showPage('workspaces')">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                    </svg>
+                    Workspaces
+                </div>
+                
+                <div class="nav-item" onclick="showPage('stores')">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path>
+                    </svg>
+                    Stores
+                </div>
+                
+                <div class="nav-item" onclick="showPage('layers')">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"></path>
+                    </svg>
+                    Layers
+                </div>
+                
+                <div class="nav-item" onclick="showPage('styles')">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"></path>
+                    </svg>
+                    Styles
+                </div>
+                
+                <div class="nav-divider"></div>
+                
+                <div class="nav-item" onclick="showPage('sync')">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                    </svg>
+                    Sync Status
+                </div>
+                
+                <div class="nav-item" onclick="showPage('jobs')">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                    </svg>
+                    Jobs
+                </div>
+            </nav>
+        </div>
+        
+        <!-- Main Content -->
+        <div class="main">
+            <!-- Top Bar -->
+            <div class="topbar">
+                <div class="engine-context">
+                    <div class="engine-selector">
+                        <button class="engine-btn" onclick="toggleEngineMenu()">
+                            <span class="engine-status"></span>
+                            <span>GeoServer Production</span>
+                            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    
+                    <label class="show-all-toggle">
+                        <input type="checkbox" id="showAll">
+                        <span>Show all engines</span>
+                    </label>
+                </div>
+                
+                <div class="topbar-actions">
+                    <div class="sync-status">
+                        <span>✓</span>
+                        <span>Synced 2 mins ago</span>
+                    </div>
+                    
+                    <button class="btn-icon" title="Sync all">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                        </svg>
+                    </button>
+                    
+                    <button class="btn-icon" title="Notifications">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Content Area -->
+            <div class="content">
+                <!-- Workspaces Page (Default) -->
+                <div id="page-workspaces">
+                    <div class="content-header">
+                        <div class="content-title">
+                            <h1>Workspaces</h1>
+                            <p>Manage logical domains in GeoServer Production</p>
+                        </div>
+                        <button class="btn-add" onclick="alert('Add Workspace')">
+                            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                            </svg>
+                            Add Workspace
+                        </button>
+                    </div>
+                    
+                    <!-- Quick Stats -->
+                    <div class="quick-stats">
+                        <div class="quick-stat">
+                            <div class="quick-stat-icon blue">📁</div>
+                            <div class="quick-stat-content">
+                                <h4>12</h4>
+                                <p>Total Workspaces</p>
+                            </div>
+                        </div>
+                        
+                        <div class="quick-stat">
+                            <div class="quick-stat-icon green">✓</div>
+                            <div class="quick-stat-content">
+                                <h4>10</h4>
+                                <p>Synced</p>
+                            </div>
+                        </div>
+                        
+                        <div class="quick-stat">
+                            <div class="quick-stat-icon orange">⚠</div>
+                            <div class="quick-stat-content">
+                                <h4>2</h4>
+                                <p>Drift Detected</p>
+                            </div>
+                        </div>
+                        
+                        <div class="quick-stat">
+                            <div class="quick-stat-icon purple">🗺️</div>
+                            <div class="quick-stat-content">
+                                <h4>45</h4>
+                                <p>Total Layers</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Cards -->
+                    <div class="cards">
+                        <!-- Card 1: Synced -->
+                        <div class="card">
+                            <div class="card-top">
+                                <div class="card-title-area">
+                                    <div class="card-name">vector</div>
+                                    <div class="card-subtitle">Primary vector workspace</div>
+                                </div>
+                                <div class="card-status synced">
+                                    <span class="status-dot synced"></span>
+                                    Synced
+                                </div>
+                            </div>
+                            
+                            <div class="card-stats">
+                                <div class="stat">
+                                    <div class="stat-label">Layers</div>
+                                    <div class="stat-value">23</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Stores</div>
+                                    <div class="stat-value">3</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Last Sync</div>
+                                    <div class="stat-value">2m ago</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Status</div>
+                                    <div class="stat-value">Active</div>
+                                </div>
+                            </div>
+                            
+                            <div class="card-actions">
+                                <button class="card-btn primary">⟳ Sync</button>
+                                <button class="card-btn secondary">Edit</button>
+                                <button class="card-btn secondary">Delete</button>
+                            </div>
+                        </div>
+                        
+                        <!-- Card 2: Drift -->
+                        <div class="card">
+                            <div class="card-top">
+                                <div class="card-title-area">
+                                    <div class="card-name">raster_archive</div>
+                                    <div class="card-subtitle">Historical raster data</div>
+                                </div>
+                                <div class="card-status drift">
+                                    <span class="status-dot drift"></span>
+                                    Drift
+                                </div>
+                            </div>
+                            
+                            <div class="card-stats">
+                                <div class="stat">
+                                    <div class="stat-label">Layers</div>
+                                    <div class="stat-value">8</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Stores</div>
+                                    <div class="stat-value">2</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Last Sync</div>
+                                    <div class="stat-value">3h ago</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Status</div>
+                                    <div class="stat-value">Warning</div>
+                                </div>
+                            </div>
+                            
+                            <div class="card-actions">
+                                <button class="card-btn primary">⟳ Sync</button>
+                                <button class="card-btn secondary">Edit</button>
+                                <button class="card-btn secondary">Delete</button>
+                            </div>
+                        </div>
+                        
+                        <!-- Card 3: Normal -->
+                        <div class="card">
+                            <div class="card-top">
+                                <div class="card-title-area">
+                                    <div class="card-name">cadastral</div>
+                                    <div class="card-subtitle">Cadastral boundaries</div>
+                                </div>
+                                <div class="card-status synced">
+                                    <span class="status-dot synced"></span>
+                                    Synced
+                                </div>
+                            </div>
+                            
+                            <div class="card-stats">
+                                <div class="stat">
+                                    <div class="stat-label">Layers</div>
+                                    <div class="stat-value">5</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Stores</div>
+                                    <div class="stat-value">1</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Last Sync</div>
+                                    <div class="stat-value">15m ago</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Status</div>
+                                    <div class="stat-value">Active</div>
+                                </div>
+                            </div>
+                            
+                            <div class="card-actions">
+                                <button class="card-btn primary">⟳ Sync</button>
+                                <button class="card-btn secondary">Edit</button>
+                                <button class="card-btn secondary">Delete</button>
+                            </div>
+                        </div>
+                        
+                        <!-- Card 4 -->
+                        <div class="card">
+                            <div class="card-top">
+                                <div class="card-title-area">
+                                    <div class="card-name">transport</div>
+                                    <div class="card-subtitle">Transportation networks</div>
+                                </div>
+                                <div class="card-status synced">
+                                    <span class="status-dot synced"></span>
+                                    Synced
+                                </div>
+                            </div>
+                            
+                            <div class="card-stats">
+                                <div class="stat">
+                                    <div class="stat-label">Layers</div>
+                                    <div class="stat-value">9</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Stores</div>
+                                    <div class="stat-value">2</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Last Sync</div>
+                                    <div class="stat-value">1h ago</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Status</div>
+                                    <div class="stat-value">Active</div>
+                                </div>
+                            </div>
+                            
+                            <div class="card-actions">
+                                <button class="card-btn primary">⟳ Sync</button>
+                                <button class="card-btn secondary">Edit</button>
+                                <button class="card-btn secondary">Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Engines Page -->
+                <div id="page-engines" style="display: none;">
+                    <div class="content-header">
+                        <div class="content-title">
+                            <h1>Engines</h1>
+                            <p>Manage connected geospatial data engines</p>
+                        </div>
+                        <button class="btn-add">
+                            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                            </svg>
+                            Add Engine
+                        </button>
+                    </div>
+                    
+                    <div class="cards">
+                        <div class="card">
+                            <div class="card-top">
+                                <div class="card-title-area">
+                                    <div class="card-name">GeoServer Production</div>
+                                    <div class="card-subtitle">geoserver:8080</div>
+                                </div>
+                                <div class="card-status synced">
+                                    <span class="status-dot synced"></span>
+                                    Connected
+                                </div>
+                            </div>
+                            
+                            <div class="card-stats">
+                                <div class="stat">
+                                    <div class="stat-label">Workspaces</div>
+                                    <div class="stat-value">12</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Layers</div>
+                                    <div class="stat-value">45</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Last Check</div>
+                                    <div class="stat-value">1m ago</div>
+                                </div>
+                                <div class="stat">
+                                    <div class="stat-label">Version</div>
+                                    <div class="stat-value">2.24.0</div>
+                                </div>
+                            </div>
+                            
+                            <div class="card-actions">
+                                <button class="card-btn primary">Test Connection</button>
+                                <button class="card-btn secondary">Settings</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Stores Page -->
+                <div id="page-stores" style="display: none;">
+                    <div class="content-header">
+                        <div class="content-title">
+                            <h1>Stores</h1>
+                            <p>PostGIS data stores in GeoServer Production</p>
+                        </div>
+                        <button class="btn-add">
+                            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                            </svg>
+                            Add Store
+                        </button>
+                    </div>
+                    
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🗄️</div>
+                        <h3>No stores yet</h3>
+                        <p>Create your first PostGIS store to start publishing layers</p>
+                        <button class="btn-add">
+                            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                            </svg>
+                            Add Store
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function showPage(page) {
+            // Hide all pages
+            document.querySelectorAll('[id^="page-"]').forEach(p => p.style.display = 'none');
+            // Show selected
+            document.getElementById('page-' + page).style.display = 'block';
+            
+            // Update nav
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+            event.target.closest('.nav-item').classList.add('active');
+            
+            // Update page title based on selected page
+            const titles = {
+                engines: 'Engines',
+                workspaces: 'Workspaces',
+                stores: 'Stores',
+                layers: 'Layers',
+                styles: 'Styles',
+                sync: 'Sync Status',
+                jobs: 'Jobs'
+            };
+            
+            const subtitles = {
+                engines: 'Manage connected geospatial data engines',
+                workspaces: 'Manage logical domains in GeoServer Production',
+                stores: 'PostGIS data stores in GeoServer Production',
+                layers: 'Published layers in GeoServer Production',
+                styles: 'Style definitions in GeoServer Production',
+                sync: 'Monitor synchronization status',
+                jobs: 'Background tasks and operations'
+            };
+        }
+        
+        function toggleEngineMenu() {
+            alert('Engine selector dropdown will be implemented here');
+        }
+        
+        // Show all engines checkbox handler
+        document.getElementById('showAll').addEventListener('change', function(e) {
+            if (e.target.checked) {
+                alert('Showing data from all engines');
+            } else {
+                alert('Showing only GeoServer Production data');
+            }
+        });
+    </script>
+</body>
+</html>

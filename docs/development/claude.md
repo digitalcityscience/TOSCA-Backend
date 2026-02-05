@@ -181,3 +181,23 @@ System behavior:
   ```python
   from geo.Geoserver import Geoserver
   ```
+
+---
+
+
+
+---
+    Session Dependency Risk  
+        Session tabanlı aktif motor seçimi, CLI komutları, background job’lar veya API çağrıları için yetersiz kalabilir.
+        → Öneri: request-bağımsız kontext mekanizması (örneğin thread-local veya explicit engine_id parametresi) düşünülebilir.
+    Senkronizasyon Çakışmaları  
+        Bi-directional sync iyi başlangıç, ancak aynı kaynak üzerinde eşzamanlı değişikliklerde çakışma yönetimi eksik olabilir.
+        → Öneri: İleride “last modified timestamp” veya ETag benzeri mekanizmalarla conflict detection eklenebilir.
+    Plugin Load/Unload Dinamikliği  
+        Yeni plugin’ler eklendiğinde plugin_registry’nin runtime reload davranışı tanımlı mı?
+        → Öneri: Registry’nin lazy-loading veya hot-reload desteğini belgelemek faydalı olur.
+    Hata Mesajlarının Kullanıcıya Aktarımı  
+        exceptions.py var ama admin arayüzünde hataların ne kadar kullanıcı-dostu gösterildiği net değil.
+        → Öneri: Admin’deki messages.error() çağrısıyla teknik detayları gizleyip işlevsel geri bildirim vermek önemli.
+
+---

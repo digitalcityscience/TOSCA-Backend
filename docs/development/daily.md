@@ -1,3 +1,9 @@
+Bunu UI ile değil, domain ile korursun.
+	•	Workspace = logical domain
+	•	Store = connection
+	•	Layer = dataset
+	•	Engine = publisher
+cok cok iyi tanim
 ---
 27012026
 ---

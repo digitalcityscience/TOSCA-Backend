@@ -1,0 +1,73 @@
+{% load engine_tags %}
+
+<div class="engine-selector" style="background: linear-gradient(135deg, #417690, #2c5a75); padding: 12px 20px; margin-bottom: 15px; border-radius: 6px; box-shadow: 0 3px 6px rgba(0,0,0,0.15);">
+    <div style="color: white; display: flex; align-items: center; justify-content: space-between;">
+        <div style="display: flex; align-items: center; flex: 1;">
+            <span style="margin-right: 15px; font-weight: bold; font-size: 1.1em;">🎯 Active Engine:</span>
+            
+            {% if active_engine %}
+                <select id="engine-selector" style="padding: 6px 12px; border: none; border-radius: 4px; margin-right: 15px; font-size: 1em; min-width: 200px;" 
+                        onchange="window.location.href = this.value;">
+                    {% for engine in all_engines %}
+                        <option value="{% engine_switch_url engine.id %}" 
+                                {% if engine.id == active_engine.id %}selected{% endif %}>
+                            {{ engine.status_icon|default:"✅" }} {{ engine.name }}
+                        </option>
+                    {% endfor %}
+                </select>
+                
+                <div style="font-size: 0.95em; opacity: 0.9; background: rgba(255,255,255,0.1); padding: 4px 8px; border-radius: 3px;">
+                    📡 {{ active_engine.base_url }}
+                </div>
+            {% else %}
+                <span style="color: #ffcc00; font-weight: bold; background: rgba(255,204,0,0.2); padding: 6px 12px; border-radius: 4px;">
+                    ⚠️ No active engine selected - Please select one
+                </span>
+            {% endif %}
+        </div>
+        
+        {% if active_engine %}
+            <div style="font-size: 0.9em; opacity: 0.9; text-align: right;">
+                <div>Type: <strong>{{ active_engine.engine_type|default:"geoserver"|title }}</strong></div>
+                <div style="font-size: 0.8em; margin-top: 2px;">
+                    {% if active_engine.is_default %}🏠 Default Engine{% else %}📍 Engine Instance{% endif %}
+                </div>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Current Section Indicator -->
+{% if active_engine %}
+    <div style="background: #f8f9fa; border-left: 4px solid #417690; padding: 8px 15px; margin-bottom: 15px; font-size: 0.95em; color: #495057;">
+        <strong>Working with:</strong> {{ active_engine.name }} → 
+        {% if 'workspace' in request.path %}
+            📁 Workspaces
+        {% elif 'store' in request.path %}
+            🗃️ Stores
+        {% elif 'layer' in request.path %}
+            📊 Layers
+        {% else %}
+            🏢 Engine Management
+        {% endif %}
+    </div>
+{% endif %}
+
+<style>
+.engine-selector select {
+    background: white;
+    color: #333;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.engine-selector select:focus {
+    outline: 2px solid #ffc107;
+    outline-offset: 1px;
+    box-shadow: 0 0 0 3px rgba(255,193,7,0.2);
+}
+
+.engine-selector select:hover {
+    background: #f8f9fa;
+}
+</style>

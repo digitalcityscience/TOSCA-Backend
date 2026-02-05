@@ -111,6 +111,62 @@ class GeoServerClient:
                 'recovery_needed': True
             }
     
+    def delete_workspace(self, name: str) -> Dict:
+        """
+        Delete workspace from GeoServer
+        
+        Args:
+            name: Workspace name
+            
+        Returns:
+            Dict with success status and details
+        """
+        logger.info(f"Deleting workspace from GeoServer: {name}")
+        
+        try:
+            # Check if workspace exists before deletion
+            if not self.workspace_exists(name):
+                logger.info(f"Workspace {name} does not exist, nothing to delete")
+                return {
+                    'success': True,
+                    'workspace': name,
+                    'message': f"Workspace '{name}' does not exist",
+                    'deleted': False,
+                    'already_deleted': True
+                }
+            
+            # Delete workspace from GeoServer
+            result = self._client.delete_workspace(workspace=name)
+            
+            # Validate response
+            validated_result = self.validate_response(result, f"delete_workspace({name})")
+            
+            if not validated_result.get('success', False):
+                raise GeoServerPublishError(f"Workspace deletion failed validation: {validated_result.get('message')}")
+            
+            # Post-check: Verify it's really deleted
+            if self.workspace_exists(name):
+                logger.warning(f"Workspace {name} still exists after deletion attempt")
+            
+            logger.info(f"Workspace deleted successfully: {name}")
+            return {
+                'success': True,
+                'workspace': name,
+                'message': f"Workspace '{name}' deleted successfully",
+                'deleted': True,
+                'geoserver_response': validated_result
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to delete workspace {name}: {e}")
+            return {
+                'success': False,
+                'workspace': name,
+                'error': str(e),
+                'message': f"Failed to delete workspace '{name}': {e}",
+                'deleted': False
+            }
+    
     def create_postgis_store(
         self,
         name: str,
@@ -275,14 +331,32 @@ class GeoServerClient:
             True if workspace exists
         """
         try:
-            workspaces = self._client.get_workspaces()
-            if workspaces and 'workspaces' in workspaces:
-                workspace_list = workspaces['workspaces'].get('workspace', [])
-                return any(ws.get('name') == workspace for ws in workspace_list)
-            return False
+            workspaces = self.get_workspaces()
+            return workspace in workspaces
         except Exception as e:
             logger.warning(f"Failed to check workspace {workspace}: {e}")
             return False
+    
+    def get_workspaces(self) -> list:
+        """
+        Get list of workspace names from GeoServer
+        
+        Returns:
+            List of workspace names
+        """
+        try:
+            workspaces = self._client.get_workspaces()
+            logger.info(f"GeoServer workspaces response: {workspaces}")
+            
+            if workspaces and 'workspaces' in workspaces:
+                workspace_list = workspaces['workspaces'].get('workspace', [])
+                if isinstance(workspace_list, dict):  # Single workspace
+                    workspace_list = [workspace_list]
+                return [ws.get('name') for ws in workspace_list if isinstance(ws, dict) and 'name' in ws]
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get workspaces from GeoServer: {e}")
+            return []
     
     def store_exists(self, workspace: str, store_name: str) -> bool:
         """
@@ -296,14 +370,69 @@ class GeoServerClient:
             True if store exists
         """
         try:
-            stores = self._client.get_datastores(workspace)
-            if stores and 'dataStores' in stores:
-                store_list = stores['dataStores'].get('dataStore', [])
-                return any(ds.get('name') == store_name for ds in store_list)
-            return False
+            stores = self.get_datastores(workspace)
+            return any(ds.get('name') == store_name for ds in stores)
         except Exception as e:
             logger.warning(f"Failed to check store {workspace}/{store_name}: {e}")
             return False
+    
+    def get_datastores(self, workspace: str) -> list:
+        """
+        Get list of datastores from GeoServer workspace
+        
+        Args:
+            workspace: Workspace name
+            
+        Returns:
+            List of datastore dictionaries
+        """
+        try:
+            stores = self._client.get_datastores(workspace)
+            logger.info(f"GeoServer datastores response for {workspace}: {stores}")
+            
+            if stores and 'dataStores' in stores:
+                store_data = stores['dataStores']
+                # Handle empty dataStores
+                if store_data == '' or store_data is None:
+                    return []
+                
+                store_list = store_data.get('dataStore', [])
+                if isinstance(store_list, dict):  # Single store
+                    store_list = [store_list]
+                return [ds for ds in store_list if isinstance(ds, dict)]
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get datastores from workspace {workspace}: {e}")
+            return []
+    
+    def get_layers(self, workspace: str) -> list:
+        """
+        Get list of layers from GeoServer workspace
+        
+        Args:
+            workspace: Workspace name
+            
+        Returns:
+            List of layer dictionaries with name info
+        """
+        try:
+            layers = self._client.get_layers(workspace)
+            logger.info(f"GeoServer layers response for {workspace}: {layers}")
+            
+            if layers and 'layers' in layers:
+                layer_data = layers['layers']
+                # Handle empty layers
+                if layer_data == '' or layer_data is None:
+                    return []
+                    
+                layer_list = layer_data.get('layer', [])
+                if isinstance(layer_list, dict):  # Single layer
+                    layer_list = [layer_list]
+                return [{'name': layer['name']} for layer in layer_list if isinstance(layer, dict) and 'name' in layer]
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get layers from workspace {workspace}: {e}")
+            return []
     
     def validate_response(self, response, operation: str) -> Dict:
         """
@@ -463,6 +592,67 @@ class GeoServerClient:
                 'workspace': workspace,
                 'error': str(e),
                 'message': f"Store creation failed: {e}"
+            }
+    
+    def delete_store(self, workspace: str, store: str) -> Dict:
+        """
+        Delete PostGIS datastore from GeoServer
+        
+        Args:
+            workspace: Workspace name
+            store: Store name
+            
+        Returns:
+            Dict with success status and details
+        """
+        logger.info(f"Deleting store '{store}' from workspace '{workspace}'")
+        
+        try:
+            # Check if store exists before deletion
+            pre_check = self.pre_check_store(workspace, store)
+            if not pre_check.get('exists', False):
+                logger.info(f"Store {store} does not exist in workspace {workspace}, nothing to delete")
+                return {
+                    'success': True,
+                    'store': store,
+                    'workspace': workspace,
+                    'message': f"Store '{store}' does not exist",
+                    'deleted': False,
+                    'already_deleted': True
+                }
+            
+            # Delete store from GeoServer
+            result = self._client.delete_datastore(datastore=store, workspace=workspace)
+            
+            # Validate response
+            validated_result = self.validate_response(result, f"delete_datastore({store})")
+            
+            if not validated_result.get('success', False):
+                raise GeoServerPublishError(f"Store deletion failed validation: {validated_result.get('message')}")
+            
+            # Post-check: Verify it's really deleted
+            verification = self.post_verify_store(workspace, store, expected_exists=False)
+            
+            logger.info(f"Store deleted successfully: {store} from workspace {workspace}")
+            return {
+                'success': True,
+                'store': store,
+                'workspace': workspace,
+                'message': f"Store '{store}' deleted successfully",
+                'deleted': True,
+                'verified': verification.get('verified', False),
+                'geoserver_response': validated_result
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to delete store '{store}' from workspace '{workspace}': {e}")
+            return {
+                'success': False,
+                'store': store,
+                'workspace': workspace,
+                'error': str(e),
+                'message': f"Failed to delete store '{store}': {e}",
+                'deleted': False
             }
     
     def pre_check_store(self, workspace: str, store_name: str) -> Dict:

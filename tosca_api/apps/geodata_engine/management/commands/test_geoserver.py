@@ -2,8 +2,9 @@
 Management command to test GeoServer integration
 """
 from django.core.management.base import BaseCommand, CommandError
-from tosca_api.apps.geodata_engine.geoserver.engine import GeoServerEngine
-from tosca_api.apps.geodata_engine.core.exceptions import GeoServerConnectionError
+from tosca_api.apps.geodata_engine.geoserver.client import GeoServerClient
+from tosca_api.apps.geodata_engine.exceptions import GeoServerConnectionError
+from tosca_api.apps.geodata_engine.models import GeodataEngine
 
 
 class Command(BaseCommand):
@@ -30,33 +31,65 @@ class Command(BaseCommand):
         self.stdout.write('Testing GeoServer integration...\n')
 
         try:
-            # Initialize GeoServer engine
-            engine = GeoServerEngine(
-                url=options.get('url'),
-                username=options.get('username'),
-                password=options.get('password')
-            )
+            # Get default GeoServer engine from DB or use provided params
+            if not any([options.get('url'), options.get('username'), options.get('password')]):
+                try:
+                    engine = GeodataEngine.objects.filter(is_default=True, engine_type='geoserver').first()
+                    if not engine:
+                        raise CommandError("No default GeoServer engine found. Use --url, --username, --password options.")
+                    
+                    client = GeoServerClient(
+                        url=engine.geoserver_url,
+                        username=engine.admin_username,
+                        password=engine.decrypted_admin_password
+                    )
+                    self.stdout.write(f'✓ Using default GeoServer: {engine.name}')
+                except Exception as e:
+                    raise CommandError(f"Failed to connect to default engine: {e}")
+            else:
+                # Use provided connection parameters
+                url = options.get('url') or 'http://geoserver:8080/geoserver'
+                username = options.get('username') or 'admin'
+                password = options.get('password') or 'geoserver'
+                
+                client = GeoServerClient(url=url, username=username, password=password)
+                self.stdout.write(f'✓ GeoServer URL: {url}')
+                self.stdout.write(f'✓ Username: {username}')
             
-            self.stdout.write(f'✓ GeoServer URL: {engine.url}')
-            self.stdout.write(f'✓ Username: {engine.username}')
             self.stdout.write('')
 
-            # Test 1: Create test workspace
-            self.stdout.write('Test 1: Creating test workspace...')
+            # Test 1: Get workspaces
+            self.stdout.write('Test 1: Getting workspaces...')
             try:
-                result = engine.create_workspace('test_workspace', 'Test workspace for connectivity')
+                workspaces = client.get_workspaces()
+                self.stdout.write(self.style.SUCCESS(f'✓ Found {len(workspaces)} workspaces: {workspaces}'))
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f'✗ Failed to get workspaces: {e}'))
+                return
+
+            # Test 2: Create test workspace
+            self.stdout.write('\\nTest 2: Creating test workspace...')
+            try:
+                result = client.create_workspace('test_cli_workspace')
                 if result.get('success'):
                     self.stdout.write(self.style.SUCCESS(f'✓ {result["message"]}'))
                 else:
                     self.stdout.write(self.style.ERROR(f'✗ Failed to create workspace: {result}'))
-                    return
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f'✗ Workspace creation failed: {e}'))
-                return
 
-            # Test 2: Create test datastore
-            self.stdout.write('\nTest 2: Creating test PostGIS datastore...')
+            # Test 3: Delete test workspace  
+            self.stdout.write('\\nTest 3: Deleting test workspace...')
             try:
+                result = client.delete_workspace('test_cli_workspace')
+                if result.get('success'):
+                    self.stdout.write(self.style.SUCCESS(f'✓ {result["message"]}'))
+                else:
+                    self.stdout.write(self.style.WARNING(f'⚠ {result.get("message", "Delete result unclear")}'))
+            except Exception as e:
+                self.stdout.write(self.style.WARNING(f'⚠ Workspace deletion failed (might not exist): {e}'))
+
+            self.stdout.write('\\n' + self.style.SUCCESS('🎉 GeoServer integration test completed!'))
                 # Use database settings from Django
                 from django.conf import settings
                 import os

@@ -1,0 +1,7 @@
+{% extends "admin/change_form.html" %}
+{% load engine_tags %}
+
+{# Cleaner form without the intrusive engine message #}
+{% block form_top %}
+    {{ block.super }}
+{% endblock %}
