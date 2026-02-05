@@ -121,14 +121,36 @@ class FeatureLink(TimeStampedModel):
                     f"Only GeoStory, CalendarEvent, and GeoFeedback can be linked."
                 )
 
-        # 3. Self-link check
+        # 3. Validate source object exists
+        if self.source_content_type_id and self.source_object_id:
+            try:
+                model_class = self.source_content_type.model_class()
+                if model_class and not model_class.objects.filter(pk=self.source_object_id).exists():
+                    errors["source_object_id"] = (
+                        f"No {self.source_content_type.model} found with ID '{self.source_object_id}'."
+                    )
+            except Exception:
+                errors["source_object_id"] = "Unable to validate source object."
+
+        # 4. Validate target object exists
+        if self.target_content_type_id and self.target_object_id:
+            try:
+                model_class = self.target_content_type.model_class()
+                if model_class and not model_class.objects.filter(pk=self.target_object_id).exists():
+                    errors["target_object_id"] = (
+                        f"No {self.target_content_type.model} found with ID '{self.target_object_id}'."
+                    )
+            except Exception:
+                errors["target_object_id"] = "Unable to validate target object."
+
+        # 5. Self-link check
         if (
             self.source_content_type == self.target_content_type
             and self.source_object_id == self.target_object_id
         ):
             errors["target_object_id"] = "Cannot link an object to itself."
 
-        # 4. Campaign boundary check
+        # 6. Campaign boundary check
         # Both source and target must belong to the same campaign as this link
         # Note: Check campaign_id first to avoid RelatedObjectDoesNotExist on unsaved instances
         if self.campaign_id and self.source_object and hasattr(self.source_object, "campaign"):
