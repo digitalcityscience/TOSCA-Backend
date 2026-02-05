@@ -34,5 +34,6 @@ urlpatterns = [
     path('', include('tosca_api.apps.authentication.urls')),  # ← Include authentication app URLs
     path('api/v1/', include('tosca_api.apps.campaigns.urls')),
     path('api/v1/', include('tosca_api.apps.geostories.urls')),
+    path('api/v1/', include('tosca_api.apps.events.urls')),
     path('admin/', admin.site.urls),
 ]
