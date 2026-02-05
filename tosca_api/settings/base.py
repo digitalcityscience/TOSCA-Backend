@@ -164,6 +164,21 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Backend API for TOSCA Geospatial Platform",
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    # Add common error responses to all endpoints
+    "APPEND_COMPONENTS": {
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+            }
+        }
+    },
+    "SECURITY": [{"bearerAuth": []}],
+    # Postprocessing hooks to add common responses
+    "POSTPROCESSING_HOOKS": [
+        "tosca_api.apps.core.schema.add_common_responses",
+    ],
 }
 
 AUTHENTICATION_BACKENDS = [

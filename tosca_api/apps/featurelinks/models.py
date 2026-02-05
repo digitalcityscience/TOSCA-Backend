@@ -130,14 +130,15 @@ class FeatureLink(TimeStampedModel):
 
         # 4. Campaign boundary check
         # Both source and target must belong to the same campaign as this link
-        if self.source_object and hasattr(self.source_object, "campaign"):
-            if self.source_object.campaign != self.campaign:
+        # Note: Check campaign_id first to avoid RelatedObjectDoesNotExist on unsaved instances
+        if self.campaign_id and self.source_object and hasattr(self.source_object, "campaign"):
+            if self.source_object.campaign_id != self.campaign_id:
                 errors["source_object_id"] = (
                     "Source object must belong to the same campaign."
                 )
 
-        if self.target_object and hasattr(self.target_object, "campaign"):
-            if self.target_object.campaign != self.campaign:
+        if self.campaign_id and self.target_object and hasattr(self.target_object, "campaign"):
+            if self.target_object.campaign_id != self.campaign_id:
                 errors["target_object_id"] = (
                     "Target object must belong to the same campaign."
                 )
