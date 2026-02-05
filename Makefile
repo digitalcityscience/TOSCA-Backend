@@ -1,6 +1,7 @@
 .PHONY: help which-env build up down restart logs rebuild rmvolumes \
 	django-restart django-logs django-cmd django-shell django-migrate django-makemigrations \
-	django-test django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean
+	django-test django-test-unit django-test-integration test-geoserver test-console \
+	django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean
 
 # -------------------------------------------------
 # ENV selection (DEFAULT = dev) or prod
@@ -72,7 +73,11 @@ help:
 	@echo "  make django-shell    - Open Django shell (python manage.py shell)"
 	@echo "  make django-migrate [APP=app] [MIGRATION=0003] - Run migrations"
 	@echo "  make django-makemigrations [APP=app] - Create new migrations"
-	@echo "  make django-test     - Run Django tests"
+	@echo "  make django-test           - Run Django tests (unit & integration)"
+	@echo "  make django-test-unit      - Run unit tests with mocks"
+	@echo "  make django-test-integration - Run integration tests with real GeoServer"
+	@echo "  make test-geoserver        - Quick alias for integration tests"
+	@echo "  make test-console          - Test console views only"
 	@echo "  make django-createsuperuser - Create Django superuser"
 	@echo ""
 	@echo "$(COLOR_YELLOW)UV/Python Package Management:$(COLOR_RESET)"
@@ -240,6 +245,42 @@ test:
 	else \
 		docker exec -it tosca-django bash -lc "uv run pytest"; \
 	fi
+
+# -------------------------------------------------
+# Django test commands
+# Usage:
+#   make django-test                  - Run all tests
+#   make django-test app=geodata_engine  - Run specific app tests  
+#   make django-test-unit            - Run unit tests only
+#   make django-test-integration     - Run integration tests only
+# -------------------------------------------------
+django-test: which-env
+	@echo "$(COLOR_BLUE)🧪 Running all Django tests...$(COLOR_RESET)"
+	@if [ -n "$(app)" ]; then \
+		docker exec -it tosca-django bash -lc "uv run python manage.py test tosca_api.apps.$(app) -v 2 --settings=tosca_api.settings.development --keepdb"; \
+	elif [ -n "$(test)" ]; then \
+		docker exec -it tosca-django bash -lc "uv run python manage.py test $(test) -v 2 --settings=tosca_api.settings.development --keepdb"; \
+	else \
+		docker exec -it tosca-django bash -lc "uv run python manage.py test -v 2 --settings=tosca_api.settings.development --keepdb"; \
+	fi
+
+# Run unit tests with mocks (fast, no external dependencies)
+django-test-unit: which-env
+	@echo "$(COLOR_BLUE)⚡ Running unit tests (no test DB, uses dev DB directly)...$(COLOR_RESET)"
+	docker exec -it tosca-django bash -lc "uv run python -m pytest tosca_api/apps/geodata_engine/tests/test_api.py -v --tb=short"
+
+# Run integration tests with real GeoServer (slower, needs services)
+django-test-integration: which-env
+	@echo "$(COLOR_BLUE)🌐 Running integration tests (real services)...$(COLOR_RESET)"
+	docker exec -it tosca-django bash -lc "uv run python integration_test.py"
+
+# Quick alias for integration test
+test-geoserver: django-test-integration
+
+# Quick alias for console test
+test-console: which-env
+	@echo "$(COLOR_BLUE)🖥️  Testing console views...$(COLOR_RESET)"
+	docker exec -it tosca-django bash -lc "uv run python manage.py test tosca_api.apps.geodata_engine.tests.test_integration.SimpleConsoleIntegrationTestCase -v 2 --settings=tosca_api.settings.development --keepdb"
 # -------------------------------------------------
 # Django-specific Commands
 # -------------------------------------------------
@@ -306,11 +347,6 @@ django-makemigrations: which-env
 		echo "Running: makemigrations (all apps)"; \
 		docker exec -it tosca-django uv run python manage.py makemigrations; \
 	fi
-
-# Run Django tests
-django-test: which-env
-	@echo "$(COLOR_BLUE)🧪 Running Django tests...$(COLOR_RESET)"
-	docker exec -it tosca-django uv run pytest
 
 # Create Django superuser
 django-createsuperuser: which-env

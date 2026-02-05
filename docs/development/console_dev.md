@@ -71,9 +71,10 @@ Deliverables:
 - console/templates/console/index.html
 
 Base layout:
-- Black header
-- White background
-- Simple vertical navigation
+
+At the end it is going to be same as this html 
+/Users/hsadmin/Desktop/coding/dcs-django-api/docs/development/geodata_console.html
+Please follow the all desigin within this html. First jusf focus Engines and sync
 
 Navigation entries (disabled for now):
 - Engines
@@ -91,18 +92,7 @@ Milestone complete when:
 
 ⸻
 
-🟢 PHASE 1 — ENGINES + SYNC (BİRLİKTE, ÇOK KRİTİK)
-
-⚠️ BU EN ÖNEMLİ PROMPT
-Engine + Sync AYRILMAYACAK
-
-🔀 Branch
-
-feature/console-engines-sync
-
-🎯 Goal
-	•	Engine kavramını console’a entegre et
-	•	GeoServer ↔ Django iki yönlü sync’i kusursuz kur
+🟢 PHASE 1 — ENGINES + SYNC
 
 📌 Prompt
 
@@ -164,13 +154,9 @@ Patterns to enforce:
   - Verify
 
 ### Console UI
-- `/console/engines/`
-  - Engine list
-  - Connection status
-  - Buttons:
-    - Test connection
-    - Sync from engine
-    - Sync to engine
+At the end it is going to be same as this html 
+/Users/hsadmin/Desktop/coding/dcs-django-api/docs/development/geodata_console.html
+Please follow the all desigin within this html. First jusf focus Engines and sync
 
 Each button:
 - Executes sync logic
@@ -219,6 +205,100 @@ Default:
 Milestone complete when:
 - Workspace CRUD works
 - Sync never leaves ghost workspaces
+
+---
+📋 Milestone Breakdown
+🏗️ MILESTONE 1: DRF Foundation (30 mins)
+Goal: Set up Django REST Framework infrastructure
+
+Tasks:
+
+Add djangorestframework to dependencies
+Configure DRF settings in base.py
+Create geodata_engine/api/ directory structure
+Add API URL routing
+Deliverables:
+
+/api/ endpoint accessible
+DRF browsable API working
+🔧 MILESTONE 2: First API Endpoint (45 mins)
+Goal: Create engines API with permissions
+
+Tasks:
+
+Create EnginesAPIViewSet in geodata_engine/api/views.py
+Add permissions: IsAuthenticated + custom CanManageEngines
+Implement: GET /api/engines/ and POST /api/engines/sync/
+Create serializers for engine data
+Deliverables:
+
+GET /api/engines/ - list engines
+POST /api/engines/{id}/sync/ - sync specific engine
+Permission-protected endpoints
+🔄 MILESTONE 3: Console API Integration (30 mins)
+Goal: Update console to use API calls
+
+Tasks:
+
+Update console/views.py to use requests or Django test client
+Replace direct model access with API calls
+Add proper error handling for API failures
+Update templates to handle API responses
+Deliverables:
+
+Console engines page uses API
+Console sync buttons use API
+Error messages from API displayed properly
+🛡️ MILESTONE 4: Enhanced Security (45 mins)
+Goal: Add audit logging and rate limiting
+
+Tasks:
+
+Create AuditLog model for tracking console operations
+Add @ratelimit decorators to expensive operations
+Create custom permission classes: ConsoleUserPermission
+Add operation logging to all API endpoints
+Deliverables:
+
+All console operations logged
+Rate limiting on sync operations (max 5/minute)
+Role-based permissions (console_user vs admin)
+🚀 MILESTONE 5: Additional Endpoints (60 mins)
+Goal: Expand API for workspaces, stores, layers
+
+Tasks:
+
+Create WorkspacesAPIViewSet
+Create StoresAPIViewSet
+Create LayersAPIViewSet
+Add bulk operations support
+Create status/health endpoints
+Deliverables:
+
+Full CRUD API for all geodata entities
+Bulk sync operations
+/api/status/ health check endpoint
+🎯 Implementation Priority
+Week 1: Milestones 1-3 (Console working with API)
+Week 2: Milestones 4-5 (Security + Full API)
+
+🔧 Technical Decisions
+DRF Configuration:
+
+Use ViewSets for CRUD operations
+Token authentication for internal calls
+Custom permission classes
+API versioning (/api/v1/)
+Key Benefits After Completion:
+
+✅ Clean separation: Console ↔ API ↔ Models
+✅ Permission boundaries enforced
+✅ All operations audited
+✅ Rate limiting protection
+✅ Future-ready for external API
+Want me to start with Milestone 1: DRF Foundation setup?
+
+
 
 
 ⸻

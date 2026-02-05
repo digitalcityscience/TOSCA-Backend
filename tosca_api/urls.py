@@ -22,5 +22,7 @@ from tosca_api.apps.authentication.views import KeycloakLogoutView
 urlpatterns = [
     path('admin/logout/', KeycloakLogoutView.as_view(), name='admin_logout'),  # Override Django admin logout
     path('', include('tosca_api.apps.authentication.urls')),  # ← Include authentication app URLs
+    path('console/', include('tosca_api.apps.console.urls')),  # Console management interface
+    path('api/geodata/', include('tosca_api.apps.geodata_engine.api.urls')),  # Geodata Engine API
     path('admin/', admin.site.urls),
 ]

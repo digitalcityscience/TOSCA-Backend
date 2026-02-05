@@ -1,0 +1,92 @@
+{% extends 'console/base.html' %}
+
+{% block content %}
+<div class="content-header">
+    <div class="content-title">
+        <h1>GeoData Console</h1>
+        <p>Manage your geospatial data workflow</p>
+    </div>
+</div>
+
+<div class="card-grid">
+    <div class="card">
+        <div class="card-header">
+            <div>
+                <div class="card-title">Engines</div>
+                <div class="card-subtitle">GeoServer instances</div>
+            </div>
+            <div class="card-status synced">
+                <span class="status-dot synced"></span>
+                Active
+            </div>
+        </div>
+        <div class="card-actions">
+            <a href="{% url 'console:engines' %}" class="card-btn primary">Manage</a>
+        </div>
+    </div>
+    
+    <div class="card">
+        <div class="card-header">
+            <div>
+                <div class="card-title">Sync Status</div>
+                <div class="card-subtitle">Engine synchronization</div>
+            </div>
+            <div class="card-status synced">
+                <span class="status-dot synced"></span>
+                Ready
+            </div>
+        </div>
+        <div class="card-actions">
+            <a href="{% url 'console:sync_engines' %}" class="card-btn primary">Sync Engines</a>
+        </div>
+    </div>
+    
+    <div class="card">
+        <div class="card-header">
+            <div>
+                <div class="card-title">Workspaces</div>
+                <div class="card-subtitle">Coming soon</div>
+            </div>
+            <div class="card-status drift">
+                <span class="status-dot drift"></span>
+                Disabled
+            </div>
+        </div>
+        <div class="card-actions">
+            <button class="card-btn secondary" disabled>Coming Soon</button>
+        </div>
+    </div>
+    
+    <div class="card">
+        <div class="card-header">
+            <div>
+                <div class="card-title">Layers</div>
+                <div class="card-subtitle">Coming soon</div>
+            </div>
+            <div class="card-status drift">
+                <span class="status-dot drift"></span>
+                Disabled
+            </div>
+        </div>
+        <div class="card-actions">
+            <button class="card-btn secondary" disabled>Coming Soon</button>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <div>
+            <div class="card-title">Quick Actions</div>
+            <div class="card-subtitle">Common console operations</div>
+        </div>
+    </div>
+    <div class="card-actions">
+        <form method="post" action="{% url 'console:sync_engines' %}" style="display:inline;">
+            {% csrf_token %}
+            <button type="submit" class="card-btn primary">Sync All Engines</button>
+        </form>
+        <a href="{% url 'console:engines' %}" class="card-btn secondary">Manage Engines</a>
+    </div>
+</div>
+{% endblock content %}

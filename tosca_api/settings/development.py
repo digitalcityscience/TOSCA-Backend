@@ -4,8 +4,8 @@ from .base import *  # noqa: F401,F403
 
 DEBUG = True
 
-# Allow Postman reverse DNS lookup
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '1.0.0.127.in-addr.arpa']
+# Allow Postman reverse DNS lookup + testserver for tests
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '1.0.0.127.in-addr.arpa', 'testserver']
 
 # Django auth redirects
 LOGIN_REDIRECT_URL = '/welcome/'
