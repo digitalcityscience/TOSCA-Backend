@@ -1,10 +1,14 @@
 """
-GeoFeedback model - Citizen feedback collection with forms and ratings.
+GeoFeedback & FeedbackSubmission models.
 
 GeoFeedback represents a configurable feedback campaign that can collect
 star ratings, custom form responses (via django-basic-form-builder), and
 spatial drawings from citizens. Each GeoFeedback belongs to a Campaign
 and can be linked to map layers for contextual display.
+
+FeedbackSubmission stores individual citizen responses to a GeoFeedback,
+including optional ratings, dynamic form answers (JSONB), and spatial
+drawings (GeometryField).
 """
 
 from __future__ import annotations
@@ -12,7 +16,9 @@ from __future__ import annotations
 import uuid
 
 from django.conf import settings
+from django.contrib.gis.db import models as gis_models
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 from tosca_api.apps.core.models import TimeStampedModel
@@ -190,4 +196,104 @@ class FeedbackLayer(models.Model):
             )
             if max_order is not None:
                 self.display_order = max_order + 1
+        super().save(*args, **kwargs)
+
+
+class FeedbackSubmission(TimeStampedModel):
+    """
+    An individual citizen response to a GeoFeedback campaign.
+
+    Attributes:
+        id: UUID primary key
+        feedback: Parent GeoFeedback this submission belongs to
+        submitted_by: Optional FK to User (nullable for anonymous submissions)
+        rating: Star rating 1-5 (nullable, required when feedback.rating_enabled)
+        form_data: JSONB storing dynamic form answers (nullable)
+        geometry: Mixed geometry for drawings (Point/Line/Polygon, nullable)
+        is_anonymized: Whether PII has been stripped from this submission
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    feedback = models.ForeignKey(
+        GeoFeedback,
+        on_delete=models.CASCADE,
+        related_name="submissions",
+    )
+
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="feedback_submissions",
+    )
+
+    rating = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text="Star rating from 1 to 5.",
+    )
+
+    form_data = models.JSONField(
+        null=True,
+        blank=True,
+        default=None,
+        help_text="Dynamic form answers stored as JSON (from formbuilder).",
+    )
+
+    geometry = gis_models.GeometryField(
+        srid=4326,
+        null=True,
+        blank=True,
+        help_text="Spatial drawing (Point, LineString, or Polygon).",
+    )
+
+    is_anonymized = models.BooleanField(
+        default=False,
+        help_text="Whether personally identifiable information has been removed.",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Feedback Submission"
+        verbose_name_plural = "Feedback Submissions"
+        indexes = [
+            models.Index(fields=["feedback"]),
+            models.Index(fields=["submitted_by"]),
+        ]
+
+    def __str__(self) -> str:
+        user_label = self.submitted_by or "Anonymous"
+        rating_label = f"★{self.rating}" if self.rating else "no rating"
+        return f"Submission to {self.feedback} ({user_label}, {rating_label})"
+
+    def clean(self) -> None:
+        """Validate submission against parent GeoFeedback configuration."""
+        errors = {}
+
+        # Rating validation
+        if self.rating is not None:
+            if self.rating < 1 or self.rating > 5:
+                errors["rating"] = "Rating must be between 1 and 5."
+
+        # Geometry only if allow_drawings is enabled
+        if self.geometry and self.feedback_id:
+            try:
+                if not self.feedback.allow_drawings:
+                    errors["geometry"] = (
+                        "This feedback does not accept spatial drawings."
+                    )
+            except GeoFeedback.DoesNotExist:
+                pass  # FK will be validated by Django
+
+        if errors:
+            raise ValidationError(errors)
+
+        super().clean()
+
+    def save(self, *args, **kwargs) -> None:
+        """Override save to validate."""
+        self.full_clean()
         super().save(*args, **kwargs)
