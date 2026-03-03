@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 from django.conf import settings
+from django.contrib.contenttypes.fields import GenericRelation
 from django.contrib.gis.db import models as gis_models
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -96,6 +97,20 @@ class CalendarEvent(TimeStampedModel):
         max_length=20,
         choices=Visibility.choices,
         default=Visibility.PUBLIC,
+    )
+
+    # Reverse generic relations for cascading deletes of FeatureLinks
+    feature_links_source = GenericRelation(
+        "featurelinks.FeatureLink",
+        content_type_field="source_content_type",
+        object_id_field="source_object_id",
+        related_query_name="calendarevent_source"
+    )
+    feature_links_target = GenericRelation(
+        "featurelinks.FeatureLink",
+        content_type_field="target_content_type",
+        object_id_field="target_object_id",
+        related_query_name="calendarevent_target"
     )
 
     class Meta:
