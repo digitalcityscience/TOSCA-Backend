@@ -289,6 +289,20 @@ wheels = [
 ]
 
 [[package]]
+name = "django-basic-form-builder"
+version = "0.1.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+    { name = "djangorestframework" },
+    { name = "drf-spectacular" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7b/01/cce57190df6b94bf135c16ceebab9a22c0413d821601297cdba04716e444/django_basic_form_builder-0.1.4.tar.gz", hash = "sha256:544ec617cdc1fe0b721d8e598b3c634e0fa52d247783c2601445b305ff504162", size = 37679, upload-time = "2026-03-03T11:03:11.134Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/14/4c/f5571b2f1f28eea457de62c9437fab586d878fa9690d22c750cae74cb294/django_basic_form_builder-0.1.4-py3-none-any.whl", hash = "sha256:28ffb6d74e9ba9d863cab562faef89c9c6e63ad4682eabcf6ffddf4b4db33418", size = 31716, upload-time = "2026-03-03T11:03:09.876Z" },
+]
+
+[[package]]
 name = "django-environ"
 version = "0.12.0"
 source = { registry = "https://pypi.org/simple" }
@@ -966,6 +980,7 @@ dependencies = [
     { name = "dj-rest-auth" },
     { name = "django" },
     { name = "django-allauth" },
+    { name = "django-basic-form-builder" },
     { name = "django-environ" },
     { name = "djangorestframework" },
     { name = "djangorestframework-gis" },
@@ -998,6 +1013,7 @@ requires-dist = [
     { name = "dj-rest-auth", specifier = ">=7.0.1" },
     { name = "django", specifier = ">=5.1,<5.2" },
     { name = "django-allauth", specifier = ">=65.13.1" },
+    { name = "django-basic-form-builder", specifier = ">=0.1.4" },
     { name = "django-environ", specifier = ">=0.11.0" },
     { name = "djangorestframework", specifier = ">=3.15.0" },
     { name = "djangorestframework-gis", specifier = ">=1.2.0" },

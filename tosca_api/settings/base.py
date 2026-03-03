@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     "allauth.socialaccount.providers.openid_connect",
     "dj_rest_auth",
     "dj_rest_auth.registration",
+    "formbuilder",
     # Local apps
     "tosca_api.apps.core",
     "tosca_api.apps.tosca_web",
@@ -73,7 +74,11 @@ INSTALLED_APPS = [
     "tosca_api.apps.geostories",
     "tosca_api.apps.featurelinks",
     "tosca_api.apps.events",
+    "tosca_api.apps.feedback",
 ]
+
+# django-basic-form-builder: enable read-only API endpoint
+FORMBUILDER_API_ENABLED = True
 
 SITE_ID = 1
 
