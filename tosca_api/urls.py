@@ -35,5 +35,6 @@ urlpatterns = [
     path('api/v1/', include('tosca_api.apps.campaigns.urls')),
     path('api/v1/', include('tosca_api.apps.geostories.urls')),
     path('api/v1/', include('tosca_api.apps.events.urls')),
+    path("api/v1/", include("tosca_api.apps.feedback.urls")),
     path('admin/', admin.site.urls),
 ]
