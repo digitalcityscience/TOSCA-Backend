@@ -16,6 +16,7 @@ from __future__ import annotations
 import uuid
 
 from django.conf import settings
+from django.contrib.contenttypes.fields import GenericRelation
 from django.contrib.gis.db import models as gis_models
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -119,6 +120,20 @@ class GeoFeedback(TimeStampedModel):
         through="FeedbackLayer",
         related_name="feedbacks",
         blank=True,
+    )
+
+    # Reverse generic relations for cascading deletes of FeatureLinks
+    feature_links_source = GenericRelation(
+        "featurelinks.FeatureLink",
+        content_type_field="source_content_type",
+        object_id_field="source_object_id",
+        related_query_name="geofeedback_source"
+    )
+    feature_links_target = GenericRelation(
+        "featurelinks.FeatureLink",
+        content_type_field="target_content_type",
+        object_id_field="target_object_id",
+        related_query_name="geofeedback_target"
     )
 
     class Meta:

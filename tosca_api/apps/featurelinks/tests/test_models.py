@@ -10,6 +10,7 @@ from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geostories.models import GeoStory
 from tosca_api.apps.events.models import CalendarEvent
+from tosca_api.apps.feedback.models import GeoFeedback
 
 User = get_user_model()
 
@@ -85,6 +86,28 @@ def event_b(user, campaign_b):
         start_datetime=now + timedelta(days=3),
         end_datetime=now + timedelta(days=3, hours=2),
         organizer=user,
+    )
+
+
+@pytest.fixture
+def geofeedback1(user, campaign):
+    """Create a GeoFeedback for Campaign A."""
+    return GeoFeedback.objects.create(
+        title="Feedback 1",
+        campaign=campaign,
+        created_by=user,
+        rating_enabled=True,
+    )
+
+
+@pytest.fixture
+def geofeedback_b(user, campaign_b):
+    """Create a GeoFeedback for Campaign B."""
+    return GeoFeedback.objects.create(
+        title="Feedback B",
+        campaign=campaign_b,
+        created_by=user,
+        rating_enabled=True,
     )
 
 
@@ -351,3 +374,51 @@ def test_featurelink_rejects_wrong_type_uuid(user, campaign, geocontext):
             created_by=user,
         )
     assert "source_object_id" in exc.value.message_dict or "target_object_id" in exc.value.message_dict
+
+
+# =============================================================================
+# GeoFeedback Linking Tests (Task 3.4)
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_featurelink_story_to_feedback(user, story1, geofeedback1, campaign):
+    """Test linking a GeoStory to a GeoFeedback."""
+    link = FeatureLink.objects.create(
+        campaign=campaign,
+        source_object=story1,
+        target_object=geofeedback1,
+        link_type=FeatureLink.LinkType.ACTION,
+        created_by=user,
+    )
+    assert link.id is not None
+    assert link.source_object == story1
+    assert link.target_object == geofeedback1
+
+
+@pytest.mark.django_db
+def test_featurelink_feedback_to_event(user, geofeedback1, event1, campaign):
+    """Test linking a GeoFeedback to a CalendarEvent."""
+    link = FeatureLink.objects.create(
+        campaign=campaign,
+        source_object=geofeedback1,
+        target_object=event1,
+        link_type=FeatureLink.LinkType.DIRECT,
+        created_by=user,
+    )
+    assert link.id is not None
+    assert link.source_object == geofeedback1
+    assert link.target_object == event1
+
+
+@pytest.mark.django_db
+def test_featurelink_feedback_rejects_cross_campaign(user, geofeedback1, event_b, campaign):
+    """Test that GeoFeedback and Event from different campaigns cannot be linked."""
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_object=geofeedback1,
+            target_object=event_b,
+            created_by=user,
+        )
+    assert "target_object_id" in exc.value.message_dict

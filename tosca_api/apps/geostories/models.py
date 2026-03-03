@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 
 from django.conf import settings
+from django.contrib.contenttypes.fields import GenericRelation
 from django.db import models
 
 from tosca_api.apps.core.models import TimeStampedModel
@@ -68,6 +69,20 @@ class GeoStory(TimeStampedModel):
         through="GeoStoryLayer",
         related_name="geostories",
         blank=True,
+    )
+    
+    # Reverse generic relations for cascading deletes of FeatureLinks
+    feature_links_source = GenericRelation(
+        "featurelinks.FeatureLink",
+        content_type_field="source_content_type",
+        object_id_field="source_object_id",
+        related_query_name="geostory_source"
+    )
+    feature_links_target = GenericRelation(
+        "featurelinks.FeatureLink",
+        content_type_field="target_content_type",
+        object_id_field="target_object_id",
+        related_query_name="geostory_target"
     )
 
     class Meta:
