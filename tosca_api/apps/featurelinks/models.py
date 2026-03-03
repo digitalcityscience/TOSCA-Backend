@@ -15,7 +15,7 @@ from tosca_api.apps.core.models import TimeStampedModel
 ALLOWED_LINK_MODELS = frozenset([
     "geostories.geostory",
     "events.calendarevent",
-    "geofeedback.geofeedback",  # Future
+    "feedback.geofeedback",
 ])
 
 
