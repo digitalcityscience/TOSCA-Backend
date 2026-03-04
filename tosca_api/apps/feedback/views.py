@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from .models import FeedbackSubmission, GeoFeedback
 from .serializers import (
     FeedbackSubmissionSerializer,
-    GeoFeedbackCreateUpdateSerializer,
+    GeoFeedbackWriteSerializer,
     GeoFeedbackDetailSerializer,
     GeoFeedbackListSerializer,
 )
@@ -60,7 +60,7 @@ class GeoFeedbackViewSet(viewsets.ModelViewSet):
             return GeoFeedbackDetailSerializer
         if self.action == "submit":
             return FeedbackSubmissionSerializer
-        return GeoFeedbackCreateUpdateSerializer
+        return GeoFeedbackWriteSerializer
 
     def get_queryset(self):
         """

@@ -118,7 +118,7 @@ class CalendarEventGeoSerializer(GeoFeatureModelSerializer):
         read_only_fields = fields
 
 
-class CalendarEventCreateSerializer(serializers.ModelSerializer):
+class CalendarEventWriteSerializer(serializers.ModelSerializer):
     """Serializer for creating/updating events."""
 
     class Meta:
@@ -137,6 +137,17 @@ class CalendarEventCreateSerializer(serializers.ModelSerializer):
             "context",
         ]
         read_only_fields = ["id", "organizer"]
+
+    def validate(self, attrs):
+        """Invoke model clean() to ensure DB constraints surface as API 400s."""
+        instance = CalendarEvent(**attrs)
+        if self.instance:
+            for attr, value in attrs.items():
+                setattr(instance, attr, value)
+        
+        # CalendarEvent.clean() enforces start_datetime <= end_datetime
+        instance.clean()
+        return attrs
 
 
 # =============================================================================

@@ -5,7 +5,7 @@ from .models import GeoStory
 from .serializers import (
     GeoStoryDetailSerializer,
     GeoStoryListSerializer,
-    GeoStorySerializer,
+    GeoStoryWriteSerializer,
 )
 
 
@@ -42,7 +42,7 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
             return GeoStoryListSerializer
         if self.action == "retrieve":
             return GeoStoryDetailSerializer
-        return GeoStorySerializer
+        return GeoStoryWriteSerializer
 
     def get_queryset(self):
         """

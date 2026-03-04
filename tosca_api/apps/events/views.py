@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from .models import CalendarEvent
 from .serializers import (
     BBoxSerializer,
-    CalendarEventCreateSerializer,
+    CalendarEventWriteSerializer,
     CalendarEventDetailSerializer,
     CalendarEventGeoSerializer,
     CalendarEventListSerializer,
@@ -75,7 +75,7 @@ class CalendarEventViewSet(viewsets.ModelViewSet):
             return CalendarEventDetailSerializer
         if self.action == "within":
             return CalendarEventGeoSerializer
-        return CalendarEventCreateSerializer
+        return CalendarEventWriteSerializer
 
     def _is_spatial_request(self) -> bool:
         """Check if request has bbox parameter."""

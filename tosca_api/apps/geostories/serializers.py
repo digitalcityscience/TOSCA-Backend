@@ -19,7 +19,7 @@ class GeoContextSerializer(serializers.ModelSerializer):
     class Meta:
         model = GeoContext
         fields = ["id", "content", "content_type"]
-        read_only_fields = ["id", "content", "content_type"]
+        read_only_fields = fields
 
 
 class LayerRefSerializer(serializers.ModelSerializer):
@@ -28,7 +28,7 @@ class LayerRefSerializer(serializers.ModelSerializer):
     class Meta:
         model = LayerRef
         fields = ["id", "layer_name"]
-        read_only_fields = ["id", "layer_name"]
+        read_only_fields = fields
 
 
 class GeoStoryLayerSerializer(serializers.ModelSerializer):
@@ -43,7 +43,7 @@ class GeoStoryLayerSerializer(serializers.ModelSerializer):
     class Meta:
         model = GeoStoryLayer
         fields = ["id", "layer_name", "display_order"]
-        read_only_fields = ["id", "layer_name", "display_order"]
+        read_only_fields = fields
 
 
 class FeatureLinkSerializer(serializers.ModelSerializer):
@@ -57,7 +57,7 @@ class FeatureLinkSerializer(serializers.ModelSerializer):
     class Meta:
         model = FeatureLink
         fields = ["id", "target_content_type", "target_object_id", "target_type", "link_type"]
-        read_only_fields = ["id", "target_content_type", "target_object_id", "target_type", "link_type"]
+        read_only_fields = fields
 
     def get_target_type(self, obj) -> str:
         """Return human-readable target type (e.g. 'geostory')."""
@@ -133,9 +133,9 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
         return FeatureLinkSerializer(links, many=True).data
 
 
-class GeoStorySerializer(serializers.ModelSerializer):
+class GeoStoryWriteSerializer(serializers.ModelSerializer):
     """
-    Serializer for GeoStory model.
+    Write serializer for GeoStory model.
     Used for create/update operations (Admin/Editor use).
     """
 
@@ -153,3 +153,13 @@ class GeoStorySerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "author", "context", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        """Invoke model clean() for DB-level validation."""
+        instance = GeoStory(**attrs)
+        if self.instance:
+            for attr, value in attrs.items():
+                setattr(instance, attr, value)
+        
+        instance.clean()
+        return attrs

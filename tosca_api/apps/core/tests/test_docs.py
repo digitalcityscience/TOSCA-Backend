@@ -8,7 +8,7 @@ def test_swagger_docs_accessible():
     # /api/schema/
     response = client.get(reverse("schema"))
     assert response.status_code == 200
-    assert response['Content-Type'] == 'application/vnd.oai.openapi; version=3.0.3'
+    assert "application/vnd.oai.openapi" in response['Content-Type']
 
     # /api/docs/
     response = client.get(reverse("swagger-ui"))

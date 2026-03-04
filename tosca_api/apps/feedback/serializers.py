@@ -43,6 +43,7 @@ class GeoFeedbackListSerializer(serializers.ModelSerializer):
             "allow_drawings",
             "created_at",
         ]
+        read_only_fields = fields
 
 
 class GeoFeedbackDetailSerializer(serializers.ModelSerializer):
@@ -85,7 +86,7 @@ class GeoFeedbackDetailSerializer(serializers.ModelSerializer):
         return FeedbackLayerSerializer(through_qs, many=True).data
 
 
-class GeoFeedbackCreateUpdateSerializer(serializers.ModelSerializer):
+class GeoFeedbackWriteSerializer(serializers.ModelSerializer):
     """Write serializer for creating or updating GeoFeedback."""
 
     class Meta:
@@ -106,9 +107,14 @@ class GeoFeedbackCreateUpdateSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_by"]
 
     def validate(self, attrs):
-        # We manually trigger model clean inside ModelViewSet perform_create
-        # but DRF validate() can also do some basic validation here if we want
-        return super().validate(attrs)
+        """Invoke model clean() for DB-level validation."""
+        instance = GeoFeedback(**attrs)
+        if self.instance:
+            for attr, value in attrs.items():
+                setattr(instance, attr, value)
+        
+        instance.clean()
+        return attrs
 
 
 
@@ -136,6 +142,11 @@ class FeedbackSubmissionSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "feedback", "submitted_by", "created_at"]
 
     def validate(self, attrs):
-        # Validation dependent on feedback is done in clean() or in the view.
-        # But we can also check it here if we inject self.context['feedback'] 
-        return super().validate(attrs)
+        """Invoke model clean() for submission-level validation."""
+        instance = FeedbackSubmission(**attrs)
+        # Inject the feedback instance from context (set by ViewSet)
+        if 'feedback' in self.context:
+            instance.feedback = self.context['feedback']
+            
+        instance.clean()
+        return attrs
