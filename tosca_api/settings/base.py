@@ -66,7 +66,7 @@ INSTALLED_APPS = [
     "tosca_api.apps.core",
     "tosca_api.apps.tosca_web",
     "tosca_api.apps.geodata_engine",
-    "tosca_api.apps.console",
+    # "tosca_api.apps.console",
 ]
 
 SITE_ID = 1

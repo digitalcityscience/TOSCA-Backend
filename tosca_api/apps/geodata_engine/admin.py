@@ -3,14 +3,12 @@ from django import forms
 from django.utils.html import format_html
 from django.contrib import messages
 from django.contrib.admin import SimpleListFilter
+from .engine_factory import EngineClientFactory
 from .models import GeodataEngine, Workspace, Store, Layer
 from .middleware import get_active_engine
-from .actions import get_actions_for_model, sync_with_active_engine, test_active_engine_connection
-from .plugins import plugin_registry
-import json
 
 
-# Admin Forms with Plugin Support
+# Admin Forms
 class GeodataEngineForm(forms.ModelForm):
     class Meta:
         model = GeodataEngine
@@ -22,12 +20,6 @@ class GeodataEngineForm(forms.ModelForm):
             'api_key': forms.PasswordInput(render_value=True),
         }
     
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Set engine type choices from plugin registry
-        self.fields['engine_type'].choices = plugin_registry.get_engine_choices()
-
-
 class ActiveEngineFilter(SimpleListFilter):
     """Filter to show only resources for active engine"""
     title = 'geodata engine'
@@ -51,7 +43,7 @@ class GeodataEngineAdmin(admin.ModelAdmin):
     list_filter = ['engine_type', 'is_active', 'is_default', 'created_at']
     search_fields = ['name', 'description', 'base_url']
     readonly_fields = ['id', 'geoserver_url', 'connection_status', 'created_at', 'updated_at']
-    actions = [sync_with_active_engine, test_active_engine_connection, 'check_all_connections']
+    actions = ['check_all_connections']
     
     fieldsets = (
         ('Basic Information', {
@@ -72,14 +64,15 @@ class GeodataEngineAdmin(admin.ModelAdmin):
     
     def connection_status(self, obj):
         """Show connection status with real-time check"""
-        plugin = plugin_registry.get_plugin(obj.engine_type or 'geoserver')
-        if plugin:
-            result = plugin.validate_connection(obj)
-            if result['valid']:
-                return format_html('<span style="color: green; font-weight: bold;">✅ Online</span>')
-            else:
-                return format_html('<span style="color: red; font-weight: bold;">❌ Offline</span><br/><small style="color: #666;">{}</small>', result['message'][:50])
-        return format_html('<span style="color: orange;">❓ Unknown</span>')
+        try:
+            client = EngineClientFactory.create_client(obj)
+            _ = client.get_workspaces()
+            return format_html('<span style="color: green; font-weight: bold;">✅ Online</span>')
+        except Exception as e:
+            return format_html(
+                '<span style="color: red; font-weight: bold;">❌ Offline</span><br/><small style="color: #666;">{}</small>',
+                str(e)[:50],
+            )
     connection_status.short_description = 'Connection Status'
     
     @admin.action(description="🔍 Check connection status of all engines")
@@ -90,14 +83,13 @@ class GeodataEngineAdmin(admin.ModelAdmin):
         offline_count = 0
         
         for engine in queryset:
-            plugin = plugin_registry.get_plugin(engine.engine_type or 'geoserver')
-            if plugin:
-                result = plugin.validate_connection(engine)
-                checked_count += 1
-                if result['valid']:
-                    online_count += 1
-                else:
-                    offline_count += 1
+            checked_count += 1
+            try:
+                client = EngineClientFactory.create_client(engine)
+                _ = client.get_workspaces()
+                online_count += 1
+            except Exception:
+                offline_count += 1
         
         messages.info(request, f"📊 Connection Check Results: {checked_count} engines checked, {online_count} online, {offline_count} offline")
     
@@ -110,19 +102,6 @@ class GeodataEngineAdmin(admin.ModelAdmin):
         """Hide created_by field from form"""
         return ['created_by']
     
-    def get_actions(self, request):
-        """Dynamic actions based on plugins"""
-        actions = super().get_actions(request)
-        
-        # Add plugin-specific actions
-        for plugin in plugin_registry.get_all_plugins().values():
-            plugin_actions = plugin.get_admin_actions()
-            for action_name, action_func in plugin_actions.items():
-                actions[action_name] = (action_func, action_name, action_func.__doc__ or action_name)
-        
-        return actions
-
-
 # Session-Filtered Workspace Admin
 @admin.register(Workspace)
 class WorkspaceAdmin(admin.ModelAdmin):
@@ -131,7 +110,6 @@ class WorkspaceAdmin(admin.ModelAdmin):
     search_fields = ['name', 'description']
     readonly_fields = ['id', 'created_at', 'updated_at']
     fields = ['geodata_engine', 'name', 'description']  # Explicitly specify fields
-    actions = [sync_with_active_engine]
     
     def get_readonly_fields(self, request, obj=None):
         """Make geodata_engine readonly when editing existing workspace"""
@@ -182,24 +160,85 @@ class WorkspaceAdmin(admin.ModelAdmin):
         for obj in queryset:
             obj.delete()  # Call individual delete for each object
     
-    def get_actions(self, request):
-        """Get actions for workspace model"""
-        actions = super().get_actions(request)
-        dynamic_actions = get_actions_for_model('Workspace', request)
-        for action in dynamic_actions:
-            actions[action.__name__] = (action, action.__name__, action.__doc__ or action.__name__)
-        return actions
+# Store Form with Dynamic Fields
+class StoreForm(forms.ModelForm):
+    class Meta:
+        model = Store
+        fields = '__all__'
+        widgets = {
+            'password': forms.PasswordInput(render_value=True),
+            'description': forms.Textarea(attrs={'rows': 3}),
+        }
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Make fields conditional based on store type
+        if self.instance and self.instance.pk:
+            self._make_fields_conditional()
+    
+    def _make_fields_conditional(self):
+        """Make fields required/optional based on store type"""
+        store_type = self.instance.store_type
+        
+        # PostGIS fields
+        postgis_fields = ['host', 'port', 'database', 'username', 'password', 'schema']
+        # File fields  
+        file_fields = ['file_path', 'charset']
+        
+        if store_type == 'postgis':
+            for field in postgis_fields:
+                if field in self.fields:
+                    self.fields[field].required = True
+            for field in file_fields:
+                if field in self.fields:
+                    self.fields[field].required = False
+        elif store_type in ['file', 'geotiff']:
+            for field in file_fields:
+                if field in self.fields:
+                    self.fields[field].required = True
+            for field in postgis_fields:
+                if field in self.fields:
+                    self.fields[field].required = False
 
 
 # Session-Filtered Store Admin  
 @admin.register(Store)
 class StoreAdmin(admin.ModelAdmin):
-    list_display = ['name', 'workspace', 'geodata_engine', 'host', 'database', 'schema', 'created_at']
-    list_filter = [ActiveEngineFilter, 'workspace', 'host', 'schema', 'created_at']
-    search_fields = ['name', 'description', 'host', 'database']
+    form = StoreForm
+    list_display = ['name', 'store_type', 'workspace', 'geodata_engine', 'connection_info', 'created_at']
+    list_filter = [ActiveEngineFilter, 'store_type', 'workspace', 'created_at']
+    search_fields = ['name', 'description', 'host', 'database', 'file_path']
     readonly_fields = ['id', 'created_at', 'updated_at']
-    fields = ['geodata_engine', 'workspace', 'name', 'host', 'port', 'database', 'username', 'password', 'schema', 'description']  # Explicitly specify fields
-    actions = [sync_with_active_engine]
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('geodata_engine', 'workspace', 'name', 'store_type', 'description')
+        }),
+        ('PostGIS Configuration', {
+            'fields': ('host', 'port', 'database', 'username', 'password', 'schema'),
+            'classes': ('collapse',),
+            'description': 'Required for PostGIS stores'
+        }),
+        ('File-based Configuration', {
+            'fields': ('file_path', 'charset'),
+            'classes': ('collapse',),
+            'description': 'Required for file-based and GeoTIFF stores'
+        }),
+        ('Metadata', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',),
+        }),
+    )
+    
+    
+    def connection_info(self, obj):
+        """Display connection info based on store type"""
+        if obj.store_type == 'postgis':
+            return f"{obj.host}:{obj.port}/{obj.database}"
+        elif obj.store_type in ['file', 'geotiff']:
+            return obj.file_path or "No path set"
+        return "N/A"
+    connection_info.short_description = "Connection Info"
     
     def get_readonly_fields(self, request, obj=None):
         """Make geodata_engine readonly when editing existing store"""
@@ -254,7 +293,6 @@ class LayerAdmin(admin.ModelAdmin):
     search_fields = ['name', 'title', 'description', 'table_name']
     readonly_fields = ['id', 'active_engine_indicator', 'full_table_name', 'published_url', 'created_at', 'updated_at']
     exclude = ['created_by']  # Hide created_by field (Layer doesn't have geodata_engine)
-    actions = [sync_with_active_engine]
     
     # Form fields - exclude geodata_engine (auto-set from active engine)
     fields = ['workspace', 'store', 'name', 'title', 'description', 'table_name', 
@@ -302,10 +340,3 @@ class LayerAdmin(admin.ModelAdmin):
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
     
-    def get_actions(self, request):
-        """Get actions for layer model"""
-        actions = super().get_actions(request)
-        dynamic_actions = get_actions_for_model('Layer', request)
-        for action in dynamic_actions:
-            actions[action.__name__] = (action, action.__name__, action.__doc__ or action.__name__)
-        return actions

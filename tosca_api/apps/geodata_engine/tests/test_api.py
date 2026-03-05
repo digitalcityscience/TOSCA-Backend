@@ -11,22 +11,11 @@ import os
 from tosca_api.apps.geodata_engine.models import GeodataEngine, Workspace, Store, Layer
 
 
-@patch('tosca_api.apps.geodata_engine.models.Workspace.create_in_geoserver')
-@patch('tosca_api.apps.geodata_engine.models.Store.create_in_geoserver')
-@patch('tosca_api.apps.geodata_engine.models.Layer.create_in_geoserver')
 class GeodataEngineAPITestCase(TestCase):
     """Test API endpoints for geodata engine management"""
     
-    def setUp(self, mock_layer_create=None, mock_store_create=None, mock_workspace_create=None):
+    def setUp(self):
         """Set up test data"""
-        # Mock GeoServer calls during object creation
-        if mock_workspace_create:
-            mock_workspace_create.return_value = {'success': True, 'created': True}
-        if mock_store_create:
-            mock_store_create.return_value = {'success': True, 'created': True}
-        if mock_layer_create:
-            mock_layer_create.return_value = {'success': True, 'created': True}
-            
         self.client = APIClient()
         
         # Create test user
@@ -85,7 +74,7 @@ class GeodataEngineAPITestCase(TestCase):
             created_by=self.user
         )
     
-    def test_engines_list_api(self, mock_layer_create, mock_store_create, mock_workspace_create):
+    def test_engines_list_api(self):
         """Test GET /api/geodata/engines/"""
         url = '/api/geodata/engines/'
         response = self.client.get(url)
@@ -104,7 +93,7 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertEqual(engine_data['geoserver_url'], f"http://{os.getenv('GEOSERVER_HOST')}:{os.getenv('GEOSERVER_PORT')}/geoserver")
         self.assertTrue(engine_data['is_active'])
     
-    def test_engines_detail_api(self, mock_layer_create, mock_store_create, mock_workspace_create):
+    def test_engines_detail_api(self):
         """Test GET /api/geodata/engines/{id}/"""
         url = f'/api/geodata/engines/{self.engine.id}/'
         response = self.client.get(url)
@@ -116,7 +105,7 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertEqual(data['geoserver_url'], f"http://{os.getenv('GEOSERVER_HOST')}:{os.getenv('GEOSERVER_PORT')}/geoserver")
         self.assertTrue(data['is_active'])
     
-    def test_workspaces_list_api(self, mock_layer_create, mock_store_create, mock_workspace_create):
+    def test_workspaces_list_api(self):
         """Test GET /api/geodata/workspaces/"""
         url = '/api/geodata/workspaces/'
         response = self.client.get(url)
@@ -130,7 +119,7 @@ class GeodataEngineAPITestCase(TestCase):
         workspace_data = data['results'][0]
         self.assertEqual(workspace_data['name'], 'test_workspace')
     
-    def test_stores_list_api(self, mock_layer_create, mock_store_create, mock_workspace_create):
+    def test_stores_list_api(self):
         """Test GET /api/geodata/stores/"""
         url = '/api/geodata/stores/'
         response = self.client.get(url)
@@ -145,7 +134,7 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertEqual(store_data['name'], 'test_store')
         self.assertEqual(store_data['host'], os.getenv('PG_HOST'))
     
-    def test_layers_list_api(self, mock_layer_create, mock_store_create, mock_workspace_create):
+    def test_layers_list_api(self):
         """Test GET /api/geodata/layers/"""
         url = '/api/geodata/layers/'
         response = self.client.get(url)
@@ -161,7 +150,7 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertEqual(layer_data['geometry_type'], 'Point')
     
     @patch('tosca_api.apps.geodata_engine.api.views.GeoServerSyncService')
-    def test_engine_sync_endpoint_success(self, mock_sync_service, mock_layer_create, mock_store_create, mock_workspace_create):
+    def test_engine_sync_endpoint_success(self, mock_sync_service):
         """Test POST /api/geodata/engines/{id}/sync/ - successful sync"""
         # Mock successful sync response
         mock_sync_instance = MagicMock()
@@ -188,7 +177,7 @@ class GeodataEngineAPITestCase(TestCase):
         mock_sync_instance.sync_all_resources.assert_called_once_with(self.user)
     
     @patch('tosca_api.apps.geodata_engine.api.views.GeoServerSyncService')
-    def test_engine_sync_endpoint_failure(self, mock_sync_service, mock_layer_create, mock_store_create, mock_workspace_create):
+    def test_engine_sync_endpoint_failure(self, mock_sync_service):
         """Test POST /api/geodata/engines/{id}/sync/ - failed sync"""
         # Mock failed sync response
         mock_sync_instance = MagicMock()
@@ -210,7 +199,7 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertIn('results', data)
     
     @patch('tosca_api.apps.geodata_engine.api.views.GeoServerSyncService')
-    def test_engine_sync_endpoint_exception(self, mock_sync_service, mock_layer_create, mock_store_create, mock_workspace_create):
+    def test_engine_sync_endpoint_exception(self, mock_sync_service):
         """Test POST /api/geodata/engines/{id}/sync/ - exception handling"""
         # Mock service raising exception
         mock_sync_service.side_effect = Exception('Connection error')
@@ -225,7 +214,7 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertIn('message', data)
     
     @patch('tosca_api.apps.geodata_engine.api.views.GeoServerSyncService')
-    def test_engines_sync_all_endpoint(self, mock_sync_service, mock_layer_create, mock_store_create, mock_workspace_create):
+    def test_engines_sync_all_endpoint(self, mock_sync_service):
         """Test POST /api/geodata/engines/sync_all/"""
         # Create additional test engine
         engine2 = GeodataEngine.objects.create(
@@ -261,7 +250,7 @@ class GeodataEngineAPITestCase(TestCase):
         # Verify sync service was called twice (once for each engine)
         self.assertEqual(mock_sync_service.call_count, 2)
     
-    def test_api_pagination(self, mock_layer_create, mock_store_create, mock_workspace_create):
+    def test_api_pagination(self):
         """Test API pagination with multiple engines"""
         # Get initial count
         initial_count = GeodataEngine.objects.count()

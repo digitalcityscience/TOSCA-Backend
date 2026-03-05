@@ -1,7 +1,8 @@
 .PHONY: help which-env build up down restart logs rebuild rmvolumes \
 	django-restart django-logs django-cmd django-shell django-migrate django-makemigrations \
 	django-test django-test-unit django-test-integration test-geoserver test-console \
-	django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean
+	django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean \
+	sync-django-geoengine smoke-test
 
 # -------------------------------------------------
 # ENV selection (DEFAULT = dev) or prod
@@ -85,6 +86,10 @@ help:
 	@echo "  make uv-install      - Install all dependencies including dev"
 	@echo "  make uv-add PKG=<package> - Add a new package (e.g., make uv-add PKG=requests)"
 	@echo "  make uv-lock         - Update uv.lock file"
+	@echo ""
+	@echo "$(COLOR_BLUE)GeoEngine Management:$(COLOR_RESET)"
+	@echo "  make sync-django-geoengine   - Sync GeoEngine with active engine"
+	@echo "  make smoke-test              - Run GeoEngine smoke test (validate setup)"
 	@echo ""
 	@echo "$(COLOR_GREEN)Project Initialization:$(COLOR_RESET)"
 	@echo "  make initialize-project - Build, start all services, run migrations, restart Django"
@@ -402,6 +407,16 @@ clean:
 	docker container prune -f
 	docker image prune -f
 	@echo "$(COLOR_GREEN)✅ Cleanup complete$(COLOR_RESET)"
+
+# Sync GeoEngine with active engine
+sync-django-geoengine: which-env
+	@echo "$(COLOR_BLUE)🔄 Syncing GeoEngine with active engine...$(COLOR_RESET)"
+	docker exec -it tosca-django uv run python manage.py sync_geoengine_dev
+
+# Run GeoEngine smoke test
+smoke-test: which-env
+	@echo "$(COLOR_BLUE)🧪 Running GeoEngine smoke test...$(COLOR_RESET)"
+	docker exec -it tosca-django uv run python manage.py geoengine_smoke_test
 
 # Allow arguments to be passed to certain commands
 %:

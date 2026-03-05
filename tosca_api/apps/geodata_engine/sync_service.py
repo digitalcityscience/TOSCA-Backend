@@ -276,7 +276,7 @@ class GeoServerSyncService:
                             'geometry_column': layer_data.get('geometry_column', 'geom'),
                             'geometry_type': layer_data.get('geometry_type', 'Point'),
                             'srid': layer_data.get('srid', 4326),
-                            'publishing_state': 'published',
+                            'publishing_state': 'PUBLISHED',
                             'created_by': created_by
                         }
                     )

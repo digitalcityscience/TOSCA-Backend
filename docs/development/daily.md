@@ -1,3 +1,18 @@
+docker compose -f docker-compose-dev.yml --env-file .env.dev exec db psql -U postgres -d tosca -c "DROP SCHEMA IF EXISTS api_schema CASCADE;"
+ docker compose -f docker-compose-dev.yml --env-file .env.dev exec db psql -U postgres -d tosca -c "\dt api_schema.*"
+
+ --
+  docker compose -f docker-compose-dev.yml --env-file .env.dev exec db psql -U postgres -d tosca -c "CREATE SCHEMA api_schema AUTHORIZATION tosca_api;"
+
+--
+suan temel seyler calisiyor gibi.
+console icin gerekli olan development a gecebiliirm gibi duruyor.
+
+
+--
+
+drop db update db for migration
+--
 Bunu UI ile değil, domain ile korursun.
 	•	Workspace = logical domain
 	•	Store = connection
