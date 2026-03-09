@@ -1,0 +1,54 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}TOSCA{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'css/base.css' %}">
+  {% block page_css %}{% endblock %}
+</head>
+<body>
+<div class="shell">
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+    <div class="sidebar-title">Applications</div>
+
+    <a href="{% url 'base' %}" class="nav-item">Home</a>
+
+    <div class="nav-sep"></div>
+
+    {% if user.is_authenticated %}
+    <a href="{% url 'geo_console' %}" class="nav-item">Geo Console</a>
+    {% endif %}
+  </aside>
+
+  <!-- ── Topbar ── -->
+  <header class="topbar">
+    <div class="topbar-logo">
+      <div class="logo-square">T</div>
+      TOSCA
+    </div>
+
+    <div class="topbar-right">
+      {% if user.is_authenticated %}
+        <div class="user-pill">
+          <div class="user-avatar">{{ user.username|slice:":2"|upper }}</div>
+          <span class="user-name-text">{{ user.username }}</span>
+        </div>
+        <a href="{% url 'account_logout' %}" class="logout-link">Logout</a>
+      {% else %}
+        <a href="{% url 'account_login' %}" class="btn-login">Login</a>
+      {% endif %}
+    </div>
+  </header>
+
+  <!-- ── Main ── -->
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
+</body>
+</html>

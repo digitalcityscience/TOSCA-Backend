@@ -1,0 +1,415 @@
+/* ============================================================
+   TOSCA — base.css
+   Global design tokens, shell layout, shared components.
+   Every page loads this file. Nothing page-specific here.
+   ============================================================ */
+
+
+/* ── 1. Design Tokens ───────────────────────────────────────
+   All colors, sizes, and spacing in one place.
+   Change a value here → it updates everywhere.
+   ---------------------------------------------------------- */
+:root {
+  /* Background layers — darkest to lightest */
+  --bg:          #0d0d0d;   /* page background */
+  --surface:     #141414;   /* sidebar, topbar, cards */
+  --surface-2:   #1c1c1c;   /* hover states, inputs */
+
+  /* Borders */
+  --border:      #262626;   /* default borders */
+  --border-2:    #333333;   /* stronger borders, focused */
+
+  /* Text */
+  --text:        #e8e8e8;   /* primary text */
+  --text-muted:  #666666;   /* secondary text, labels */
+  --text-dim:    #3a3a3a;   /* section labels, disabled */
+
+  /* Accent — blue, used for interactive + active states */
+  --accent:      #4f86f7;
+  --accent-dim:  rgba(79, 134, 247, 0.10);
+
+  /* Status colors */
+  --green:       #3ecf8e;   /* success, connected, synced */
+  --green-dim:   rgba(62, 207, 142, 0.10);
+
+  --orange:      #f5a623;   /* warning, drift, pending */
+  --orange-dim:  rgba(245, 166, 35, 0.10);
+
+  --red:         #e54d4d;   /* error, failed, offline */
+  --red-dim:     rgba(229, 77, 77, 0.10);
+
+  /* Border radius */
+  --r:           6px;       /* buttons, nav items, badges */
+  --r-lg:        10px;      /* cards, panels */
+
+  /* Layout dimensions */
+  --sidebar-w:   200px;
+  --topbar-h:    48px;
+
+  /* Typography */
+  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+
+/* ── 2. Reset ───────────────────────────────────────────────
+   Remove browser defaults so we start from zero.
+   ---------------------------------------------------------- */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+
+/* ── 3. Shell — Page Grid ───────────────────────────────────
+   Divides the screen into 3 fixed regions:
+   sidebar | topbar
+   sidebar | main
+   ---------------------------------------------------------- */
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-rows: var(--topbar-h) 1fr;
+  grid-template-areas:
+    "sidebar topbar"
+    "sidebar main";
+  height: 100vh;
+}
+
+
+/* ── 4. Sidebar ─────────────────────────────────────────────
+   Left vertical strip. Fixed width, full height.
+   ---------------------------------------------------------- */
+.sidebar {
+  grid-area: sidebar;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 12px 8px;
+}
+
+/* "APPLICATIONS" label above nav links */
+.sidebar-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 4px 8px 10px;
+}
+
+/* Each navigation link in the sidebar */
+.nav-item {
+  display: flex;
+  align-items: center;
+  padding: 7px 10px;
+  border-radius: var(--r);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 450;
+  cursor: pointer;
+  transition: background 100ms, color 100ms;
+}
+
+.nav-item:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.nav-item.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Thin horizontal line between nav groups */
+.nav-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 0;
+}
+
+/* Bottom of sidebar — user info + logout */
+.sidebar-footer {
+  margin-top: auto;          /* pushes footer to the bottom */
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Circle with user initials */
+.avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.u-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.u-role {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.logout-link {
+  font-size: 15px;
+  color: var(--text-dim);
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 100ms;
+  margin-left: auto;
+}
+
+.logout-link:hover {
+  color: var(--text-muted);
+}
+
+
+/* ── 5. Topbar ──────────────────────────────────────────────
+   Top horizontal strip. Logo left, auth right.
+   ---------------------------------------------------------- */
+.topbar {
+  grid-area: topbar;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+}
+
+/* TOSCA logo mark + wordmark */
+.topbar-logo {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Blue square with "T" */
+.logo-square {
+  width: 22px;
+  height: 22px;
+  background: var(--accent);
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Login button — shown when user is not authenticated */
+.btn-login {
+  padding: 5px 14px;
+  border-radius: var(--r);
+  border: 1px solid var(--border-2);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.btn-login:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* User pill — shown when user is authenticated */
+.user-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 4px 5px;
+  border-radius: 20px;
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color 120ms;
+}
+
+.user-pill:hover {
+  border-color: #444;
+}
+
+/* Small circle with user initials inside user-pill */
+.user-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.user-name-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+
+/* ── 6. Main Content Area ───────────────────────────────────
+   Everything the user reads and interacts with.
+   Scrollable. Page templates fill this area.
+   ---------------------------------------------------------- */
+.main {
+  grid-area: main;
+  overflow-y: auto;
+  padding: 32px 36px;
+}
+
+/* Custom scrollbar — subtle, matches dark theme */
+.main::-webkit-scrollbar {
+  width: 4px;
+}
+
+.main::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.main::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border-radius: 2px;
+}
+
+
+/* ── 7. Shared Page Components ──────────────────────────────
+   Reusable pieces used on multiple pages.
+   Not specific to any one page.
+   ---------------------------------------------------------- */
+
+/* Page heading — top of every page */
+.page-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+/* Subtitle under page title */
+.page-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+/* Section heading — e.g. "APPLICATIONS", "OPERATIONS" */
+.section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+/* Thin horizontal separator line */
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 24px 0;
+}
+
+/* Status and type badges — used on cards, tables, everywhere */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.badge-green {
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.badge-orange {
+  background: var(--orange-dim);
+  color: var(--orange);
+}
+
+.badge-red {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
+.badge-blue {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.badge-neutral {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+/* Monospace text — for URLs, IDs, API keys, EPSG codes */
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}

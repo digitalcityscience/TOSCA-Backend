@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TOSCA</title>
+  <style>
+    :root {
+      --bg:        #0d0d0d;
+      --surface:   #141414;
+      --surface-2: #1c1c1c;
+      --border:    #262626;
+      --border-2:  #333;
+      --text:      #e8e8e8;
+      --text-muted:#666;
+      --text-dim:  #3a3a3a;
+      --accent:    #4f86f7;
+      --accent-dim:rgba(79,134,247,.10);
+      --r:         6px;
+      --r-lg:      10px;
+      --sidebar-w: 200px;
+      --topbar-h:  48px;
+      --font: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: var(--font);
+      font-size: 13px;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    button { font-family: inherit; cursor: pointer; border: none; background: none; }
+
+    /* ── Shell ── */
+    .shell {
+      display: grid;
+      grid-template-columns: var(--sidebar-w) 1fr;
+      grid-template-rows: var(--topbar-h) 1fr;
+      grid-template-areas:
+        "sidebar topbar"
+        "sidebar main";
+      height: 100vh;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      grid-area: sidebar;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 12px 8px;
+    }
+
+    .sidebar-title {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .7px;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      padding: 4px 8px 10px;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      padding: 7px 10px;
+      border-radius: var(--r);
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 450;
+      cursor: pointer;
+      transition: background 100ms, color 100ms;
+      gap: 8px;
+    }
+    .nav-item:hover  { background: var(--surface-2); color: var(--text); }
+    .nav-item.active { background: var(--accent-dim); color: var(--accent); }
+
+    .nav-sep { height: 1px; background: var(--border); margin: 8px 0; }
+
+    /* ── Topbar ── */
+    .topbar {
+      grid-area: topbar;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+    }
+
+    .topbar-logo {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: -.3px;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .logo-square {
+      width: 22px; height: 22px;
+      background: var(--accent);
+      border-radius: 5px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: #fff;
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Login button — kullanıcı giriş yapmamış */
+    .btn-login {
+      padding: 5px 14px;
+      border-radius: var(--r);
+      border: 1px solid var(--border-2);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 120ms, color 120ms;
+    }
+    .btn-login:hover { background: var(--surface-2); color: var(--text); }
+
+    /* User pill — kullanıcı giriş yapmış */
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 4px 10px 4px 5px;
+      border-radius: 20px;
+      border: 1px solid var(--border-2);
+      background: var(--surface-2);
+      cursor: pointer;
+      transition: border-color 120ms;
+    }
+    .user-pill:hover { border-color: #444; }
+
+    .user-avatar {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      background: var(--accent-dim);
+      border: 1px solid var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 700; color: var(--accent);
+    }
+
+    .user-name-text {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text);
+    }
+
+    .logout-link {
+      font-size: 12px;
+      color: var(--text-dim);
+      padding: 5px 8px;
+      border-radius: var(--r);
+      transition: color 100ms;
+    }
+    .logout-link:hover { color: var(--text-muted); }
+
+    /* ── Main ── */
+    .main {
+      grid-area: main;
+      overflow-y: auto;
+      padding: 32px 36px;
+    }
+    .main::-webkit-scrollbar { width: 4px; }
+    .main::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 2px; }
+
+    /* ── Shared utilities ── */
+    .page-title {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -.4px;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+    .page-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .divider { height: 1px; background: var(--border); margin: 24px 0; }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 7px; border-radius: 20px;
+      font-size: 11px; font-weight: 500;
+    }
+    .badge-green   { background: rgba(62,207,142,.10); color: #3ecf8e; }
+    .badge-neutral { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+    <div class="sidebar-title">Applications</div>
+
+    <a href="/" class="nav-item">Home</a>
+
+    <div class="nav-sep"></div>
+
+    <a href="/console/" class="nav-item">Geo Console</a>
+    <a href="/participation/" class="nav-item">Participation</a>
+    <a href="/api/" class="nav-item">Geo Engine API</a>
+  </aside>
+
+  <!-- ── Topbar ── -->
+  <header class="topbar">
+    <div class="topbar-logo">
+      <div class="logo-square">T</div>
+      TOSCA
+    </div>
+
+    <div class="topbar-right">
+      <!--
+        Django'da bu alan iki farklı şekilde render edilir:
+        {% if user.is_authenticated %}  → user-pill gösterilir
+        {% else %}                      → btn-login gösterilir
+
+        Şu an ikisi de gösteriliyor — hangisinin ne olduğunu anlamak için
+      -->
+
+      <!-- Giriş yapılmamış hali -->
+      <a href="/login/" class="btn-login">Login</a>
+
+      <!-- Giriş yapılmış hali — Django'da sadece bu kalır -->
+      <!--
+      <div class="user-pill">
+        <div class="user-avatar">AD</div>
+        <span class="user-name-text">admin</span>
+      </div>
+      <a href="/logout/" class="logout-link">Logout</a>
+      -->
+    </div>
+  </header>
+
+  <!-- ── Main ── -->
+  <main class="main">
+    <!-- Sayfa içeriği buraya gelir -->
+  </main>
+
+</div>
+</body>
+</html>

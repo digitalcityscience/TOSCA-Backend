@@ -66,7 +66,7 @@ INSTALLED_APPS = [
     "tosca_api.apps.core",
     "tosca_api.apps.tosca_web",
     "tosca_api.apps.geodata_engine",
-    # "tosca_api.apps.console",
+    "tosca_api.apps.geo_console",
 ]
 
 SITE_ID = 1
@@ -139,6 +139,7 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
+STATICFILES_DIRS = [ROOT_DIR / "static"]
 STATIC_URL = "static/"
 STATIC_ROOT = ROOT_DIR / "staticfiles"
 MEDIA_URL = "media/"

@@ -17,7 +17,6 @@ Yani:
 - **Ama**, senin `GeoDataEngine` soyutlamana uygun şekilde **sadece ihtiyacın olan methodları** wrap et.
 
 ---
-
 ### 🛠️ Örnek: Minimal & Güvenli Kullanım
 
 ```python

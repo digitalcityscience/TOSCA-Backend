@@ -28,7 +28,13 @@ class GeodataEngineSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'engine_url', 'geoserver_url']
-
+    
+    def update(self, instance, validated_data):
+        password = validated_data.pop('admin_password', None)
+        # Only update the password if it's provided
+        if password: 
+            instance.admin_password = password
+        return super().update(instance, validated_data)
 
 class WorkspaceSerializer(serializers.ModelSerializer):
     """Serializer for Workspace model."""

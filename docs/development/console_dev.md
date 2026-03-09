@@ -1,3 +1,33 @@
+myproject/
+
+├── geoconsole/                 # Yeni UI app — model yok
+│   ├── __init__.py
+│   ├── urls.py
+│   ├── views.py             # List/Detail/Sync/Publish view'ları
+│   ├── forms.py             # SearchForm, FilterForm (ModelForm değil)
+│   ├── exceptions.py        # APIError, APITimeoutError
+│   │
+│   ├── services/
+│   │   ├── __init__.py
+│   │   └── api_client.py    # GeoAPIClient — requests buradan çıkar
+│   │
+│   └── templates/
+│       └── console/
+│           ├── base.html
+│           ├── engine_list.html
+│           ├── workspace_list.html
+│           ├── layer_list.html
+│           ├── layer_detail.html
+│           └── publish_confirm.html
+│
+├── myproject/
+│   ├── settings.py
+│   ├── urls.py              # include("console.urls") eklenecek
+│   └── wsgi.py
+│
+└── manage.py
+
+----
 tamam. bunu çok ciddiyetle ve titizlikle ele alıyorum.
 Aşağıda sana VS Code Agent Mode (Claude) için adım adım, branch-bazlı, milestone’lı bir PROMPT SETİ veriyorum.
 
