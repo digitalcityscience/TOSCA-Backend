@@ -20,5 +20,11 @@ else
   echo "➡ Installing PROD dependencies"
   uv sync --frozen
 fi
-echo "🚀 Starting application..."
+echo "� Running migrations..."
+uv run python manage.py migrate --noinput
+
+echo "🔧 Setting up default GeoServer engine..."
+uv run python manage.py setup_default_engine
+
+echo "�🚀 Starting application..."
 exec "$@"

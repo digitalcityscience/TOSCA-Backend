@@ -5,7 +5,6 @@ from django.contrib import messages
 from django.contrib.admin import SimpleListFilter
 from .engine_factory import EngineClientFactory
 from .models import GeodataEngine, Workspace, Store, Layer
-from .middleware import get_active_engine
 
 
 # Admin Forms
@@ -118,37 +117,20 @@ class WorkspaceAdmin(admin.ModelAdmin):
             readonly.append('geodata_engine')
         return readonly    
     def get_queryset(self, request):
-        """Filter by active engine from session"""
-        qs = super().get_queryset(request)
-        active_engine = get_active_engine(request)
-        if active_engine:
-            return qs.filter(geodata_engine=active_engine)
-        return qs
-    
+        """Show all workspaces for all engines — no session filter."""
+        return super().get_queryset(request)
+
     def get_form(self, request, obj=None, **kwargs):
-        """Configure geodata_engine field: selectable when adding, readonly when editing"""
         form = super().get_form(request, obj, **kwargs)
-        
-        # Filter geodata_engine choices to active engines only
         if 'geodata_engine' in form.base_fields:
-            form.base_fields['geodata_engine'].queryset = GeodataEngine.objects.filter(is_active=True).order_by('name')
-            
-            if not obj:  # Adding new workspace
-                active_engine = get_active_engine(request)
-                if active_engine:
-                    form.base_fields['geodata_engine'].initial = active_engine
-                    # Keep it visible and selectable for new objects
-        # For editing: geodata_engine will be readonly (handled by get_readonly_fields)
-        
+            form.base_fields['geodata_engine'].queryset = (
+                GeodataEngine.objects.filter(is_active=True).order_by('name')
+            )
         return form
-    
+
     def save_model(self, request, obj, form, change):
         if not change:
             obj.created_by = request.user
-            # Always set geodata_engine to active engine
-            active_engine = get_active_engine(request)
-            if active_engine:
-                obj.geodata_engine = active_engine
         super().save_model(request, obj, form, change)
     
     def delete_model(self, request, obj):
@@ -247,41 +229,25 @@ class StoreAdmin(admin.ModelAdmin):
             readonly.append('geodata_engine')
         return readonly    
     def get_queryset(self, request):
-        """Filter by active engine from session"""
-        qs = super().get_queryset(request)
-        active_engine = get_active_engine(request)
-        if active_engine:
-            return qs.filter(geodata_engine=active_engine)
-        return qs
-    
+        """Show all stores for all engines — no session filter."""
+        return super().get_queryset(request)
+
     def get_form(self, request, obj=None, **kwargs):
-        """Configure geodata_engine and workspace fields: selectable when adding, readonly when editing"""
+        """Show all active engines and all workspaces — no session filter."""
         form = super().get_form(request, obj, **kwargs)
-        active_engine = get_active_engine(request)
-        
-        if active_engine:
-            # Always filter workspace choices by active engine
-            if 'workspace' in form.base_fields:
-                form.base_fields['workspace'].queryset = Workspace.objects.filter(geodata_engine=active_engine)
-            
-            # Filter geodata_engine choices to active engines only  
-            if 'geodata_engine' in form.base_fields:
-                form.base_fields['geodata_engine'].queryset = GeodataEngine.objects.filter(is_active=True).order_by('name')
-                
-                if not obj:  # Adding new store
-                    form.base_fields['geodata_engine'].initial = active_engine
-                    # Keep it visible and selectable for new objects
-        # For editing: geodata_engine will be readonly (handled by get_readonly_fields)
-        
+        if 'geodata_engine' in form.base_fields:
+            form.base_fields['geodata_engine'].queryset = (
+                GeodataEngine.objects.filter(is_active=True).order_by('name')
+            )
+        if 'workspace' in form.base_fields:
+            form.base_fields['workspace'].queryset = Workspace.objects.select_related(
+                'geodata_engine'
+            ).all().order_by('geodata_engine__name', 'name')
         return form
     
     def save_model(self, request, obj, form, change):
         if not change:
             obj.created_by = request.user
-            # Always set geodata_engine to active engine
-            active_engine = get_active_engine(request)
-            if active_engine:
-                obj.geodata_engine = active_engine
         super().save_model(request, obj, form, change)
 
 
@@ -314,25 +280,20 @@ class LayerAdmin(admin.ModelAdmin):
     active_engine_indicator.admin_order_field = 'workspace__geodata_engine'
     
     def get_queryset(self, request):
-        """Filter by active engine from session"""
-        qs = super().get_queryset(request)
-        active_engine = get_active_engine(request)
-        if active_engine:
-            return qs.filter(workspace__geodata_engine=active_engine)
-        return qs
+        """Show all layers for all engines — no session filter."""
+        return super().get_queryset(request)
     
     def get_form(self, request, obj=None, **kwargs):
-        """Filter workspace and store choices by active engine"""
+        """Show all workspaces and stores for all engines — no session filter."""
         form = super().get_form(request, obj, **kwargs)
-        active_engine = get_active_engine(request)
-        
-        if active_engine:
-            if 'workspace' in form.base_fields:
-                form.base_fields['workspace'].queryset = Workspace.objects.filter(geodata_engine=active_engine)
-            if 'store' in form.base_fields:
-                form.base_fields['store'].queryset = Store.objects.filter(geodata_engine=active_engine)
-            
-            # Note: Layer doesn't have direct geodata_engine field, it's through workspace
+        if 'workspace' in form.base_fields:
+            form.base_fields['workspace'].queryset = Workspace.objects.select_related(
+                'geodata_engine'
+            ).all().order_by('geodata_engine__name', 'name')
+        if 'store' in form.base_fields:
+            form.base_fields['store'].queryset = Store.objects.select_related(
+                'workspace__geodata_engine'
+            ).all().order_by('workspace__geodata_engine__name', 'name')
         return form
     
     def save_model(self, request, obj, form, change):

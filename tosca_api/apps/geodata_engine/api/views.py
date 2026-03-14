@@ -1,3 +1,4 @@
+import logging
 import os
 
 from django.shortcuts import get_object_or_404
@@ -7,8 +8,12 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from ..engine_factory import EngineClientFactory
+from ..exceptions import GeoServerConnectionError
+from ..geoserver.client import GeoServerClient
 from ..models import GeodataEngine, Layer, Store, Workspace
 from .serializers import GeodataEngineSerializer, LayerSerializer, StoreSerializer, WorkspaceSerializer
+
+logger = logging.getLogger(__name__)
 
 
 class GeodataEngineViewSet(viewsets.ModelViewSet):
@@ -19,11 +24,71 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        engine = serializer.instance
+
+        # Immediately sync to populate workspaces/stores/layers from the new engine.
+        sync_result = self._trigger_initial_sync(engine, request.user)
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(
+            {'engine': serializer.data, 'initial_sync': sync_result},
+            status=status.HTTP_201_CREATED,
+            headers=headers,
+        )
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        engine = serializer.instance
+
+        # Re-sync on update (e.g. URL or credentials changed).
+        sync_result = self._trigger_initial_sync(engine, request.user)
+
+        return Response({'engine': serializer.data, 'sync': sync_result})
+
+    def _trigger_initial_sync(self, engine: GeodataEngine, user) -> dict:
+        """
+        Pull workspaces/stores/layers from the engine into Django.
+        Called after create or update.  Never raises — sync failure must NOT
+        prevent the engine record from being persisted.
+        """
+        if engine.engine_type != 'geoserver':
+            return {
+                'success': None,
+                'skipped': True,
+                'reason': f'Auto-sync not supported for engine type: {engine.engine_type}',
+            }
+        try:
+            sync_service = EngineClientFactory.create_sync_service(engine)
+            result = sync_service.sync_all_resources(created_by=user)
+            logger.info("Auto-sync after engine save '%s': %s", engine.name, result)
+            return result
+        except GeoServerConnectionError as e:
+            logger.warning(
+                "Auto-sync skipped for engine '%s' — GeoServer unreachable: %s",
+                engine.name, e,
+            )
+            return {'success': False, 'skipped': False, 'error': f'GeoServer unreachable: {e}'}
+        except Exception as e:
+            logger.error("Auto-sync unexpected error for engine '%s': %s", engine.name, e)
+            return {'success': False, 'skipped': False, 'error': str(e)}
+
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
     def sync(self, request, pk=None):
         engine = get_object_or_404(GeodataEngine, pk=pk)
         sync_service = EngineClientFactory.create_sync_service(engine)
         result = sync_service.sync_all_resources(created_by=request.user)
+        # Attach fresh DB counts so the UI card can update accurately
+        result['db_workspace_count'] = Workspace.objects.filter(geodata_engine=engine).count()
+        from ..models import Layer as LayerModel
+        result['db_layer_count'] = LayerModel.objects.filter(workspace__geodata_engine=engine).count()
         code = status.HTTP_200_OK if result.get('success', False) else status.HTTP_400_BAD_REQUEST
         return Response(result, status=code)
 
@@ -58,16 +123,83 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
         engine = get_object_or_404(GeodataEngine, pk=pk)
         client = EngineClientFactory.create_client(engine)
         try:
-            _ = client.get_workspaces()
-            return Response({'success': True, 'message': 'Connection validated'}, status=status.HTTP_200_OK)
+            result = client.validate_connection()
+            return Response(
+                {'success': True, 'message': result.get('message', 'Connection validated'), 'version': result.get('version')},
+                status=status.HTTP_200_OK,
+            )
         except Exception as e:
             return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'], url_path='test_connection', permission_classes=[permissions.IsAuthenticated])
+    def test_connection(self, request):
+        """
+        POST /api/geoengine/engines/test_connection/
+        Stateless connection test — no saved engine required.
+        Body: { base_url, admin_username, admin_password, engine_type }
+        Used by the create engine form before the engine is saved.
+        """
+        base_url = request.data.get('base_url', '').strip()
+        admin_username = request.data.get('admin_username', '').strip()
+        admin_password = request.data.get('admin_password', '')
+        engine_type = request.data.get('engine_type', 'geoserver')
+
+        if not base_url:
+            return Response(
+                {'success': False, 'error': 'base_url is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if engine_type == 'geoserver':
+            try:
+                client = GeoServerClient(url=base_url, username=admin_username, password=admin_password)
+                result = client.validate_connection()
+                return Response(
+                    {
+                        'success': True,
+                        'message': result.get('message', 'Connection validated'),
+                        'version': result.get('version'),
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            except GeoServerConnectionError as e:
+                return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            except Exception as e:
+                return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            return Response(
+                {'success': False, 'error': f'Connection test not supported for engine type: {engine_type}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
+    def push(self, request, pk=None):
+        """
+        POST /api/geoengine/engines/{id}/push/
+        Push Django metadata intent → GeoServer (workspaces for now).
+        Sync rule: check exists → create if missing → verify → report.
+        Does NOT modify Django state.
+        """
+        engine = get_object_or_404(GeodataEngine, pk=pk)
+        from ..sync_service import GeoServerSyncService
+
+        sync_service = GeoServerSyncService(engine)
+        result = sync_service.push_all_workspaces(created_by=request.user)
+        code = status.HTTP_200_OK if result.get('success', False) else status.HTTP_400_BAD_REQUEST
+        return Response(result, status=code)
 
 
 class WorkspaceViewSet(viewsets.ModelViewSet):
     queryset = Workspace.objects.select_related('geodata_engine')
     serializer_class = WorkspaceSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = Workspace.objects.select_related('geodata_engine')
+        engine_id = self.request.query_params.get('geodata_engine')
+        if engine_id:
+            qs = qs.filter(geodata_engine__id=engine_id)
+        return qs
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -100,14 +232,52 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         workspace = self.get_object()
-        result = {'success': True, 'message': 'Workspace deleted from DB'}
 
+        # Sync rule: delete in engine FIRST, verify, THEN delete Django object.
+        # Never delete Django if engine operation fails.
         if workspace.geodata_engine:
             client = EngineClientFactory.create_client(workspace.geodata_engine)
             result = client.delete_workspace(workspace.name)
 
+            if not result.get('success', False):
+                # Engine delete failed — do NOT touch Django.
+                return Response(
+                    {
+                        'success': False,
+                        'error': result.get('error', result.get('message', 'Engine delete failed')),
+                        'detail': 'Workspace was NOT deleted from Django — engine deletion must succeed first.',
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Verify: confirm workspace is gone from the engine before removing from DB.
+            # If we cannot reach the engine to verify (connection error), we treat this as
+            # "unconfirmed but probably gone" — the delete call already returned success.
+            # We log a warning and proceed rather than leaving a Django orphan.
+            try:
+                workspaces_after = client.get_workspaces()
+                if workspace.name in workspaces_after:
+                    return Response(
+                        {
+                            'success': False,
+                            'error': 'Workspace still exists in GeoServer after delete — aborting Django delete.',
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+            except Exception as verify_exc:
+                # Could not reach engine to verify — delete returned success earlier,
+                # so proceed with Django deletion and log the unverified state.
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    'workspace %s: engine delete succeeded but verify step failed (%s) — '
+                    'proceeding with Django deletion.',
+                    workspace.name, verify_exc,
+                )
+
+        # Engine delete confirmed (or no engine attached, or unverifiable after success)
+        # — safe to delete from Django.
         workspace.delete()
-        return Response(result, status=status.HTTP_200_OK)
+        return Response({'success': True, 'message': 'Workspace deleted from engine and Django.'}, status=status.HTTP_200_OK)
 
 
 class StoreViewSet(viewsets.ModelViewSet):
@@ -245,9 +415,23 @@ class LayerViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         layer = self.get_object()
-        _ = self._unpublish_layer(layer)
+
+        # Sync rule: unpublish from engine FIRST, verify, THEN delete Django object.
+        if layer.publishing_state == 'PUBLISHED':
+            result = self._unpublish_layer(layer)
+            if not result.get('success', False) and not result.get('idempotent', False):
+                return Response(
+                    {
+                        'success': False,
+                        'error': result.get('error', result.get('message', 'Engine unpublish failed')),
+                        'detail': 'Layer was NOT deleted from Django — engine unpublish must succeed first.',
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Engine unpublish confirmed (or layer was not published) — safe to delete Django object.
         layer.delete()
-        return Response({'success': True, 'message': 'Layer deleted'}, status=status.HTTP_200_OK)
+        return Response({'success': True, 'message': 'Layer unpublished and deleted.'}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
     def publish(self, request, pk=None):

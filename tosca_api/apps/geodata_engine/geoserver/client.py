@@ -191,10 +191,8 @@ class GeoServerClient:
 
     def get_workspaces(self) -> list:
         """
-        Get list of workspace names from GeoServer
-
-        Returns:
-            List of workspace names
+        Get list of workspace names from GeoServer.
+        Raises GeoServerConnectionError on any network or HTTP failure.
         """
         try:
             workspaces = self._client.get_workspaces()
@@ -206,9 +204,11 @@ class GeoServerClient:
                     workspace_list = [workspace_list]
                 return [ws.get('name') for ws in workspace_list if isinstance(ws, dict) and 'name' in ws]
             return []
+        except GeoServerConnectionError:
+            raise
         except Exception as e:
             logger.error(f"Failed to get workspaces from GeoServer: {e}")
-            return []
+            raise GeoServerConnectionError(f"Failed to get workspaces from GeoServer at {self.url}: {e}")
 
     def post_verify_workspace(self, workspace_name: str, expected_exists: bool = True) -> Dict:
         """
@@ -321,32 +321,106 @@ class GeoServerClient:
 
     def get_datastores(self, workspace: str) -> list:
         """
-        Get list of datastores from GeoServer workspace
+        Get list of datastores from GeoServer workspace with full connection details.
+        Calls individual store detail endpoint for each store so the returned dicts
+        contain real host/port/database/username/schema values suitable for
+        directly populating Django Store model fields.
 
         Args:
             workspace: Workspace name
 
         Returns:
-            List of datastore dictionaries
+            List of normalised datastore dicts:
+              name, host, port, database, username, schema, store_type
         """
         try:
-            stores = self._client.get_datastores(workspace)
-            logger.info(f"GeoServer datastores response for {workspace}: {stores}")
+            stores_resp = self._client.get_datastores(workspace)
+            logger.info(f"GeoServer datastores list for {workspace}: {stores_resp}")
 
-            if stores and 'dataStores' in stores:
-                store_data = stores['dataStores']
-                # Handle empty dataStores payload.
-                if store_data == '' or store_data is None:
-                    return []
+            if not stores_resp or 'dataStores' not in stores_resp:
+                return []
 
-                store_list = store_data.get('dataStore', [])
-                if isinstance(store_list, dict):  # Single store response
-                    store_list = [store_list]
-                return [ds for ds in store_list if isinstance(ds, dict)]
-            return []
+            store_data = stores_resp['dataStores']
+            if store_data == '' or store_data is None:
+                return []
+
+            store_list = store_data.get('dataStore', [])
+            if isinstance(store_list, dict):
+                store_list = [store_list]
+
+            result = []
+            for ds in store_list:
+                if not isinstance(ds, dict):
+                    continue
+                name = ds.get('name', '')
+                if not name:
+                    continue
+                detail = self.get_datastore_detail(workspace, name)
+                result.append(detail)
+            return result
+
+        except GeoServerConnectionError:
+            raise
         except Exception as e:
             logger.error(f"Failed to get datastores from workspace {workspace}: {e}")
-            return []
+            raise GeoServerConnectionError(
+                f"Failed to get datastores for workspace '{workspace}' from GeoServer at {self.url}: {e}"
+            )
+
+    def get_datastore_detail(self, workspace: str, store_name: str) -> dict:
+        """
+        Fetch full connection parameters for a single datastore.
+        GeoServer stores connection params as a list of {"@key": k, "$": v} entries.
+
+        Returns:
+            Normalised dict: name, host, port, database, username, schema, store_type
+        """
+        try:
+            raw = self._client.get_datastore(store_name, workspace=workspace)
+            ds = raw.get('dataStore', {})
+
+            # Parse connectionParameters → flat dict
+            params: dict = {}
+            entries = ds.get('connectionParameters', {}).get('entry', [])
+            if isinstance(entries, dict):
+                entries = [entries]
+            for entry in entries:
+                if isinstance(entry, dict):
+                    key = entry.get('@key', '')
+                    val = entry.get('$', '')
+                    if key:
+                        params[key] = val
+
+            dbtype = params.get('dbtype', '').lower()
+            store_type = 'postgis' if dbtype in ('postgis', 'postgis_jndi', 'postgis ng') else 'file'
+
+            try:
+                port = int(params.get('port', 5432))
+            except (ValueError, TypeError):
+                port = 5432
+
+            return {
+                'name': ds.get('name', store_name),
+                'host': params.get('host', ''),
+                'port': port,
+                'database': params.get('database', ''),
+                'username': params.get('user', ''),
+                'schema': params.get('schema', 'public'),
+                'store_type': store_type,
+            }
+        except Exception as e:
+            logger.warning(
+                f"Could not fetch detail for store {workspace}/{store_name}: {e} — using defaults."
+            )
+            return {
+                'name': store_name,
+                'host': '',
+                'port': 5432,
+                'database': '',
+                'username': '',
+                'schema': 'public',
+                'store_type': 'postgis',
+            }
 
     def create_store(self, workspace: str, store_data: dict) -> Dict:
         """
@@ -653,36 +727,100 @@ class GeoServerClient:
 
     def get_layers(self, workspace: str) -> list:
         """
-        Get list of layers from GeoServer workspace
+        Get all layers for a workspace, grouped by their source datastore.
+
+        Strategy: iterate stores → featuretypes so we know which store each
+        layer belongs to without a separate per-layer REST call.
+        Layer names are stored WITHOUT the 'workspace:' prefix.
 
         Args:
             workspace: Workspace name
 
         Returns:
-            List of layer dictionaries with name info
+            List of layer dicts: {name, store_name}
         """
         try:
-            layers = self._client.get_layers(workspace)
-            logger.info(f"GeoServer layers response for {workspace}: {layers}")
+            # Get store names (list endpoint only — we just need names here)
+            stores_resp = self._client.get_datastores(workspace)
+            logger.info(f"GeoServer stores for layer traversal in {workspace}: {stores_resp}")
 
-            if layers and 'layers' in layers:
-                layer_data = layers['layers']
-                # Handle empty layers payload.
-                if layer_data == '' or layer_data is None:
-                    return []
+            result = []
 
-                layer_list = layer_data.get('layer', [])
-                if isinstance(layer_list, dict):  # Single layer response
-                    layer_list = [layer_list]
-                return [
-                    {'name': layer['name']}
-                    for layer in layer_list
-                    if isinstance(layer, dict) and 'name' in layer
-                ]
-            return []
+            if stores_resp and 'dataStores' in stores_resp:
+                store_data = stores_resp['dataStores']
+                if store_data and store_data != '':
+                    store_list = store_data.get('dataStore', [])
+                    if isinstance(store_list, dict):
+                        store_list = [store_list]
+
+                    for ds in store_list:
+                        if not isinstance(ds, dict):
+                            continue
+                        store_name = ds.get('name', '')
+                        if not store_name:
+                            continue
+                        try:
+                            ft_names = self._client.get_featuretypes(
+                                workspace=workspace, store_name=store_name
+                            )
+                            for ft_name in ft_names:
+                                clean = (
+                                    ft_name.split(':', 1)[1]
+                                    if ':' in ft_name
+                                    else ft_name
+                                )
+                                result.append({'name': clean, 'store_name': store_name})
+                                logger.debug(
+                                    f"Layer discovered: {workspace}/{store_name}/{clean}"
+                                )
+                        except Exception as ft_err:
+                            logger.warning(
+                                f"Could not list featuretypes for store "
+                                f"{workspace}/{store_name}: {ft_err}"
+                            )
+
+            logger.info(
+                f"get_layers({workspace}) found {len(result)} layers across all stores"
+            )
+            return result
+
+        except GeoServerConnectionError:
+            raise
         except Exception as e:
             logger.error(f"Failed to get layers from workspace {workspace}: {e}")
-            return []
+            raise GeoServerConnectionError(
+                f"Failed to get layers for workspace '{workspace}' from GeoServer at {self.url}: {e}"
+            )
+
+    def validate_connection(self) -> Dict:
+        """
+        Verify that GeoServer is reachable and responding correctly.
+        Uses /rest/about/version.json which raises a real exception on failure
+        (unlike get_workspaces which silently returns []).
+
+        Returns:
+            Dict with success=True and version string on success.
+        Raises:
+            GeoServerConnectionError on any network or HTTP error.
+        """
+        try:
+            result = self._client.get_version()
+            # result is {'about': {'resource': [{'@name': 'GeoServer', 'Version': '2.x.x', ...}]}}
+            version = None
+            try:
+                resources = result.get('about', {}).get('resource', [])
+                if isinstance(resources, dict):
+                    resources = [resources]
+                for r in resources:
+                    if r.get('@name') == 'GeoServer':
+                        version = r.get('Version')
+                        break
+            except Exception:
+                pass
+            return {'success': True, 'version': version, 'message': 'Connection validated'}
+        except Exception as e:
+            logger.error(f"GeoServer validate_connection failed for {self.url}: {e}")
+            raise GeoServerConnectionError(f"GeoServer unreachable at {self.url}: {e}")
 
     # Shared helpers
 

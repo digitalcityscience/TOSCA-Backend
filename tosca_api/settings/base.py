@@ -77,7 +77,6 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
-    "tosca_api.apps.geodata_engine.middleware.ActiveEngineMiddleware",  # Active engine session
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "allauth.account.middleware.AccountMiddleware",
@@ -96,7 +95,6 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
-                "tosca_api.apps.geodata_engine.middleware.active_engine_context",  # Active engine context
             ],
         },
     }
@@ -147,10 +145,16 @@ MEDIA_ROOT = ROOT_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# -------------------------------------------------
+# geo_console internal API
+# -------------------------------------------------
+INTERNAL_API_BASE_URL = env("INTERNAL_API_BASE_URL", default="http://localhost:8000/api/geoengine")
+
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "tosca_api.apps.authentication.backends.KeycloakTokenAuthentication",  # JWT token auth
+        "rest_framework.authentication.TokenAuthentication",  # DRF token — used by geo_console internal calls
         "rest_framework.authentication.SessionAuthentication",  # Browser session
     ],
     "DEFAULT_PAGINATION_CLASS": "tosca_api.apps.core.pagination.StandardResultsSetPagination",

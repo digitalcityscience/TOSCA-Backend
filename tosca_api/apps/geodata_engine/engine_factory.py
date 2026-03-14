@@ -25,6 +25,9 @@ class MartinClientPlaceholder:
     def get_workspaces(self):
         return []
 
+    def validate_connection(self):
+        return self._not_implemented()
+
     def create_workspace(self, name: str):
         return self._not_implemented()
 

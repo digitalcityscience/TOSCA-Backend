@@ -39,10 +39,12 @@ class GeodataEngineSerializer(serializers.ModelSerializer):
 class WorkspaceSerializer(serializers.ModelSerializer):
     """Serializer for Workspace model."""
 
+    engine_name = serializers.CharField(source='geodata_engine.name', read_only=True)
+
     class Meta:
         model = Workspace
-        fields = ['id', 'geodata_engine', 'name', 'description', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        fields = ['id', 'geodata_engine', 'engine_name', 'name', 'description', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'engine_name', 'created_at', 'updated_at']
 
 
 class StoreSerializer(serializers.ModelSerializer):

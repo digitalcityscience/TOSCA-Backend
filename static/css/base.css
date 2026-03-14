@@ -112,17 +112,43 @@ button {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 12px 8px;
 }
 
-/* "APPLICATIONS" label above nav links */
-.sidebar-title {
-  font-size: 10px;
+/* Logo area at the top of the sidebar — aligns with topbar height */
+.sidebar-logo {
+  height: var(--topbar-h);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.7px;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  padding: 4px 8px 10px;
+  letter-spacing: -0.2px;
+  flex-shrink: 0;
+  color: var(--text);
+}
+
+/* Blue square mark with "T" */
+.logo-mark {
+  width: 22px;
+  height: 22px;
+  background: var(--accent);
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+/* Nav items wrapper — flex: 1 pushes footer to bottom */
+.sidebar-nav {
+  flex: 1;
+  padding: 8px;
+  overflow-y: auto;
 }
 
 /* Each navigation link in the sidebar */
@@ -153,6 +179,16 @@ button {
   height: 1px;
   background: var(--border);
   margin: 8px 0;
+}
+
+/* Section label inside sidebar — e.g. "GEO CONSOLE", "OPERATIONS" */
+.nav-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 10px 8px 3px;
 }
 
 /* Bottom of sidebar — user info + logout */
@@ -219,29 +255,13 @@ button {
   padding: 0 20px;
 }
 
-/* TOSCA logo mark + wordmark */
-.topbar-logo {
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: -0.3px;
-  color: var(--text);
+/* Left zone of topbar — breadcrumbs, page context, etc. */
+.topbar-left {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-/* Blue square with "T" */
-.logo-square {
-  width: 22px;
-  height: 22px;
-  background: var(--accent);
-  border-radius: 5px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 700;
-  color: #fff;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .topbar-right {
@@ -412,4 +432,184 @@ button {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--text-muted);
+}
+
+
+/* ── 8. Content Layout Helpers ──────────────────────────────
+   Reused across all app pages (Engines, Workspaces, etc.)
+   ---------------------------------------------------------- */
+
+/* Row: page title+sub on left, action button on right */
+.content-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+/* Primary CTA — "Add Engine", "Add Workspace", etc. */
+.btn-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--r);
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 120ms;
+}
+
+.btn-add:hover { opacity: .85; }
+
+.btn-add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+
+/* ── 9. Card Grid ───────────────────────────────────────────
+   Used for Engines, Workspaces, Stores, Layers pages.
+   ---------------------------------------------------------- */
+
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 10px;
+}
+
+/* Individual item card */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  transition: border-color 140ms;
+  cursor: pointer;
+}
+
+.card:hover { border-color: var(--border-2); }
+
+/* Card top row: name + status badge */
+.card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+
+/* URL, host address, short identifier */
+.card-subtitle {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* 2-column stat grid inside a card */
+.card-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 14px;
+  background: var(--surface-2);
+  border-radius: var(--r);
+}
+
+.stat-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+
+.stat-value {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* Row of action buttons at the bottom of a card */
+.card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.card-btn {
+  flex: 1;
+  padding: 7px 12px;
+  border-radius: var(--r);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms, color 120ms, border-color 120ms;
+  text-align: center;
+}
+
+.card-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Primary card action — e.g. "Test Connection", "Sync" */
+.card-btn.primary {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid transparent;
+}
+
+.card-btn.primary:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Secondary card action — e.g. "Settings", "Edit" */
+.card-btn.secondary {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.card-btn.secondary:hover {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--border-2);
+}
+
+
+/* ── 10. Empty State ────────────────────────────────────────
+   Required for all list/grid pages when no items exist.
+   Always include a title, description, and action CTA.
+   ---------------------------------------------------------- */
+
+.empty-state {
+  text-align: center;
+  padding: 80px 20px;
+  border: 1px dashed var(--border-2);
+  border-radius: var(--r-lg);
+}
+
+.empty-state-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.empty-state-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 20px;
 }

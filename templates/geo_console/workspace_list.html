@@ -1,0 +1,121 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Workspaces — Geo Console — TOSCA{% endblock %}
+
+{% block sidebar_subnav %}
+<div class="nav-sep"></div>
+<div class="nav-section-label">Geo Console</div>
+<a href="{% url 'geo_console' %}" class="nav-item">Engines</a>
+<a href="{% url 'workspace_list' %}" class="nav-item active">Workspaces</a>
+{% endblock %}
+
+{# ── Topbar: engine selector ──────────────────────────────────────────── #}
+{% block topbar_left %}
+{% if engines %}
+<form method="post" action="{% url 'set_active_engine' %}" class="engine-selector-form">
+  {% csrf_token %}
+  <input type="hidden" name="next" value="{{ request.path }}">
+  <label class="engine-selector-label" for="engine-select">Engine</label>
+  <select id="engine-select" name="engine_id" class="engine-selector-select"
+          onchange="this.form.submit()">
+    {% for engine in engines %}
+    <option value="{{ engine.id }}"
+            {% if engine.id|stringformat:"s" == active_engine_id %}selected{% endif %}>
+      {{ engine.name }}
+    </option>
+    {% endfor %}
+  </select>
+</form>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+
+<!-- ── Messages ─────────────────────────────────────────────────────── -->
+{% if messages %}
+<div class="messages-wrap">
+  {% for msg in messages %}
+  <div class="message message--{{ msg.tags }}">{{ msg }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- ── Page header ──────────────────────────────────────────────────── -->
+<div class="content-header">
+  <div>
+    <div class="page-title">Workspaces</div>
+    <div class="page-sub">
+      {% if active_engine %}
+        {{ active_engine.name }} — {{ active_engine.base_url }}
+      {% else %}
+        No engine selected
+      {% endif %}
+    </div>
+  </div>
+  <div class="header-actions">
+    <a href="{% url 'workspace_create' %}" class="btn-add">+ Add Workspace</a>
+  </div>
+</div>
+
+{% if not active_engine %}
+<div class="empty-state">
+  <div class="empty-state-title">No engine selected</div>
+  <div class="empty-state-sub">Select an engine from the dropdown above to view its workspaces.</div>
+</div>
+
+{% elif workspaces %}
+<div class="cards-grid">
+  {% for ws in workspaces %}
+  <div class="card">
+    <div class="card-top">
+      <div>
+        <div class="card-name">{{ ws.name }}</div>
+      </div>
+      <div class="card-badge-stack"></div>
+    </div>
+
+    {% if ws.description %}
+    <div class="card-description">{{ ws.description }}</div>
+    {% endif %}
+
+    <div class="card-stats">
+      <div>
+        <div class="stat-label">Engine</div>
+        <div class="stat-value">{{ ws.engine_name }}</div>
+      </div>
+      <div>
+        <div class="stat-label">Created</div>
+        <div class="stat-value">{{ ws.created_at|date:"d M Y" }}</div>
+      </div>
+    </div>
+
+    <div class="card-actions">
+      <form method="post" action="{% url 'workspace_delete' ws.id %}"
+            style="margin:0; display:inline;"
+            onsubmit="return confirm('Delete workspace \'{{ ws.name }}\' permanently?\nThis also removes it from GeoServer.')">
+        {% csrf_token %}
+        <button type="submit" class="card-btn danger">Delete</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+<div class="empty-state">
+  <div class="empty-state-title">No workspaces found</div>
+  <div class="empty-state-sub">
+    Add a workspace or sync
+    <a href="{% url 'engine_detail' active_engine.id %}" class="link">{{ active_engine.name }}</a>
+    to import existing ones.
+  </div>
+  <a href="{% url 'workspace_create' %}" class="btn-add" style="display:inline-flex; margin-top:0.75rem;">+ Add Workspace</a>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block page_css %}
+<link rel="stylesheet" href="{% static 'geo_console/css/console.css' %}">
+{% endblock %}

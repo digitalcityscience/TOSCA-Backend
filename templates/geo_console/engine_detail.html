@@ -1,0 +1,133 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}{{ engine.name }} — Engine — TOSCA{% endblock %}
+
+{% block sidebar_subnav %}
+<div class="nav-sep"></div>
+<div class="nav-section-label">Geo Console</div>
+<a href="{% url 'geo_console' %}" class="nav-item">Engines</a>
+<a href="{% url 'workspace_list' %}" class="nav-item">Workspaces</a>
+{% endblock %}
+
+{% block content %}
+
+<!-- ── Messages ─────────────────────────────────────────────────────── -->
+{% if messages %}
+<div class="messages-wrap">
+  {% for msg in messages %}
+  <div class="message message--{{ msg.tags }}">{{ msg }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- ── Page header ──────────────────────────────────────────────────── -->
+<div class="content-header">
+  <div>
+    <div class="page-title">{{ engine.name }}</div>
+    <div class="page-sub mono">{{ engine.base_url }}</div>
+  </div>
+  <div class="header-actions">
+
+    <button id="btn-sync" class="btn btn--secondary"
+            onclick="syncEngine('{{ engine.id }}')">Sync Now</button>
+    <a href="{% url 'engine_edit' engine.id %}" class="btn btn--secondary">Edit</a>
+    <form method="post" action="{% url 'engine_delete' engine.id %}" style="margin:0;">
+      {% csrf_token %}
+      <button type="submit" class="btn btn--danger"
+              onclick="return confirm('Delete engine \'{{ engine.name }}\' permanently? This cannot be undone.')">Delete</button>
+    </form>
+  </div>
+</div>
+
+<!-- ── Info grid ────────────────────────────────────────────────────── -->
+<div class="detail-grid">
+
+  <!-- Left column: core info -->
+  <div class="detail-section">
+    <div class="section-label">Engine Info</div>
+
+    <div class="detail-row">
+      <span class="detail-key">ID</span>
+      <span class="detail-val mono">{{ engine.id }}</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-key">Type</span>
+      <span class="detail-val">{{ engine.engine_type }}</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-key">Status</span>
+      <span class="detail-val">
+        {% if engine.is_active %}
+          <span class="badge badge--green">Active</span>
+        {% else %}
+          <span class="badge badge--red">Inactive</span>
+        {% endif %}
+      </span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-key">Default</span>
+      <span class="detail-val">
+        {% if engine.is_default %}
+          <span class="badge badge--accent">Yes</span>
+        {% else %}
+          <span class="badge badge--neutral">No</span>
+        {% endif %}
+      </span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-key">Username</span>
+      <span class="detail-val mono">{{ engine.admin_username }}</span>
+    </div>
+    {% if engine.description %}
+    <div class="detail-row">
+      <span class="detail-key">Description</span>
+      <span class="detail-val">{{ engine.description }}</span>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Right column: timestamps -->
+  <div class="detail-section">
+    <div class="section-label">Metadata</div>
+
+    <div class="detail-row">
+      <span class="detail-key">Created</span>
+      <span class="detail-val mono">{{ engine.created_at }}</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-key">Updated</span>
+      <span class="detail-val mono">{{ engine.updated_at }}</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Sync result ───────────────────────────────────────────────────── -->
+<div id="sync-result" class="result-panel" style="display:none; margin-top:1rem;"></div>
+
+<!-- ── Sync info panel ──────────────────────────────────────────────── -->
+<div class="detail-section" style="margin-top: 1.5rem;">
+  <div class="section-label">About these actions</div>
+  <p class="text-muted" style="font-size:12px; margin: 0.5rem 0 0;">
+    <strong>Sync Now</strong> pulls the current state from GeoServer into Django
+    (workspaces, stores, layers). Read-only pull — never deletes data from GeoServer.
+    The sync verifies the connection before starting; if the engine is unreachable the
+    sync will fail with an explicit error.
+  </p>
+</div>
+
+<!-- ── Back link ────────────────────────────────────────────────────── -->
+<div style="margin-top: 2rem;">
+  <a href="{% url 'geo_console' %}" class="link-muted">← Back to Engines</a>
+</div>
+
+{% endblock %}
+
+{% block page_css %}
+<link rel="stylesheet" href="{% static 'geo_console/css/console.css' %}">
+{% endblock %}
+
+{% block page_js %}
+<script src="{% static 'geo_console/js/engine_detail.js' %}"></script>
+{% endblock %}

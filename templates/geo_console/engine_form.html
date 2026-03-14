@@ -1,0 +1,166 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}
+  {% if edit_mode %}Edit Engine{% else %}Add Engine{% endif %} — TOSCA
+{% endblock %}
+
+{% block sidebar_subnav %}
+<div class="nav-sep"></div>
+<div class="nav-section-label">Geo Console</div>
+<a href="{% url 'geo_console' %}" class="nav-item">Engines</a>
+<a href="{% url 'workspace_list' %}" class="nav-item">Workspaces</a>
+{% endblock %}
+
+{% block content %}
+
+<!-- ── Messages ────────────────────────────────────────────────────── -->
+{% if messages %}
+<div class="messages-wrap">
+  {% for msg in messages %}
+  <div class="message message--{{ msg.tags }}">{{ msg }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- ── Page header ─────────────────────────────────────────────────── -->
+<div class="content-header">
+  <div>
+    <div class="page-title">
+      {% if edit_mode %}Edit Engine{% else %}Add Engine{% endif %}
+    </div>
+    <div class="page-sub">
+      {% if edit_mode %}Update connection details and credentials{% else %}Register a new geospatial data engine{% endif %}
+    </div>
+  </div>
+  <div class="header-actions">
+    {% if edit_mode %}
+      <a href="{% url 'engine_detail' engine_id %}" class="btn btn--secondary">Cancel</a>
+    {% else %}
+      <a href="{% url 'geo_console' %}" class="btn btn--secondary">Cancel</a>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── Form ────────────────────────────────────────────────────────── -->
+<form method="post" autocomplete="off" novalidate>
+  {% csrf_token %}
+
+  <!-- General -->
+  <div class="form-section">
+    <div class="section-label">General</div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.name.id_for_label }}">Name <span class="req">*</span></label>
+      <div class="form-field">
+        {{ form.name }}
+        {% if form.name.errors %}<div class="form-error">{{ form.name.errors.0 }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.description.id_for_label }}">Description</label>
+      <div class="form-field">
+        {{ form.description }}
+        {% if form.description.errors %}<div class="form-error">{{ form.description.errors.0 }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.engine_type.id_for_label }}">Engine Type <span class="req">*</span></label>
+      <div class="form-field">
+        {{ form.engine_type }}
+        {% if form.engine_type.errors %}<div class="form-error">{{ form.engine_type.errors.0 }}</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Connection -->
+  <div class="form-section">
+    <div class="section-label">Connection</div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.base_url.id_for_label }}">Base URL <span class="req">*</span></label>
+      <div class="form-field">
+        {{ form.base_url }}
+        {% if form.base_url.errors %}<div class="form-error">{{ form.base_url.errors.0 }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.admin_username.id_for_label }}">Admin Username</label>
+      <div class="form-field">
+        {{ form.admin_username }}
+        {% if form.admin_username.errors %}<div class="form-error">{{ form.admin_username.errors.0 }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.admin_password.id_for_label }}">Admin Password</label>
+      <div class="form-field">
+        {{ form.admin_password }}
+        {% if edit_mode %}
+          <div class="form-hint">Leave blank to keep the existing password.</div>
+        {% endif %}
+        {% if form.admin_password.errors %}<div class="form-error">{{ form.admin_password.errors.0 }}</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Test connection result (create mode only) -->
+  {% if not edit_mode %}
+  <div id="test-result" class="result-panel" style="display:none; margin-bottom:1rem;"></div>
+  {% endif %}
+
+  <!-- Settings -->
+  <div class="form-section">
+    <div class="section-label">Settings</div>
+
+    <div class="form-row form-row--check">
+      <div class="form-field">
+        <label class="check-label">
+          {{ form.is_active }}
+          <span>Active</span>
+        </label>
+        <div class="form-hint">Inactive engines are hidden from the console engine list.</div>
+        {% if form.is_active.errors %}<div class="form-error">{{ form.is_active.errors.0 }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="form-row form-row--check">
+      <div class="form-field">
+        <label class="check-label">
+          {{ form.is_default }}
+          <span>Default engine</span>
+        </label>
+        <div class="form-hint">Only one engine can be the default — enabling this will unset any current default.</div>
+        {% if form.is_default.errors %}<div class="form-error">{{ form.is_default.errors.0 }}</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="form-actions">
+    {% if edit_mode %}
+      <button type="submit" class="btn btn--primary">Save Changes</button>
+      <a href="{% url 'engine_detail' engine_id %}" class="btn btn--secondary">Cancel</a>
+    {% else %}
+      <button type="button" class="btn btn--secondary" id="btn-test-connection"
+              onclick="testConnection()">Test Connection</button>
+      <button type="submit" class="btn btn--primary" id="btn-create" disabled>Create Engine</button>
+      <a href="{% url 'geo_console' %}" class="btn btn--secondary">Cancel</a>
+    {% endif %}
+  </div>
+</form>
+
+{% endblock %}
+
+{% block page_css %}
+<link rel="stylesheet" href="{% static 'geo_console/css/console.css' %}">
+{% endblock %}
+
+{% block page_js %}
+{% if not edit_mode %}
+<script src="{% static 'geo_console/js/engine_form.js' %}"></script>
+{% endif %}
+{% endblock %}

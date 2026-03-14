@@ -1,0 +1,114 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Add Workspace — Geo Console — TOSCA{% endblock %}
+
+{% block sidebar_subnav %}
+<div class="nav-sep"></div>
+<div class="nav-section-label">Geo Console</div>
+<a href="{% url 'geo_console' %}" class="nav-item">Engines</a>
+<a href="{% url 'workspace_list' %}" class="nav-item active">Workspaces</a>
+{% endblock %}
+
+{% block content %}
+
+<!-- ── Messages ────────────────────────────────────────────────────── -->
+{% if messages %}
+<div class="messages-wrap">
+  {% for msg in messages %}
+  <div class="message message--{{ msg.tags }}">{{ msg }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- ── Page header ─────────────────────────────────────────────────── -->
+<div class="content-header">
+  <div>
+    <div class="page-title">Add Workspace</div>
+    <div class="page-sub">Create a new workspace in Django and publish it to the engine</div>
+  </div>
+  <div class="header-actions">
+    <a href="{% url 'workspace_list' %}" class="btn btn--secondary">Cancel</a>
+  </div>
+</div>
+
+<!-- ── Form ────────────────────────────────────────────────────────── -->
+<form method="post" autocomplete="off" novalidate>
+  {% csrf_token %}
+
+  <!-- General -->
+  <div class="form-section">
+    <div class="section-label">Workspace Details</div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.geodata_engine.id_for_label }}">
+        Engine <span class="req">*</span>
+      </label>
+      <div class="form-field">
+        {{ form.geodata_engine }}
+        {% if form.geodata_engine.errors %}
+          <div class="form-error">{{ form.geodata_engine.errors.0 }}</div>
+        {% endif %}
+        <div class="form-hint">
+          The engine this workspace will be created in.
+          {% if not engines %}
+            <span class="form-warn">No active engines found. Add an engine first.</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.name.id_for_label }}">
+        Name <span class="req">*</span>
+      </label>
+      <div class="form-field">
+        {{ form.name }}
+        {% if form.name.errors %}
+          <div class="form-error">{{ form.name.errors.0 }}</div>
+        {% endif %}
+        <div class="form-hint">{{ form.name.help_text }}</div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.description.id_for_label }}">Description</label>
+      <div class="form-field">
+        {{ form.description }}
+        {% if form.description.errors %}
+          <div class="form-error">{{ form.description.errors.0 }}</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Sync note -->
+  <div class="form-section">
+    <div class="section-label">Sync Behaviour</div>
+    <div class="form-hint" style="padding: 0.5rem 0;">
+      On create, TOSCA will:
+      <ol style="margin: 0.5rem 0 0 1.2rem; line-height: 1.8;">
+        <li>Check if the workspace already exists in the engine</li>
+        <li>Create it in the engine if missing</li>
+        <li>Verify the workspace is live in the engine</li>
+        <li>Persist the record in Django</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="form-actions">
+    {% if not engines %}
+      <span class="form-warn">No engines available — workspace cannot be created.</span>
+    {% else %}
+      <button type="submit" class="btn btn--primary">Create Workspace</button>
+    {% endif %}
+    <a href="{% url 'workspace_list' %}" class="btn btn--secondary">Cancel</a>
+  </div>
+
+</form>
+
+{% endblock %}
+{% block page_css %}
+<link rel="stylesheet" href="{% static 'geo_console/css/console.css' %}">
+{% endblock %}

@@ -13,34 +13,42 @@
 
   <!-- ── Sidebar ── -->
   <aside class="sidebar">
-    <div class="sidebar-title">Applications</div>
+    <div class="sidebar-logo">
+      <div class="logo-mark">T</div>
+      TOSCA
+    </div>
 
-    <a href="{% url 'base' %}" class="nav-item">Home</a>
+    <nav class="sidebar-nav">
+      <a href="{% url 'base' %}" class="nav-item">Home</a>
 
-    <div class="nav-sep"></div>
+      {% if user.is_authenticated %}
+      <div class="nav-sep"></div>
+      <a href="{% url 'geo_console' %}" class="nav-item">Geo Console</a>
+      {% endif %}
 
-    {% if user.is_authenticated %}
-    <a href="{% url 'geo_console' %}" class="nav-item">Geo Console</a>
-    {% endif %}
+      {% block sidebar_subnav %}{% endblock %}
+    </nav>
+
   </aside>
 
   <!-- ── Topbar ── -->
   <header class="topbar">
-    <div class="topbar-logo">
-      <div class="logo-square">T</div>
-      TOSCA
+    <div class="topbar-left">
+      {% block topbar_left %}{% endblock %}
     </div>
 
     <div class="topbar-right">
-      {% if user.is_authenticated %}
-        <div class="user-pill">
-          <div class="user-avatar">{{ user.username|slice:":2"|upper }}</div>
-          <span class="user-name-text">{{ user.username }}</span>
-        </div>
-        <a href="{% url 'account_logout' %}" class="logout-link">Logout</a>
-      {% else %}
-        <a href="{% url 'account_login' %}" class="btn-login">Login</a>
-      {% endif %}
+      {% block topbar_right %}
+        {% if user.is_authenticated %}
+          <div class="user-pill">
+            <div class="user-avatar">{{ user.username|slice:":2"|upper }}</div>
+            <span class="user-name-text">{{ user.username }}</span>
+          </div>
+          <a href="{% url 'account_logout' %}" class="logout-link">Logout</a>
+        {% else %}
+          <a href="{% url 'account_login' %}" class="btn-login">Login</a>
+        {% endif %}
+      {% endblock %}
     </div>
   </header>
 
@@ -50,5 +58,6 @@
   </main>
 
 </div>
+{% block page_js %}{% endblock %}
 </body>
 </html>

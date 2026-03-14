@@ -184,9 +184,7 @@ Patterns to enforce:
   - Verify
 
 ### Console UI
-At the end it is going to be same as this html 
-/Users/hsadmin/Desktop/coding/dcs-django-api/docs/development/geodata_console.html
-Please follow the all desigin within this html. First jusf focus Engines and sync
+Please follow /Users/hsadmin/Desktop/coding/dcs-django-api/docs/development/UI-UX_Rules.md. First jusf focus Engines and sync
 
 Each button:
 - Executes sync logic
