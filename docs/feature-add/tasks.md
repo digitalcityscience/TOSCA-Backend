@@ -270,76 +270,326 @@ This fixes new syncs going forward but **does not clean up already-corrupted Dja
 
 ---
 
-## PHASE 3 — Stores ⬜
+## PHASE 3 — Stores ✅
 
 **Branch:** `feature/console-stores`
 **Goal:** Store management bound to PostGIS schemas.
 
 | # | Task | Status |
 |---|------|--------|
-| 3.1 | Add `store_list(request)` view | ⬜ |
-| 3.2 | Add `store_create(request)` POST view | ⬜ |
-| 3.3 | Add `store_delete(request, store_id)` POST view | ⬜ |
-| 3.4 | Add `store_test_connection(request, store_id)` POST view | ⬜ |
-| 3.5 | `StoreForm` — workspace selection, schema from ENV, db params | ⬜ |
-| 3.6 | Validate schema existence in DB before creating store in GeoServer | ⬜ |
-| 3.7 | Templates: `store_list.html`, `store_create.html` | ⬜ |
-| 3.8 | Add `list_stores()`, `create_store()`, `delete_store()`, `test_store()` to `api_client.py` | ⬜ |
-| 3.9 | Wire URLs: `/console/stores/`, `/console/stores/create/`, `/console/stores/<uuid>/delete/` | ⬜ |
+| 3.1 | Add `store_list(request)` view | ✅ |
+| 3.2 | Add `store_create(request)` POST view | ✅ |
+| 3.3 | Add `store_delete(request, store_id)` POST view | ✅ |
+| 3.4 | Add `store_test_connection(request, store_id)` POST view | ✅ |
+| 3.5 | `StoreForm` — workspace selection, schema from ENV, db params | ✅ |
+| 3.6 | Validate schema existence in DB before creating store in GeoServer | ✅ |
+| 3.7 | Templates: `store_list.html`, `store_create.html` | ✅ |
+| 3.8 | Add `list_stores()`, `create_store()`, `delete_store()`, `test_store()` to `api_client.py` | ✅ |
+| 3.9 | Wire URLs: `/console/stores/`, `/console/stores/create/`, `/console/stores/<uuid>/delete/` | ✅ |
+
+**Extra changes made alongside Phase 3:**
+- `StoreSerializer`: added `workspace_name` read-only field for display in templates
+- `StoreViewSet.destroy`: added sync-safe delete (engine first, then Django) — default ModelViewSet destroy was unsafe
+- `StoreViewSet.test_connection`: new `@action(detail=True)` calling `client.get_datastore_detail()`
+- `StoreViewSet.get_queryset`: added `?geodata_engine=` and `?workspace=` query param filtering (same pattern as WorkspaceViewSet)
+- `StoreViewSet.create`: removed incorrect Django-DB schema existence check — that query hit Django's own DB, not the target PostGIS DB; GeoServer surfaces the real error
+- `settings/base.py`: added `GIS_SCHEMA = env("PG_SCHEMA_GIS", default="public")` — used as default in `StoreForm`
+- `geo_console/services/api_client.py`: added `get_store()` in addition to the 4 required methods
+- `geo_console/base.html`: created console-wide base template — all console pages extend this; nav managed in one place
+- `store_create.html`: PostGIS section hidden by JS until `store_type == 'postgis'`; Host+Port inline on one row; `port` field changed to `CharField` (no spinner)
+- Clone store: `?clone_from=<uuid>` query param pre-fills connection fields from source store (password excluded — write-only API field); workspace + name intentionally left blank
+- `docker/postgis/init001.sh`: fixed `gis_schema` permissions — was `USAGE` only, now `ALL` + `DEFAULT PRIVILEGES` for tables/sequences; `tosca_gs` search_path now includes `gis_schema`
+- `docker-compose-dev.yml`: fixed volume mount (`./docker/postgis` not `./docker/postgis/initdb`); added missing `PG_SCHEMA_JDBCCONF` env var
 
 **Milestone check:**
-- Store connects to PostGIS ⬜
-- Schema validated before insert ⬜
-- Workspace-store relationship is stable ⬜
+- Store list filters by active engine (session-stored engine ID passed as `?geodata_engine=`) ✅
+- Store connects to PostGIS ✅
+- Schema validated before insert ✅
+- Workspace-store relationship is stable ✅
 
----
 
-## PHASE 4 — Layers ⬜
+PHASE 4 — Layers ⬜
 
-**Branch:** `feature/console-layers`
-**Goal:** Layer import → PostGIS → GeoServer publish.
+Branch: feature/console-layers
+Goal: PostGIS tables → GeoServer layer publishing (POC).
+Future: File upload → inspection → queue → publish pipeline.
 
-### 4.1 — Upload & Inspect ⬜
+⸻
 
-| # | Task | Status |
-|---|------|--------|
-| 4.1.1 | `layer_upload(request)` view — accept GeoJSON / GeoPackage | ⬜ |
-| 4.1.2 | GDAL inspection: geometry type, CRS, feature count | ⬜ |
-| 4.1.3 | `LayerUploadForm` — file field, target workspace, target store, layer name | ⬜ |
-| 4.1.4 | Show inspection result to user before confirming import | ⬜ |
+4.1 — PostGIS Table → GeoServer Layer Publish ⬜
 
-### 4.2 — Import to PostGIS ⬜
+Scope:
+Publish an existing PostGIS table from a configured GeoServer datastore as a GeoServer layer.
 
-| # | Task | Status |
-|---|------|--------|
-| 4.2.1 | `layer_import(request)` POST view — GDAL → PostGIS ingest | ⬜ |
-| 4.2.2 | Register `Layer` object in Django after successful import | ⬜ |
-| 4.2.3 | Rollback Django object if PostGIS import fails | ⬜ |
+User does not upload data yet.
+User selects a PostGIS table already available in the datastore.
 
-### 4.3 — Publish to Engine ⬜
+⸻
 
-| # | Task | Status |
-|---|------|--------|
-| 4.3.1 | `layer_publish(request, layer_id)` POST view — separate step from import | ⬜ |
-| 4.3.2 | Publish via engine client, verify layer is live | ⬜ |
-| 4.3.3 | Update `Layer.is_published = True` only after verified success | ⬜ |
+Minimum Layer Requirements
 
-### 4.4 — Layer List & Detail ⬜
+A publishable layer must satisfy:
 
-| # | Task | Status |
-|---|------|--------|
-| 4.4.1 | `layer_list(request)` view — filter by workspace/store | ⬜ |
-| 4.4.2 | `layer_detail(request, layer_id)` view — geometry info, CRS, publish status | ⬜ |
-| 4.4.3 | `layer_delete(request, layer_id)` — engine first, verify, then Django | ⬜ |
-| 4.4.4 | Templates: `layer_list.html`, `layer_detail.html`, `layer_upload.html`, `publish_confirm.html` | ⬜ |
+Property	Source
+Table name	PostGIS
+Geometry column	PostGIS
+Geometry type	PostGIS
+Source CRS	PostGIS SRID
+Target CRS	selected by user
+Bounding box	computed
+Workspace	selected
+Layer name	user-defined
+Enabled : default true
+Advertised: default false
 
-**Milestone check:**
-- Layer uploaded and inspected ⬜
-- Layer imported into PostGIS ⬜
-- Layer published to GeoServer ⬜
-- Sync state consistent across Django + PostGIS + GeoServer ⬜
+Notes:
+	•	Geometry column must exist
+	•	Table must contain geometry type supported by GeoServer
+	•	CRS must be valid EPSG code
 
----
+⸻
+
+Tasks
+
+#	Task	Status
+4.1.1	postgis_tables(engine_id, workspace_id) — list publishable tables from datastore	⬜
+4.1.2	Retrieve geometry metadata using PostGIS system views (geometry_columns)	⬜
+4.1.3	Retrieve table bounding box using safe query (ST_Extent)	⬜
+4.1.4	UI: table selection dialog (table → geometry column → CRS preview)	⬜
+4.1.5	LayerCreateForm — workspace, layer name, source CRS, target CRS	⬜
+4.1.6	layer_publish_postgis(request) — create featureType via GeoServer REST	⬜
+4.1.7	Trigger GeoServer bbox recalculation	⬜
+4.1.8	Verify layer exists via GeoServer REST	⬜
+4.1.9	Register Layer object in Django DB	⬜
+4.1.10	Store engine metadata (engine_layer_id, workspace, store)	⬜
+
+
+⸻
+
+Safe PostGIS Metadata Retrieval
+
+Avoid raw SQL injection.
+
+Use parameterized queries.
+
+Example metadata retrieval:
+
+SELECT
+f_table_schema,
+f_table_name,
+f_geometry_column,
+srid,
+type
+FROM geometry_columns
+WHERE f_table_schema = %s
+
+Bounding box:
+
+SELECT
+ST_Extent(geom)
+FROM schema.table
+
+Use Django DB parameter binding, not string interpolation. or geo sql alchemy. before this implemenation ask me and show the pros and cons of this approach.
+
+⸻
+
+4.2 — Layer List & Workspace Filtering ⬜
+
+UI behavior
+
+Layer panel contains:
+
+[✓] Show all layers
+
+When enabled:
+
+show layers from all workspaces
+
+When disabled:
+
+workspace dropdown active
+
+Example UI structure:
+
+Layers
+ ├── Show all layers [✓]
+ ├── Workspace filter ▼
+ │      urban
+ │      forest
+ │      agriculture
+ │      green
+
+
+⸻
+
+Tasks
+
+#	Task	Status
+4.2.1	layer_list(engine_id) — retrieve layers from GeoServer	⬜
+4.2.2	UI checkbox show_all_layers	⬜
+4.2.3	Workspace dropdown filter	⬜
+4.2.4	Accordion view for workspace grouping	⬜
+4.2.5	Sync engine layers with Django DB	⬜
+4.2.6	Display layer metadata (CRS, geometry type, bbox)	⬜
+
+
+⸻
+
+4.3 — Layer Publish Verification ⬜
+
+Publishing is successful only if:
+
+GeoServer REST
+GET /layers/{layer}
+
+returns valid response.
+
+Tasks:
+
+#	Task	Status
+4.3.1	GeoServer REST publish request	⬜
+4.3.2	Verify layer availability	⬜
+4.3.3	Update Django Layer.is_published = True	⬜
+4.3.4	Error handling + rollback	⬜
+
+
+⸻
+
+4.4 — Layer Delete ⬜
+
+Delete flow:
+
+GeoServer delete
+↓
+verify deletion
+↓
+delete Django object
+
+Tasks:
+
+#	Task	Status
+4.4.1	layer_delete(request, layer_id)	⬜
+4.4.2	GeoServer REST delete layer	⬜
+4.4.3	Verify deletion	⬜
+4.4.4	Remove Django object	⬜
+
+
+⸻
+
+4.5 — Future Pipeline: File Upload → Publish ⬜
+
+(Not implemented in POC)
+
+Goal:
+
+file upload
+↓
+inspection
+↓
+PostGIS ingest
+↓
+publish
+
+
+⸻
+
+Upload Inspection
+
+Supported formats:
+
+GeoJSON
+GeoPackage
+Shapefile
+
+Inspection tools:
+
+GDAL
+OGR
+GeoPandas
+
+Inspection outputs:
+
+Property	Description
+geometry type	Point / Line / Polygon
+CRS	EPSG
+feature count	number of records
+bounding box	spatial extent
+
+
+⸻
+
+Upload Workflow
+
+Upload file
+↓
+Inspect metadata
+↓
+Return preview to user
+↓
+User selects workspace
+↓
+User selects layer name
+↓
+User selects target CRS
+↓
+Queue publish job
+
+
+⸻
+
+Queue Pipeline
+
+Recommended queue system:
+
+RQ
+
+Pipeline:
+
+inspect_job
+↓
+ingest_job
+↓
+publish_job
+
+
+⸻
+
+Import to PostGIS
+
+Rules:
+
+workspace has default datastore → use it
+workspace has no datastore → create default datastore
+
+Data ingest:
+
+GDAL → PostGIS
+
+
+⸻
+
+Publish Step
+
+Queue worker:
+
+publish_layer(engine)
+
+Engine-specific adapter:
+
+GeoServerAdapter.publish()
+pygeoapiAdapter.publish()
+MartinAdapter.publish()
+
+
+⸻
+
+Milestone Check
+
+POC completion criteria:
+	•	Publish PostGIS table as GeoServer layer ⬜
+	•	Layer list synchronized with GeoServer ⬜
+	•	Workspace filtering working ⬜
+	•	Django + GeoServer state consistent ⬜
 
 ## PHASE 5 — Styles ⬜
 
@@ -447,10 +697,10 @@ These apply to every phase. Do not skip.
 | 0 | Bootstrap console app | ✅ Done |
 | 1 | Engines + Sync UI | ✅ Done (1.1–1.6 all complete) |
 | 2 | Workspaces | ✅ Done |
-| 3 | Stores | ⬜ Not started |
+| 3 | Stores | ✅ Done |
 | 4 | Layers (import + publish) | ⬜ Not started |
 | 5 | Styles | ⬜ Not started |
 | 6 | Jobs (Django-Q) | ⬜ Not started |
 
-**Next action:** Phase 3 — Stores.
-**Last updated:** 14 March 2026 — Auto-sync on engine create/update implemented; 1.6.8 layer name integrity cleanup complete. Sync architecture fixed: `get_datastores()` now fetches real host/port/database/schema per store via individual detail calls; `get_layers()` now traverses store→featuretypes so every layer carries its `store_name`, eliminating placeholder stores during sync.
+**Next action:** Phase 4 — Layers.
+**Last updated:** 15 March 2026 — Phase 3 post-fixes: clone store feature, schema validation bug removed, `tosca_gs` PostgreSQL permissions corrected (`gis_schema` ALL + DEFAULT PRIVILEGES), docker-compose volume mount fixed.

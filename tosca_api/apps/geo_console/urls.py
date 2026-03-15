@@ -9,6 +9,10 @@ from .views import (
     engine_sync,
     engine_validate,
     set_active_engine,
+    store_create,
+    store_delete,
+    store_list,
+    store_test_connection,
     workspace_create,
     workspace_delete,
     workspace_list,
@@ -38,4 +42,10 @@ urlpatterns = [
     path('workspaces/create/', workspace_create, name='workspace_create'),
     path('workspaces/<uuid:workspace_id>/delete/', workspace_delete, name='workspace_delete'),
     path('workspaces/<uuid:workspace_id>/sync/', workspace_sync, name='workspace_sync'),
+
+    # Phase 3 — Stores
+    path('stores/', store_list, name='store_list'),
+    path('stores/create/', store_create, name='store_create'),
+    path('stores/<uuid:store_id>/delete/', store_delete, name='store_delete'),
+    path('stores/<uuid:store_id>/test/', store_test_connection, name='store_test_connection'),
 ]

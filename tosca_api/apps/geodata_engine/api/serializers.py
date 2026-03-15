@@ -50,12 +50,15 @@ class WorkspaceSerializer(serializers.ModelSerializer):
 class StoreSerializer(serializers.ModelSerializer):
     """Serializer for Store model."""
 
+    workspace_name = serializers.CharField(source='workspace.name', read_only=True)
+
     class Meta:
         model = Store
         fields = [
             'id',
             'geodata_engine',
             'workspace',
+            'workspace_name',
             'name',
             'store_type',
             'description',
@@ -70,7 +73,7 @@ class StoreSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'workspace_name', 'created_at', 'updated_at']
         extra_kwargs = {'password': {'write_only': True}}
 
 

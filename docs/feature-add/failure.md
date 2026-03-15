@@ -1,7 +1,29 @@
-# TOSCA — Failure Log
+## F-006 — Integration testi için `TestCase` kullanıldı — test DB izin hatası
+**Date:** 14 March 2026
+**Discovered:** `make test-console-crud` çalıştırılınca `permission denied for table django_migrations`
 
-Record architectural mistakes, wrong assumptions, and silent bugs discovered during development.
-The goal: never make the same mistake twice.
+**What happened:**
+GeoServer + DRF üzerinden CRUD yapan entegrasyon testi `django.test.TestCase` ile yazıldı.
+`TestCase` her çalışmada `test_tosca` adında yeni bir DB yaratmaya çalışır.
+DB user'ı (`tosca_api`) bu yetkiye sahip değil — `permission denied` hatası.
+
+**Why it was wrong:**
+Bu test tip olarak bir entegrasyon scripti: gerçek GeoServer'a bağlanıyor, servis katmanını test ediyor, kendi yarattığı her şeyi sonda temizliyor.
+DB izolasyonuna ihtiyacı yok. `TestCase` sadece model davranışlarını test eden unit testler için uygundur.
+
+**Fix:**
+`TestCase`'i kaldır, `integration_test.py` ile aynı pattern'ı kullan:
+```python
+import django
+django.setup()
+# APIClient ile çağrılar, sonda cleanup
+```
+Artık `manage.py test` çağrılmıyor — script direkt `uv run python test_console_crud.py` ile koşuyor.
+
+**Rule going forward:**
+Gerçek servislerle (GeoServer, PostGIS) çalışan testler için Django `TestCase` kullanma.
+Düz script yaz: `django.setup()` + `APIClient` yeterli.
+`TestCase` yalnızca mock/unit testlerde, DB transaction isolation gerektiğinde kullan.
 
 ---
 

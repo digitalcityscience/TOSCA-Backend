@@ -737,6 +737,7 @@ dependencies = [
     { name = "pyjwt", extra = ["crypto"] },
     { name = "python-json-logger" },
     { name = "python-keycloak" },
+    { name = "requests" },
     { name = "ruff" },
     { name = "xmltodict" },
 ]
@@ -772,6 +773,7 @@ requires-dist = [
     { name = "pytest-django", marker = "extra == 'dev'", specifier = ">=4.8.0" },
     { name = "python-json-logger", specifier = ">=4.0.0" },
     { name = "python-keycloak", specifier = ">=4.0.0" },
+    { name = "requests", specifier = ">=2.32.0" },
     { name = "ruff", specifier = ">=0.14.7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5.0" },
     { name = "xmltodict", specifier = ">=1.0.2" },

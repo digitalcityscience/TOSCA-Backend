@@ -2,6 +2,25 @@
 
 ---
 
+## 14 March 2026 — Static File Refactor + Console CRUD Test
+
+### Tamamlanan İşler
+
+**1. Template inline CSS/JS → static dosyalara taşındı**
+- `static/geo_console/css/console.css` oluşturuldu — tüm 5 geo_console template'inin inline `<style>` bloklarından derlendi
+- `static/geo_console/js/engine_detail.js` oluşturuldu — `engine_detail.html`'den inline sync fonksiyonları
+- `static/geo_console/js/engine_form.js` oluşturuldu — `engine_form.html`'den inline test connection IIFE
+- Tüm 5 template (`geodata_console.html`, `engine_detail.html`, `engine_form.html`, `workspace_list.html`, `workspace_create.html`) `{% block page_css %}` → `<link>` tag'e dönüştürüldü
+- `{% block page_js %}` inline script → `<script src="...">` referansına dönüştürüldü
+
+**2. Console CRUD entegrasyon testi yazıldı**
+- `tosca_api/apps/geodata_engine/tests/test_console_crud.py` — düz Python script, `manage.py test` yok, test DB yok
+- Engine (`pytest-geoserver`) oluştur → workspace (`pytest-workspace`) oluştur → workspace sil → engine sil
+- Her adımda HTTP status ve `success` alanı kontrol ediliyor, hata varsa renkli `❌` ile çıkıyor
+- `make test-console-crud` ile Docker içinde çalışıyor
+
+---
+
 ## 14 March 2026 — Sync Architecture Fix + Admin Cleanup
 
 ### Tamamlanan İşler

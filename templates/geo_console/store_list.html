@@ -1,7 +1,7 @@
 {% extends 'geo_console/base.html' %}
 {% load static %}
 
-{% block title %}Workspaces — Geo Console — TOSCA{% endblock %}
+{% block title %}Stores — Geo Console — TOSCA{% endblock %}
 
 
 {# ── Topbar: engine selector ──────────────────────────────────────────── #}
@@ -38,7 +38,7 @@
 <!-- ── Page header ──────────────────────────────────────────────────── -->
 <div class="content-header">
   <div>
-    <div class="page-title">Workspaces</div>
+    <div class="page-title">Stores</div>
     <div class="page-sub">
       {% if active_engine %}
         {{ active_engine.name }} — {{ active_engine.base_url }}
@@ -48,46 +48,69 @@
     </div>
   </div>
   <div class="header-actions">
-    <a href="{% url 'workspace_create' %}" class="btn-add">+ Add Workspace</a>
+    <a href="{% url 'store_create' %}" class="btn-add">+ Add Store</a>
   </div>
 </div>
 
 {% if not active_engine %}
 <div class="empty-state">
   <div class="empty-state-title">No engine selected</div>
-  <div class="empty-state-sub">Select an engine from the dropdown above to view its workspaces.</div>
+  <div class="empty-state-sub">Select an engine from the dropdown above to view its stores.</div>
 </div>
 
-{% elif workspaces %}
+{% elif stores %}
 <div class="cards-grid">
-  {% for ws in workspaces %}
+  {% for st in stores %}
   <div class="card">
     <div class="card-top">
       <div>
-        <div class="card-name">{{ ws.name }}</div>
+        <div class="card-name">{{ st.name }}</div>
       </div>
-      <div class="card-badge-stack"></div>
+      <div class="card-badge-stack">
+        {% if st.store_type == 'postgis' %}
+        <span class="badge badge--blue">PostGIS</span>
+        {% elif st.store_type == 'file' %}
+        <span class="badge badge--orange">File</span>
+        {% elif st.store_type == 'geotiff' %}
+        <span class="badge badge--purple">GeoTIFF</span>
+        {% else %}
+        <span class="badge">{{ st.store_type }}</span>
+        {% endif %}
+      </div>
     </div>
 
-    {% if ws.description %}
-    <div class="card-description">{{ ws.description }}</div>
+    {% if st.description %}
+    <div class="card-description">{{ st.description }}</div>
     {% endif %}
 
     <div class="card-stats">
       <div>
-        <div class="stat-label">Engine</div>
-        <div class="stat-value">{{ ws.engine_name }}</div>
+        <div class="stat-label">Workspace</div>
+        <div class="stat-value">{{ st.workspace_name|default:"—" }}</div>
+      </div>
+      {% if st.store_type == 'postgis' %}
+      <div>
+        <div class="stat-label">Schema</div>
+        <div class="stat-value">{{ st.schema|default:"public" }}</div>
       </div>
       <div>
-        <div class="stat-label">Created</div>
-        <div class="stat-value">{{ ws.created_at|date:"d M Y" }}</div>
+        <div class="stat-label">Database</div>
+        <div class="stat-value">{{ st.database|default:"—" }}</div>
       </div>
+      {% endif %}
     </div>
 
     <div class="card-actions">
-      <form method="post" action="{% url 'workspace_delete' ws.id %}"
+      <!-- Clone store -->
+      <form method="get" action="{% url 'store_create' %}" style="margin:0; display:inline;">
+        <input type="hidden" name="clone_from" value="{{ st.id }}">
+        <button type="submit" class="card-btn secondary">Clone</button>
+      </form>
+
+      <!-- Delete store -->
+      <form method="post" action="{% url 'store_delete' st.id %}"
             style="margin:0; display:inline;"
-            onsubmit="return confirm('Delete workspace \'{{ ws.name }}\' permanently?\nThis also removes it from GeoServer.')">
+            onsubmit="return confirm('Delete store \'{{ st.name }}\' permanently?\nThis also removes it from GeoServer.')">
         {% csrf_token %}
         <button type="submit" class="card-btn danger">Delete</button>
       </form>
@@ -98,13 +121,13 @@
 
 {% else %}
 <div class="empty-state">
-  <div class="empty-state-title">No workspaces found</div>
+  <div class="empty-state-title">No stores found</div>
   <div class="empty-state-sub">
-    Add a workspace or sync
+    Add a store or sync
     <a href="{% url 'engine_detail' active_engine.id %}" class="link">{{ active_engine.name }}</a>
     to import existing ones.
   </div>
-  <a href="{% url 'workspace_create' %}" class="btn-add" style="display:inline-flex; margin-top:0.75rem;">+ Add Workspace</a>
+  <a href="{% url 'store_create' %}" class="btn-add" style="display:inline-flex; margin-top:0.75rem;">+ Add Store</a>
 </div>
 {% endif %}
 

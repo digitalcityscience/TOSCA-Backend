@@ -150,6 +150,9 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # -------------------------------------------------
 INTERNAL_API_BASE_URL = env("INTERNAL_API_BASE_URL", default="http://localhost:8000/api/geoengine")
 
+# Default PostGIS schema for GeoServer stores (task 3.5)
+GIS_SCHEMA = env("PG_SCHEMA_GIS", default="public")
+
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_AUTHENTICATION_CLASSES": [

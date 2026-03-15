@@ -1,0 +1,200 @@
+{% extends 'geo_console/base.html' %}
+{% load static %}
+
+{% block title %}Add Store — Geo Console — TOSCA{% endblock %}
+
+
+{% block content %}
+
+<!-- ── Messages ────────────────────────────────────────────────────── -->
+{% if messages %}
+<div class="messages-wrap">
+  {% for msg in messages %}
+  <div class="message message--{{ msg.tags }}">{{ msg }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- ── Page header ─────────────────────────────────────────────────── -->
+<div class="content-header">
+  <div>
+    <div class="page-title">{% if clone_store_name %}Clone Store{% else %}Add Store{% endif %}</div>
+    <div class="page-sub">
+      {% if clone_store_name %}
+        Cloning connection settings from <strong>{{ clone_store_name }}</strong> — set a new name and workspace.
+      {% else %}
+        Register a new data store in Django and publish it to the engine
+      {% endif %}
+    </div>
+  </div>
+  <div class="header-actions">
+    <a href="{% url 'store_list' %}" class="btn btn--secondary">Cancel</a>
+  </div>
+</div>
+
+<!-- ── Form ────────────────────────────────────────────────────────── -->
+<form id="store-form" method="post" autocomplete="off" novalidate>
+  {% csrf_token %}
+
+  <!-- Store Details -->
+  <div class="form-section">
+    <div class="section-label">Store Details</div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.workspace.id_for_label }}">
+        Workspace <span class="req">*</span>
+      </label>
+      <div class="form-field">
+        {{ form.workspace }}
+        {% if form.workspace.errors %}
+          <div class="form-error">{{ form.workspace.errors.0 }}</div>
+        {% endif %}
+        <div class="form-hint">
+          The workspace this store belongs to. Only workspaces in the active engine are shown.
+          {% if not workspaces %}
+            <span class="form-warn">No workspaces found.</span>
+          {% endif %}
+          <a href="{% url 'workspace_create' %}" class="link" target="_blank"
+             title="Opens in a new tab so you don't lose this form">+ New workspace</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.name.id_for_label }}">
+        Name <span class="req">*</span>
+      </label>
+      <div class="form-field">
+        {{ form.name }}
+        {% if form.name.errors %}
+          <div class="form-error">{{ form.name.errors.0 }}</div>
+        {% endif %}
+        <div class="form-hint">{{ form.name.help_text }}</div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.store_type.id_for_label }}">Store Type</label>
+      <div class="form-field">
+        {{ form.store_type }}
+        {% if form.store_type.errors %}
+          <div class="form-error">{{ form.store_type.errors.0 }}</div>
+        {% endif %}
+        <div class="form-hint">PostGIS stores require connection details below.</div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.description.id_for_label }}">Description</label>
+      <div class="form-field">
+        {{ form.description }}
+        {% if form.description.errors %}
+          <div class="form-error">{{ form.description.errors.0 }}</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- PostGIS Connection — only shown when store_type == 'postgis' -->
+  <div class="form-section" id="postgis-section">
+    <div class="section-label">PostGIS Connection</div>
+    <div class="form-hint" style="margin-bottom: 0.75rem;">
+      GeoServer will attempt to open a live connection using these credentials.
+      Save will fail if the connection is refused — nothing is persisted on error.
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.host.id_for_label }}">Host / Port</label>
+      <div class="form-field" style="display:flex; gap: 0.75rem; align-items: flex-start;">
+        <div style="flex:1;">
+          {{ form.host }}
+          {% if form.host.errors %}
+            <div class="form-error">{{ form.host.errors.0 }}</div>
+          {% endif %}
+        </div>
+        <div>
+          {{ form.port }}
+          {% if form.port.errors %}
+            <div class="form-error">{{ form.port.errors.0 }}</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.database.id_for_label }}">
+        {{ form.database.label }}
+      </label>
+      <div class="form-field">
+        {{ form.database }}
+        {% if form.database.errors %}
+          <div class="form-error">{{ form.database.errors.0 }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.schema.id_for_label }}">
+        {{ form.schema.label }}
+      </label>
+      <div class="form-field">
+        {{ form.schema }}
+        {% if form.schema.errors %}
+          <div class="form-error">{{ form.schema.errors.0 }}</div>
+        {% endif %}
+        <div class="form-hint">{{ form.schema.help_text }}</div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.username.id_for_label }}">
+        {{ form.username.label }}
+      </label>
+      <div class="form-field">
+        {{ form.username }}
+        {% if form.username.errors %}
+          <div class="form-error">{{ form.username.errors.0 }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="{{ form.password.id_for_label }}">
+        {{ form.password.label }}
+      </label>
+      <div class="form-field">
+        {{ form.password }}
+        {% if form.password.errors %}
+          <div class="form-error">{{ form.password.errors.0 }}</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="form-actions">
+    {% if not workspaces %}
+      <span class="form-warn">No workspaces available — store cannot be created.</span>
+    {% else %}
+      <button type="submit" class="btn btn--primary">Create Store</button>
+    {% endif %}
+    <a href="{% url 'store_list' %}" class="btn btn--secondary">Cancel</a>
+  </div>
+
+</form>
+
+{% endblock %}
+
+{% block page_js %}
+<script>
+(function () {
+  var typeSelect = document.getElementById('{{ form.store_type.id_for_label }}');
+  var pgSection  = document.getElementById('postgis-section');
+  function toggle() {
+    pgSection.style.display = typeSelect.value === 'postgis' ? '' : 'none';
+  }
+  toggle();
+  typeSelect.addEventListener('change', toggle);
+})();
+</script>
+{% endblock %}

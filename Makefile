@@ -1,6 +1,6 @@
 .PHONY: help which-env build up down restart logs rebuild rmvolumes \
 	django-restart django-logs django-cmd django-shell django-migrate django-makemigrations \
-	django-test django-test-unit django-test-integration test-geoserver test-console \
+	django-test django-test-unit django-test-integration test-geoserver test-console test-console-crud \
 	django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean \
 	sync-django-geoengine smoke-test
 
@@ -79,6 +79,7 @@ help:
 	@echo "  make django-test-integration - Run integration tests with real GeoServer"
 	@echo "  make test-geoserver        - Quick alias for integration tests"
 	@echo "  make test-console          - Test console views only"
+	@echo "  make test-console-crud     - CRUD integration test: engine + workspace lifecycle"
 	@echo "  make django-createsuperuser - Create Django superuser"
 	@echo ""
 	@echo "$(COLOR_YELLOW)UV/Python Package Management:$(COLOR_RESET)"
@@ -286,6 +287,11 @@ test-geoserver: django-test-integration
 test-console: which-env
 	@echo "$(COLOR_BLUE)🖥️  Testing console views...$(COLOR_RESET)"
 	docker exec -it tosca-django bash -lc "uv run python manage.py test tosca_api.apps.geodata_engine.tests.test_integration.SimpleConsoleIntegrationTestCase -v 2 --settings=tosca_api.settings.development --keepdb"
+
+# Engine + Workspace CRUD integration test (requires live GeoServer)
+test-console-crud: which-env
+	@echo "$(COLOR_BLUE)🧪 Running console CRUD test (Engine + Workspace lifecycle)...$(COLOR_RESET)"
+	docker exec -it tosca-django bash -lc "uv run python tosca_api/apps/geodata_engine/tests/test_console_crud.py"
 # -------------------------------------------------
 # Django-specific Commands
 # -------------------------------------------------

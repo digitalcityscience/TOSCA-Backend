@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{# ── Console-wide CSS ─────────────────────────────────────────────────── #}
+{% block page_css %}
+<link rel="stylesheet" href="{% static 'geo_console/css/console.css' %}">
+{% endblock %}
+
+{# ── Console sidebar nav ──────────────────────────────────────────────── #}
+{#                                                                          #}
+{# Active item is resolved from request.resolver_match.url_name —          #}
+{# no need to hardcode "active" in every child template.                   #}
+{# When adding a new section (Phase 4 Layers, Phase 5 Styles etc.),        #}
+{# add ONE entry here and all pages get it automatically.                  #}
+{% block sidebar_subnav %}
+{% with u=request.resolver_match.url_name %}
+<div class="nav-sep"></div>
+<div class="nav-section-label">Geo Console</div>
+
+<a href="{% url 'geo_console' %}"
+   class="nav-item{% if u == 'geo_console' or u == 'engine_detail' or u == 'engine_create' or u == 'engine_edit' or u == 'engine_delete' %} active{% endif %}">
+  Engines
+</a>
+
+<a href="{% url 'workspace_list' %}"
+   class="nav-item{% if u == 'workspace_list' or u == 'workspace_create' %} active{% endif %}">
+  Workspaces
+</a>
+
+<a href="{% url 'store_list' %}"
+   class="nav-item{% if u == 'store_list' or u == 'store_create' %} active{% endif %}">
+  Stores
+</a>
+
+{# Phase 4 — uncomment when layer views are wired #}
+{% comment %}
+<a href="{% url 'layer_list' %}"
+   class="nav-item{% if u == 'layer_list' or u == 'layer_detail' or u == 'layer_upload' %} active{% endif %}">
+  Layers
+</a>
+{% endcomment %}
+
+{# Phase 5 — uncomment when style views are wired #}
+{% comment %}
+<a href="{% url 'style_list' %}"
+   class="nav-item{% if u == 'style_list' or u == 'style_upload' %} active{% endif %}">
+  Styles
+</a>
+{% endcomment %}
+
+{# Phase 6 — uncomment when job views are wired #}
+{% comment %}
+<a href="{% url 'job_list' %}"
+   class="nav-item{% if u == 'job_list' %} active{% endif %}">
+  Jobs
+</a>
+{% endcomment %}
+
+{% endwith %}
+{% endblock %}

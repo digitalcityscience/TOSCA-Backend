@@ -268,6 +268,63 @@ class GeoConsoleAPIClient:
         return self._post(f"engines/{engine_id}/sync/", timeout=_SYNC_TIMEOUT)
 
     # ------------------------------------------------------------------
+    # Store methods  (Phase 3)
+    # ------------------------------------------------------------------
+
+    def list_stores(self, workspace_id: str | None = None, engine_id: str | None = None) -> list[dict]:
+        """
+        GET /api/geoengine/stores/
+        Returns all stores, optionally filtered by workspace or engine UUID.
+        """
+        path = "stores/"
+        params = []
+        if workspace_id:
+            params.append(f"workspace={workspace_id}")
+        if engine_id:
+            params.append(f"geodata_engine={engine_id}")
+        if params:
+            path = f"stores/?{'&'.join(params)}"
+        result = self._get(path)
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return result
+
+    def get_store(self, store_id: str) -> dict:
+        """
+        GET /api/geoengine/stores/{store_id}/
+        Returns a single Store dict.
+        Raises APINotFoundError if store does not exist.
+        """
+        return self._get(f"stores/{store_id}/")
+
+    def create_store(self, data: dict) -> dict:
+        """
+        POST /api/geoengine/stores/
+        Creates a store in Django + GeoServer.
+
+        Required keys: workspace (UUID str), name.
+        For PostGIS stores: host, port, database, username, password, schema.
+        Returns: {"store": {...}, "result": {"success": True, ...}}
+        """
+        return self._post("stores/", data=data)
+
+    def delete_store(self, store_id: str) -> dict:
+        """
+        DELETE /api/geoengine/stores/{store_id}/
+        Deletes store from GeoServer first (verify), then from Django.
+        Returns {"success": True, ...} or raises APIError on failure.
+        """
+        return self._delete(f"stores/{store_id}/")
+
+    def test_store(self, store_id: str) -> dict:
+        """
+        POST /api/geoengine/stores/{store_id}/test_connection/
+        Verifies the store is reachable in GeoServer.
+        Returns {"success": True, "message": ..., "detail": {...}}
+        """
+        return self._post(f"stores/{store_id}/test_connection/")
+
+    # ------------------------------------------------------------------
     # Low-level write helpers
     # ------------------------------------------------------------------
 

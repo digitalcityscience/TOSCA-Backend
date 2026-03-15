@@ -285,6 +285,16 @@ class StoreViewSet(viewsets.ModelViewSet):
     serializer_class = StoreSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_queryset(self):
+        qs = Store.objects.select_related('workspace', 'geodata_engine')
+        engine_id = self.request.query_params.get('geodata_engine')
+        workspace_id = self.request.query_params.get('workspace')
+        if engine_id:
+            qs = qs.filter(geodata_engine__id=engine_id)
+        if workspace_id:
+            qs = qs.filter(workspace__id=workspace_id)
+        return qs
+
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -362,6 +372,50 @@ class StoreViewSet(viewsets.ModelViewSet):
 
         return {'success': False, 'error': f'Unsupported store type: {store.store_type}'}
 
+    def destroy(self, request, *args, **kwargs):
+        store = self.get_object()
+
+        # Sync rule: delete from engine FIRST, verify, THEN delete Django object.
+        # Never delete Django if engine operation fails.
+        if store.workspace and store.workspace.geodata_engine:
+            client = EngineClientFactory.create_client(store.workspace.geodata_engine)
+            result = client.delete_store(workspace=store.workspace.name, store=store.name)
+
+            if not result.get('success', False):
+                return Response(
+                    {
+                        'success': False,
+                        'error': result.get('error', result.get('message', 'Engine delete failed')),
+                        'detail': 'Store was NOT deleted from Django — engine deletion must succeed first.',
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        store.delete()
+        return Response({'success': True, 'message': 'Store deleted from engine and Django.'}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def test_connection(self, request, pk=None):
+        """
+        POST /api/geoengine/stores/{id}/test_connection/
+        Verifies the store is reachable in GeoServer by fetching its detail.
+        Returns success + store detail on success, error on failure.
+        """
+        store = self.get_object()
+        if not store.workspace or not store.workspace.geodata_engine:
+            return Response(
+                {'success': False, 'error': 'Store has no engine attached.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        client = EngineClientFactory.create_client(store.workspace.geodata_engine)
+        try:
+            detail = client.get_datastore_detail(workspace=store.workspace.name, store_name=store.name)
+            return Response({'success': True, 'message': 'Store reachable in GeoServer.', 'detail': detail})
+        except GeoServerConnectionError as exc:
+            return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
 
 class LayerViewSet(viewsets.ModelViewSet):
     queryset = Layer.objects.select_related('workspace', 'store', 'workspace__geodata_engine')
@@ -377,9 +431,15 @@ class LayerViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = super().get_queryset()
         user = getattr(self.request, 'user', None)
-        if user and user.is_authenticated:
-            return qs
-        return qs.filter(is_public=True)
+        if not (user and user.is_authenticated):
+            qs = qs.filter(is_public=True)
+        engine_id = self.request.query_params.get('geodata_engine')
+        workspace_id = self.request.query_params.get('workspace')
+        if engine_id:
+            qs = qs.filter(workspace__geodata_engine__id=engine_id)
+        if workspace_id:
+            qs = qs.filter(workspace__id=workspace_id)
+        return qs
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)

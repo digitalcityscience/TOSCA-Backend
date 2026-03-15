@@ -15,11 +15,12 @@ services:
       PG_SCHEMA_API: ${PG_SCHEMA_API}
       PG_SCHEMA_GEOSERVER: ${PG_SCHEMA_GEOSERVER}
       PG_SCHEMA_GIS: ${PG_SCHEMA_GIS}
+      PG_SCHEMA_JDBCCONF: ${PG_SCHEMA_JDBCCONF}
     ports:
       - "${PG_PORT}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./docker/postgis/initdb:/docker-entrypoint-initdb.d
+      - ./docker/postgis:/docker-entrypoint-initdb.d
     healthcheck:
       test:
         [

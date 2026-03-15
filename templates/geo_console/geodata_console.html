@@ -1,14 +1,8 @@
-{% extends 'base.html' %}
+{% extends 'geo_console/base.html' %}
 {% load static %}
 
 {% block title %}Engines - Geo Console - TOSCA{% endblock %}
 
-{% block sidebar_subnav %}
-<div class="nav-sep"></div>
-<div class="nav-section-label">Geo Console</div>
-<a href="{% url 'geo_console' %}" class="nav-item active">Engines</a>
-<a href="{% url 'workspace_list' %}" class="nav-item">Workspaces</a>
-{% endblock %}
 
 {% block content %}
 
@@ -88,6 +82,4 @@
 <script src="{% static 'geo_console/js/engines.js' %}?v=5"></script>
 {% endblock %}
 
-{% block page_css %}
-<link rel="stylesheet" href="{% static 'geo_console/css/console.css' %}">
-{% endblock %}
+

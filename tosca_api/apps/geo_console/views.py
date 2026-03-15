@@ -9,9 +9,9 @@ from django.views.decorators.http import require_POST
 from rest_framework.authtoken.models import Token
 
 from tosca_api.apps.geo_console.exceptions import APIError, APINotFoundError, APITimeoutError
-from tosca_api.apps.geo_console.forms import EngineForm, WorkspaceForm
+from tosca_api.apps.geo_console.forms import EngineForm, StoreForm, WorkspaceForm
 from tosca_api.apps.geo_console.services.api_client import GeoConsoleAPIClient
-from tosca_api.apps.geodata_engine.models import GeodataEngine, Layer, Workspace
+from tosca_api.apps.geodata_engine.models import GeodataEngine, Layer, Store, Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -468,6 +468,194 @@ def workspace_sync(request, workspace_id):
     else:
         messages.warning(request, "Sync completed with errors. Check the logs for details.")
     return redirect("workspace_list")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Store views
+# ---------------------------------------------------------------------------
+
+@login_required
+def store_list(request):
+    """
+    GET /console/stores/
+    Lists stores belonging to the currently active engine.
+    Active engine is stored in the session; defaults to is_default engine.
+    """
+    client = _get_client(request)
+    engine_ctx = _get_active_engine_context(request, client)
+    active_engine_id = engine_ctx['active_engine_id']
+
+    try:
+        stores = client.list_stores(engine_id=active_engine_id) if active_engine_id else []
+    except APITimeoutError:
+        messages.error(request, "Registry unreachable — connection timed out.")
+        stores = []
+    except APIError as e:
+        messages.error(request, f"Could not load stores: {e.detail}")
+        stores = []
+
+    return render(request, "geo_console/store_list.html", {
+        "stores": stores,
+        **engine_ctx,
+    })
+
+
+@login_required
+def store_create(request):
+    """
+    GET  /console/stores/create/ — blank form with workspace dropdown
+    POST /console/stores/create/ — POST /api/geoengine/stores/ → redirect to list
+    """
+    client = _get_client(request)
+    engine_ctx = _get_active_engine_context(request, client)
+    active_engine_id = engine_ctx['active_engine_id']
+
+    # Fetch workspaces filtered to the active engine for the dropdown.
+    try:
+        workspaces = client.list_workspaces(engine_id=active_engine_id) if active_engine_id else []
+    except (APIError, APITimeoutError):
+        workspaces = []
+    workspace_choices = [(str(ws["id"]), ws["name"]) for ws in workspaces]
+
+    clone_store_name: str | None = None
+
+    if request.method == "POST":
+        form = StoreForm(request.POST, workspace_choices=workspace_choices)
+        if form.is_valid():
+            data = form.cleaned_data
+            try:
+                result = client.create_store(data)
+            except APITimeoutError:
+                messages.error(request, "Engine registry unreachable — timed out.")
+                return render(request, "geo_console/store_create.html", {
+                    "form": form,
+                    "workspaces": workspaces,
+                    "clone_store_name": None,
+                    **engine_ctx,
+                })
+            except APIError as e:
+                messages.error(request, f"Could not create store: {e.detail}")
+                return render(request, "geo_console/store_create.html", {
+                    "form": form,
+                    "workspaces": workspaces,
+                    "clone_store_name": None,
+                    **engine_ctx,
+                })
+
+            store = result.get("store", result)
+            is_idempotent = result.get("result", {}).get("idempotent", False)
+            if is_idempotent:
+                messages.warning(request, f"Store '{store['name']}' already exists — no changes made.")
+            else:
+                messages.success(request, f"Store '{store['name']}' created successfully.")
+            return redirect("store_list")
+    else:
+        # Clone pre-fill: ?clone_from=<uuid> copies connection data from an existing store.
+        clone_from_id = request.GET.get('clone_from')
+        clone_initial: dict = {}
+        if clone_from_id:
+            try:
+                source = client.get_store(clone_from_id)
+                clone_store_name = source.get('name')
+                clone_initial = {
+                    'store_type': source.get('store_type', 'postgis'),
+                    'description': source.get('description', ''),
+                    'host': source.get('host', ''),
+                    'port': str(source.get('port') or '5432'),
+                    'database': source.get('database', ''),
+                    'schema': source.get('schema', ''),
+                    'username': source.get('username', ''),
+                    # password is write-only in the API — intentionally not cloned
+                }
+            except (APIError, APITimeoutError, APINotFoundError):
+                messages.warning(request, "Could not load source store for clone — starting blank.")
+
+        # Pre-select the first workspace of the active engine.
+        active_ws = next(
+            (ws for ws in workspaces if str(ws.get("geodata_engine")) == active_engine_id),
+            None,
+        )
+        form = StoreForm(
+            workspace_choices=workspace_choices,
+            initial={"workspace": str(active_ws["id"]) if active_ws else None, **clone_initial},
+        )
+
+    return render(request, "geo_console/store_create.html", {
+        "form": form,
+        "workspaces": workspaces,
+        "clone_store_name": clone_store_name,
+        **engine_ctx,
+    })
+
+
+@login_required
+@require_POST
+def store_delete(request, store_id):
+    """
+    POST /console/stores/<uuid>/delete/
+    Sync rule: engine deletion first, verify, THEN Django object delete.
+    """
+    client = _get_client(request)
+
+    try:
+        store = client.get_store(str(store_id))
+    except APINotFoundError:
+        messages.error(request, "Store not found.")
+        return redirect("store_list")
+    except APITimeoutError:
+        messages.error(request, "Registry unreachable — could not load store.")
+        return redirect("store_list")
+    except APIError as e:
+        messages.error(request, f"Could not load store: {e.detail}")
+        return redirect("store_list")
+
+    store_name = store.get("name", str(store_id))
+    logger.info("User %s deleting store %s (%s)", request.user, store_id, store_name)
+
+    try:
+        client.delete_store(str(store_id))
+    except APINotFoundError:
+        messages.error(request, "Store not found.")
+        return redirect("store_list")
+    except APITimeoutError:
+        messages.error(request, "Engine unreachable — timed out. Store was NOT deleted.")
+        return redirect("store_list")
+    except APIError as e:
+        logger.error("Delete store %s failed: %s", store_id, e.detail)
+        messages.error(request, f"Delete failed: {e.detail}")
+        return redirect("store_list")
+
+    messages.success(request, f"Store '{store_name}' deleted.")
+    return redirect("store_list")
+
+
+@login_required
+@require_POST
+def store_test_connection(request, store_id):
+    """
+    POST /console/stores/<uuid>/test/
+    Calls the DRF test_connection action and surfaces the result as a Django message.
+    """
+    client = _get_client(request)
+    logger.info("User %s testing store connection %s", request.user, store_id)
+    try:
+        result = client.test_store(str(store_id))
+    except APITimeoutError:
+        messages.error(request, "Engine unreachable — connection timed out.")
+        return redirect("store_list")
+    except APINotFoundError:
+        messages.error(request, "Store not found.")
+        return redirect("store_list")
+    except APIError as e:
+        logger.error("Store test failed for %s: %s", store_id, e.detail)
+        messages.error(request, f"Connection test failed: {e.detail}")
+        return redirect("store_list")
+
+    if result.get("success"):
+        messages.success(request, result.get("message", "Store connection verified."))
+    else:
+        messages.error(request, result.get("error", "Connection test returned an unexpected response."))
+    return redirect("store_list")
 
 
 # ---------------------------------------------------------------------------
