@@ -1,0 +1,11 @@
+{% extends "admin/change_form.html" %}
+{% load static %}
+
+{% block form_top %}
+{% if original and original.store_type == 'postgis' and not original.has_usable_password %}
+    <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 12px; margin-bottom: 20px; border-radius: 4px;">
+        <strong>⚠ Warning:</strong> No password stored. PostGIS table preview and layer publish will fail.
+    </div>
+{% endif %}
+{{ block.super }}
+{% endblock %}

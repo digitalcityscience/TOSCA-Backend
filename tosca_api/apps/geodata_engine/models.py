@@ -226,6 +226,13 @@ class Store(models.Model, EncryptedCharField):
         """Get decrypted password."""
         return self.decrypt_field('password', self.password)
 
+    def has_usable_password(self):
+        """Check if the store has a usable (decryptable) password."""
+        try:
+            return bool(self.decrypted_password)
+        except (ValueError, Exception):
+            return False
+
 
 class Layer(models.Model):
     """

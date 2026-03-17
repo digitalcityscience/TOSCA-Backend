@@ -3,59 +3,62 @@ Encryption utilities for secure field handling
 """
 from cryptography.fernet import Fernet
 from django.conf import settings
-import os
-import base64
+from django.core.exceptions import ImproperlyConfigured
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-def get_encryption_key():
-    """Get or generate encryption key for field encryption"""
-    # Check if key exists in settings
-    if hasattr(settings, 'FIELD_ENCRYPTION_KEY'):
-        return settings.FIELD_ENCRYPTION_KEY.encode()
-    
-    # Check environment variable
-    key = os.environ.get('FIELD_ENCRYPTION_KEY')
-    if key:
+def get_encryption_key() -> bytes:
+    """
+    Return the Fernet encryption key as bytes.
+
+    Reads from settings.FIELD_ENCRYPTION_KEY which is populated by the
+    FIELD_ENCRYPTION_KEY environment variable (set in .env.dev / .env.prod).
+
+    Raises ImproperlyConfigured if the key is missing — never silently
+    generates a throwaway key, which would make every decrypt silently fail.
+    """
+    key = getattr(settings, 'FIELD_ENCRYPTION_KEY', None)
+    if not key:
+        raise ImproperlyConfigured(
+            "FIELD_ENCRYPTION_KEY is not set. "
+            "Generate one with: "
+            "uv run python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\" "
+            "and add it to your .env file."
+        )
+    if isinstance(key, str):
         return key.encode()
-    
-    # Generate new key (for development only)
-    # In production, this should be set explicitly
-    key = Fernet.generate_key()
-    print(f"Generated new encryption key: {key.decode()}")
-    print("Set this as FIELD_ENCRYPTION_KEY in your environment")
     return key
 
 
-def encrypt_value(plain_text):
-    """Encrypt a plain text value"""
+def encrypt_value(plain_text: str) -> str:
+    """
+    Encrypt a plain text value using Fernet (AES-128-CBC + HMAC-SHA256).
+    Returns the raw Fernet token as a string — no extra base64 wrapping.
+    """
     if not plain_text:
         return plain_text
-    
-    key = get_encryption_key()
-    fernet = Fernet(key)
-    
-    # Convert to bytes and encrypt
-    encrypted_bytes = fernet.encrypt(plain_text.encode())
-    # Base64 encode for database storage
-    return base64.urlsafe_b64encode(encrypted_bytes).decode()
+
+    fernet = Fernet(get_encryption_key())
+    return fernet.encrypt(plain_text.encode()).decode()
 
 
-def decrypt_value(encrypted_text):
-    """Decrypt an encrypted text value"""
+def decrypt_value(encrypted_text: str) -> str:
+    """
+    Decrypt a Fernet-encrypted value.
+    Raises ValueError on decryption failure — callers must handle this explicitly.
+    Never silently returns ciphertext as if it were plain text.
+    """
     if not encrypted_text:
         return encrypted_text
-    
+
     try:
-        key = get_encryption_key()
-        fernet = Fernet(key)
-        
-        # Base64 decode and decrypt
-        encrypted_bytes = base64.urlsafe_b64decode(encrypted_text.encode())
-        decrypted_bytes = fernet.decrypt(encrypted_bytes)
-        return decrypted_bytes.decode()
-    except Exception as e:
-        # If decryption fails, assume it's plain text (for migration purposes)
-        return encrypted_text
+        fernet = Fernet(get_encryption_key())
+        return fernet.decrypt(encrypted_text.encode()).decode()
+    except Exception as exc:
+        logger.error('decrypt_value failed — wrong key or corrupt data: %s', exc)
+        raise ValueError(f'Failed to decrypt value: {exc}') from exc
 
 
 class EncryptedCharField:
@@ -73,11 +76,9 @@ class EncryptedCharField:
             return decrypt_value(value)
         return value
     
-    def _is_encrypted(self, value):
-        """Check if a value appears to be encrypted (basic heuristic)"""
-        try:
-            # Try to decode as base64 - encrypted values should be base64 encoded
-            base64.urlsafe_b64decode(value.encode())
-            return len(value) > 50  # Encrypted values are typically longer
-        except:
-            return False
+    def _is_encrypted(self, value: str) -> bool:
+        """
+        Fernet tokens always start with 'gAAAAA' (version byte 0x80, base64url-encoded).
+        This is a reliable marker — no length heuristic needed.
+        """
+        return isinstance(value, str) and value.startswith('gAAAAA')

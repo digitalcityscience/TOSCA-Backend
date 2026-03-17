@@ -249,3 +249,53 @@ This is the most important structural rule:
 - ❌ Color as the only indicator of status — always pair with text
 - ❌ Designing only the happy path — empty states and error states are required
 - ❌ Sub-navigation in the global sidebar — that belongs inside each app
+
+***
+
+## 11. CSS Architecture
+
+### File structure
+
+```
+static/geo_console/css/
+  console.css   ← shared foundation, always loaded (~400 lines hard cap)
+  layers.css    ← layer_list / layer_detail / layer_publish
+  stores.css    ← store_list / store_create / store_detail
+```
+
+Add a new file when a section has more than ~20 lines of styles that are
+**not** needed by any other section.
+
+### Loading pattern
+
+`geo_console/base.html` loads `console.css` unconditionally.
+Each domain template loads its own CSS via `{% block page_extra_css %}`:
+
+```django
+{# At the top of layer_list.html, layer_detail.html, layer_publish.html #}
+{% block page_extra_css %}
+<link rel="stylesheet" href="{% static 'geo_console/css/layers.css' %}">
+{% endblock %}
+```
+
+### Hard rules
+
+| Rule | Rationale |
+|---|---|
+| `console.css` must stay under 400 lines | Forces extraction before a file grows unmanageable |
+| No `style=""` attribute anywhere in templates | Every visual decision must be traceable to a named class |
+| No `<style>` blocks in templates | Same as above |
+| No inline `<script>` blocks — JS belongs in `static/geo_console/js/` | Separation of concerns |
+| Domain CSS file = scoped to one section | `layers.css` knows nothing about stores; `stores.css` knows nothing about layers |
+| Shared patterns go in `console.css` | If two domain files need the same class, it promotes to shared |
+
+### Utility classes (`console.css`)
+
+Rather than repeating the same inline values, use the utility classes in
+the `Utility classes` section of `console.css`. Add new utilities there
+when the same `style=""` pattern appears in more than one place.
+
+Current utilities: `.mt-xs` `.mt-md` `.mt-lg` `.mt-xl` `.me-xs` `.me-sm`
+`.form-inline` `.form-row__cols` `.form-field--grow` `.form-field--port`
+`.form-section--spaced` `.form-section--danger` `.form-section-title--danger`
+`.section-tag` `.meta-id` `.mono-meta` `.steps-list`

@@ -307,8 +307,32 @@ This fixes new syncs going forward but **does not clean up already-corrupted Dja
 - Schema validated before insert ✅
 - Workspace-store relationship is stable ✅
 
+### 3.10 — Store Detail + Credential Management ✅
 
-PHASE 4 — Layers ⬜
+GeoServer'dan sync edilen store'larda Django'nun password'u hiç bilmediği tespit edildi (F-009).
+Bu kullanıcının PostGIS tablo listesi alamamasına yol açıyordu.
+
+| # | Task | Status |
+|---|------|--------|
+| 3.10.1 | `StoreSerializer`: `has_password` SerializerMethodField eklendi — `decrypted_password` boş mu dolu mu boolean döner | ✅ |
+| 3.10.2 | `StoreViewSet.postgis_tables`: bağlantı öncesinde `decrypted_password` boşluk kontrolü — boşsa açıklayıcı 400 mesajı | ✅ |
+| 3.10.3 | `StoreDetailForm` oluşturuldu — kısmi güncelleme formu (name/workspace/type read-only, sadece bağlantı alanları düzenlenebilir) | ✅ |
+| 3.10.4 | `store_detail(request, store_id)` view eklendi — GET: form prefill, POST: PATCH API → redirect | ✅ |
+| 3.10.5 | `templates/geo_console/store_detail.html` oluşturuldu — identity card, sarı password uyarı banner'ı, bağlantı edit formu | ✅ |
+| 3.10.6 | `GeoConsoleAPIClient.update_store()` eklendi — `PATCH /api/geoengine/stores/{id}/` | ✅ |
+| 3.10.7 | URL wiring: `stores/<uuid>/` → `store_detail` | ✅ |
+| 3.10.8 | `store_list.html` kart butonları güncellendi: Detail (sol) → Clone → Delete (sağ) | ✅ |
+| 3.10.9 | Delete hata mesajı düzeltildi: `detail` alanına bookkeeping metni yerine gerçek GeoServer hatası yazılıyor | ✅ |
+| 3.10.10 | `GeoServerClient.delete_store()`: yanlış `delete_datastore()` → doğru `delete_featurestore()` (F-007) | ✅ |
+
+
+PHASE 4 — Layers ✅
+
+**Post-fixes applied 15 March 2026:**
+- `layer_publish.html`: `{% block page_scripts %}` → `{% block page_js %}` — JS sessizce drop ediliyordu (F-008)
+- Layer publish form tam yeniden yazıldı: 4-step form, geometry card picker, CRS preset grid (6 kart), read-only geometry display
+- Layer list: accordion → flat paginated table (20/page), workspace filter dropdown header'da
+- `lp-*` CSS namespace eklendi `console.css`'e
 
 Branch: feature/console-layers
 Goal: PostGIS tables → GeoServer layer publishing (POC).
@@ -316,7 +340,7 @@ Future: File upload → inspection → queue → publish pipeline.
 
 ⸻
 
-4.1 — PostGIS Table → GeoServer Layer Publish ⬜
+4.1 — PostGIS Table → GeoServer Layer Publish ✅
 
 Scope:
 Publish an existing PostGIS table from a configured GeoServer datastore as a GeoServer layer.
@@ -352,16 +376,16 @@ Notes:
 Tasks
 
 #	Task	Status
-4.1.1	postgis_tables(engine_id, workspace_id) — list publishable tables from datastore	⬜
-4.1.2	Retrieve geometry metadata using PostGIS system views (geometry_columns)	⬜
-4.1.3	Retrieve table bounding box using safe query (ST_Extent)	⬜
-4.1.4	UI: table selection dialog (table → geometry column → CRS preview)	⬜
-4.1.5	LayerCreateForm — workspace, layer name, source CRS, target CRS	⬜
-4.1.6	layer_publish_postgis(request) — create featureType via GeoServer REST	⬜
-4.1.7	Trigger GeoServer bbox recalculation	⬜
-4.1.8	Verify layer exists via GeoServer REST	⬜
-4.1.9	Register Layer object in Django DB	⬜
-4.1.10	Store engine metadata (engine_layer_id, workspace, store)	⬜
+4.1.1	postgis_tables(engine_id, workspace_id) — list publishable tables from datastore	✅
+4.1.2	Retrieve geometry metadata using PostGIS system views (geometry_columns)	✅
+4.1.3	Retrieve table bounding box using safe query (ST_Extent)	✅
+4.1.4	UI: table selection dialog (table → geometry column → CRS preview)	✅
+4.1.5	LayerCreateForm — workspace, layer name, source CRS, target CRS	✅
+4.1.6	layer_publish_postgis(request) — create featureType via GeoServer REST	✅
+4.1.7	Trigger GeoServer bbox recalculation	✅
+4.1.8	Verify layer exists via GeoServer REST	✅
+4.1.9	Register Layer object in Django DB	✅
+4.1.10	Store engine metadata (engine_layer_id, workspace, store)	✅
 
 
 ⸻
@@ -393,7 +417,7 @@ Use Django DB parameter binding, not string interpolation. or geo sql alchemy. b
 
 ⸻
 
-4.2 — Layer List & Workspace Filtering ⬜
+4.2 — Layer List & Workspace Filtering ✅
 
 UI behavior
 
@@ -425,17 +449,17 @@ Layers
 Tasks
 
 #	Task	Status
-4.2.1	layer_list(engine_id) — retrieve layers from GeoServer	⬜
-4.2.2	UI checkbox show_all_layers	⬜
-4.2.3	Workspace dropdown filter	⬜
-4.2.4	Accordion view for workspace grouping	⬜
-4.2.5	Sync engine layers with Django DB	⬜
-4.2.6	Display layer metadata (CRS, geometry type, bbox)	⬜
+4.2.1	layer_list(engine_id) — retrieve layers from GeoServer	✅
+4.2.2	UI checkbox show_all_layers → replaced with workspace dropdown in header	✅
+4.2.3	Workspace dropdown filter	✅
+4.2.4	Flat paginated table (20/page) — accordion dropped per UX review	✅
+4.2.5	Sync engine layers with Django DB	✅
+4.2.6	Display layer metadata (CRS, geometry type, bbox)	✅
 
 
 ⸻
 
-4.3 — Layer Publish Verification ⬜
+4.3 — Layer Publish Verification ✅
 
 Publishing is successful only if:
 
@@ -447,15 +471,15 @@ returns valid response.
 Tasks:
 
 #	Task	Status
-4.3.1	GeoServer REST publish request	⬜
-4.3.2	Verify layer availability	⬜
-4.3.3	Update Django Layer.is_published = True	⬜
-4.3.4	Error handling + rollback	⬜
+4.3.1	GeoServer REST publish request	✅
+4.3.2	Verify layer availability	✅
+4.3.3	Update Django Layer.publishing_state = PUBLISHED	✅
+4.3.4	Error handling + rollback	✅
 
 
 ⸻
 
-4.4 — Layer Delete ⬜
+4.4 — Layer Delete ✅
 
 Delete flow:
 
@@ -468,11 +492,16 @@ delete Django object
 Tasks:
 
 #	Task	Status
-4.4.1	layer_delete(request, layer_id)	⬜
-4.4.2	GeoServer REST delete layer	⬜
-4.4.3	Verify deletion	⬜
-4.4.4	Remove Django object	⬜
+4.4.1	layer_delete(request, layer_id)	✅
+4.4.2	GeoServer REST delete layer	✅
+4.4.3	Verify deletion	✅
+4.4.4	Remove Django object	✅
 
+
+4.4.5 ✅ workspace create sayfasında engine seçimi header'daki aktif engine ile kilitli gelir — `<select>` yerine badge + `<input type="hidden">` render edilir; aktif engine yoksa uyarı mesajı gösterilir.
+4.4.6 ✅ sync_service.py `sync_stores_for_workspace()`: `password` alanı `update_or_create` defaults'dan çıkarıldı. GeoServer REST API credentials expose etmediğinden `store_data.get('password', '')` her zaman `''` döner ve mevcut şifreyi silerdi. Password yalnızca PATCH `/api/geoengine/stores/{id}/` üzerinden yönetilir.
+4.4.7 ✅ layer eklerken ayni ismi 2 defa yukelmeye calistigim icin hata almisim. bu aslinda yaygin hata. bunu daha guzel sekilde yaklayip kullaniciyi uyaralim — `publish_postgis` action'a `verify_featuretype()` ön-kontrolü eklendi; katman GeoServer'da zaten varsa HTTP 409 + `error_code='LAYER_ALREADY_EXISTS'` döndürülür. Konsol view'i 409'u ayrı branch'te ele alır: "Go to the Layers list to delete it first, or choose a different name."
+4.4.8 ✅ diger sorun da ismi degistirip veriyi tekrar gonderemedim. yani form yeni update olmus bilgi ile guncellenmiyor — İki ayrı sorun tespit edildi ve düzeltildi: (1) `layer_publish.js`: `loadTables()` tamamlandığında POST-back'den gelen `table_name` değeriyle eşleşen kart `.selected` olarak işaretleniyor; kullanıcı hata sonrası sayfaya döndüğünde seçili tabloyu görür. (2) 409 hata mesajı yanlış yönlendiriyordu ("Choose a different layer name") — oysa çakışma `layer_name` (sadece görüntü başlığı) değil `table_name` (GeoServer featuretype adı = PostGIS tablo adı) üzerinde. Mesaj güncellendi: "PostGIS table X is already published … delete the existing layer first, or select a different table."
 
 ⸻
 
@@ -591,6 +620,57 @@ POC completion criteria:
 	•	Workspace filtering working ⬜
 	•	Django + GeoServer state consistent ⬜
 
+## PHASE 4.6 — Template Quality & Static File Refactor ✅
+
+**Cross-cutting:** applies to all console templates.
+**Goal:** No inline CSS, no inline `<script>` blocks, no inline event handlers in any HTML template.
+
+### CSS Architecture
+
+| # | Task | Status |
+|---|------|--------|
+| 4.6.1 | Split 1036-line `console.css` monolith into domain files | ✅ |
+| 4.6.2 | `static/geo_console/css/console.css` — shared foundation (~400 line cap) | ✅ |
+| 4.6.3 | `static/geo_console/css/layers.css` — layer list + layer_publish (`lp-*` namespace) | ✅ |
+| 4.6.4 | `static/geo_console/css/stores.css` — store-specific styles | ✅ |
+| 4.6.5 | Add `{% block page_extra_css %}` hook to `geo_console/base.html` | ✅ |
+| 4.6.6 | Wire domain CSS into templates via `{% block page_extra_css %}` | ✅ |
+| 4.6.7 | Remove all `style=""` attributes from all 12 console templates | ✅ |
+| 4.6.8 | Document CSS rules in `docs/development/UI-UX_Rules.md` §11 | ✅ |
+
+### JS Extraction
+
+| # | Task | Status |
+|---|------|--------|
+| 4.6.9 | Extract `layer_publish.html` scripts → `static/geo_console/js/layer_publish.js` | ✅ |
+| 4.6.10 | Extract store type toggle → `static/geo_console/js/store_form.js` | ✅ |
+| 4.6.11 | Create `static/geo_console/js/console.js` — shared DOMContentLoaded handlers | ✅ |
+| 4.6.12 | Add `{% block page_extra_js %}` hook inside `{% block page_js %}` in `geo_console/base.html` | ✅ |
+| 4.6.13 | Migrate all child templates from `{% block page_js %}` → `{% block page_extra_js %}` | ✅ |
+
+### Inline Event Handler Cleanup
+
+| # | Task | Status |
+|---|------|--------|
+| 4.6.14 | Replace 3× `onchange="this.form.submit()"` with `data-autosubmit` | ✅ |
+| 4.6.15 | Replace 4× `onsubmit="return confirm(...)"` with `data-confirm` on forms | ✅ |
+| 4.6.16 | Move engine delete `onclick="confirm(...)"` → `data-confirm` on `<form>` | ✅ |
+| 4.6.17 | Verify: zero `onchange=`/`onsubmit=`/`onclick=.*confirm` in any template | ✅ |
+
+**`console.js` behavior contracts:**
+- `select[data-autosubmit]` → submits closest form on `change`
+- `form[data-confirm]` → `window.confirm(dataset.confirm)` before submit; `&#10;` = newline in attr
+- `[data-confirm-click]` → `window.confirm(dataset.confirmClick)` before click
+- Intentionally kept as `onclick`: `syncEngine(...)`, `quickSync(...)`, `testConnection()` — external function calls
+
+**Milestone check:**
+- Zero `style=""` attributes in any console template ✅
+- Zero `<script>` blocks inline in any console template ✅
+- Zero `onchange=`/`onsubmit=`/`onclick=.*confirm` in any console template ✅
+- CSS hard cap: each file < 400 lines, enforced in `UI-UX_Rules.md` §11 ✅
+
+---
+
 ## PHASE 5 — Styles ⬜
 
 **Branch:** `feature/console-styles`
@@ -698,9 +778,10 @@ These apply to every phase. Do not skip.
 | 1 | Engines + Sync UI | ✅ Done (1.1–1.6 all complete) |
 | 2 | Workspaces | ✅ Done |
 | 3 | Stores | ✅ Done |
-| 4 | Layers (import + publish) | ⬜ Not started |
+| 4 | Layers (import + publish) | ✅ Done |
+| 4.6 | Template Quality & Static File Refactor | ✅ Done |
 | 5 | Styles | ⬜ Not started |
 | 6 | Jobs (Django-Q) | ⬜ Not started |
 
-**Next action:** Phase 4 — Layers.
-**Last updated:** 15 March 2026 — Phase 3 post-fixes: clone store feature, schema validation bug removed, `tosca_gs` PostgreSQL permissions corrected (`gis_schema` ALL + DEFAULT PRIVILEGES), docker-compose volume mount fixed.
+**Next action:** Phase 5 — Styles.
+**Last updated:** 15 March 2026 — Phase 4.6: CSS split (console/layers/stores.css), `layer_publish.js` + `store_form.js` extraction, `console.js` shared handlers, inline event handler cleanup (`data-autosubmit`, `data-confirm`).

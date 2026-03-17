@@ -4,6 +4,13 @@
 {# ── Console-wide CSS ─────────────────────────────────────────────────── #}
 {% block page_css %}
 <link rel="stylesheet" href="{% static 'geo_console/css/console.css' %}">
+{% block page_extra_css %}{% endblock %}
+{% endblock %}
+
+{# ── Console-wide JS (data-autosubmit, data-confirm, data-confirm-click) ─ #}
+{% block page_js %}
+<script src="{% static 'geo_console/js/console.js' %}"></script>
+{% block page_extra_js %}{% endblock %}
 {% endblock %}
 
 {# ── Console sidebar nav ──────────────────────────────────────────────── #}
@@ -32,13 +39,11 @@
   Stores
 </a>
 
-{# Phase 4 — uncomment when layer views are wired #}
-{% comment %}
+{# Phase 4 — Layers #}
 <a href="{% url 'layer_list' %}"
-   class="nav-item{% if u == 'layer_list' or u == 'layer_detail' or u == 'layer_upload' %} active{% endif %}">
+   class="nav-item{% if u == 'layer_list' or u == 'layer_publish' or u == 'layer_detail' or u == 'layer_delete' %} active{% endif %}">
   Layers
 </a>
-{% endcomment %}
 
 {# Phase 5 — uncomment when style views are wired #}
 {% comment %}

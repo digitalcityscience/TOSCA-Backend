@@ -3,6 +3,10 @@
 
 {% block title %}Add Store — Geo Console — TOSCA{% endblock %}
 
+{% block page_extra_css %}
+<link rel="stylesheet" href="{% static 'geo_console/css/stores.css' %}">
+{% endblock %}
+
 
 {% block content %}
 
@@ -96,23 +100,24 @@
   </div>
 
   <!-- PostGIS Connection — only shown when store_type == 'postgis' -->
-  <div class="form-section" id="postgis-section">
+  <div class="form-section" id="postgis-section"
+       data-store-type-id="{{ form.store_type.id_for_label }}">
     <div class="section-label">PostGIS Connection</div>
-    <div class="form-hint" style="margin-bottom: 0.75rem;">
+    <div class="form-hint">
       GeoServer will attempt to open a live connection using these credentials.
       Save will fail if the connection is refused — nothing is persisted on error.
     </div>
 
     <div class="form-row">
       <label class="form-label" for="{{ form.host.id_for_label }}">Host / Port</label>
-      <div class="form-field" style="display:flex; gap: 0.75rem; align-items: flex-start;">
-        <div style="flex:1;">
+      <div class="form-field form-row__cols">
+        <div class="form-field--grow">
           {{ form.host }}
           {% if form.host.errors %}
             <div class="form-error">{{ form.host.errors.0 }}</div>
           {% endif %}
         </div>
-        <div>
+        <div class="form-field--port">
           {{ form.port }}
           {% if form.port.errors %}
             <div class="form-error">{{ form.port.errors.0 }}</div>
@@ -185,16 +190,6 @@
 
 {% endblock %}
 
-{% block page_js %}
-<script>
-(function () {
-  var typeSelect = document.getElementById('{{ form.store_type.id_for_label }}');
-  var pgSection  = document.getElementById('postgis-section');
-  function toggle() {
-    pgSection.style.display = typeSelect.value === 'postgis' ? '' : 'none';
-  }
-  toggle();
-  typeSelect.addEventListener('change', toggle);
-})();
-</script>
+{% block page_extra_js %}
+<script src="{% static 'geo_console/js/store_form.js' %}"></script>
 {% endblock %}

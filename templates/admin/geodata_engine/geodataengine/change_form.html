@@ -1,0 +1,152 @@
+{% extends "admin/change_form.html" %}
+{% load i18n %}
+
+{% block submit_buttons_bottom %}
+  {{ block.super }}
+
+  {% if object.pk %}
+  {# ------------------------------------------------------------------ #}
+  {# Engine action buttons — only shown on the change form (not add)    #}
+  {# ------------------------------------------------------------------ #}
+  <div id="engine-action-panel" style="
+    margin: 18px 0 8px 0;
+    padding: 14px 18px;
+    background: #f8f8f8;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+  ">
+    <strong style="display:block; margin-bottom:12px; font-size:13px;">Engine Actions</strong>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+
+      {# ── Test Connection ────────────────────────────────────────── #}
+      <button
+        type="button"
+        id="btn-test-connection"
+        style="
+          padding: 7px 16px;
+          background: #417690;
+          color: #fff;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 13px;
+        "
+        onclick="engineAction('test-connection', this)"
+      >
+        Test Connection
+      </button>
+
+      {# ── Sync Now ────────────────────────────────────────────────── #}
+      <button
+        type="button"
+        id="btn-sync-now"
+        style="
+          padding: 7px 16px;
+          background: #5a9e6f;
+          color: #fff;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 13px;
+        "
+        onclick="engineAction('sync', this)"
+      >
+        Sync Now
+      </button>
+
+      <span id="engine-action-spinner" style="display:none; font-size:13px; color:#666;">
+        &#9203; Running&hellip;
+      </span>
+    </div>
+
+    {# Result box — hidden until a call completes #}
+    <div id="engine-action-result" style="
+      display: none;
+      margin-top: 12px;
+      padding: 10px 14px;
+      border-radius: 4px;
+      font-size: 13px;
+      line-height: 1.6;
+    "></div>
+  </div>
+
+  <script>
+  (function () {
+    var ENGINE_ID = "{{ object.pk }}";
+
+    function getCsrf() {
+      var name = 'csrftoken';
+      var cookies = document.cookie.split(';');
+      for (var i = 0; i < cookies.length; i++) {
+        var c = cookies[i].trim();
+        if (c.startsWith(name + '=')) return decodeURIComponent(c.slice(name.length + 1));
+      }
+      return '';
+    }
+
+    window.engineAction = function (action, btn) {
+      var url = window.location.pathname.replace(/\/$/, '')
+                  .replace(/\/change$/, '') + '/' + action + '/';
+
+      var spinner    = document.getElementById('engine-action-spinner');
+      var resultBox  = document.getElementById('engine-action-result');
+      var allBtns    = document.querySelectorAll('#engine-action-panel button');
+
+      allBtns.forEach(function (b) { b.disabled = true; });
+      spinner.style.display   = 'inline';
+      resultBox.style.display = 'none';
+
+      fetch(url, {
+        method: 'POST',
+        headers: {
+          'X-CSRFToken': getCsrf(),
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({}),
+      })
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        spinner.style.display = 'none';
+        allBtns.forEach(function (b) { b.disabled = false; });
+
+        if (data.success) {
+          resultBox.style.background = '#eaf7ee';
+          resultBox.style.border     = '1px solid #3ecf8e';
+          resultBox.style.color      = '#1a6b41';
+
+          var msg = '';
+          if (action === 'test-connection') {
+            msg = '&#10003; Connected &mdash; GeoServer ' + data.version
+                + ', latency <strong>' + data.latency_ms + ' ms</strong>.';
+          } else {
+            var ws = data.workspaces, st = data.stores, ly = data.layers;
+            msg = '&#10003; Sync complete &mdash; '
+                + 'Workspaces: +' + ws.created + ' / &minus;' + ws.deleted + ' / ~' + ws.synced + ' &bull; '
+                + 'Stores: +'     + st.created + ' / &minus;' + st.deleted + ' / ~' + st.synced + ' &bull; '
+                + 'Layers: +'     + ly.created + ' / &minus;' + ly.deleted + ' / ~' + ly.synced + '.';
+          }
+          resultBox.innerHTML = msg;
+        } else {
+          resultBox.style.background = '#fdf0f0';
+          resultBox.style.border     = '1px solid #e54d4d';
+          resultBox.style.color      = '#a31515';
+          resultBox.innerHTML = '&#10007; ' + (data.error || 'An error occurred.');
+        }
+        resultBox.style.display = 'block';
+      })
+      .catch(function (err) {
+        spinner.style.display = 'none';
+        allBtns.forEach(function (b) { b.disabled = false; });
+        resultBox.style.background = '#fdf0f0';
+        resultBox.style.border     = '1px solid #e54d4d';
+        resultBox.style.color      = '#a31515';
+        resultBox.innerHTML = '&#10007; Network error: ' + err;
+        resultBox.style.display = 'block';
+      });
+    };
+  })();
+  </script>
+  {% endif %}
+{% endblock %}

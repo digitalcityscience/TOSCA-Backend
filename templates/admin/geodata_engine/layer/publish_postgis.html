@@ -1,0 +1,233 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}Publish Layer from PostGIS{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="/admin/">Home</a> &rsaquo;
+  <a href="/admin/geodata_engine/layer/">Layers</a> &rsaquo;
+  Publish from PostGIS
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>Publish Layer from PostGIS</h1>
+
+<p style="color:#666; margin-bottom:18px; font-size:13px;">
+  Select a workspace, store, and table to publish as a new GeoServer layer.
+  The table must already exist in the PostGIS database.
+</p>
+
+{% if form.non_field_errors %}
+<div style="
+  background:#fdf0f0; border:1px solid #e54d4d; color:#a31515;
+  padding:10px 14px; margin-bottom:16px; border-radius:4px; font-size:13px;
+">
+  {% for error in form.non_field_errors %}
+    <div>&#10007; {{ error }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<form method="post" style="max-width: 720px;">
+  {% csrf_token %}
+
+  {# ── Source section ─────────────────────────────────────── #}
+  <fieldset class="module aligned" style="margin-bottom:16px;">
+    <h2>Source</h2>
+
+    <div class="form-row">
+      <div>
+        <label for="{{ form.workspace.id_for_label }}" class="required">Workspace:</label>
+        {{ form.workspace }}
+        {% if form.workspace.errors %}
+          <p class="errornote">{{ form.workspace.errors|join:", " }}</p>
+        {% endif %}
+        <p class="help">{{ form.workspace.help_text }}</p>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div>
+        <label for="{{ form.store.id_for_label }}" class="required">Store:</label>
+        {{ form.store }}
+        {% if form.store.errors %}
+          <p class="errornote">{{ form.store.errors|join:", " }}</p>
+        {% endif %}
+        <p class="help">{{ form.store.help_text }}</p>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div>
+        <label for="{{ form.table_name.id_for_label }}" class="required">Table name:</label>
+        {{ form.table_name }}
+        {% if form.table_name.errors %}
+          <p class="errornote">{{ form.table_name.errors|join:", " }}</p>
+        {% endif %}
+        <p class="help">{{ form.table_name.help_text }}</p>
+      </div>
+    </div>
+  </fieldset>
+
+  {# ── Identity section ────────────────────────────────────── #}
+  <fieldset class="module aligned" style="margin-bottom:16px;">
+    <h2>Layer Identity</h2>
+
+    <div class="form-row">
+      <div>
+        <label for="{{ form.layer_name.id_for_label }}">Layer name:</label>
+        {{ form.layer_name }}
+        {% if form.layer_name.errors %}
+          <p class="errornote">{{ form.layer_name.errors|join:", " }}</p>
+        {% endif %}
+        <p class="help">{{ form.layer_name.help_text }}</p>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div>
+        <label for="{{ form.title.id_for_label }}">Title:</label>
+        {{ form.title }}
+        <p class="help">{{ form.title.help_text }}</p>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div>
+        <label for="{{ form.description.id_for_label }}">Description:</label>
+        {{ form.description }}
+      </div>
+    </div>
+  </fieldset>
+
+  {# ── Geometry section ─────────────────────────────────────── #}
+  <fieldset class="module aligned" style="margin-bottom:24px;">
+    <h2>Geometry &amp; CRS</h2>
+
+    <div class="form-row">
+      <div>
+        <label for="{{ form.geometry_column.id_for_label }}" class="required">Geometry column:</label>
+        {{ form.geometry_column }}
+        {% if form.geometry_column.errors %}
+          <p class="errornote">{{ form.geometry_column.errors|join:", " }}</p>
+        {% endif %}
+        <p class="help">{{ form.geometry_column.help_text }}</p>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div>
+        <label for="{{ form.geometry_type.id_for_label }}" class="required">Geometry type:</label>
+        {{ form.geometry_type }}
+        {% if form.geometry_type.errors %}
+          <p class="errornote">{{ form.geometry_type.errors|join:", " }}</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div>
+        <label for="{{ form.srid.id_for_label }}" class="required">SRID:</label>
+        {{ form.srid }}
+        {% if form.srid.errors %}
+          <p class="errornote">{{ form.srid.errors|join:", " }}</p>
+        {% endif %}
+        <p class="help">{{ form.srid.help_text }}</p>
+      </div>
+    </div>
+  </fieldset>
+
+  <div style="display:flex; gap:10px; align-items:center;">
+    <input
+      type="submit"
+      value="Publish Layer"
+      style="
+        background: #5a9e6f;
+        color: #fff;
+        border: none;
+        padding: 9px 22px;
+        border-radius: 4px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      "
+    />
+    <a
+      href="/admin/geodata_engine/layer/"
+      style="font-size: 13px; color: #666; text-decoration: none;"
+    >
+      Cancel
+    </a>
+  </div>
+</form>
+
+<script>
+(function () {
+  /* When workspace changes, filter the store dropdown via AJAX */
+  var wsSelect = document.getElementById('{{ form.workspace.id_for_label }}');
+  var storeSelect = document.getElementById('{{ form.store.id_for_label }}');
+  var tableSelect = document.getElementById('{{ form.table_name.id_for_label }}');
+
+  if (!wsSelect || !storeSelect || !tableSelect) return;
+
+  wsSelect.addEventListener('change', function () {
+    var wsId = wsSelect.value;
+    if (!wsId) return;
+
+    fetch('/admin/geodata_engine/layer/stores-for-workspace/?workspace_id=' + wsId, {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      /* Rebuild store options */
+      storeSelect.innerHTML = '<option value="">---------</option>';
+      (data.stores || []).forEach(function (s) {
+        var opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.name + ' (' + s.store_type + ')';
+        storeSelect.appendChild(opt);
+      });
+      /* Clear table options when workspace changes */
+      tableSelect.innerHTML = '<option value="">---------</option>';
+    })
+    .catch(function (err) {
+      console.warn('stores-for-workspace failed:', err);
+    });
+  });
+
+  /* When store changes, fetch available tables via AJAX */
+  storeSelect.addEventListener('change', function () {
+    var storeId = storeSelect.value;
+    if (!storeId) {
+      tableSelect.innerHTML = '<option value="">---------</option>';
+      return;
+    }
+
+    fetch('/admin/geodata_engine/store/' + storeId + '/postgis-tables/', {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.error) {
+        tableSelect.innerHTML = '<option value="">Error: ' + data.error + '</option>';
+        return;
+      }
+      /* Rebuild table options */
+      tableSelect.innerHTML = '<option value="">---------</option>';
+      (data.tables || []).forEach(function (t) {
+        var opt = document.createElement('option');
+        opt.value = t.table_name;
+        opt.textContent = t.table_name + ' (' + t.geometry_type + ', SRID: ' + t.srid + ')';
+        tableSelect.appendChild(opt);
+      });
+    })
+    .catch(function (err) {
+      console.warn('postgis-tables failed:', err);
+      tableSelect.innerHTML = '<option value="">Failed to load tables</option>';
+    });
+  });
+})();
+</script>
+{% endblock %}

@@ -8,9 +8,14 @@ from .views import (
     engine_edit,
     engine_sync,
     engine_validate,
+    layer_delete,
+    layer_detail,
+    layer_list,
+    layer_publish,
     set_active_engine,
     store_create,
     store_delete,
+    store_detail,
     store_list,
     store_test_connection,
     workspace_create,
@@ -46,6 +51,13 @@ urlpatterns = [
     # Phase 3 — Stores
     path('stores/', store_list, name='store_list'),
     path('stores/create/', store_create, name='store_create'),
+    path('stores/<uuid:store_id>/', store_detail, name='store_detail'),
     path('stores/<uuid:store_id>/delete/', store_delete, name='store_delete'),
     path('stores/<uuid:store_id>/test/', store_test_connection, name='store_test_connection'),
+
+    # Phase 4 — Layers
+    path('layers/', layer_list, name='layer_list'),
+    path('layers/publish/', layer_publish, name='layer_publish'),
+    path('layers/<uuid:layer_id>/', layer_detail, name='layer_detail'),
+    path('layers/<uuid:layer_id>/delete/', layer_delete, name='layer_delete'),
 ]

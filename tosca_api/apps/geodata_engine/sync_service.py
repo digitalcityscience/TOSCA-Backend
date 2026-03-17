@@ -205,6 +205,12 @@ class GeoServerSyncService:
                         )
                         continue
 
+                    # NOTE: 'password' is intentionally excluded from defaults.
+                    # GeoServer REST API never exposes credentials — store_data
+                    # will always return '' for password.  Including it in defaults
+                    # would wipe any password the user entered via Store Detail on
+                    # every sync cycle (F-009 / task 4.4.6).
+                    # Password is managed exclusively via PATCH /api/geoengine/stores/{id}/.
                     store, created = Store.objects.update_or_create(
                         workspace=workspace,
                         name=store_name,
@@ -216,7 +222,6 @@ class GeoServerSyncService:
                             'port': store_data.get('port', 5432),
                             'database': store_data.get('database', ''),
                             'username': store_data.get('username', ''),
-                            'password': store_data.get('password', ''),
                             'schema': store_data.get('schema', 'public'),
                             'created_by': created_by
                         }
@@ -327,6 +332,7 @@ class GeoServerSyncService:
                             'geometry_column': layer_data.get('geometry_column', 'geom'),
                             'geometry_type': layer_data.get('geometry_type', 'Point'),
                             'srid': layer_data.get('srid', 4326),
+                            'is_public': layer_data.get('advertised', True),  # read from GeoServer
                             'publishing_state': 'PUBLISHED',
                             'created_by': created_by
                         }

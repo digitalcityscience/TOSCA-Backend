@@ -2,6 +2,39 @@
 
 ---
 
+## 15 March 2026 — Template Static File Cleanup (Phase 4.6)
+
+### Tamamlanan İşler
+
+**1. CSS mimarisi — 1036 satırlık `console.css` parçalandı**
+- `console.css` (~400 satır) — ortak temel; header, button, badge, card, form, engine selector
+- `layers.css` (~369 satır) — layer list tablosu (`table-card`, `layer-table`, `lp-*` publish form namespace)
+- `stores.css` — store-specific stiller (`.form-section-note` vb.)
+- `geo_console/base.html`'e `{% block page_extra_css %}` hook eklendi
+- Tüm domain template'lere domain CSS'i `{% block page_extra_css %}` üzerinden yükleniyor
+- Tüm 12 template'den `style=""` attribute'ları kaldırıldı, yerlerine utility class'lar eklendi
+- `docs/development/UI-UX_Rules.md`'e §11 CSS Architecture bölümü eklendi (400 satır hard cap, dosya yapısı tablosu, loading pattern örneği)
+
+**2. JS extraction — tüm inline `<script>` bloklar dışa taşındı**
+- `static/geo_console/js/layer_publish.js` — publish form logic: `filterStores`, `loadTables`, `selectTable`, `selectCRS`, `applyCustomCRS`, `updateGeomDisplay`
+- `static/geo_console/js/store_form.js` — store type toggle; `data-store-type-id` dataset pattern ile Django template var'ı external JS'e iletiliyor
+- `static/geo_console/js/console.js` — tüm console sayfaları için paylaşılan `DOMContentLoaded` handler'ları
+- `geo_console/base.html`'e `{% block page_extra_js %}` hook eklendi (`{% block page_js %}` içinde, `console.js`'den sonra)
+- Tüm 5 alt template `{% block page_js %}` → `{% block page_extra_js %}`'e taşındı
+
+**3. Inline event handler temizliği — 9 handler kaldırıldı**
+- 3× `onchange="this.form.submit()"` → `data-autosubmit` (workspace/store/layer engine selector + layer workspace filter)
+- 4× `onsubmit="return confirm(...)"` → `data-confirm="msg&#10;second line"` (workspace/store/layer/layer-detail delete form'lar)
+- 1× `onclick="return confirm(...)"` → engine delete butondan `<form data-confirm="...">` olarak taşındı
+- Kalan `onclick`: yalnızca `syncEngine(id)`, `quickSync(id)`, `testConnection()` — external JS'de tanımlı function call'lar, inline logic değil
+
+**4. Block inheritance fix (F-010)**
+- Alt template'ler `{% block page_js %}` override edince `console.js` sessizce drop ediliyordu
+- Çözüm: base'de `{% block page_js %}` köke sabit `console.js` yüklüyor, ardından `{% block page_extra_js %}` açıyor
+- Alt template'ler artık yalnızca `{% block page_extra_js %}` kullanıyor → `console.js` her sayfada garanti yükleniyor
+
+---
+
 ## 14 March 2026 — Static File Refactor + Console CRUD Test
 
 ### Tamamlanan İşler
@@ -101,3 +134,47 @@
 - DB'de 1 engine (`Default GeoServer`), 4 workspace, 1 layer (`vector/apotheken`)
 - Layer sayısı GeoServer sync'e bağlı — `make sync-django-geoengine` ile güncellenir
 - Geo Console şu an sadece Engines view'ını implement ediyor; Workspaces/Stores/Layers ileride eklenecek
+
+---
+
+## 15 March 2026 — Phase 4 Layers + Store Credential Management + Bug Fixes
+
+### Tamamlanan İşler
+
+**1. Phase 4 — Layer Publish (4.1–4.4) tamamlandı**
+- `postgis_inspector.py` oluşturuldu — SQLAlchemy/psycopg3 ile direct PostGIS bağlantısı, `geometry_columns` view'ından metadata, `ST_Extent` ile bbox
+- `StoreViewSet.postgis_tables` DRF action: `GET /api/geoengine/stores/{id}/postgis_tables/`
+- `LayerViewSet.publish_postgis` DRF action: `POST /api/geoengine/layers/publish_postgis/`
+- Console views: `layer_list`, `layer_publish`, `layer_delete`
+- `LayerPublishForm` (workspace → store → table → geometry/CRS)
+
+**2. Layer Publish Form — Tam UX Yeniden Yazım**
+- 4-bölümlü form: Source (workspace/store seçimi), Layer Definition, Geometry (read-only), CRS
+- Store dropdown: workspace'e göre DOM rebuild (macOS native `<select>` CSS `display:none` option'ı yok sayıyor, JSON+JS rebuild ile çözüldü)
+- Table picker: her PostGIS tablosu için card — geometry icon (●╌▭▰), type badge, srid
+- Geometry display: seçilen tablonun geometry tipi/kolonu read-only kart olarak gösteriliyor
+- CRS preset grid: 6 kart (WGS84/4326, Web Mercator/3857, ETRS89/4258, UTM32N/25832, UTM33N/25833, BNG/27700) + custom EPSG input
+- `lp-*` CSS namespace `console.css`'e eklendi (18+ yeni selector)
+
+**3. Layer List — Flat Table**
+- Accordion yapısı kaldırıldı, flat paginated tablo (20/page)
+- Workspace filter dropdown header actions'da
+- Workspace tag badge, status badge (published/unpublished), CRS/geometry sütunları
+
+**4. Store Detail + Credential Management (3.10)**
+- GeoServer sync'den gelen store'ların Django'da password bilgisi olmadığı tespit edildi (GeoServer REST API credentials expose etmiyor)
+- `StoreSerializer.has_password` SerializerMethodField eklendi
+- `postgis_tables` endpoint: password yoksa açıklayıcı 400 mesajı, stack trace yok
+- Store Detail sayfası: `/console/stores/<uuid>/` — identity card + credential edit formu + sarı uyarı banner'ı
+- Store list kartları: Detail | Clone | Delete üç buton sırası
+- `GeoConsoleAPIClient.update_store()` PATCH metodu eklendi
+
+**5. Kritik Bug Fix'ler**
+- `delete_datastore` → `delete_featurestore`: `geoserver-rest` kütüphanesinde bu method yoktu, store silinemiyordu (F-007)
+- `{% block page_scripts %}` → `{% block page_js %}`: layer publish sayfasında tüm JS sessizce drop ediliyordu — Django bilinmeyen block'ları hata vermeden yok sayıyor (F-008)
+- Delete hata mesajı: `detail` alanına bookkeeping metni yerine gerçek GeoServer hatası yazılıyor
+
+### Bilinen Durum
+- Phase 4 POC tamamlandı — PostGIS tablosunu GeoServer layer olarak publish etmek uçtan uca çalışıyor
+- GeoServer'dan sync edilen store'lar için Detail sayfasından credential girilmesi gerekiyor
+- Phase 5 (Styles) henüz başlamadı

@@ -71,14 +71,14 @@
 <div class="empty-state">
   <div class="empty-state-title">No engines configured</div>
   <div class="empty-state-sub">
-    <a href="{% url 'engine_create' %}" class="btn-add" style="display:inline-flex; margin-top:0.75rem;">+ Add Engine</a>
+    <a href="{% url 'engine_create' %}" class="btn-add mt-md">+ Add Engine</a>
   </div>
 </div>
 {% endif %}
 
 {% endblock %}
 
-{% block page_js %}
+{% block page_extra_js %}
 <script src="{% static 'geo_console/js/engines.js' %}?v=5"></script>
 {% endblock %}
 

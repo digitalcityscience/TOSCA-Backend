@@ -308,6 +308,16 @@ class GeoConsoleAPIClient:
         """
         return self._post("stores/", data=data)
 
+    def update_store(self, store_id: str, data: dict) -> dict:
+        """
+        PATCH /api/geoengine/stores/{store_id}/
+        Partial update — only the fields in `data` are changed.
+        Typically used to save connection credentials (host, username, password, etc.)
+        that Django never received when the store was synced from GeoServer.
+        Returns the updated store dict.
+        """
+        return self._patch(f"stores/{store_id}/", data=data)
+
     def delete_store(self, store_id: str) -> dict:
         """
         DELETE /api/geoengine/stores/{store_id}/
@@ -323,6 +333,86 @@ class GeoConsoleAPIClient:
         Returns {"success": True, "message": ..., "detail": {...}}
         """
         return self._post(f"stores/{store_id}/test_connection/")
+
+    def get_postgis_tables(self, store_id: str) -> list[dict]:
+        """
+        GET /api/geoengine/stores/{store_id}/postgis_tables/
+        Returns list of PostGIS tables with geometry metadata for the store.
+        Each entry: {table_name, geometry_column, geometry_type, srid}
+        """
+        result = self._get(f"stores/{store_id}/postgis_tables/")
+        return result.get("tables", [])
+
+    # ------------------------------------------------------------------
+    # Layer methods  (Phase 4)
+    # ------------------------------------------------------------------
+
+    def list_layers(
+        self,
+        engine_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[dict]:
+        """
+        GET /api/geoengine/layers/
+        Returns all layers, optionally filtered by engine or workspace UUID.
+        """
+        params = []
+        if engine_id:
+            params.append(f"geodata_engine={engine_id}")
+        if workspace_id:
+            params.append(f"workspace={workspace_id}")
+        path = "layers/?" + "&".join(params) if params else "layers/"
+        result = self._get(path)
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return result if isinstance(result, list) else []
+
+    def get_layer(self, layer_id: str) -> dict:
+        """GET /api/geoengine/layers/{layer_id}/"""
+        return self._get(f"layers/{layer_id}/")
+
+    def publish_layer_postgis(self, data: dict) -> dict:
+        """
+        POST /api/geoengine/layers/publish_postgis/
+        Publishes a PostGIS table as a GeoServer layer and registers it in Django.
+
+        Required keys: store_id, workspace_id, table_name, layer_name,
+                       geometry_column, geometry_type, srid.
+        Optional: title, description.
+
+        Returns: {"layer": {...}, "result": {"success": True, ...}}
+        """
+        return self._post("layers/publish_postgis/", data=data, timeout=_SYNC_TIMEOUT)
+
+    def delete_layer(self, layer_id: str) -> dict:
+        """
+        DELETE /api/geoengine/layers/{layer_id}/
+        Unpublishes from GeoServer first, then deletes Django object.
+        Returns {"success": True, ...} or raises APIError.
+        """
+        return self._delete(f"layers/{layer_id}/")
+
+    def update_layer(self, layer_id: str, data: dict) -> dict:
+        """
+        PATCH /api/geoengine/layers/{layer_id}/
+        Updates editable layer fields: title, description, srid, is_public.
+        For PUBLISHED layers, title and description are also synced to GeoServer.
+        """
+        return self._patch(f"layers/{layer_id}/", data=data)
+
+    def publish_layer(self, layer_id: str) -> dict:
+        """
+        POST /api/geoengine/layers/{layer_id}/publish/
+        Publishes an already-registered DRAFT layer to GeoServer.
+        """
+        return self._post(f"layers/{layer_id}/publish/", timeout=_SYNC_TIMEOUT)
+
+    def unpublish_layer(self, layer_id: str) -> dict:
+        """
+        POST /api/geoengine/layers/{layer_id}/unpublish/
+        Unpublishes a layer from GeoServer (sets state to UNPUBLISHED).
+        """
+        return self._post(f"layers/{layer_id}/unpublish/")
 
     # ------------------------------------------------------------------
     # Low-level write helpers

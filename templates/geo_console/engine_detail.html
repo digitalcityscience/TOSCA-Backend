@@ -26,10 +26,11 @@
     <button id="btn-sync" class="btn btn--secondary"
             onclick="syncEngine('{{ engine.id }}')">Sync Now</button>
     <a href="{% url 'engine_edit' engine.id %}" class="btn btn--secondary">Edit</a>
-    <form method="post" action="{% url 'engine_delete' engine.id %}" style="margin:0;">
+    <form method="post" action="{% url 'engine_delete' engine.id %}"
+          class="form-inline"
+          data-confirm="Delete '{{ engine.name }}' permanently? This cannot be undone.">
       {% csrf_token %}
-      <button type="submit" class="btn btn--danger"
-              onclick="return confirm('Delete engine \'{{ engine.name }}\' permanently? This cannot be undone.')">Delete</button>
+      <button type="submit" class="btn btn--danger">Delete</button>
     </form>
   </div>
 </div>
@@ -98,12 +99,12 @@
 </div>
 
 <!-- ── Sync result ───────────────────────────────────────────────────── -->
-<div id="sync-result" class="result-panel" style="display:none; margin-top:1rem;"></div>
+<div id="sync-result" class="result-panel mt-md" style="display:none;"></div>
 
 <!-- ── Sync info panel ──────────────────────────────────────────────── -->
-<div class="detail-section" style="margin-top: 1.5rem;">
+<div class="detail-section mt-lg">
   <div class="section-label">About these actions</div>
-  <p class="text-muted" style="font-size:12px; margin: 0.5rem 0 0;">
+  <p class="form-hint mt-xs">
     <strong>Sync Now</strong> pulls the current state from GeoServer into Django
     (workspaces, stores, layers). Read-only pull — never deletes data from GeoServer.
     The sync verifies the connection before starting; if the engine is unreachable the
@@ -112,12 +113,12 @@
 </div>
 
 <!-- ── Back link ────────────────────────────────────────────────────── -->
-<div style="margin-top: 2rem;">
+<div class="mt-xl">
   <a href="{% url 'geo_console' %}" class="link-muted">← Back to Engines</a>
 </div>
 
 {% endblock %}
 
-{% block page_js %}
+{% block page_extra_js %}
 <script src="{% static 'geo_console/js/engine_detail.js' %}"></script>
 {% endblock %}

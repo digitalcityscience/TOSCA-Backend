@@ -1,0 +1,301 @@
+{% extends 'geo_console/base.html' %}
+{% load static %}
+
+{% block title %}Publish Layer — Geo Console — TOSCA{% endblock %}
+
+{% block page_extra_css %}
+<link rel="stylesheet" href="{% static 'geo_console/css/layers.css' %}">
+{% endblock %}
+
+
+{% block content %}
+
+{% if messages %}
+<div class="messages-wrap">
+  {% for msg in messages %}
+  <div class="message message--{{ msg.tags }}">{{ msg }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- ── Page header ─────────────────────────────────────────────────── -->
+<div class="content-header">
+  <div>
+    <div class="page-title">Publish Layer</div>
+    <div class="page-sub">Select a PostGIS table and publish it to GeoServer</div>
+  </div>
+  <div class="header-actions">
+    <a href="{% url 'layer_list' %}" class="btn btn--secondary">Cancel</a>
+  </div>
+</div>
+
+<!-- ── Form ────────────────────────────────────────────────────────── -->
+<form id="layer-publish-form" method="post" autocomplete="off" novalidate>
+  {% csrf_token %}
+
+  <!-- ─────────────────────────────────────────────────────────────────
+       STEP 1 — SOURCE
+       ──────────────────────────────────────────────────────────────── -->
+  <div class="form-section">
+    <div class="section-label">1 — Source</div>
+
+    <!-- Workspace -->
+    <div class="form-row">
+      <label class="form-label" for="id_workspace_id">
+        Workspace <span class="req">*</span>
+      </label>
+      <div class="form-field">
+        <select id="id_workspace_id" name="workspace_id" class="form-control">
+          <option value="">— select a workspace —</option>
+          {% for ws in workspaces %}
+          <option value="{{ ws.id }}"
+            {% if form.workspace_id.value == ws.id|stringformat:"s" %}selected{% endif %}>
+            {{ ws.name }}
+          </option>
+          {% endfor %}
+        </select>
+        {% if form.workspace_id.errors %}
+          <div class="form-error">{{ form.workspace_id.errors.0 }}</div>
+        {% endif %}
+        {% if not workspaces %}
+          <div class="form-warn">No workspaces found.
+            <a href="{% url 'workspace_create' %}">Create one →</a>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Store — rendered manually so each option carries data-workspace -->
+    <div class="form-row">
+      <label class="form-label" for="id_store_id">
+        Datastore <span class="req">*</span>
+      </label>
+      <div class="form-field">
+        <select id="id_store_id" name="store_id" class="form-control" disabled>
+          <option value="">— select a workspace first —</option>
+          {% for st in stores %}
+          <option value="{{ st.id }}"
+                  data-workspace="{{ st.workspace }}"
+                  {% if form.store_id.value == st.id|stringformat:"s" %}selected{% endif %}>
+            {{ st.name }}{% if st.store_type %} ({{ st.store_type }}){% endif %}
+          </option>
+          {% endfor %}
+        </select>
+        {% if form.store_id.errors %}
+          <div class="form-error">{{ form.store_id.errors.0 }}</div>
+        {% endif %}
+        {% if not stores %}
+          <div class="form-warn">No stores found.
+            <a href="{% url 'store_create' %}">Add a store →</a>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- PostGIS table picker -->
+    <div class="form-row" id="table-picker-row">
+      <label class="form-label">Tables</label>
+      <div class="form-field">
+        <div id="picker-placeholder" class="lp-picker-placeholder">
+          Select a datastore to load its geometry tables.
+        </div>
+        <div id="picker-loading" class="lp-picker-loading" style="display:none;">
+          <span class="lp-spinner"></span> Loading tables…
+        </div>
+        <div id="picker-empty" class="lp-picker-empty" style="display:none;">
+          No geometry tables found for this store.
+        </div>
+        <div id="picker-list" class="lp-picker-list" style="display:none;"></div>
+      </div>
+    </div>
+
+  </div>{# /step 1 #}
+
+
+  <!-- ─────────────────────────────────────────────────────────────────
+       STEP 2 — LAYER DEFINITION
+       ──────────────────────────────────────────────────────────────── -->
+  <div class="form-section">
+    <div class="section-label">2 — Layer Definition</div>
+
+    <!-- Hidden table_name: auto-filled from picker, submitted with form -->
+    <input type="hidden" id="id_table_name" name="table_name"
+           value="{{ form.table_name.value|default_if_none:'' }}">
+
+    <div class="form-row">
+      <label class="form-label" for="id_layer_name">
+        Layer Name <span class="req">*</span>
+      </label>
+      <div class="form-field">
+        <input type="text" id="id_layer_name" name="layer_name"
+               class="form-control"
+               placeholder="e.g. buildings"
+               autocomplete="off"
+               pattern="^[a-zA-Z][a-zA-Z0-9_\-]*$"
+               value="{{ form.layer_name.value|default_if_none:'' }}">
+        {% if form.layer_name.errors %}
+          <div class="form-error">{{ form.layer_name.errors.0 }}</div>
+        {% endif %}
+        <div class="form-hint">GeoServer layer identifier — letters, digits, _ and - only.</div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="id_title">Title</label>
+      <div class="form-field">
+        <input type="text" id="id_title" name="title"
+               class="form-control"
+               placeholder="Human-readable title (optional)"
+               value="{{ form.title.value|default_if_none:'' }}">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="id_description">Description</label>
+      <div class="form-field">
+        <textarea id="id_description" name="description"
+                  class="form-control" rows="2"
+                  placeholder="Optional description">{{ form.description.value|default_if_none:'' }}</textarea>
+      </div>
+    </div>
+  </div>{# /step 2 #}
+
+
+  <!-- ─────────────────────────────────────────────────────────────────
+       STEP 3 — GEOMETRY  (read-only, auto-detected from PostGIS)
+       ──────────────────────────────────────────────────────────────── -->
+  <div class="form-section">
+    <div class="section-label">3 — Geometry</div>
+
+    <!-- Hidden inputs that carry values on submit -->
+    <input type="hidden" id="id_geometry_column" name="geometry_column"
+           value="{{ form.geometry_column.value|default_if_none:'geom' }}">
+    <input type="hidden" id="id_geometry_type" name="geometry_type"
+           value="{{ form.geometry_type.value|default_if_none:'' }}">
+
+    <div class="form-row">
+      <label class="form-label">Detected Geometry</label>
+      <div class="form-field">
+        <div id="geom-display" class="lp-geom-display lp-geom-display--empty">
+          <div class="lp-geom-icon" id="geom-icon">?</div>
+          <div class="lp-geom-details">
+            <span class="lp-geom-type" id="geom-type-label">—</span>
+            <span class="lp-geom-col"  id="geom-col-label">Select a table to detect geometry</span>
+          </div>
+        </div>
+        {% if form.geometry_column.errors or form.geometry_type.errors %}
+          <div class="form-error">
+            {{ form.geometry_column.errors.0 }}{{ form.geometry_type.errors.0 }}
+          </div>
+        {% endif %}
+        <div class="form-hint">
+          Detected automatically from PostGIS <code>geometry_columns</code>.
+          Geometry column and type are not editable here.
+        </div>
+      </div>
+    </div>
+  </div>{# /step 3 #}
+
+
+  <!-- ─────────────────────────────────────────────────────────────────
+       STEP 4 — COORDINATE REFERENCE SYSTEM
+       ──────────────────────────────────────────────────────────────── -->
+  <div class="form-section">
+    <div class="section-label">4 — Coordinate Reference System</div>
+
+    <!-- Hidden srid input submitted with form -->
+    <input type="hidden" id="id_srid" name="srid"
+           value="{{ form.srid.value|default_if_none:'4326' }}">
+
+    <div class="form-row">
+      <label class="form-label">Preset CRS <span class="req">*</span></label>
+      <div class="form-field">
+        <div class="lp-crs-grid" id="crs-preset-grid">
+
+          <button type="button" class="lp-crs-card" data-epsg="4326"
+                  data-name="WGS 84">
+            <div class="lp-crs-code">EPSG:4326</div>
+            <div class="lp-crs-name">WGS 84</div>
+            <div class="lp-crs-desc">Global · GPS · latitude/longitude · most common</div>
+          </button>
+
+          <button type="button" class="lp-crs-card" data-epsg="3857"
+                  data-name="Web Mercator">
+            <div class="lp-crs-code">EPSG:3857</div>
+            <div class="lp-crs-name">Web Mercator</div>
+            <div class="lp-crs-desc">Google Maps · OpenStreetMap · web tile services</div>
+          </button>
+
+          <button type="button" class="lp-crs-card" data-epsg="4258"
+                  data-name="ETRS89">
+            <div class="lp-crs-code">EPSG:4258</div>
+            <div class="lp-crs-name">ETRS89</div>
+            <div class="lp-crs-desc">Official EU geodetic reference datum</div>
+          </button>
+
+          <button type="button" class="lp-crs-card" data-epsg="25832"
+                  data-name="ETRS89 / UTM 32N">
+            <div class="lp-crs-code">EPSG:25832</div>
+            <div class="lp-crs-name">ETRS89 / UTM 32N</div>
+            <div class="lp-crs-desc">Central Europe — Germany · Netherlands · Denmark</div>
+          </button>
+
+          <button type="button" class="lp-crs-card" data-epsg="25833"
+                  data-name="ETRS89 / UTM 33N">
+            <div class="lp-crs-code">EPSG:25833</div>
+            <div class="lp-crs-name">ETRS89 / UTM 33N</div>
+            <div class="lp-crs-desc">Eastern Europe — Poland · Austria · Scandinavia</div>
+          </button>
+
+          <button type="button" class="lp-crs-card" data-epsg="27700"
+                  data-name="British National Grid">
+            <div class="lp-crs-code">EPSG:27700</div>
+            <div class="lp-crs-name">British National Grid</div>
+            <div class="lp-crs-desc">OSGB 1936 · United Kingdom</div>
+          </button>
+
+        </div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label" for="srid-custom">Custom EPSG</label>
+      <div class="form-field">
+        <div class="lp-crs-custom-row">
+          <span class="lp-crs-custom-prefix">EPSG:</span>
+          <input type="number" id="srid-custom" class="form-control lp-crs-custom-input"
+                 min="1" max="999999" placeholder="e.g. 32632" autocomplete="off">
+          <button type="button" class="btn btn--secondary" id="srid-custom-apply">Apply</button>
+        </div>
+        <div class="lp-crs-selected-info" id="crs-selected-info">
+          <span class="lp-crs-selected-label">Active CRS:</span>
+          <span class="lp-crs-selected-badge" id="crs-selected-badge">EPSG:4326</span>
+          <span class="lp-crs-selected-name"  id="crs-selected-name">WGS 84</span>
+        </div>
+        {% if form.srid.errors %}
+          <div class="form-error">{{ form.srid.errors.0 }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>{# /step 4 #}
+
+
+  <!-- Submit -->
+  <div class="form-actions">
+    <button type="submit" class="btn btn--primary" id="publish-btn">Publish Layer</button>
+    <a href="{% url 'layer_list' %}" class="btn btn--secondary">Cancel</a>
+  </div>
+
+</form>
+
+{# All store data for JS workspace→store filtering #}
+<script id="stores-data" type="application/json">[{% for st in stores %}{"id":"{{ st.id }}","workspace":"{{ st.workspace }}","name":"{{ st.name }}","store_type":"{{ st.store_type }}"}{% if not forloop.last %},{% endif %}{% endfor %}]</script>
+
+{% endblock %}
+
+
+{% block page_extra_js %}
+<script src="{% static 'geo_console/js/layer_publish.js' %}"></script>
+{% endblock %}
+

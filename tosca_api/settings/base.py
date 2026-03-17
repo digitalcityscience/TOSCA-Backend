@@ -153,6 +153,11 @@ INTERNAL_API_BASE_URL = env("INTERNAL_API_BASE_URL", default="http://localhost:8
 # Default PostGIS schema for GeoServer stores (task 3.5)
 GIS_SCHEMA = env("PG_SCHEMA_GIS", default="public")
 
+# Fernet key for encrypting GeoServer credentials in the DB.
+# Generate once:  uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# NEVER leave this unset in production — changing it invalidates all stored credentials.
+FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY")
+
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_AUTHENTICATION_CLASSES": [

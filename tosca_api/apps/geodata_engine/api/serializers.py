@@ -51,6 +51,7 @@ class StoreSerializer(serializers.ModelSerializer):
     """Serializer for Store model."""
 
     workspace_name = serializers.CharField(source='workspace.name', read_only=True)
+    has_password = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Store
@@ -67,25 +68,41 @@ class StoreSerializer(serializers.ModelSerializer):
             'database',
             'username',
             'password',
+            'has_password',
             'schema',
             'file_path',
             'charset',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'workspace_name', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'workspace_name', 'has_password', 'created_at', 'updated_at']
         extra_kwargs = {'password': {'write_only': True}}
+
+    def get_has_password(self, obj) -> bool:
+        """True if a non-empty password is stored (decrypted check)."""
+        return bool(obj.decrypted_password)
 
 
 class LayerSerializer(serializers.ModelSerializer):
     """Serializer for Layer model."""
+
+    workspace_name = serializers.SerializerMethodField()
+    store_name = serializers.SerializerMethodField()
+
+    def get_workspace_name(self, obj):
+        return obj.workspace.name if obj.workspace_id else None
+
+    def get_store_name(self, obj):
+        return obj.store.name if obj.store_id else None
 
     class Meta:
         model = Layer
         fields = [
             'id',
             'workspace',
+            'workspace_name',
             'store',
+            'store_name',
             'name',
             'title',
             'description',
@@ -101,4 +118,4 @@ class LayerSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'publishing_error', 'published_url', 'published_at', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'workspace_name', 'store_name', 'publishing_error', 'published_url', 'published_at', 'created_at', 'updated_at']

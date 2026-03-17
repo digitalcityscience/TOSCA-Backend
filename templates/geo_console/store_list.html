@@ -3,6 +3,10 @@
 
 {% block title %}Stores — Geo Console — TOSCA{% endblock %}
 
+{% block page_extra_css %}
+<link rel="stylesheet" href="{% static 'geo_console/css/stores.css' %}">
+{% endblock %}
+
 
 {# ── Topbar: engine selector ──────────────────────────────────────────── #}
 {% block topbar_left %}
@@ -12,7 +16,7 @@
   <input type="hidden" name="next" value="{{ request.path }}">
   <label class="engine-selector-label" for="engine-select">Engine</label>
   <select id="engine-select" name="engine_id" class="engine-selector-select"
-          onchange="this.form.submit()">
+          data-autosubmit>
     {% for engine in engines %}
     <option value="{{ engine.id }}"
             {% if engine.id|stringformat:"s" == active_engine_id %}selected{% endif %}>
@@ -101,16 +105,19 @@
     </div>
 
     <div class="card-actions">
+      <!-- Detail / edit store -->
+      <a href="{% url 'store_detail' st.id %}" class="card-btn">Detail</a>
+
       <!-- Clone store -->
-      <form method="get" action="{% url 'store_create' %}" style="margin:0; display:inline;">
+      <form method="get" action="{% url 'store_create' %}" class="form-inline">
         <input type="hidden" name="clone_from" value="{{ st.id }}">
         <button type="submit" class="card-btn secondary">Clone</button>
       </form>
 
       <!-- Delete store -->
       <form method="post" action="{% url 'store_delete' st.id %}"
-            style="margin:0; display:inline;"
-            onsubmit="return confirm('Delete store \'{{ st.name }}\' permanently?\nThis also removes it from GeoServer.')">
+            class="form-inline"
+            data-confirm="Delete '{{ st.name }}' permanently?&#10;This also removes it from GeoServer.">
         {% csrf_token %}
         <button type="submit" class="card-btn danger">Delete</button>
       </form>
@@ -127,7 +134,7 @@
     <a href="{% url 'engine_detail' active_engine.id %}" class="link">{{ active_engine.name }}</a>
     to import existing ones.
   </div>
-  <a href="{% url 'store_create' %}" class="btn-add" style="display:inline-flex; margin-top:0.75rem;">+ Add Store</a>
+  <a href="{% url 'store_create' %}" class="btn-add mt-md">+ Add Store</a>
 </div>
 {% endif %}
 

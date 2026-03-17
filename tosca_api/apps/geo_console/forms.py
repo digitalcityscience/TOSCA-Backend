@@ -235,3 +235,215 @@ class StoreForm(forms.Form):
         if not (1 <= val <= 65535):
             raise forms.ValidationError('Port must be between 1 and 65535.')
         return val
+
+
+class StoreDetailForm(forms.Form):
+    """
+    Partial-edit form for an existing Store — used on the store detail page.
+    Does NOT change name / workspace / store_type (those are read-only on detail).
+    Primary use: fill in DB credentials that Django never received when the store
+    was synced from GeoServer (GeoServer never exposes passwords via its REST API).
+    """
+
+    description = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={'rows': 2, 'placeholder': 'Optional description'}),
+    )
+    host = forms.CharField(
+        max_length=255,
+        required=False,
+        label='DB Host',
+        widget=forms.TextInput(attrs={'placeholder': 'e.g. db or 127.0.0.1', 'autocomplete': 'off'}),
+    )
+    port = forms.CharField(
+        required=False,
+        label='Port',
+        widget=forms.TextInput(attrs={
+            'placeholder': '5432',
+            'autocomplete': 'off',
+            'inputmode': 'numeric',
+            'style': 'max-width: 100px;',
+        }),
+    )
+    database = forms.CharField(
+        max_length=100,
+        required=False,
+        label='Database',
+        widget=forms.TextInput(attrs={'placeholder': 'e.g. tosca', 'autocomplete': 'off'}),
+    )
+    username = forms.CharField(
+        max_length=100,
+        required=False,
+        label='DB Username',
+        widget=forms.TextInput(attrs={'placeholder': 'e.g. tosca_gs', 'autocomplete': 'off'}),
+    )
+    password = forms.CharField(
+        max_length=100,
+        required=False,
+        label='DB Password',
+        help_text='Leave blank to keep the existing password unchanged.',
+        widget=forms.PasswordInput(
+            render_value=False,
+            attrs={'placeholder': 'New password (blank = keep existing)'},
+        ),
+    )
+    schema = forms.CharField(
+        max_length=100,
+        required=False,
+        label='Schema',
+        widget=forms.TextInput(attrs={'autocomplete': 'off'}),
+        help_text='PostGIS schema name.',
+    )
+
+    def clean_port(self):
+        port = self.cleaned_data.get('port')
+        if not port:
+            return None  # keep existing
+        try:
+            val = int(str(port).strip())
+        except (ValueError, TypeError):
+            raise forms.ValidationError('Port must be a number (e.g. 5432).')
+        if not (1 <= val <= 65535):
+            raise forms.ValidationError('Port must be between 1 and 65535.')
+        return val
+
+
+GEOMETRY_TYPE_CHOICES = [
+    ('Point', 'Point'),
+    ('LineString', 'LineString'),
+    ('Polygon', 'Polygon'),
+    ('MultiPoint', 'MultiPoint'),
+    ('MultiLineString', 'MultiLineString'),
+    ('MultiPolygon', 'MultiPolygon'),
+    ('GeometryCollection', 'GeometryCollection'),
+]
+
+
+class LayerPublishForm(forms.Form):
+    """
+    Form for publishing a PostGIS table as a GeoServer layer.
+    workspace_choices and store_choices are injected at instantiation time.
+
+    Usage:
+        workspace_choices = [(w['id'], w['name']) for w in client.list_workspaces(engine_id=...)]
+        form = LayerPublishForm(request.POST, workspace_choices=workspace_choices)
+    """
+
+    workspace_id = forms.ChoiceField(
+        choices=[],
+        label='Workspace',
+    )
+    store_id = forms.ChoiceField(
+        choices=[],
+        label='Datastore',
+    )
+    table_name = forms.CharField(
+        max_length=100,
+        label='PostGIS Table',
+        widget=forms.TextInput(attrs={
+            'placeholder': 'Select a table above or type manually',
+            'autocomplete': 'off',
+        }),
+    )
+    layer_name = forms.CharField(
+        max_length=100,
+        label='Layer Name',
+        widget=forms.TextInput(attrs={
+            'placeholder': 'e.g. buildings',
+            'autocomplete': 'off',
+            'pattern': r'^[a-zA-Z][a-zA-Z0-9_\-]*$',
+        }),
+        help_text='GeoServer layer identifier. Alphanumeric, underscore, hyphen only.',
+    )
+    title = forms.CharField(
+        max_length=200,
+        required=False,
+        label='Title',
+        widget=forms.TextInput(attrs={'placeholder': 'Human-readable title (optional)'}),
+    )
+    description = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={'rows': 2, 'placeholder': 'Optional description'}),
+    )
+    geometry_column = forms.CharField(
+        max_length=100,
+        initial='geom',
+        label='Geometry Column',
+        widget=forms.TextInput(attrs={'autocomplete': 'off'}),
+    )
+    geometry_type = forms.ChoiceField(
+        choices=GEOMETRY_TYPE_CHOICES,
+        label='Geometry Type',
+    )
+    srid = forms.IntegerField(
+        initial=4326,
+        label='Source CRS (EPSG)',
+        widget=forms.NumberInput(attrs={'min': 1, 'max': 999999}),
+        help_text='EPSG code of the source data (e.g. 4326 for WGS-84)',
+    )
+
+    def __init__(
+        self,
+        *args,
+        workspace_choices: list | None = None,
+        store_choices: list | None = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        if workspace_choices:
+            self.fields['workspace_id'].choices = [('', '— select a workspace —')] + list(workspace_choices)
+        if store_choices:
+            self.fields['store_id'].choices = [('', '— select a store —')] + list(store_choices)
+
+    def clean_layer_name(self):
+        import re
+        name = self.cleaned_data['layer_name'].strip()
+        if not re.match(r'^[a-zA-Z][a-zA-Z0-9_\-]*$', name):
+            raise forms.ValidationError(
+                'Layer name must start with a letter and contain only letters, digits, underscores, or hyphens.'
+            )
+        return name
+
+    def clean_srid(self):
+        srid = self.cleaned_data.get('srid')
+        if srid is None or srid < 1:
+            raise forms.ValidationError('SRID must be a positive integer (e.g. 4326).')
+        return srid
+
+
+class LayerEditForm(forms.Form):
+    """
+    Edit form for an already-registered Layer.
+
+    GeoServer-synced (if layer is PUBLISHED): title, description.
+    Django-only: srid.
+    """
+
+    title = forms.CharField(
+        max_length=200,
+        required=False,
+        label='Title',
+        widget=forms.TextInput(attrs={
+            'placeholder': 'Human-readable display name',
+            'autocomplete': 'off',
+        }),
+        help_text='Synced to GeoServer for published layers.',
+    )
+    description = forms.CharField(
+        required=False,
+        label='Description / Abstract',
+        widget=forms.Textarea(attrs={
+            'rows': 3,
+            'placeholder': 'Optional description (also set as GeoServer abstract for published layers)',
+        }),
+        help_text='Synced to GeoServer abstract field for published layers.',
+    )
+    srid = forms.IntegerField(
+        required=False,
+        label='SRID (EPSG)',
+        widget=forms.TextInput(attrs={
+            'placeholder': 'e.g. 4326',
+            'autocomplete': 'off',
+        }),
+        help_text='Spatial reference system code (e.g. 4326 for WGS-84). Django-side only.',
+    )

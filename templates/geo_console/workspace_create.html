@@ -35,20 +35,22 @@
     <div class="section-label">Workspace Details</div>
 
     <div class="form-row">
-      <label class="form-label" for="{{ form.geodata_engine.id_for_label }}">
-        Engine <span class="req">*</span>
-      </label>
+      <label class="form-label">Engine</label>
       <div class="form-field">
-        {{ form.geodata_engine }}
-        {% if form.geodata_engine.errors %}
-          <div class="form-error">{{ form.geodata_engine.errors.0 }}</div>
-        {% endif %}
-        <div class="form-hint">
-          The engine this workspace will be created in.
-          {% if not engines %}
-            <span class="form-warn">No active engines found. Add an engine first.</span>
+        {% if active_engine %}
+          {# Hidden input submits the value; locked display shows the name #}
+          <input type="hidden" name="geodata_engine" value="{{ active_engine.id }}">
+          <div class="locked-field">
+            <span class="badge badge--blue">{{ active_engine.name }}</span>
+            <span class="locked-hint">Locked to active engine. Change from the header to select a different engine.</span>
+          </div>
+        {% else %}
+          {{ form.geodata_engine }}
+          {% if form.geodata_engine.errors %}
+            <div class="form-error">{{ form.geodata_engine.errors.0 }}</div>
           {% endif %}
-        </div>
+          <div class="form-hint form-warn">No active engine selected. Use the header selector first.</div>
+        {% endif %}
       </div>
     </div>
 
@@ -79,9 +81,9 @@
   <!-- Sync note -->
   <div class="form-section">
     <div class="section-label">Sync Behaviour</div>
-    <div class="form-hint" style="padding: 0.5rem 0;">
+    <div class="form-hint">
       On create, TOSCA will:
-      <ol style="margin: 0.5rem 0 0 1.2rem; line-height: 1.8;">
+      <ol class="steps-list">
         <li>Check if the workspace already exists in the engine</li>
         <li>Create it in the engine if missing</li>
         <li>Verify the workspace is live in the engine</li>

@@ -11,6 +11,7 @@ from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError
 from ..geoserver.client import GeoServerClient
 from ..models import GeodataEngine, Layer, Store, Workspace
+from ..postgis_inspector import PostGISInspectorError, get_geometry_tables, get_table_bbox
 from .serializers import GeodataEngineSerializer, LayerSerializer, StoreSerializer, WorkspaceSerializer
 
 logger = logging.getLogger(__name__)
@@ -382,11 +383,11 @@ class StoreViewSet(viewsets.ModelViewSet):
             result = client.delete_store(workspace=store.workspace.name, store=store.name)
 
             if not result.get('success', False):
+                engine_error = result.get('error', result.get('message', 'Engine failed to delete the store.'))
                 return Response(
                     {
                         'success': False,
-                        'error': result.get('error', result.get('message', 'Engine delete failed')),
-                        'detail': 'Store was NOT deleted from Django — engine deletion must succeed first.',
+                        'detail': engine_error,
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
@@ -415,6 +416,65 @@ class StoreViewSet(viewsets.ModelViewSet):
             return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['get'])
+    def postgis_tables(self, request, pk=None):
+        """
+        GET /api/geoengine/stores/{id}/postgis_tables/
+
+        Returns all PostGIS tables with geometry metadata from the store's
+        target database schema.  Uses SQLAlchemy (psycopg v3) — connects
+        directly to the store's PostGIS DB, not Django's own database.
+
+        Response:
+            {
+              "tables": [
+                {"table_name": str, "geometry_column": str,
+                 "geometry_type": str, "srid": int},
+                ...
+              ]
+            }
+        """
+        store = self.get_object()
+        if store.store_type != 'postgis':
+            return Response(
+                {'success': False, 'error': 'Only PostGIS stores support table inspection.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not store.host or not store.database or not store.username:
+            return Response(
+                {'success': False, 'error': 'Store is missing connection details (host, database, username).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        db_password = store.decrypted_password
+        if not db_password:
+            return Response(
+                {
+                    'success': False,
+                    'error': (
+                        'Store has no saved database password. '
+                        'If this store was synced from GeoServer, Django never received the password '
+                        'because GeoServer does not expose credentials via its REST API. '
+                        'Edit the store and enter the PostgreSQL password to enable table inspection.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            tables = get_geometry_tables(
+                host=store.host,
+                port=store.port or 5432,
+                database=store.database,
+                username=store.username,
+                password=db_password,
+                schema=store.schema or 'public',
+            )
+            return Response({'tables': tables, 'schema': store.schema, 'store': store.name})
+        except PostGISInspectorError as exc:
+            return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.error('postgis_tables error for store %s: %s', store.name, exc)
+            return Response({'success': False, 'error': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class LayerViewSet(viewsets.ModelViewSet):
@@ -473,6 +533,60 @@ class LayerViewSet(viewsets.ModelViewSet):
         payload = self.get_serializer(layer).data
         return Response({'layer': payload, 'result': {'success': True, 'message': 'Layer created'}}, status=status.HTTP_201_CREATED)
 
+    def update(self, request, *args, **kwargs):
+        """
+        PATCH/PUT /api/geoengine/layers/<id>/
+
+        Allowed editable fields:
+            title, description  — synced to GeoServer (if PUBLISHED) then Django
+            srid                — Django-only
+
+        All other fields (name, table_name, workspace, store, geometry_*)
+        are silently ignored — they cannot be changed via this endpoint.
+        """
+        partial = kwargs.pop('partial', True)  # always treat as partial
+        layer = self.get_object()
+
+        # Extract only the fields we allow to be changed
+        ALLOWED = {'title', 'description', 'srid'}
+        incoming = {k: v for k, v in request.data.items() if k in ALLOWED}
+
+        if not incoming:
+            return Response(
+                {'detail': 'No editable fields provided. Allowed: title, description, srid.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # GeoServer sync for PUBLISHED layers
+        if layer.publishing_state == 'PUBLISHED':
+            gs_client = EngineClientFactory.create_client(layer.workspace.geodata_engine)
+
+            # title / description → featuretype
+            if {'title', 'description'} & set(incoming):
+                try:
+                    gs_client.update_featuretype(
+                        workspace=layer.workspace.name,
+                        store_name=layer.store.name,
+                        table_name=layer.table_name,
+                        title=incoming.get('title', layer.title) or layer.title,
+                        abstract=incoming.get('description', layer.description) or None,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        'LayerViewSet.update: featuretype update failed for %s/%s: %s',
+                        layer.workspace.name, layer.name, exc,
+                    )
+                    return Response(
+                        {'success': False, 'error': f'GeoServer featuretype update failed: {exc}'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        # Persist in Django
+        serializer = self.get_serializer(layer, data=incoming, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
+
     def destroy(self, request, *args, **kwargs):
         layer = self.get_object()
 
@@ -513,7 +627,7 @@ class LayerViewSet(viewsets.ModelViewSet):
             Layer.objects.filter(pk=layer.pk).update(
                 publishing_state='PUBLISHED',
                 publishing_error='',
-                published_url=result.get('wms_url', ''),
+                published_url='',
                 published_at=timezone.now(),
             )
             return Response(result, status=status.HTTP_200_OK)
@@ -547,6 +661,184 @@ class LayerViewSet(viewsets.ModelViewSet):
             )
 
         return result
+
+    @action(detail=False, methods=['post'])
+    def publish_postgis(self, request):
+        """
+        POST /api/geoengine/layers/publish_postgis/
+
+        Publishes an existing PostGIS table as a GeoServer FeatureType and
+        registers a Layer object in Django.  All operations follow the
+        GeoServer-first sync pattern:
+            1. Check exists → 2. Create in GeoServer → 3. Verify → 4. Persist Django
+
+        Expected request body:
+            {
+              "store_id":        "<uuid>",
+              "workspace_id":    "<uuid>",
+              "table_name":      "buildings",
+              "layer_name":      "buildings",          # user-defined, defaults to table_name
+              "geometry_column": "geom",
+              "geometry_type":   "Polygon",
+              "srid":            4326,
+              "title":           "Buildings",          # optional
+              "description":     "...",               # optional
+              "advertised":      false,               # default false per spec
+            }
+
+        Returns:
+            {"layer": <LayerSerializer>, "result": {"success": True, ...}}
+        """
+        data = request.data
+        store_id = data.get('store_id')
+        workspace_id = data.get('workspace_id')
+        table_name = data.get('table_name', '').strip()
+        layer_name = data.get('layer_name', table_name).strip()
+
+        if not store_id or not workspace_id or not table_name or not layer_name:
+            return Response(
+                {'success': False, 'error': 'store_id, workspace_id, table_name, and layer_name are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        store = get_object_or_404(Store, pk=store_id)
+        workspace = get_object_or_404(Workspace, pk=workspace_id)
+
+        if store.workspace != workspace:
+            return Response(
+                {'success': False, 'error': 'Store does not belong to the selected workspace.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        engine = workspace.geodata_engine
+        if not engine:
+            return Response(
+                {'success': False, 'error': 'Workspace has no associated GeoServer engine.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        geometry_column = data.get('geometry_column', 'geom')
+        geometry_type = data.get('geometry_type', 'Point')
+        srid = int(data.get('srid', 4326))
+        title = data.get('title', layer_name)
+        description = data.get('description', '')
+
+        # Retrieve bounding box from PostGIS (non-fatal if empty table).
+        bbox = None
+        if store.store_type == 'postgis' and store.host:
+            try:
+                bbox = get_table_bbox(
+                    host=store.host,
+                    port=store.port or 5432,
+                    database=store.database,
+                    username=store.username,
+                    password=store.decrypted_password,
+                    schema=store.schema or 'public',
+                    table=table_name,
+                    geometry_column=geometry_column,
+                )
+            except PostGISInspectorError as exc:
+                logger.warning('Could not retrieve bbox for %s.%s: %s', store.schema, table_name, exc)
+
+        # Step 1: Pre-check — does a layer with this name already exist in GeoServer?
+        # This allows multiple layers from the same PostGIS table as long as layer names are unique.
+        client = EngineClientFactory.create_client(engine)
+        already_in_geoserver = client.get_layer_info(workspace=workspace.name, layer_name=layer_name)
+        if already_in_geoserver:
+            return Response(
+                {
+                    'success': False,
+                    'error': f"Layer '{layer_name}' already exists in workspace '{workspace.name}'. Choose a different layer name.",
+                    'error_code': 'LAYER_ALREADY_EXISTS',
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Step 1-3: Publish in GeoServer + verify.
+        try:
+            publish_result = client.publish_featuretype(
+                store_name=store.name,
+                workspace=workspace.name,
+                pg_table=table_name,
+                srid=srid,
+                geometry_type=geometry_type,
+                layer_name=layer_name,
+            )
+        except Exception as exc:
+            logger.error('GeoServer publish_featuretype failed for %s/%s: %s', workspace.name, layer_name, exc)
+            return Response(
+                {'success': False, 'error': f'GeoServer publish failed: {exc}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Step 3: Verify featuretype exists in GeoServer.
+        # Use the datastore's featuretypes endpoint — same resource that
+        # publish_featurestore writes to.  The global /layers/ endpoint is
+        # unreliable for unadvertised layers, so we never use get_layer_info here.
+        verified = client.verify_featuretype(
+            workspace=workspace.name,
+            store_name=store.name,
+            table_name=table_name,
+        )
+        if not verified:
+            logger.error(
+                'publish_postgis: featuretype %s/%s/%s not found in GeoServer after publish',
+                workspace.name, store.name, table_name,
+            )
+            return Response(
+                {'success': False, 'error': 'Layer publish_featurestore reported success but featuretype could not be verified in GeoServer.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Step 4: Persist in Django.
+        # Layer.name is the GeoServer featuretype identifier (= table_name).
+        # Layer.title is the user-supplied display name (= layer_name).
+        layer, created = Layer.objects.get_or_create(
+            workspace=workspace,
+            name=table_name,
+            defaults={
+                'store': store,
+                'title': title,
+                'description': description,
+                'table_name': table_name,
+                'geometry_column': geometry_column,
+                'geometry_type': geometry_type,
+                'srid': srid,
+                'is_public': True,   # matches advertised=True set in GeoServer during publish
+                'publishing_state': 'PUBLISHED',
+                'published_url': '',
+                'published_at': timezone.now(),
+                'created_by': request.user,
+            },
+        )
+
+        if not created:
+            # Layer already existed in Django — update state to reflect publish.
+            Layer.objects.filter(pk=layer.pk).update(
+                publishing_state='PUBLISHED',
+                published_url='',
+                published_at=timezone.now(),
+                publishing_error='',
+            )
+            layer.refresh_from_db()
+
+        payload = self.get_serializer(layer).data
+        logger.info(
+            'publish_postgis: layer %s/%s published (created=%s, bbox=%s)',
+            workspace.name, layer_name, created, bbox,
+        )
+        return Response(
+            {
+                'layer': payload,
+                'result': {
+                    'success': True,
+                    'created': created,
+                    'message': f"Layer '{layer_name}' published in workspace '{workspace.name}'.",
+                    'bbox': bbox,
+                },
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
     @action(detail=False, methods=['post'])
     def preview(self, request):
