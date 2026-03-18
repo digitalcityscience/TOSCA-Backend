@@ -5,7 +5,7 @@ from rest_framework_gis.serializers import GeoFeatureModelSerializer
 
 from tosca_api.apps.geocontext.models import GeoContext
 
-from .models import CalendarEvent, EventLayer
+from .models import Event, EventLayer
 
 
 # =============================================================================
@@ -35,18 +35,18 @@ class EventLayerSerializer(serializers.ModelSerializer):
 
 
 # =============================================================================
-# CalendarEvent Serializers
+# Event Serializers
 # =============================================================================
 
 
-class CalendarEventListSerializer(serializers.ModelSerializer):
+class EventListSerializer(serializers.ModelSerializer):
     """
     Slim serializer for calendar view (list).
     Used when no spatial filtering is applied.
     """
 
     class Meta:
-        model = CalendarEvent
+        model = Event
         fields = [
             "id",
             "title",
@@ -61,7 +61,7 @@ class CalendarEventListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class CalendarEventDetailSerializer(serializers.ModelSerializer):
+class EventDetailSerializer(serializers.ModelSerializer):
     """
     Full serializer for event detail view.
     Includes nested context and layers.
@@ -71,7 +71,7 @@ class CalendarEventDetailSerializer(serializers.ModelSerializer):
     layers = serializers.SerializerMethodField()
 
     class Meta:
-        model = CalendarEvent
+        model = Event
         fields = [
             "id",
             "title",
@@ -96,14 +96,14 @@ class CalendarEventDetailSerializer(serializers.ModelSerializer):
         return EventLayerSerializer(through_qs, many=True).data
 
 
-class CalendarEventGeoSerializer(GeoFeatureModelSerializer):
+class EventGeoSerializer(GeoFeatureModelSerializer):
     """
     GeoJSON serializer for map view.
     Returns events as GeoJSON FeatureCollection.
     """
 
     class Meta:
-        model = CalendarEvent
+        model = Event
         geo_field = "location"
         fields = [
             "id",
@@ -118,11 +118,11 @@ class CalendarEventGeoSerializer(GeoFeatureModelSerializer):
         read_only_fields = fields
 
 
-class CalendarEventWriteSerializer(serializers.ModelSerializer):
+class EventWriteSerializer(serializers.ModelSerializer):
     """Serializer for creating/updating events."""
 
     class Meta:
-        model = CalendarEvent
+        model = Event
         fields = [
             "id",
             "title",
@@ -140,12 +140,12 @@ class CalendarEventWriteSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         """Invoke model clean() to ensure DB constraints surface as API 400s."""
-        instance = CalendarEvent(**attrs)
+        instance = Event(**attrs)
         if self.instance:
             for attr, value in attrs.items():
                 setattr(instance, attr, value)
         
-        # CalendarEvent.clean() enforces start_datetime <= end_datetime
+        # Event.clean() enforces start_datetime <= end_datetime
         instance.clean()
         return attrs
 
@@ -201,8 +201,8 @@ class GeometryFilterSerializer(serializers.Serializer):
     start_after = serializers.DateTimeField(required=False)
     start_before = serializers.DateTimeField(required=False)
     status = serializers.ChoiceField(
-        choices=CalendarEvent.Status.choices,
-        default=CalendarEvent.Status.PUBLISHED,
+        choices=Event.Status.choices,
+        default=Event.Status.PUBLISHED,
     )
 
     def validate_geometry(self, value):

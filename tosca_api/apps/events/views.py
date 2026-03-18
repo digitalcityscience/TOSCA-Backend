@@ -4,13 +4,13 @@ from rest_framework.decorators import action
 from rest_framework.pagination import CursorPagination
 from rest_framework.response import Response
 
-from .models import CalendarEvent
+from .models import Event
 from .serializers import (
     BBoxSerializer,
-    CalendarEventWriteSerializer,
-    CalendarEventDetailSerializer,
-    CalendarEventGeoSerializer,
-    CalendarEventListSerializer,
+    EventWriteSerializer,
+    EventDetailSerializer,
+    EventGeoSerializer,
+    EventListSerializer,
     GeometryFilterSerializer,
 )
 
@@ -22,9 +22,9 @@ class EventCursorPagination(CursorPagination):
     ordering = "start_datetime"
 
 
-class CalendarEventViewSet(viewsets.ModelViewSet):
+class EventViewSet(viewsets.ModelViewSet):
     """
-    API endpoint for CalendarEvent operations.
+    API endpoint for Event operations.
 
     ## List Endpoints
 
@@ -60,7 +60,7 @@ class CalendarEventViewSet(viewsets.ModelViewSet):
     Returns events WITH location inside geometry as GeoJSON FeatureCollection.
     """
 
-    queryset = CalendarEvent.objects.all()
+    queryset = Event.objects.all()
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = EventCursorPagination
 
@@ -69,13 +69,13 @@ class CalendarEventViewSet(viewsets.ModelViewSet):
         if self.action == "list":
             # Check if spatial filter is applied
             if self._is_spatial_request():
-                return CalendarEventGeoSerializer
-            return CalendarEventListSerializer
+                return EventGeoSerializer
+            return EventListSerializer
         if self.action == "retrieve":
-            return CalendarEventDetailSerializer
+            return EventDetailSerializer
         if self.action == "within":
-            return CalendarEventGeoSerializer
-        return CalendarEventWriteSerializer
+            return EventGeoSerializer
+        return EventWriteSerializer
 
     def _is_spatial_request(self) -> bool:
         """Check if request has bbox parameter."""
@@ -175,10 +175,10 @@ class CalendarEventViewSet(viewsets.ModelViewSet):
         data = filter_serializer.validated_data
 
         # Build queryset
-        queryset = CalendarEvent.objects.filter(
+        queryset = Event.objects.filter(
             location__isnull=False,
             location__within=data["geometry"],
-            status=data.get("status", CalendarEvent.Status.PUBLISHED),
+            status=data.get("status", Event.Status.PUBLISHED),
         )
 
         # Campaign filter
@@ -199,5 +199,5 @@ class CalendarEventViewSet(viewsets.ModelViewSet):
         queryset = queryset.order_by("start_datetime").select_related("campaign")
 
         # Serialize as GeoJSON
-        serializer = CalendarEventGeoSerializer(queryset, many=True)
+        serializer = EventGeoSerializer(queryset, many=True)
         return Response(serializer.data)
