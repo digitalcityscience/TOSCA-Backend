@@ -14,7 +14,17 @@ TOSCA Django REST backend for the TOSCA-Web geospatial platform.
 2. **Choose Environment**
    - Default: `dev`
    - For production: `make ENV=prod ...`
-   - Copy .env.exampe to env.dev
+   - Copy `.env.example` to `.env.dev` and fill in your values
+
+   **Optional – local GeoServer data mount:**
+   If you have local geodata to expose inside GeoServer at `/mnt/home`, add this
+   line to your `.env.dev` (the file is gitignored, so it stays off GitHub):
+
+   ```dotenv
+   GEOSERVER_LOCAL_DATA_PATH=/absolute/path/to/your/geodata
+   ```
+
+   Leave it unset if you don't need it — GeoServer will start normally without it.
 
 3. **Initialize Project (build, start, migrate)**
 
@@ -35,6 +45,7 @@ TOSCA Django REST backend for the TOSCA-Web geospatial platform.
    ```
 
 6. **View Logs**
+
    ```bash
    make logs         # All services
    make django-logs  # Django only
