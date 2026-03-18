@@ -14,7 +14,7 @@ from tosca_api.apps.core.models import TimeStampedModel
 # Allowed models for FeatureLink (app_label.model_name)
 ALLOWED_LINK_MODELS = frozenset([
     "geostories.geostory",
-    "events.calendarevent",
+    "events.event",
     "feedback.geofeedback",
 ])
 
@@ -23,7 +23,7 @@ class FeatureLink(TimeStampedModel):
     """
     Polymorphic link between two features (e.g. GeoStory -> GeoStory).
     
-    Only GeoStory, CalendarEvent, and GeoFeedback can be linked.
+    Only GeoStory, Event, and GeoFeedback can be linked.
     GeoContext is NOT linkable (it's a submodule of features).
     """
 
@@ -102,30 +102,38 @@ class FeatureLink(TimeStampedModel):
     def clean(self) -> None:
         """Validate the link."""
         errors = {}
+        source_model_class = None
+        source_instance = None
+        target_model_class = None
+        target_instance = None
 
         # 1. Validate source content type is allowed
         if self.source_content_type_id:
             source_key = self._get_model_key(self.source_content_type)
+            source_model_class = self.source_content_type.model_class()
             if source_key not in ALLOWED_LINK_MODELS:
                 errors["source_content_type"] = (
                     f"'{source_key}' is not allowed. "
-                    f"Only GeoStory, CalendarEvent, and GeoFeedback can be linked."
+                    f"Only GeoStory, Event, and GeoFeedback can be linked."
                 )
 
         # 2. Validate target content type is allowed
         if self.target_content_type_id:
             target_key = self._get_model_key(self.target_content_type)
+            target_model_class = self.target_content_type.model_class()
             if target_key not in ALLOWED_LINK_MODELS:
                 errors["target_content_type"] = (
                     f"'{target_key}' is not allowed. "
-                    f"Only GeoStory, CalendarEvent, and GeoFeedback can be linked."
+                    f"Only GeoStory, Event, and GeoFeedback can be linked."
                 )
 
         # 3. Validate source object exists
-        if self.source_content_type_id and self.source_object_id:
+        if source_model_class and self.source_object_id:
             try:
-                model_class = self.source_content_type.model_class()
-                if model_class and not model_class.objects.filter(pk=self.source_object_id).exists():
+                source_instance = source_model_class.objects.filter(
+                    pk=self.source_object_id
+                ).first()
+                if source_instance is None:
                     errors["source_object_id"] = (
                         f"No {self.source_content_type.model} found with ID '{self.source_object_id}'."
                     )
@@ -133,10 +141,12 @@ class FeatureLink(TimeStampedModel):
                 errors["source_object_id"] = "Unable to validate source object."
 
         # 4. Validate target object exists
-        if self.target_content_type_id and self.target_object_id:
+        if target_model_class and self.target_object_id:
             try:
-                model_class = self.target_content_type.model_class()
-                if model_class and not model_class.objects.filter(pk=self.target_object_id).exists():
+                target_instance = target_model_class.objects.filter(
+                    pk=self.target_object_id
+                ).first()
+                if target_instance is None:
                     errors["target_object_id"] = (
                         f"No {self.target_content_type.model} found with ID '{self.target_object_id}'."
                     )
@@ -152,15 +162,22 @@ class FeatureLink(TimeStampedModel):
 
         # 6. Campaign boundary check
         # Both source and target must belong to the same campaign as this link
-        # Note: Check campaign_id first to avoid RelatedObjectDoesNotExist on unsaved instances
-        if self.campaign_id and self.source_object and hasattr(self.source_object, "campaign"):
-            if self.source_object.campaign_id != self.campaign_id:
+        if (
+            self.campaign_id
+            and source_instance is not None
+            and hasattr(source_instance, "campaign_id")
+            and source_instance.campaign_id != self.campaign_id
+        ):
                 errors["source_object_id"] = (
                     "Source object must belong to the same campaign."
                 )
 
-        if self.campaign_id and self.target_object and hasattr(self.target_object, "campaign"):
-            if self.target_object.campaign_id != self.campaign_id:
+        if (
+            self.campaign_id
+            and target_instance is not None
+            and hasattr(target_instance, "campaign_id")
+            and target_instance.campaign_id != self.campaign_id
+        ):
                 errors["target_object_id"] = (
                     "Target object must belong to the same campaign."
                 )

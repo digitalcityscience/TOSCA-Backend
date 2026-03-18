@@ -9,7 +9,7 @@ from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geostories.models import GeoStory
-from tosca_api.apps.events.models import CalendarEvent
+from tosca_api.apps.events.models import Event
 from tosca_api.apps.feedback.models import GeoFeedback
 
 User = get_user_model()
@@ -52,9 +52,9 @@ def geocontext(user):
 
 @pytest.fixture
 def event1(user, campaign):
-    """Create a calendar event in Campaign A."""
+    """Create an event in Campaign A."""
     now = timezone.now()
-    return CalendarEvent.objects.create(
+    return Event.objects.create(
         title="Event 1",
         campaign=campaign,
         start_datetime=now + timedelta(days=1),
@@ -65,9 +65,9 @@ def event1(user, campaign):
 
 @pytest.fixture
 def event2(user, campaign):
-    """Create another calendar event in Campaign A."""
+    """Create another event in Campaign A."""
     now = timezone.now()
-    return CalendarEvent.objects.create(
+    return Event.objects.create(
         title="Event 2",
         campaign=campaign,
         start_datetime=now + timedelta(days=2),
@@ -78,9 +78,9 @@ def event2(user, campaign):
 
 @pytest.fixture
 def event_b(user, campaign_b):
-    """Create a calendar event in Campaign B."""
+    """Create an event in Campaign B."""
     now = timezone.now()
-    return CalendarEvent.objects.create(
+    return Event.objects.create(
         title="Event B",
         campaign=campaign_b,
         start_datetime=now + timedelta(days=3),
@@ -226,13 +226,13 @@ def test_featurelink_prevents_duplicates(user, story1, story2, campaign):
 
 
 # =============================================================================
-# CalendarEvent Linking Tests (Task 2.3)
+# Event Linking Tests (Task 2.3)
 # =============================================================================
 
 
 @pytest.mark.django_db
 def test_featurelink_story_to_event(user, story1, event1, campaign):
-    """Test linking a GeoStory to a CalendarEvent."""
+    """Test linking a GeoStory to an Event."""
     link = FeatureLink.objects.create(
         campaign=campaign,
         source_object=story1,
@@ -247,7 +247,7 @@ def test_featurelink_story_to_event(user, story1, event1, campaign):
 
 @pytest.mark.django_db
 def test_featurelink_event_to_story(user, event1, story1, campaign):
-    """Test linking a CalendarEvent to a GeoStory."""
+    """Test linking an Event to a GeoStory."""
     link = FeatureLink.objects.create(
         campaign=campaign,
         source_object=event1,
@@ -262,7 +262,7 @@ def test_featurelink_event_to_story(user, event1, story1, campaign):
 
 @pytest.mark.django_db
 def test_featurelink_event_to_event(user, event1, event2, campaign):
-    """Test linking a CalendarEvent to another CalendarEvent."""
+    """Test linking an Event to another Event."""
     link = FeatureLink.objects.create(
         campaign=campaign,
         source_object=event1,
@@ -277,7 +277,7 @@ def test_featurelink_event_to_event(user, event1, event2, campaign):
 
 @pytest.mark.django_db
 def test_featurelink_event_rejects_self_link(user, event1, campaign):
-    """Test that CalendarEvent cannot link to itself."""
+    """Test that Event cannot link to itself."""
     with pytest.raises(ValidationError) as exc:
         FeatureLink.objects.create(
             campaign=campaign,
@@ -291,7 +291,7 @@ def test_featurelink_event_rejects_self_link(user, event1, campaign):
 
 @pytest.mark.django_db
 def test_featurelink_event_rejects_cross_campaign(user, event1, event_b, campaign):
-    """Test that CalendarEvents from different campaigns cannot be linked."""
+    """Test that events from different campaigns cannot be linked."""
     with pytest.raises(ValidationError) as exc:
         FeatureLink.objects.create(
             campaign=campaign,
@@ -343,7 +343,7 @@ def test_featurelink_rejects_nonexistent_target(user, story1, campaign):
     """Test that a non-existent target object ID is rejected."""
     import uuid
     fake_uuid = uuid.uuid4()
-    event_ct = ContentType.objects.get_for_model(CalendarEvent)
+    event_ct = ContentType.objects.get_for_model(Event)
     
     with pytest.raises(ValidationError) as exc:
         FeatureLink.objects.create(
@@ -361,7 +361,7 @@ def test_featurelink_rejects_nonexistent_target(user, story1, campaign):
 def test_featurelink_rejects_wrong_type_uuid(user, campaign, geocontext):
     """Test that using a GeoContext UUID for GeoStory content type is rejected."""
     geostory_ct = ContentType.objects.get_for_model(GeoStory)
-    event_ct = ContentType.objects.get_for_model(CalendarEvent)
+    event_ct = ContentType.objects.get_for_model(Event)
     
     # Use a GeoContext ID but claim it's a GeoStory
     with pytest.raises(ValidationError) as exc:
@@ -398,7 +398,7 @@ def test_featurelink_story_to_feedback(user, story1, geofeedback1, campaign):
 
 @pytest.mark.django_db
 def test_featurelink_feedback_to_event(user, geofeedback1, event1, campaign):
-    """Test linking a GeoFeedback to a CalendarEvent."""
+    """Test linking a GeoFeedback to an Event."""
     link = FeatureLink.objects.create(
         campaign=campaign,
         source_object=geofeedback1,
@@ -409,6 +409,27 @@ def test_featurelink_feedback_to_event(user, geofeedback1, event1, campaign):
     assert link.id is not None
     assert link.source_object == geofeedback1
     assert link.target_object == event1
+
+
+@pytest.mark.django_db
+def test_featurelink_rejects_legacy_event_content_type(user, story1, event1, campaign):
+    """Test that stale legacy event content types are rejected."""
+    legacy_ct, _ = ContentType.objects.get_or_create(
+        app_label="events",
+        model="calendarevent",
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_content_type=legacy_ct,
+            source_object_id=event1.id,
+            target_object=story1,
+            created_by=user,
+        )
+
+    assert "source_content_type" in exc.value.message_dict
+    assert "events.calendarevent" in str(exc.value)
 
 
 @pytest.mark.django_db

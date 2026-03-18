@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
 
-from .models import CalendarEvent, EventLayer
+from .models import Event, EventLayer
 
 
 class EventLayerInline(admin.TabularInline):
@@ -10,9 +10,9 @@ class EventLayerInline(admin.TabularInline):
     autocomplete_fields = ["layer"]
 
 
-@admin.register(CalendarEvent)
-class CalendarEventAdmin(GISModelAdmin):
-    """Admin interface for CalendarEvent with map widget for location."""
+@admin.register(Event)
+class EventAdmin(GISModelAdmin):
+    """Admin interface for Event with map widget for location."""
 
     list_display = [
         "title",

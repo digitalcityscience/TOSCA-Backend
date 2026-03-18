@@ -20,7 +20,7 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
-            name='CalendarEvent',
+            name='Event',
             fields=[
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
@@ -37,8 +37,8 @@ class Migration(migrations.Migration):
                 ('organizer', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='organized_events', to=settings.AUTH_USER_MODEL)),
             ],
             options={
-                'verbose_name': 'Calendar Event',
-                'verbose_name_plural': 'Calendar Events',
+                'verbose_name': 'Event',
+                'verbose_name_plural': 'Events',
                 'ordering': ['start_datetime'],
             },
         ),
@@ -48,7 +48,7 @@ class Migration(migrations.Migration):
                 ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
                 ('display_order', models.PositiveIntegerField(default=0)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('event', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='events.calendarevent')),
+                ('event', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='events.event')),
                 ('layer', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='layerrefs.layerref')),
             ],
             options={
@@ -59,24 +59,24 @@ class Migration(migrations.Migration):
             },
         ),
         migrations.AddField(
-            model_name='calendarevent',
+            model_name='event',
             name='layers',
             field=models.ManyToManyField(blank=True, related_name='events', through='events.EventLayer', to='layerrefs.layerref'),
         ),
         migrations.AddIndex(
-            model_name='calendarevent',
-            index=models.Index(fields=['campaign'], name='events_cale_campaig_4aec08_idx'),
+            model_name='event',
+            index=models.Index(fields=['campaign'], name='events_even_campaig_341f9c_idx'),
         ),
         migrations.AddIndex(
-            model_name='calendarevent',
-            index=models.Index(fields=['start_datetime', 'end_datetime'], name='events_cale_start_d_00c370_idx'),
+            model_name='event',
+            index=models.Index(fields=['start_datetime', 'end_datetime'], name='events_even_start_d_e338a8_idx'),
         ),
         migrations.AddIndex(
-            model_name='calendarevent',
-            index=models.Index(fields=['status'], name='events_cale_status_3aa341_idx'),
+            model_name='event',
+            index=models.Index(fields=['status'], name='events_even_status_5709b6_idx'),
         ),
         migrations.AddConstraint(
-            model_name='calendarevent',
+            model_name='event',
             constraint=models.CheckConstraint(condition=models.Q(('end_datetime__gte', models.F('start_datetime'))), name='event_end_after_start'),
         ),
     ]

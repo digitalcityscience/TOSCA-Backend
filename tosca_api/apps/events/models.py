@@ -1,7 +1,7 @@
 """
-CalendarEvent model - Time-bound spatial events.
+Event model - Time-bound spatial events.
 
-CalendarEvents represent scheduled activities (workshops, discussions, meetings)
+Events represent scheduled activities (workshops, discussions, meetings)
 that occur at a specific time and optionally at a specific location. They belong
 to a Campaign and can have associated map layers and rich content (GeoContext).
 """
@@ -20,7 +20,7 @@ from tosca_api.apps.core.models import TimeStampedModel
 from tosca_api.apps.core.sanitization import sanitize_simple
 
 
-class CalendarEvent(TimeStampedModel):
+class Event(TimeStampedModel):
     """
     A calendar event with optional spatial location.
 
@@ -104,19 +104,19 @@ class CalendarEvent(TimeStampedModel):
         "featurelinks.FeatureLink",
         content_type_field="source_content_type",
         object_id_field="source_object_id",
-        related_query_name="calendarevent_source"
+        related_query_name="event_source",
     )
     feature_links_target = GenericRelation(
         "featurelinks.FeatureLink",
         content_type_field="target_content_type",
         object_id_field="target_object_id",
-        related_query_name="calendarevent_target"
+        related_query_name="event_target",
     )
 
     class Meta:
         ordering = ["start_datetime"]
-        verbose_name = "Calendar Event"
-        verbose_name_plural = "Calendar Events"
+        verbose_name = "Event"
+        verbose_name_plural = "Events"
         indexes = [
             models.Index(fields=["campaign"]),
             models.Index(fields=["start_datetime", "end_datetime"]),
@@ -157,12 +157,12 @@ class CalendarEvent(TimeStampedModel):
 
 class EventLayer(models.Model):
     """
-    Through model for CalendarEvent <-> LayerRef.
+    Through model for Event <-> LayerRef.
     Allows ordering of layers within an event.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    event = models.ForeignKey(CalendarEvent, on_delete=models.CASCADE)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE)
     layer = models.ForeignKey("layerrefs.LayerRef", on_delete=models.CASCADE)
     display_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
