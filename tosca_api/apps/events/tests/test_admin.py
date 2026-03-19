@@ -7,9 +7,9 @@ from django.contrib.gis.geos import Point
 from django.test import RequestFactory
 from django.utils import timezone
 
-from tosca_api.apps.events.admin import TaxonomyDimensionAdmin, TaxonomyTermAdmin
 from tosca_api.apps.campaigns.models import Campaign
-from tosca_api.apps.events.models import Event, EventTerm, TaxonomyDimension, TaxonomyTerm
+from tosca_api.apps.events.admin import EventTypeAdmin, TaxonomyDimensionAdmin, TaxonomyTermAdmin
+from tosca_api.apps.events.models import Event, EventTerm, EventType, TaxonomyDimension, TaxonomyTerm
 
 User = get_user_model()
 
@@ -33,9 +33,41 @@ def admin_request(admin_user):
 @pytest.mark.django_db
 def test_taxonomy_models_are_registered_in_admin():
     """Taxonomy models should be available in Django admin."""
+    assert isinstance(admin.site._registry[EventType], EventTypeAdmin)
     assert isinstance(admin.site._registry[TaxonomyDimension], TaxonomyDimensionAdmin)
     assert isinstance(admin.site._registry[TaxonomyTerm], TaxonomyTermAdmin)
     assert EventTerm in admin.site._registry
+
+
+@pytest.mark.django_db
+def test_event_type_admin_form_exposes_registry_fields(admin_request):
+    """Event type admin should expose the full registry contract."""
+    model_admin = admin.site._registry[EventType]
+    form_class = model_admin.get_form(admin_request)
+
+    assert {"code", "label", "profile_mode", "profile_key", "is_active"} <= set(
+        form_class.base_fields
+    )
+
+
+@pytest.mark.django_db
+def test_event_type_admin_can_store_inactive_custom_type(admin_request):
+    """Custom inactive event types should be valid through the admin form."""
+    model_admin = admin.site._registry[EventType]
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(
+        data={
+            "code": "custom-admin-type",
+            "label": "Custom Admin Type",
+            "profile_mode": EventType.ProfileMode.CORE,
+            "profile_key": "",
+            "is_active": "",
+        }
+    )
+
+    assert form.is_valid(), form.errors
+    event_type = form.save()
+    assert event_type.is_active is False
 
 
 @pytest.mark.django_db

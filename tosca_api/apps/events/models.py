@@ -21,17 +21,22 @@ from tosca_api.apps.core.sanitization import sanitize_simple
 
 
 class EventType(TimeStampedModel):
-    """
-    Minimal placeholder registry model for event-type assignment.
+    """Registry describing how an event type maps to profile behavior."""
 
-    The full registry contract lands in Task 2B.7. This placeholder exists so
-    Event can carry the requested foreign key without collapsing into a UUID
-    shim that would be harder to migrate later.
-    """
+    class ProfileMode(models.TextChoices):
+        CORE = "core", "Core"
+        EXTENSION = "extension", "Extension"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     code = models.CharField(max_length=100, unique=True)
     label = models.CharField(max_length=255)
+    profile_mode = models.CharField(
+        max_length=20,
+        choices=ProfileMode.choices,
+        default=ProfileMode.CORE,
+    )
+    profile_key = models.CharField(max_length=100, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["label"]
@@ -40,6 +45,24 @@ class EventType(TimeStampedModel):
 
     def __str__(self) -> str:
         return self.label
+
+    def clean(self) -> None:
+        errors = {}
+
+        if self.profile_mode == self.ProfileMode.CORE and self.profile_key:
+            errors["profile_key"] = "Core event types must not define a profile key."
+
+        if self.profile_mode == self.ProfileMode.EXTENSION and not self.profile_key:
+            errors["profile_key"] = "Extension event types require a profile key."
+
+        if errors:
+            raise ValidationError(errors)
+
+        super().clean()
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class TaxonomyDimension(TimeStampedModel):

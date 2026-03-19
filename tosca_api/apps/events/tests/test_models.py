@@ -668,6 +668,86 @@ def test_event_core_indexes_exist():
 
 
 # =============================================================================
+# Event Type Registry Tests
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_event_type_seeds_exist_with_expected_profile_bindings():
+    """The initial registry seed should create the agreed event types."""
+    seeded = {
+        event_type.code: (event_type.profile_mode, event_type.profile_key, event_type.is_active)
+        for event_type in EventType.objects.filter(
+            code__in=["general", "public_health", "sports", "culture"]
+        )
+    }
+
+    assert seeded == {
+        "general": (EventType.ProfileMode.CORE, None, True),
+        "public_health": (EventType.ProfileMode.EXTENSION, "public_health", True),
+        "sports": (EventType.ProfileMode.EXTENSION, "sports", True),
+        "culture": (EventType.ProfileMode.EXTENSION, "culture", True),
+    }
+
+
+@pytest.mark.django_db
+def test_extension_event_type_requires_profile_key():
+    """Extension event types must declare their profile key."""
+    with pytest.raises(ValidationError) as exc:
+        EventType.objects.create(
+            code="broken-extension",
+            label="Broken Extension",
+            profile_mode=EventType.ProfileMode.EXTENSION,
+            profile_key=None,
+        )
+
+    assert "profile_key" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_core_event_type_rejects_profile_key():
+    """Core event types must not carry a profile key."""
+    with pytest.raises(ValidationError) as exc:
+        EventType.objects.create(
+            code="broken-core",
+            label="Broken Core",
+            profile_mode=EventType.ProfileMode.CORE,
+            profile_key="sports",
+        )
+
+    assert "profile_key" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_inactive_event_type_can_be_stored():
+    """Inactive custom event types remain valid registry rows."""
+    event_type = EventType.objects.create(
+        code="legacy-custom",
+        label="Legacy Custom",
+        profile_mode=EventType.ProfileMode.CORE,
+        is_active=False,
+    )
+
+    assert event_type.is_active is False
+    assert event_type.profile_key is None
+
+
+@pytest.mark.django_db
+def test_event_type_code_must_be_unique():
+    """Duplicate event type codes should be rejected."""
+    EventType.objects.create(code="custom-type", label="Custom Type")
+
+    duplicate = EventType(
+        code="custom-type",
+        label="Custom Type Duplicate",
+        profile_mode=EventType.ProfileMode.CORE,
+    )
+
+    with pytest.raises(IntegrityError):
+        EventType.objects.bulk_create([duplicate])
+
+
+# =============================================================================
 # Taxonomy Tests
 # =============================================================================
 
