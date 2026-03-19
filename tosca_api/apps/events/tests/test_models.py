@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import time, timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -1068,6 +1068,27 @@ def test_recurring_series_rejects_invalid_end_date_occurrence_count_combinations
         )
 
     assert "end_date" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_recurring_series_requires_same_day_end_time(user, campaign, event_type):
+    """Recurring generation currently only supports same-day occurrence durations."""
+    with pytest.raises(ValidationError) as exc:
+        EventSeries.objects.create(
+            **build_series_kwargs(
+                user,
+                campaign,
+                event_type,
+                series_mode=EventSeries.SeriesMode.RECURRING,
+                recurrence_type=EventSeries.RecurrenceType.WEEKLY,
+                start_time=time(18, 0),
+                by_weekday=["monday"],
+                end_date=timezone.now().date() + timedelta(days=14),
+                end_time=time(17, 0),
+            )
+        )
+
+    assert "end_time" in exc.value.message_dict
 
     with pytest.raises(ValidationError) as exc:
         EventSeries.objects.create(
