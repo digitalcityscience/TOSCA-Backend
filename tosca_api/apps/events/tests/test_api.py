@@ -7,7 +7,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from tosca_api.apps.campaigns.models import Campaign
-from tosca_api.apps.events.models import Event
+from tosca_api.apps.events.models import Event, EventSeries
+from tosca_api.apps.geocontext.models import GeoContext
 
 User = get_user_model()
 
@@ -32,6 +33,11 @@ def staff_user():
 @pytest.fixture
 def campaign(user):
     return Campaign.objects.create(title="API Test Campaign", created_by=user)
+
+
+@pytest.fixture
+def geocontext(user):
+    return GeoContext.objects.create(content="Shared API context", created_by=user)
 
 
 @pytest.fixture
@@ -366,6 +372,34 @@ def test_events_retrieve_detail(api_client, user, future_event):
     assert response.data["title"] == "Future Event"
     assert "layers" in response.data
     assert "context" in response.data
+
+
+@pytest.mark.django_db
+def test_events_retrieve_detail_uses_series_default_context(
+    api_client, user, campaign, geocontext
+):
+    """Detail responses should expose the resolved series default context."""
+    series = EventSeries.objects.create(
+        name="API Series",
+        default_context=geocontext,
+    )
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Series Detail Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=2),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        series=series,
+        occurrence_index=1,
+        context=None,
+        status=Event.Status.PUBLISHED,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get(f"/api/v1/events/{event.id}/")
+    assert response.status_code == 200
+    assert response.data["context"]["id"] == str(geocontext.id)
 
 
 # =============================================================================

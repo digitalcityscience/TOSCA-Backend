@@ -69,7 +69,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
     Includes nested context and layers.
     """
 
-    context = EventGeoContextSerializer(read_only=True)
+    context = serializers.SerializerMethodField()
     layers = serializers.SerializerMethodField()
 
     class Meta:
@@ -108,6 +108,13 @@ class EventDetailSerializer(serializers.ModelSerializer):
         """Return layers ordered by display_order."""
         through_qs = EventLayer.objects.filter(event=obj).select_related("layer")
         return EventLayerSerializer(through_qs, many=True).data
+
+    def get_context(self, obj):
+        """Return the resolved event context."""
+        context = obj.effective_context
+        if context is None:
+            return None
+        return EventGeoContextSerializer(context).data
 
 
 class EventGeoSerializer(GeoFeatureModelSerializer):
