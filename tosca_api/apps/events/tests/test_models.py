@@ -9,7 +9,15 @@ from django.db import IntegrityError
 from django.utils import timezone
 
 from tosca_api.apps.campaigns.models import Campaign
-from tosca_api.apps.events.models import Event, EventLayer, EventSeries, EventType
+from tosca_api.apps.events.models import (
+    Event,
+    EventLayer,
+    EventSeries,
+    EventTerm,
+    EventType,
+    TaxonomyDimension,
+    TaxonomyTerm,
+)
 from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.layerrefs.models import LayerRef
 
@@ -657,3 +665,97 @@ def test_event_core_indexes_exist():
     index_names = {row[0] for row in rows}
     assert expected_indexes.issubset(index_names)
     assert any("using gist" in row[1].lower() and "location" in row[1].lower() for row in rows)
+
+
+# =============================================================================
+# Taxonomy Tests
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_taxonomy_dimension_supports_active_and_inactive_states():
+    """Dimensions can be created in active or inactive states."""
+    active = TaxonomyDimension.objects.create(
+        code="audience",
+        label="Audience",
+        selection_mode=TaxonomyDimension.SelectionMode.MULTIPLE,
+        is_active=True,
+    )
+    inactive = TaxonomyDimension.objects.create(
+        code="theme",
+        label="Theme",
+        selection_mode=TaxonomyDimension.SelectionMode.SINGLE,
+        is_active=False,
+    )
+
+    assert active.is_active is True
+    assert inactive.is_active is False
+    assert inactive.selection_mode == TaxonomyDimension.SelectionMode.SINGLE
+
+
+@pytest.mark.django_db
+def test_taxonomy_term_code_must_be_unique_within_dimension():
+    """Term codes are unique per dimension."""
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="climate",
+        label="Climate",
+    )
+
+    duplicate = TaxonomyTerm(
+        dimension=dimension,
+        code="climate",
+        label="Climate Duplicate",
+    )
+
+    with pytest.raises(IntegrityError):
+        TaxonomyTerm.objects.bulk_create([duplicate])
+
+
+@pytest.mark.django_db
+def test_taxonomy_term_parent_must_belong_to_same_dimension():
+    """A term parent must be defined on the same dimension."""
+    parent_dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    child_dimension = TaxonomyDimension.objects.create(code="audience", label="Audience")
+    parent = TaxonomyTerm.objects.create(
+        dimension=parent_dimension,
+        code="planning",
+        label="Planning",
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        TaxonomyTerm.objects.create(
+            dimension=child_dimension,
+            parent=parent,
+            code="youth",
+            label="Youth",
+        )
+
+    assert "parent" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_event_term_duplicate_assignment_is_rejected(user, campaign):
+    """Duplicate event-term assignments must be rejected."""
+    now = timezone.now()
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Tagged Event",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    term = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="climate",
+        label="Climate",
+    )
+    EventTerm.objects.create(event=event, term=term)
+
+    duplicate = EventTerm(event=event, term=term)
+
+    with pytest.raises(IntegrityError):
+        EventTerm.objects.bulk_create([duplicate])
