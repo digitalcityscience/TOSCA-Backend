@@ -27,8 +27,26 @@ class TaxonomyTermInline(admin.TabularInline):
 
 @admin.register(EventType)
 class EventTypeAdmin(admin.ModelAdmin):
-    list_display = ["label", "code"]
-    search_fields = ["label", "code"]
+    list_display = ["label", "code", "profile_mode", "profile_key", "is_active"]
+    list_filter = ["profile_mode", "is_active"]
+    search_fields = ["label", "code", "profile_key"]
+    readonly_fields = ["id", "created_at", "updated_at"]
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": (
+                    "id",
+                    "code",
+                    "label",
+                    "profile_mode",
+                    "profile_key",
+                    "is_active",
+                )
+            },
+        ),
+        ("Timestamps", {"fields": ("created_at", "updated_at")}),
+    )
 
 
 @admin.register(TaxonomyDimension)
