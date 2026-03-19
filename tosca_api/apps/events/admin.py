@@ -6,6 +6,7 @@ from .models import (
     Event,
     EventLayer,
     EventSeries,
+    EventSeriesDate,
     EventTerm,
     EventType,
     PublicHealthEventProfile,
@@ -19,6 +20,12 @@ class EventLayerInline(admin.TabularInline):
     model = EventLayer
     extra = 1
     autocomplete_fields = ["layer"]
+
+
+class EventSeriesDateInline(admin.TabularInline):
+    model = EventSeriesDate
+    extra = 0
+    fields = ["occurrence_date", "display_order"]
 
 
 class TaxonomyTermInline(admin.TabularInline):
@@ -107,12 +114,54 @@ class TaxonomyTermAdmin(admin.ModelAdmin):
 
 @admin.register(EventSeries)
 class EventSeriesAdmin(admin.ModelAdmin):
-    list_display = ["name", "campaign", "event_type", "default_context", "created_at"]
+    list_display = [
+        "name",
+        "series_mode",
+        "campaign",
+        "event_type",
+        "start_date",
+        "created_at",
+    ]
     search_fields = ["name"]
     readonly_fields = ["id", "created_at", "updated_at"]
-    autocomplete_fields = ["campaign", "event_type", "default_context"]
+    autocomplete_fields = ["campaign", "event_type", "default_context", "created_by"]
+    inlines = [EventSeriesDateInline]
     fieldsets = (
-        (None, {"fields": ("id", "campaign", "event_type", "name", "default_context")}),
+        (
+            None,
+            {
+                "fields": (
+                    "id",
+                    "campaign",
+                    "event_type",
+                    "created_by",
+                    "name",
+                    "default_context",
+                    "series_mode",
+                )
+            },
+        ),
+        (
+            "Recurrence",
+            {
+                "fields": (
+                    "recurrence_type",
+                    "start_date",
+                    "end_date",
+                    "occurrence_count",
+                    "interval",
+                    "start_time",
+                    "end_time",
+                    "timezone",
+                    "by_weekday",
+                    "monthly_rule_type",
+                    "day_of_month",
+                    "week_of_month",
+                    "weekday_of_month",
+                    "notes",
+                )
+            },
+        ),
         ("Timestamps", {"fields": ("created_at", "updated_at")}),
     )
 

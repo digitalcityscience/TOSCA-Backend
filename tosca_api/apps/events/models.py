@@ -14,6 +14,7 @@ from django.conf import settings
 from django.contrib.contenttypes.fields import GenericRelation
 from django.contrib.gis.db import models as gis_models
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 
 from tosca_api.apps.core.models import TimeStampedModel
@@ -149,13 +150,20 @@ class TaxonomyTerm(TimeStampedModel):
 
 
 class EventSeries(TimeStampedModel):
-    """
-    Minimal grouping model for recurring/batch event linkage.
+    """Grouping and recurrence definition model for batch and recurring events."""
 
-    Campaign and event_type live here already because series-linked event
-    invariants depend on them in Task 2B.4. Recurrence detail remains deferred
-    to the later EventSeries schema task.
-    """
+    class SeriesMode(models.TextChoices):
+        MANUAL_BATCH = "manual_batch", "Manual Batch"
+        RECURRING = "recurring", "Recurring"
+
+    class RecurrenceType(models.TextChoices):
+        DAILY = "daily", "Daily"
+        WEEKLY = "weekly", "Weekly"
+        MONTHLY = "monthly", "Monthly"
+
+    class MonthlyRuleType(models.TextChoices):
+        DAY_OF_MONTH = "day_of_month", "Day of Month"
+        NTH_WEEKDAY = "nth_weekday", "Nth Weekday"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     campaign = models.ForeignKey(
@@ -173,6 +181,13 @@ class EventSeries(TimeStampedModel):
         blank=True,
     )
     name = models.CharField(max_length=255, blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_event_series",
+        null=True,
+        blank=True,
+    )
     default_context = models.ForeignKey(
         "geocontext.GeoContext",
         on_delete=models.SET_NULL,
@@ -180,6 +195,35 @@ class EventSeries(TimeStampedModel):
         blank=True,
         related_name="default_for_event_series",
     )
+    series_mode = models.CharField(
+        max_length=20,
+        choices=SeriesMode.choices,
+        default=SeriesMode.MANUAL_BATCH,
+    )
+    recurrence_type = models.CharField(
+        max_length=20,
+        choices=RecurrenceType.choices,
+        blank=True,
+        default="",
+    )
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    occurrence_count = models.PositiveIntegerField(null=True, blank=True)
+    interval = models.PositiveIntegerField(default=1)
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
+    timezone = models.CharField(max_length=64, blank=True, default="")
+    monthly_rule_type = models.CharField(
+        max_length=20,
+        choices=MonthlyRuleType.choices,
+        blank=True,
+        default="",
+    )
+    day_of_month = models.PositiveSmallIntegerField(null=True, blank=True)
+    week_of_month = models.PositiveSmallIntegerField(null=True, blank=True)
+    weekday_of_month = models.CharField(max_length=20, blank=True, default="")
+    by_weekday = models.JSONField(default=list, blank=True)
+    notes = models.TextField(blank=True, default="")
 
     class Meta:
         ordering = ["created_at"]
@@ -191,6 +235,148 @@ class EventSeries(TimeStampedModel):
 
     def __str__(self) -> str:
         return self.name or str(self.id)
+
+    def clean(self) -> None:
+        errors = {}
+
+        if self.created_by_id is None:
+            errors["created_by"] = "Event series require a creator."
+        if self.start_date is None:
+            errors["start_date"] = "Event series require a start date."
+        if self.start_time is None:
+            errors["start_time"] = "Event series require a start time."
+        if self.end_time is None:
+            errors["end_time"] = "Event series require an end time."
+        if not self.timezone:
+            errors["timezone"] = "Event series require a timezone."
+
+        if self.interval < 1:
+            errors["interval"] = "Interval must be at least 1."
+        if self.occurrence_count is not None and self.occurrence_count < 1:
+            errors["occurrence_count"] = "Occurrence count must be at least 1."
+
+        if self.start_time and self.end_time and self.start_date:
+            if self.end_date:
+                same_or_before = (self.end_date, self.end_time) <= (
+                    self.start_date,
+                    self.start_time,
+                )
+                if same_or_before:
+                    errors["end_date"] = (
+                        "Series end date/time must be after the start date/time."
+                    )
+            elif self.end_time <= self.start_time:
+                errors["end_time"] = (
+                    "End time must be after start time for same-day events. "
+                    "Use end_date for multi-day events."
+                )
+
+        if self.series_mode == self.SeriesMode.RECURRING:
+            if not self.recurrence_type:
+                errors["recurrence_type"] = "Recurring series require a recurrence type."
+            if bool(self.end_date) == bool(self.occurrence_count):
+                errors["end_date"] = "Use either end_date or occurrence_count."
+
+            invalid_weekdays = set(self.by_weekday) - VALID_WEEKDAYS
+            if invalid_weekdays:
+                errors["by_weekday"] = (
+                    f"Invalid weekday values: {sorted(invalid_weekdays)}."
+                )
+
+            if self.recurrence_type == self.RecurrenceType.WEEKLY and not self.by_weekday:
+                errors["by_weekday"] = "Weekly recurrence requires at least one weekday."
+
+            if self.recurrence_type == self.RecurrenceType.MONTHLY:
+                if not self.monthly_rule_type:
+                    errors["monthly_rule_type"] = (
+                        "Monthly recurrence requires a monthly rule type."
+                    )
+                elif self.monthly_rule_type == self.MonthlyRuleType.DAY_OF_MONTH:
+                    if not self.day_of_month:
+                        errors["day_of_month"] = (
+                            "Day-of-month rule requires day_of_month."
+                        )
+                    elif not 1 <= self.day_of_month <= 31:
+                        errors["day_of_month"] = "day_of_month must be between 1 and 31."
+                elif self.monthly_rule_type == self.MonthlyRuleType.NTH_WEEKDAY:
+                    if not self.week_of_month or not self.weekday_of_month:
+                        errors["monthly_rule_type"] = (
+                            "Nth-weekday rule requires week_of_month and weekday_of_month."
+                        )
+                    else:
+                        if not 1 <= self.week_of_month <= 5:
+                            errors["week_of_month"] = (
+                                "week_of_month must be between 1 and 5."
+                            )
+                        if self.weekday_of_month not in VALID_WEEKDAYS:
+                            errors["weekday_of_month"] = (
+                                "weekday_of_month must be a valid weekday name."
+                            )
+
+        if self.series_mode == self.SeriesMode.MANUAL_BATCH:
+            if self.recurrence_type:
+                errors["recurrence_type"] = (
+                    "Manual batches must not define a recurrence type."
+                )
+            if self.end_date:
+                errors["end_date"] = "Manual batches must not define an end date."
+            if self.occurrence_count is not None:
+                errors["occurrence_count"] = (
+                    "Manual batches must not define an occurrence count."
+                )
+            if self.by_weekday:
+                errors["by_weekday"] = (
+                    "Manual batches must not define recurring weekdays."
+                )
+            if self.monthly_rule_type or self.day_of_month or self.week_of_month or self.weekday_of_month:
+                errors["monthly_rule_type"] = (
+                    "Manual batches must not define monthly recurrence rules."
+                )
+
+        if errors:
+            raise ValidationError(errors)
+
+        super().clean()
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+VALID_WEEKDAYS = frozenset(
+    ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+)
+
+
+class EventSeriesDate(TimeStampedModel):
+    """Explicit occurrence date for manual batch event series."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    series = models.ForeignKey(
+        EventSeries,
+        on_delete=models.CASCADE,
+        related_name="dates",
+    )
+    occurrence_date = models.DateField()
+    display_order = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+
+    class Meta:
+        ordering = ["display_order", "occurrence_date", "created_at"]
+        verbose_name = "Event Series Date"
+        verbose_name_plural = "Event Series Dates"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["series", "occurrence_date"],
+                name="events_evtseriesdate_series_date_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.series} @ {self.occurrence_date}"
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class Event(TimeStampedModel):
