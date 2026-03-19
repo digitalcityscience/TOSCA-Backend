@@ -759,3 +759,72 @@ def test_event_term_duplicate_assignment_is_rejected(user, campaign):
 
     with pytest.raises(IntegrityError):
         EventTerm.objects.bulk_create([duplicate])
+
+
+@pytest.mark.django_db
+def test_single_select_dimension_rejects_second_term_for_same_event(user, campaign):
+    """Single-select dimensions allow only one term per event."""
+    now = timezone.now()
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Single Select Event",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+    dimension = TaxonomyDimension.objects.create(
+        code="audience",
+        label="Audience",
+        selection_mode=TaxonomyDimension.SelectionMode.SINGLE,
+    )
+    first_term = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="youth",
+        label="Youth",
+    )
+    second_term = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="seniors",
+        label="Seniors",
+    )
+    EventTerm.objects.create(event=event, term=first_term)
+
+    with pytest.raises(ValidationError) as exc:
+        EventTerm.objects.create(event=event, term=second_term)
+
+    assert "term" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_multiple_select_dimension_allows_multiple_terms_for_same_event(user, campaign):
+    """Multiple-select dimensions allow more than one term per event."""
+    now = timezone.now()
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Multiple Select Event",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+    dimension = TaxonomyDimension.objects.create(
+        code="topic",
+        label="Topic",
+        selection_mode=TaxonomyDimension.SelectionMode.MULTIPLE,
+    )
+    first_term = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="climate",
+        label="Climate",
+    )
+    second_term = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="mobility",
+        label="Mobility",
+    )
+
+    EventTerm.objects.create(event=event, term=first_term)
+    EventTerm.objects.create(event=event, term=second_term)
+
+    assert EventTerm.objects.filter(event=event).count() == 2

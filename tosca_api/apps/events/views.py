@@ -81,6 +81,21 @@ class EventViewSet(viewsets.ModelViewSet):
         """Check if request has bbox parameter."""
         return bool(self.request.query_params.get("bbox"))
 
+    def _apply_taxonomy_filters(self, queryset):
+        """Apply optional taxonomy term and dimension filters."""
+        term_id = self.request.query_params.get("term_id")
+        if term_id:
+            queryset = queryset.filter(event_terms__term_id=term_id)
+
+        dimension_id = self.request.query_params.get("dimension_id")
+        if dimension_id:
+            queryset = queryset.filter(event_terms__term__dimension_id=dimension_id)
+
+        if term_id or dimension_id:
+            queryset = queryset.distinct()
+
+        return queryset
+
     def get_queryset(self):
         """
         Filter queryset based on request parameters.
@@ -101,6 +116,8 @@ class EventViewSet(viewsets.ModelViewSet):
         campaign_id = self.request.query_params.get("campaign_id")
         if campaign_id:
             queryset = queryset.filter(campaign_id=campaign_id)
+
+        queryset = self._apply_taxonomy_filters(queryset)
 
         # Time filters
         include_past = self.request.query_params.get("include_past", "").lower() == "true"
@@ -207,6 +224,17 @@ class EventViewSet(viewsets.ModelViewSet):
             "event_type",
             "series",
         )
+
+        if data.get("term_id"):
+            queryset = queryset.filter(event_terms__term_id=data["term_id"])
+
+        if data.get("dimension_id"):
+            queryset = queryset.filter(
+                event_terms__term__dimension_id=data["dimension_id"]
+            )
+
+        if data.get("term_id") or data.get("dimension_id"):
+            queryset = queryset.distinct()
 
         # Serialize as GeoJSON
         serializer = EventGeoSerializer(queryset, many=True)
