@@ -143,6 +143,28 @@ class EventGeoSerializer(GeoFeatureModelSerializer):
         read_only_fields = fields
 
 
+class EventMapOnlineSerializer(serializers.ModelSerializer):
+    """Serializer for online events returned in the dedicated map endpoint."""
+
+    class Meta:
+        model = Event
+        fields = [
+            "id",
+            "title",
+            "description",
+            "campaign",
+            "event_type",
+            "start_datetime",
+            "end_datetime",
+            "location_mode",
+            "online_url",
+            "online_platform",
+            "status",
+            "visibility",
+        ]
+        read_only_fields = fields
+
+
 class EventWriteSerializer(serializers.ModelSerializer):
     """Serializer for creating/updating events."""
 
