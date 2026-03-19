@@ -44,13 +44,28 @@ class EventType(TimeStampedModel):
 
 class EventSeries(TimeStampedModel):
     """
-    Minimal placeholder grouping model for recurring/batch event linkage.
+    Minimal grouping model for recurring/batch event linkage.
 
-    The recurrence and default-context schema lands in Task 2B.12/2B.3. This
-    placeholder keeps Event.series as a proper foreign key from the start.
+    Campaign and event_type live here already because series-linked event
+    invariants depend on them in Task 2B.4. Recurrence detail remains deferred
+    to the later EventSeries schema task.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    campaign = models.ForeignKey(
+        "campaigns.Campaign",
+        on_delete=models.CASCADE,
+        related_name="event_series",
+        null=True,
+        blank=True,
+    )
+    event_type = models.ForeignKey(
+        EventType,
+        on_delete=models.PROTECT,
+        related_name="series",
+        null=True,
+        blank=True,
+    )
     name = models.CharField(max_length=255, blank=True, default="")
     default_context = models.ForeignKey(
         "geocontext.GeoContext",
@@ -64,6 +79,9 @@ class EventSeries(TimeStampedModel):
         ordering = ["created_at"]
         verbose_name = "Event Series"
         verbose_name_plural = "Event Series"
+        indexes = [
+            models.Index(fields=["campaign", "event_type"]),
+        ]
 
     def __str__(self) -> str:
         return self.name or str(self.id)
@@ -204,12 +222,33 @@ class Event(TimeStampedModel):
             models.Index(fields=["campaign"]),
             models.Index(fields=["start_datetime", "end_datetime"]),
             models.Index(fields=["status"]),
+            models.Index(
+                fields=["campaign", "status", "start_datetime"],
+                name="events_evt_cmp_stat_start_idx",
+            ),
+            models.Index(
+                fields=["event_type", "start_datetime"],
+                name="events_evt_type_start_idx",
+            ),
+            models.Index(
+                fields=["location_mode", "start_datetime"],
+                name="events_evt_locmode_start_idx",
+            ),
+            models.Index(
+                fields=["series", "start_datetime"],
+                name="events_evt_series_start_idx",
+            ),
         ]
         constraints = [
             # Ensure end_datetime >= start_datetime
             models.CheckConstraint(
                 condition=models.Q(end_datetime__gte=models.F("start_datetime")),
                 name="event_end_after_start",
+            ),
+            models.UniqueConstraint(
+                fields=["series", "occurrence_index"],
+                condition=models.Q(series__isnull=False),
+                name="events_evt_ser_occ_uniq",
             ),
         ]
 
@@ -262,6 +301,19 @@ class Event(TimeStampedModel):
 
         if self.series_id and self.occurrence_index is None:
             errors["occurrence_index"] = "Series events require an occurrence index."
+
+        if self.series_id:
+            if self.series.campaign_id is None:
+                errors["series"] = "Series-linked events require a series campaign."
+            elif self.series.campaign_id != self.campaign_id:
+                errors["campaign"] = "Series-linked events must match the series campaign."
+
+            if self.series.event_type_id is None:
+                errors["series"] = "Series-linked events require a series event type."
+            elif self.event_type_id is None:
+                errors["event_type"] = "Series-linked events require an event type."
+            elif self.series.event_type_id != self.event_type_id:
+                errors["event_type"] = "Series-linked events must match the series event type."
 
         if errors:
             raise ValidationError(errors)

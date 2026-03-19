@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from tosca_api.apps.campaigns.models import Campaign
-from tosca_api.apps.events.models import Event, EventSeries
+from tosca_api.apps.events.models import Event, EventSeries, EventType
 from tosca_api.apps.geocontext.models import GeoContext
 
 User = get_user_model()
@@ -38,6 +38,11 @@ def campaign(user):
 @pytest.fixture
 def geocontext(user):
     return GeoContext.objects.create(content="Shared API context", created_by=user)
+
+
+@pytest.fixture
+def event_type():
+    return EventType.objects.create(code="api-core", label="API Core Event")
 
 
 @pytest.fixture
@@ -376,15 +381,18 @@ def test_events_retrieve_detail(api_client, user, future_event):
 
 @pytest.mark.django_db
 def test_events_retrieve_detail_uses_series_default_context(
-    api_client, user, campaign, geocontext
+    api_client, user, campaign, geocontext, event_type
 ):
     """Detail responses should expose the resolved series default context."""
     series = EventSeries.objects.create(
         name="API Series",
+        campaign=campaign,
+        event_type=event_type,
         default_context=geocontext,
     )
     event = Event.objects.create(
         campaign=campaign,
+        event_type=event_type,
         title="Series Detail Event",
         start_datetime=timezone.now() + timedelta(days=1),
         end_datetime=timezone.now() + timedelta(days=1, hours=2),

@@ -18,12 +18,12 @@ class EventTypeAdmin(admin.ModelAdmin):
 
 @admin.register(EventSeries)
 class EventSeriesAdmin(admin.ModelAdmin):
-    list_display = ["name", "default_context", "created_at"]
+    list_display = ["name", "campaign", "event_type", "default_context", "created_at"]
     search_fields = ["name"]
     readonly_fields = ["id", "created_at", "updated_at"]
-    autocomplete_fields = ["default_context"]
+    autocomplete_fields = ["campaign", "event_type", "default_context"]
     fieldsets = (
-        (None, {"fields": ("id", "name", "default_context")}),
+        (None, {"fields": ("id", "campaign", "event_type", "name", "default_context")}),
         ("Timestamps", {"fields": ("created_at", "updated_at")}),
     )
 
