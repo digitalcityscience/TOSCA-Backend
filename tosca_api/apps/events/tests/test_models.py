@@ -14,6 +14,7 @@ from tosca_api.apps.events.models import (
     Event,
     EventLayer,
     EventSeries,
+    EventSeriesDate,
     EventTerm,
     EventType,
     PublicHealthEventProfile,
@@ -25,6 +26,26 @@ from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.layerrefs.models import LayerRef
 
 User = get_user_model()
+
+
+def build_series_kwargs(user, campaign, event_type, **overrides):
+    now = timezone.now()
+    kwargs = {
+        "campaign": campaign,
+        "event_type": event_type,
+        "created_by": user,
+        "name": "Series",
+        "series_mode": EventSeries.SeriesMode.MANUAL_BATCH,
+        "start_date": now.date(),
+        "start_time": now.time().replace(tzinfo=None, microsecond=0),
+        "end_time": (now + timedelta(hours=1)).time().replace(
+            tzinfo=None,
+            microsecond=0,
+        ),
+        "timezone": "Europe/Berlin",
+    }
+    kwargs.update(overrides)
+    return kwargs
 
 
 @pytest.fixture
@@ -367,9 +388,12 @@ def test_series_event_requires_occurrence_index(user, campaign, event_type):
     """Series events must provide an occurrence index."""
     now = timezone.now()
     series = EventSeries.objects.create(
-        name="Recurring Workshops",
-        campaign=campaign,
-        event_type=event_type,
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="Recurring Workshops",
+        )
     )
 
     with pytest.raises(ValidationError) as exc:
@@ -446,9 +470,12 @@ def test_event_resolves_series_default_context(user, campaign, geocontext, event
     """Series default context is used when an event override is absent."""
     now = timezone.now()
     series = EventSeries.objects.create(
-        name="Series With Shared Context",
-        campaign=campaign,
-        event_type=event_type,
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="Series With Shared Context",
+        ),
         default_context=geocontext,
     )
     event = Event.objects.create(
@@ -476,9 +503,12 @@ def test_event_override_context_wins_over_series_default(user, campaign, geocont
         created_by=user,
     )
     series = EventSeries.objects.create(
-        name="Series With Shared Context",
-        campaign=campaign,
-        event_type=event_type,
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="Series With Shared Context",
+        ),
         default_context=geocontext,
     )
     event = Event.objects.create(
@@ -502,9 +532,12 @@ def test_editing_event_override_does_not_change_series_default(user, campaign, g
     """Changing one event override must not mutate the series default context."""
     now = timezone.now()
     series = EventSeries.objects.create(
-        name="Series With Shared Context",
-        campaign=campaign,
-        event_type=event_type,
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="Series With Shared Context",
+        ),
         default_context=geocontext,
     )
     first_override = GeoContext.objects.create(content="Override A", created_by=user)
@@ -554,9 +587,12 @@ def test_series_linked_event_rejects_campaign_change(user, campaign, event_type)
     now = timezone.now()
     other_campaign = Campaign.objects.create(title="Other Campaign", created_by=user)
     series = EventSeries.objects.create(
-        name="Locked Campaign Series",
-        campaign=campaign,
-        event_type=event_type,
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="Locked Campaign Series",
+        )
     )
     event = Event.objects.create(
         campaign=campaign,
@@ -583,9 +619,12 @@ def test_series_linked_event_rejects_event_type_change(user, campaign, event_typ
     now = timezone.now()
     other_event_type = EventType.objects.create(code="other", label="Other Event")
     series = EventSeries.objects.create(
-        name="Locked Event Type Series",
-        campaign=campaign,
-        event_type=event_type,
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="Locked Event Type Series",
+        )
     )
     event = Event.objects.create(
         campaign=campaign,
@@ -611,9 +650,12 @@ def test_series_occurrence_index_must_be_unique(user, campaign, event_type):
     """Duplicate series occurrence indexes must be rejected."""
     now = timezone.now()
     series = EventSeries.objects.create(
-        name="Unique Occurrence Series",
-        campaign=campaign,
-        event_type=event_type,
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="Unique Occurrence Series",
+        )
     )
     Event.objects.create(
         campaign=campaign,
@@ -887,6 +929,161 @@ def test_mismatched_event_type_profile_combinations_are_rejected(
         profile_model.objects.create(event=event)
 
     assert "event" in exc.value.message_dict
+
+
+# =============================================================================
+# Event Series Schema Tests
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_manual_batch_series_accepts_explicit_dates(user, campaign, event_type):
+    """Manual batch series should persist explicit dates through EventSeriesDate."""
+    series = EventSeries.objects.create(
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="Manual Batch Series",
+        )
+    )
+
+    first_date = EventSeriesDate.objects.create(
+        series=series,
+        occurrence_date=series.start_date,
+        display_order=1,
+    )
+    second_date = EventSeriesDate.objects.create(
+        series=series,
+        occurrence_date=series.start_date + timedelta(days=7),
+        display_order=2,
+    )
+
+    assert list(series.dates.order_by("display_order")) == [first_date, second_date]
+
+
+@pytest.mark.django_db
+def test_event_series_date_occurrence_date_must_be_unique(user, campaign, event_type):
+    """Duplicate explicit dates for one series must be rejected."""
+    series = EventSeries.objects.create(
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="Manual Batch Series",
+        )
+    )
+    EventSeriesDate.objects.create(
+        series=series,
+        occurrence_date=series.start_date,
+        display_order=1,
+    )
+
+    duplicate = EventSeriesDate(
+        series=series,
+        occurrence_date=series.start_date,
+        display_order=2,
+    )
+
+    with pytest.raises(IntegrityError):
+        EventSeriesDate.objects.bulk_create([duplicate])
+
+
+@pytest.mark.django_db
+def test_weekly_series_requires_weekday(user, campaign, event_type):
+    """Weekly recurrence must define at least one weekday."""
+    with pytest.raises(ValidationError) as exc:
+        EventSeries.objects.create(
+            **build_series_kwargs(
+                user,
+                campaign,
+                event_type,
+                name="Weekly Series",
+                series_mode=EventSeries.SeriesMode.RECURRING,
+                recurrence_type=EventSeries.RecurrenceType.WEEKLY,
+                end_date=timezone.now().date() + timedelta(days=30),
+                by_weekday=[],
+            )
+        )
+
+    assert "by_weekday" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_monthly_series_requires_monthly_rule_fields(user, campaign, event_type):
+    """Monthly recurrence must provide the fields required by its rule type."""
+    with pytest.raises(ValidationError) as exc:
+        EventSeries.objects.create(
+            **build_series_kwargs(
+                user,
+                campaign,
+                event_type,
+                name="Monthly Series",
+                series_mode=EventSeries.SeriesMode.RECURRING,
+                recurrence_type=EventSeries.RecurrenceType.MONTHLY,
+                end_date=timezone.now().date() + timedelta(days=30),
+                monthly_rule_type=EventSeries.MonthlyRuleType.DAY_OF_MONTH,
+                day_of_month=None,
+            )
+        )
+
+    assert "day_of_month" in exc.value.message_dict
+
+    with pytest.raises(ValidationError) as exc:
+        EventSeries.objects.create(
+            **build_series_kwargs(
+                user,
+                campaign,
+                event_type,
+                name="Nth Weekday Monthly Series",
+                series_mode=EventSeries.SeriesMode.RECURRING,
+                recurrence_type=EventSeries.RecurrenceType.MONTHLY,
+                end_date=timezone.now().date() + timedelta(days=30),
+                monthly_rule_type=EventSeries.MonthlyRuleType.NTH_WEEKDAY,
+                week_of_month=None,
+                weekday_of_month="",
+            )
+        )
+
+    assert "monthly_rule_type" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_recurring_series_rejects_invalid_end_date_occurrence_count_combinations(
+    user, campaign, event_type
+):
+    """Recurring series must use exactly one termination strategy."""
+    with pytest.raises(ValidationError) as exc:
+        EventSeries.objects.create(
+            **build_series_kwargs(
+                user,
+                campaign,
+                event_type,
+                name="Invalid Recurring Series",
+                series_mode=EventSeries.SeriesMode.RECURRING,
+                recurrence_type=EventSeries.RecurrenceType.DAILY,
+                end_date=timezone.now().date() + timedelta(days=14),
+                occurrence_count=5,
+            )
+        )
+
+    assert "end_date" in exc.value.message_dict
+
+    with pytest.raises(ValidationError) as exc:
+        EventSeries.objects.create(
+            **build_series_kwargs(
+                user,
+                campaign,
+                event_type,
+                name="Missing Termination Series",
+                series_mode=EventSeries.SeriesMode.RECURRING,
+                recurrence_type=EventSeries.RecurrenceType.DAILY,
+                end_date=None,
+                occurrence_count=None,
+            )
+        )
+
+    assert "end_date" in exc.value.message_dict
 
 
 # =============================================================================

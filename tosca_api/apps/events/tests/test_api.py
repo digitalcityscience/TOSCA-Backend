@@ -20,6 +20,26 @@ from tosca_api.apps.geocontext.models import GeoContext
 User = get_user_model()
 
 
+def build_series_kwargs(user, campaign, event_type, **overrides):
+    now = timezone.now()
+    kwargs = {
+        "campaign": campaign,
+        "event_type": event_type,
+        "created_by": user,
+        "name": "Series",
+        "series_mode": EventSeries.SeriesMode.MANUAL_BATCH,
+        "start_date": now.date(),
+        "start_time": now.time().replace(tzinfo=None, microsecond=0),
+        "end_time": (now + timedelta(hours=1)).time().replace(
+            tzinfo=None,
+            microsecond=0,
+        ),
+        "timezone": "Europe/Berlin",
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
 @pytest.fixture
 def api_client():
     return APIClient()
@@ -722,9 +742,12 @@ def test_events_retrieve_detail_uses_series_default_context(
 ):
     """Detail responses should expose the resolved series default context."""
     series = EventSeries.objects.create(
-        name="API Series",
-        campaign=campaign,
-        event_type=event_type,
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="API Series",
+        ),
         default_context=geocontext,
     )
     event = Event.objects.create(
