@@ -1,4 +1,5 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -38,6 +39,10 @@ def build_series_kwargs(user, campaign, event_type, **overrides):
     }
     kwargs.update(overrides)
     return kwargs
+
+
+def parse_api_datetime(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 @pytest.fixture
@@ -931,6 +936,231 @@ def test_events_retrieve_detail_uses_series_default_context(
 # =============================================================================
 # Create/Update/Delete Tests
 # =============================================================================
+
+
+@pytest.mark.django_db
+def test_event_series_preview_manual_batch_returns_one_occurrence_per_explicit_date(
+    api_client, user, campaign, event_type
+):
+    """Manual batch preview should return one preview occurrence per explicit date."""
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/event-series/preview/",
+        {
+            "campaign": str(campaign.id),
+            "event_type": str(event_type.id),
+            "name": "Manual Batch",
+            "series_mode": "manual_batch",
+            "start_date": "2026-04-01",
+            "start_time": "09:00:00",
+            "end_time": "10:30:00",
+            "timezone": "Europe/Berlin",
+            "explicit_dates": ["2026-04-03", "2026-04-10", "2026-04-17"],
+            "title": "Manual Event",
+            "location_mode": "online",
+            "online_url": "https://example.org/live",
+            "status": "draft",
+        },
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert [item["occurrence_index"] for item in response.data["occurrences"]] == [1, 2, 3]
+    assert [item["occurrence_date"] for item in response.data["occurrences"]] == [
+        "2026-04-03",
+        "2026-04-10",
+        "2026-04-17",
+    ]
+
+
+@pytest.mark.django_db
+def test_event_series_create_weekly_generates_occurrences_with_series_metadata(
+    api_client, user, campaign, event_type
+):
+    """Recurring series creation should persist generated events with series metadata."""
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/event-series/",
+        {
+            "campaign": str(campaign.id),
+            "event_type": str(event_type.id),
+            "name": "Weekly Series",
+            "series_mode": "recurring",
+            "recurrence_type": "weekly",
+            "start_date": "2026-04-06",
+            "occurrence_count": 3,
+            "interval": 1,
+            "start_time": "18:00:00",
+            "end_time": "19:30:00",
+            "timezone": "Europe/Berlin",
+            "by_weekday": ["monday"],
+            "title": "Recurring Event",
+            "location_mode": "online",
+            "online_url": "https://example.org/live",
+            "status": "draft",
+        },
+        format="json",
+    )
+
+    assert response.status_code == 201
+
+    series = EventSeries.objects.get(id=response.data["id"])
+    events = list(series.events.order_by("occurrence_index"))
+
+    assert [event.occurrence_index for event in events] == [1, 2, 3]
+    assert all(event.series_id == series.id for event in events)
+    assert all(event.original_start_datetime == event.start_datetime for event in events)
+    assert [event.start_datetime.astimezone(ZoneInfo("Europe/Berlin")).date().isoformat() for event in events] == [
+        "2026-04-06",
+        "2026-04-13",
+        "2026-04-20",
+    ]
+
+
+@pytest.mark.django_db
+def test_event_series_preview_weekly_preserves_wall_time_across_dst(
+    api_client, user, campaign, event_type
+):
+    """Weekly previews should preserve the same local clock time across DST changes."""
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/event-series/preview/",
+        {
+            "campaign": str(campaign.id),
+            "event_type": str(event_type.id),
+            "name": "DST Weekly Series",
+            "series_mode": "recurring",
+            "recurrence_type": "weekly",
+            "start_date": "2026-03-23",
+            "occurrence_count": 3,
+            "interval": 1,
+            "start_time": "09:00:00",
+            "end_time": "10:00:00",
+            "timezone": "Europe/Berlin",
+            "by_weekday": ["monday"],
+            "title": "DST Event",
+            "location_mode": "online",
+            "online_url": "https://example.org/live",
+            "status": "draft",
+        },
+        format="json",
+    )
+
+    assert response.status_code == 200
+
+    berlin = ZoneInfo("Europe/Berlin")
+    local_starts = [
+        parse_api_datetime(item["start_datetime"]).astimezone(berlin)
+        for item in response.data["occurrences"]
+    ]
+    assert [start.hour for start in local_starts] == [9, 9, 9]
+    assert [start.utcoffset() for start in local_starts] == [
+        timedelta(hours=1),
+        timedelta(hours=2),
+        timedelta(hours=2),
+    ]
+
+
+@pytest.mark.django_db
+def test_events_patch_marks_generated_occurrence_as_exception(
+    api_client, user, campaign, event_type
+):
+    """Editing a generated occurrence directly should mark it as an exception."""
+    api_client.force_authenticate(user=user)
+    create_response = api_client.post(
+        "/api/v1/event-series/",
+        {
+            "campaign": str(campaign.id),
+            "event_type": str(event_type.id),
+            "name": "Exception Series",
+            "series_mode": "recurring",
+            "recurrence_type": "weekly",
+            "start_date": "2026-04-06",
+            "occurrence_count": 2,
+            "interval": 1,
+            "start_time": "18:00:00",
+            "end_time": "19:00:00",
+            "timezone": "Europe/Berlin",
+            "by_weekday": ["monday"],
+            "title": "Generated Event",
+            "location_mode": "online",
+            "online_url": "https://example.org/live",
+            "status": "draft",
+        },
+        format="json",
+    )
+    series = EventSeries.objects.get(id=create_response.data["id"])
+    event = series.events.order_by("occurrence_index").first()
+    original_start = event.start_datetime
+
+    new_start = original_start + timedelta(hours=2)
+    response = api_client.patch(
+        f"/api/v1/events/{event.id}/",
+        {
+            "start_datetime": new_start.isoformat(),
+            "end_datetime": (new_start + timedelta(hours=1)).isoformat(),
+        },
+        format="json",
+    )
+
+    assert response.status_code == 200
+    event.refresh_from_db()
+    assert event.is_exception is True
+    assert event.original_start_datetime == original_start
+    assert event.start_datetime == new_start
+
+
+@pytest.mark.django_db
+def test_event_series_patch_skips_future_exception_occurrences_by_default(
+    api_client, user, campaign, event_type
+):
+    """Future bulk updates should leave exception occurrences untouched by default."""
+    api_client.force_authenticate(user=user)
+    create_response = api_client.post(
+        "/api/v1/event-series/",
+        {
+            "campaign": str(campaign.id),
+            "event_type": str(event_type.id),
+            "name": "Bulk Update Series",
+            "series_mode": "recurring",
+            "recurrence_type": "weekly",
+            "start_date": "2026-04-06",
+            "occurrence_count": 3,
+            "interval": 1,
+            "start_time": "18:00:00",
+            "end_time": "19:00:00",
+            "timezone": "Europe/Berlin",
+            "by_weekday": ["monday"],
+            "title": "Original Series Title",
+            "location_mode": "online",
+            "online_url": "https://example.org/live",
+            "status": "draft",
+        },
+        format="json",
+    )
+    series = EventSeries.objects.get(id=create_response.data["id"])
+    events = list(series.events.order_by("occurrence_index"))
+
+    exception_response = api_client.patch(
+        f"/api/v1/events/{events[1].id}/",
+        {"title": "Exception Title"},
+        format="json",
+    )
+    assert exception_response.status_code == 200
+
+    response = api_client.patch(
+        f"/api/v1/event-series/{series.id}/",
+        {"title": "Updated Series Title"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    series.refresh_from_db()
+    events = list(series.events.order_by("occurrence_index"))
+    assert events[0].title == "Updated Series Title"
+    assert events[1].title == "Exception Title"
+    assert events[1].is_exception is True
+    assert events[2].title == "Updated Series Title"
 
 
 @pytest.mark.django_db

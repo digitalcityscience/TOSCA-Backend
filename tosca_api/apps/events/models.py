@@ -276,6 +276,15 @@ class EventSeries(TimeStampedModel):
                 errors["recurrence_type"] = "Recurring series require a recurrence type."
             if bool(self.end_date) == bool(self.occurrence_count):
                 errors["end_date"] = "Use either end_date or occurrence_count."
+            if (
+                self.start_time is not None
+                and self.end_time is not None
+                and self.end_time <= self.start_time
+            ):
+                errors["end_time"] = (
+                    "Recurring generation currently requires same-day end times "
+                    "after start_time."
+                )
 
             invalid_weekdays = set(self.by_weekday) - VALID_WEEKDAYS
             if invalid_weekdays:

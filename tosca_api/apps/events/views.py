@@ -1,10 +1,11 @@
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin, UpdateModelMixin
 from rest_framework.pagination import CursorPagination
 from rest_framework.response import Response
 
 from .filters import apply_event_filters
-from .models import Event
+from .models import Event, EventSeries
 from .serializers import (
     BBoxSerializer,
     EventWriteSerializer,
@@ -12,8 +13,12 @@ from .serializers import (
     EventGeoSerializer,
     EventListSerializer,
     EventMapOnlineSerializer,
+    EventSeriesOccurrenceSerializer,
+    EventSeriesResponseSerializer,
+    EventSeriesWriteSerializer,
     GeometryFilterSerializer,
 )
+from .services import serialize_occurrence_specs
 
 
 class EventCursorPagination(CursorPagination):
@@ -215,3 +220,48 @@ class EventViewSet(viewsets.ModelViewSet):
         # Serialize as GeoJSON
         serializer = EventGeoSerializer(queryset, many=True)
         return Response(serializer.data)
+
+
+class EventSeriesViewSet(
+    CreateModelMixin,
+    UpdateModelMixin,
+    RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Preview, create, and update event series with generated occurrences."""
+
+    queryset = EventSeries.objects.all().select_related(
+        "campaign",
+        "event_type",
+        "default_context",
+        "created_by",
+    )
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action == "retrieve":
+            return EventSeriesResponseSerializer
+        return EventSeriesWriteSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        series = serializer.save()
+        response_serializer = EventSeriesResponseSerializer(series)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request, *args, **kwargs):
+        series = self.get_object()
+        serializer = self.get_serializer(series, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        series = serializer.save()
+        response_serializer = EventSeriesResponseSerializer(series)
+        return Response(response_serializer.data)
+
+    @action(detail=False, methods=["post"], url_path="preview")
+    def preview(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        occurrences = serialize_occurrence_specs(serializer.validated_data["_occurrences"])
+        response_serializer = EventSeriesOccurrenceSerializer(occurrences, many=True)
+        return Response({"occurrences": response_serializer.data})
