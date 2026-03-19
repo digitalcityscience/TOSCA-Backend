@@ -64,12 +64,15 @@ def past_event(user, campaign):
 
 @pytest.fixture
 def event_without_location(user, campaign):
-    """Create an event without location."""
+    """Create an online event without geometry."""
     return Event.objects.create(
         campaign=campaign,
         title="No Location Event",
         start_datetime=timezone.now() + timedelta(days=3),
         end_datetime=timezone.now() + timedelta(days=3, hours=1),
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.org/live",
+        online_platform="Zoom",
         location=None,
         organizer=user,
         status=Event.Status.PUBLISHED,
@@ -84,6 +87,7 @@ def draft_event(user, campaign):
         title="Draft Event",
         start_datetime=timezone.now() + timedelta(days=5),
         end_datetime=timezone.now() + timedelta(days=5, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
         organizer=user,
         status=Event.Status.DRAFT,
     )
@@ -170,6 +174,7 @@ def test_events_list_filter_by_campaign(api_client, user, campaign, future_event
         title="Other Event",
         start_datetime=timezone.now() + timedelta(days=1),
         end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.2, 53.6, srid=4326),
         organizer=user,
         status=Event.Status.PUBLISHED,
     )
@@ -378,12 +383,33 @@ def test_events_create(api_client, user, campaign):
         "campaign": str(campaign.id),
         "start_datetime": (timezone.now() + timedelta(days=1)).isoformat(),
         "end_datetime": (timezone.now() + timedelta(days=1, hours=2)).isoformat(),
+        "location_mode": "online",
+        "online_url": "https://example.org/live",
+        "online_platform": "Zoom",
         "status": "draft",
     }
     response = api_client.post("/api/v1/events/", data, format="json")
     assert response.status_code == 201
     assert response.data["title"] == "New Event"
     assert response.data["organizer"] == user.id
+    assert response.data["location_mode"] == "online"
+
+
+@pytest.mark.django_db
+def test_events_create_rejects_online_event_without_access_data(api_client, user, campaign):
+    """Online events without access data should be rejected."""
+    api_client.force_authenticate(user=user)
+    data = {
+        "title": "Broken Online Event",
+        "campaign": str(campaign.id),
+        "start_datetime": (timezone.now() + timedelta(days=1)).isoformat(),
+        "end_datetime": (timezone.now() + timedelta(days=1, hours=2)).isoformat(),
+        "location_mode": "online",
+        "status": "draft",
+    }
+    response = api_client.post("/api/v1/events/", data, format="json")
+    assert response.status_code == 400
+    assert "online_url" in response.data
 
 
 @pytest.mark.django_db

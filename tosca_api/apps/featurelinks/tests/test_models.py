@@ -1,6 +1,7 @@
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.contrib.gis.geos import Point
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from datetime import timedelta
@@ -59,6 +60,7 @@ def event1(user, campaign):
         campaign=campaign,
         start_datetime=now + timedelta(days=1),
         end_datetime=now + timedelta(days=1, hours=2),
+        location=Point(10.0, 53.5, srid=4326),
         organizer=user,
     )
 
@@ -72,6 +74,7 @@ def event2(user, campaign):
         campaign=campaign,
         start_datetime=now + timedelta(days=2),
         end_datetime=now + timedelta(days=2, hours=2),
+        location=Point(10.1, 53.6, srid=4326),
         organizer=user,
     )
 
@@ -85,6 +88,7 @@ def event_b(user, campaign_b):
         campaign=campaign_b,
         start_datetime=now + timedelta(days=3),
         end_datetime=now + timedelta(days=3, hours=2),
+        location=Point(10.2, 53.7, srid=4326),
         organizer=user,
     )
 

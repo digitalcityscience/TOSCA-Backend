@@ -20,9 +20,51 @@ from tosca_api.apps.core.models import TimeStampedModel
 from tosca_api.apps.core.sanitization import sanitize_simple
 
 
+class EventType(TimeStampedModel):
+    """
+    Minimal placeholder registry model for event-type assignment.
+
+    The full registry contract lands in Task 2B.7. This placeholder exists so
+    Event can carry the requested foreign key without collapsing into a UUID
+    shim that would be harder to migrate later.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    code = models.CharField(max_length=100, unique=True)
+    label = models.CharField(max_length=255)
+
+    class Meta:
+        ordering = ["label"]
+        verbose_name = "Event Type"
+        verbose_name_plural = "Event Types"
+
+    def __str__(self) -> str:
+        return self.label
+
+
+class EventSeries(TimeStampedModel):
+    """
+    Minimal placeholder grouping model for recurring/batch event linkage.
+
+    The recurrence and default-context schema lands in Task 2B.12/2B.3. This
+    placeholder keeps Event.series as a proper foreign key from the start.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "Event Series"
+        verbose_name_plural = "Event Series"
+
+    def __str__(self) -> str:
+        return self.name or str(self.id)
+
+
 class Event(TimeStampedModel):
     """
-    A calendar event with optional spatial location.
+    An event with physical, online, or hybrid delivery modes.
 
     Attributes:
         id: UUID primary key
@@ -48,12 +90,24 @@ class Event(TimeStampedModel):
         PUBLIC = "public", "Public"
         PRIVATE = "private", "Private"
 
+    class LocationMode(models.TextChoices):
+        PHYSICAL = "physical", "Physical"
+        ONLINE = "online", "Online"
+        HYBRID = "hybrid", "Hybrid"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     campaign = models.ForeignKey(
         "campaigns.Campaign",
         on_delete=models.CASCADE,
         related_name="events",
+    )
+    event_type = models.ForeignKey(
+        EventType,
+        on_delete=models.PROTECT,
+        related_name="events",
+        null=True,
+        blank=True,
     )
 
     title = models.CharField(max_length=255)
@@ -70,8 +124,30 @@ class Event(TimeStampedModel):
     start_datetime = models.DateTimeField()
     end_datetime = models.DateTimeField()
 
+    location_mode = models.CharField(
+        max_length=20,
+        choices=LocationMode.choices,
+        default=LocationMode.PHYSICAL,
+    )
+
     # Spatial location (optional) - WGS84
     location = gis_models.PointField(srid=4326, blank=True, null=True)
+    online_url = models.URLField(blank=True, default="")
+    online_platform = models.CharField(max_length=255, blank=True, default="")
+    access_notes = models.TextField(blank=True, default="")
+    provider_name = models.CharField(max_length=255, blank=True, default="")
+    provider_url = models.URLField(blank=True, default="")
+    provider_contact = models.TextField(blank=True, default="")
+    series = models.ForeignKey(
+        EventSeries,
+        on_delete=models.SET_NULL,
+        related_name="events",
+        null=True,
+        blank=True,
+    )
+    occurrence_index = models.PositiveIntegerField(null=True, blank=True)
+    is_exception = models.BooleanField(default=False)
+    original_start_datetime = models.DateTimeField(null=True, blank=True)
 
     organizer = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -136,11 +212,33 @@ class Event(TimeStampedModel):
     def clean(self) -> None:
         """Validate the event."""
         errors = {}
+        has_online_access = bool(self.online_url or self.online_platform)
 
         # Validate end >= start at application level too
         if self.start_datetime and self.end_datetime:
             if self.end_datetime < self.start_datetime:
                 errors["end_datetime"] = "End datetime must be after start datetime."
+
+        if self.location_mode == self.LocationMode.PHYSICAL and self.location is None:
+            errors["location"] = "Physical events require geometry."
+
+        if self.location_mode == self.LocationMode.ONLINE:
+            if not has_online_access:
+                errors["online_url"] = "Online events require an online URL or platform."
+            if self.location is not None:
+                errors["location"] = "Online events cannot include geometry."
+
+        if self.location_mode == self.LocationMode.HYBRID:
+            if self.location is None:
+                errors["location"] = "Hybrid events require geometry."
+            if not has_online_access:
+                errors["online_url"] = "Hybrid events require an online URL or platform."
+
+        if self.is_exception and not self.series_id:
+            errors["is_exception"] = "Only series events can be marked as exceptions."
+
+        if self.series_id and self.occurrence_index is None:
+            errors["occurrence_index"] = "Series events require an occurrence index."
 
         if errors:
             raise ValidationError(errors)

@@ -130,10 +130,16 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # Optimize queries
         if self.action == "retrieve":
-            queryset = queryset.select_related("context", "campaign", "organizer")
+            queryset = queryset.select_related(
+                "context",
+                "campaign",
+                "event_type",
+                "series",
+                "organizer",
+            )
             queryset = queryset.prefetch_related("eventlayer_set__layer")
         else:
-            queryset = queryset.select_related("campaign")
+            queryset = queryset.select_related("campaign", "event_type", "series")
 
         return queryset
 
@@ -196,7 +202,11 @@ class EventViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(start_datetime__lte=data["start_before"])
 
         # Order by start_datetime
-        queryset = queryset.order_by("start_datetime").select_related("campaign")
+        queryset = queryset.order_by("start_datetime").select_related(
+            "campaign",
+            "event_type",
+            "series",
+        )
 
         # Serialize as GeoJSON
         serializer = EventGeoSerializer(queryset, many=True)

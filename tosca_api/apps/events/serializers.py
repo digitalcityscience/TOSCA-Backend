@@ -52,8 +52,10 @@ class EventListSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "campaign",
+            "event_type",
             "start_datetime",
             "end_datetime",
+            "location_mode",
             "status",
             "visibility",
             "created_at",
@@ -77,9 +79,21 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "campaign",
+            "event_type",
             "start_datetime",
             "end_datetime",
+            "location_mode",
             "location",
+            "online_url",
+            "online_platform",
+            "access_notes",
+            "provider_name",
+            "provider_url",
+            "provider_contact",
+            "series",
+            "occurrence_index",
+            "is_exception",
+            "original_start_datetime",
             "status",
             "visibility",
             "organizer",
@@ -110,8 +124,10 @@ class EventGeoSerializer(GeoFeatureModelSerializer):
             "title",
             "description",
             "campaign",
+            "event_type",
             "start_datetime",
             "end_datetime",
+            "location_mode",
             "status",
             "visibility",
         ]
@@ -128,9 +144,21 @@ class EventWriteSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "campaign",
+            "event_type",
             "start_datetime",
             "end_datetime",
+            "location_mode",
             "location",
+            "online_url",
+            "online_platform",
+            "access_notes",
+            "provider_name",
+            "provider_url",
+            "provider_contact",
+            "series",
+            "occurrence_index",
+            "is_exception",
+            "original_start_datetime",
             "status",
             "visibility",
             "organizer",
@@ -140,11 +168,10 @@ class EventWriteSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         """Invoke model clean() to ensure DB constraints surface as API 400s."""
-        instance = Event(**attrs)
-        if self.instance:
-            for attr, value in attrs.items():
-                setattr(instance, attr, value)
-        
+        instance = self.instance or Event()
+        for attr, value in attrs.items():
+            setattr(instance, attr, value)
+
         # Event.clean() enforces start_datetime <= end_datetime
         instance.clean()
         return attrs
