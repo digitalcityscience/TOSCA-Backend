@@ -2,11 +2,14 @@ from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
 
 from .models import (
+    CultureEventProfile,
     Event,
     EventLayer,
     EventSeries,
     EventTerm,
     EventType,
+    PublicHealthEventProfile,
+    SportsEventProfile,
     TaxonomyDimension,
     TaxonomyTerm,
 )
@@ -174,3 +177,24 @@ class EventTermAdmin(admin.ModelAdmin):
     search_fields = ["event__title", "term__label", "term__code", "term__dimension__label"]
     readonly_fields = ["id", "created_at", "updated_at"]
     autocomplete_fields = ["event", "term"]
+
+
+class EventProfileAdmin(admin.ModelAdmin):
+    readonly_fields = ["created_at", "updated_at"]
+    autocomplete_fields = ["event"]
+    search_fields = ["event__title"]
+
+
+@admin.register(PublicHealthEventProfile)
+class PublicHealthEventProfileAdmin(EventProfileAdmin):
+    list_display = ["event", "insurance_eligible", "referral_required", "created_at"]
+
+
+@admin.register(SportsEventProfile)
+class SportsEventProfileAdmin(EventProfileAdmin):
+    list_display = ["event", "sport_name", "skill_level", "created_at"]
+
+
+@admin.register(CultureEventProfile)
+class CultureEventProfileAdmin(EventProfileAdmin):
+    list_display = ["event", "format_label", "age_rating", "created_at"]

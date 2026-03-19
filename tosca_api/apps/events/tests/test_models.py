@@ -10,11 +10,14 @@ from django.utils import timezone
 
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.events.models import (
+    CultureEventProfile,
     Event,
     EventLayer,
     EventSeries,
     EventTerm,
     EventType,
+    PublicHealthEventProfile,
+    SportsEventProfile,
     TaxonomyDimension,
     TaxonomyTerm,
 )
@@ -745,6 +748,145 @@ def test_event_type_code_must_be_unique():
 
     with pytest.raises(IntegrityError):
         EventType.objects.bulk_create([duplicate])
+
+
+# =============================================================================
+# Extension Profile Tests
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_general_event_can_exist_without_any_extension_profile(user, campaign):
+    """Core event types do not require profile rows."""
+    general_type = EventType.objects.get(code="general")
+    event = Event.objects.create(
+        campaign=campaign,
+        event_type=general_type,
+        title="General Event",
+        start_datetime=timezone.now(),
+        end_datetime=timezone.now() + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+
+    assert event.event_type == general_type
+    assert not PublicHealthEventProfile.objects.filter(event=event).exists()
+    assert not SportsEventProfile.objects.filter(event=event).exists()
+    assert not CultureEventProfile.objects.filter(event=event).exists()
+
+
+@pytest.mark.django_db
+def test_public_health_event_accepts_public_health_profile(user, campaign):
+    """The public_health event type should accept its matching profile table."""
+    event = Event.objects.create(
+        campaign=campaign,
+        event_type=EventType.objects.get(code="public_health"),
+        title="Public Health Event",
+        start_datetime=timezone.now(),
+        end_datetime=timezone.now() + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+
+    profile = PublicHealthEventProfile.objects.create(
+        event=event,
+        insurance_eligible=True,
+        referral_required=False,
+    )
+
+    assert profile.event == event
+
+
+@pytest.mark.django_db
+def test_sports_event_accepts_sports_profile(user, campaign):
+    """The sports event type should accept its matching profile table."""
+    event = Event.objects.create(
+        campaign=campaign,
+        event_type=EventType.objects.get(code="sports"),
+        title="Sports Event",
+        start_datetime=timezone.now(),
+        end_datetime=timezone.now() + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+
+    profile = SportsEventProfile.objects.create(
+        event=event,
+        sport_name="Football",
+        skill_level="beginner",
+    )
+
+    assert profile.event == event
+
+
+@pytest.mark.django_db
+def test_culture_event_accepts_culture_profile(user, campaign):
+    """The culture event type should accept its matching profile table."""
+    event = Event.objects.create(
+        campaign=campaign,
+        event_type=EventType.objects.get(code="culture"),
+        title="Culture Event",
+        start_datetime=timezone.now(),
+        end_datetime=timezone.now() + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+
+    profile = CultureEventProfile.objects.create(
+        event=event,
+        format_label="Festival",
+        age_rating="12+",
+    )
+
+    assert profile.event == event
+
+
+@pytest.mark.django_db
+def test_core_event_type_rejects_extension_profile(user, campaign):
+    """Core event types must not accept extension profiles."""
+    event = Event.objects.create(
+        campaign=campaign,
+        event_type=EventType.objects.get(code="general"),
+        title="General Event",
+        start_datetime=timezone.now(),
+        end_datetime=timezone.now() + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        PublicHealthEventProfile.objects.create(event=event)
+
+    assert "event" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("profile_model", "event_type_code"),
+    [
+        (PublicHealthEventProfile, "culture"),
+        (SportsEventProfile, "public_health"),
+        (CultureEventProfile, "sports"),
+    ],
+)
+def test_mismatched_event_type_profile_combinations_are_rejected(
+    user, campaign, profile_model, event_type_code
+):
+    """Extension profiles must match the profile key declared by EventType."""
+    event = Event.objects.create(
+        campaign=campaign,
+        event_type=EventType.objects.get(code=event_type_code),
+        title=f"Mismatched {event_type_code} Event",
+        start_datetime=timezone.now(),
+        end_datetime=timezone.now() + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        profile_model.objects.create(event=event)
+
+    assert "event" in exc.value.message_dict
 
 
 # =============================================================================

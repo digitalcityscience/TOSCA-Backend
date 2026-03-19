@@ -523,3 +523,104 @@ class EventTerm(TimeStampedModel):
     def save(self, *args, **kwargs) -> None:
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+class BaseEventProfile(TimeStampedModel):
+    """Shared validation for event extension profile tables."""
+
+    expected_profile_key: str | None = None
+
+    class Meta:
+        abstract = True
+
+    def clean(self) -> None:
+        errors = {}
+
+        if not self.event_id:
+            errors["event"] = "Extension profiles require an event."
+        else:
+            event_type = self.event.event_type
+            if event_type is None:
+                errors["event"] = "Extension profiles require an event type."
+            elif event_type.profile_mode != EventType.ProfileMode.EXTENSION:
+                errors["event"] = "Core event types cannot have extension profiles."
+            elif event_type.profile_key != self.expected_profile_key:
+                errors["event"] = (
+                    f"This profile requires event_type.profile_key="
+                    f"'{self.expected_profile_key}'."
+                )
+
+        if errors:
+            raise ValidationError(errors)
+
+        super().clean()
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class PublicHealthEventProfile(BaseEventProfile):
+    """Public health specific event metadata."""
+
+    expected_profile_key = "public_health"
+
+    event = models.OneToOneField(
+        Event,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="public_health_profile",
+    )
+    insurance_eligible = models.BooleanField(default=False)
+    referral_required = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = "Public Health Event Profile"
+        verbose_name_plural = "Public Health Event Profiles"
+
+    def __str__(self) -> str:
+        return f"Public Health Profile: {self.event}"
+
+
+class SportsEventProfile(BaseEventProfile):
+    """Sports specific event metadata."""
+
+    expected_profile_key = "sports"
+
+    event = models.OneToOneField(
+        Event,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="sports_profile",
+    )
+    sport_name = models.CharField(max_length=255, blank=True, default="")
+    skill_level = models.CharField(max_length=100, blank=True, default="")
+
+    class Meta:
+        verbose_name = "Sports Event Profile"
+        verbose_name_plural = "Sports Event Profiles"
+
+    def __str__(self) -> str:
+        return f"Sports Profile: {self.event}"
+
+
+class CultureEventProfile(BaseEventProfile):
+    """Culture specific event metadata."""
+
+    expected_profile_key = "culture"
+
+    event = models.OneToOneField(
+        Event,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="culture_profile",
+    )
+    format_label = models.CharField(max_length=255, blank=True, default="")
+    age_rating = models.CharField(max_length=50, blank=True, default="")
+
+    class Meta:
+        verbose_name = "Culture Event Profile"
+        verbose_name_plural = "Culture Event Profiles"
+
+    def __str__(self) -> str:
+        return f"Culture Profile: {self.event}"
