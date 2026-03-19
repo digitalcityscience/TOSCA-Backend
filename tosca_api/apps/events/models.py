@@ -42,6 +42,89 @@ class EventType(TimeStampedModel):
         return self.label
 
 
+class TaxonomyDimension(TimeStampedModel):
+    """Top-level taxonomy dimension for event classification."""
+
+    class SelectionMode(models.TextChoices):
+        SINGLE = "single", "Single"
+        MULTIPLE = "multiple", "Multiple"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    code = models.CharField(max_length=100, unique=True)
+    label = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    selection_mode = models.CharField(
+        max_length=20,
+        choices=SelectionMode.choices,
+        default=SelectionMode.MULTIPLE,
+    )
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["sort_order", "label"]
+        verbose_name = "Taxonomy Dimension"
+        verbose_name_plural = "Taxonomy Dimensions"
+
+    def __str__(self) -> str:
+        return self.label
+
+
+class TaxonomyTerm(TimeStampedModel):
+    """Term within a taxonomy dimension, with optional parent nesting."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    dimension = models.ForeignKey(
+        TaxonomyDimension,
+        on_delete=models.CASCADE,
+        related_name="terms",
+    )
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        related_name="children",
+        null=True,
+        blank=True,
+    )
+    code = models.CharField(max_length=100)
+    label = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["dimension_id", "sort_order", "label"]
+        verbose_name = "Taxonomy Term"
+        verbose_name_plural = "Taxonomy Terms"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["dimension", "code"],
+                name="events_tax_term_dim_code_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.dimension}: {self.label}"
+
+    def clean(self) -> None:
+        errors = {}
+
+        if self.parent_id:
+            if self.parent_id == self.id:
+                errors["parent"] = "A taxonomy term cannot be its own parent."
+            elif self.dimension_id and self.parent.dimension_id != self.dimension_id:
+                errors["parent"] = "Parent term must belong to the same dimension."
+
+        if errors:
+            raise ValidationError(errors)
+
+        super().clean()
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
 class EventSeries(TimeStampedModel):
     """
     Minimal grouping model for recurring/batch event linkage.
@@ -360,3 +443,33 @@ class EventLayer(models.Model):
             if max_order is not None:
                 self.display_order = max_order + 1
         super().save(*args, **kwargs)
+
+
+class EventTerm(TimeStampedModel):
+    """Assignment table linking events to taxonomy terms."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event = models.ForeignKey(
+        Event,
+        on_delete=models.CASCADE,
+        related_name="event_terms",
+    )
+    term = models.ForeignKey(
+        TaxonomyTerm,
+        on_delete=models.CASCADE,
+        related_name="event_terms",
+    )
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "Event Term"
+        verbose_name_plural = "Event Terms"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "term"],
+                name="events_event_term_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.event} -> {self.term}"
