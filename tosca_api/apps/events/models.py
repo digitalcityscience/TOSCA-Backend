@@ -464,6 +464,9 @@ class EventTerm(TimeStampedModel):
         ordering = ["created_at"]
         verbose_name = "Event Term"
         verbose_name_plural = "Event Terms"
+        indexes = [
+            models.Index(fields=["term", "event"], name="events_evtterm_term_evt_idx"),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["event", "term"],
@@ -473,3 +476,27 @@ class EventTerm(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.event} -> {self.term}"
+
+    def clean(self) -> None:
+        errors = {}
+
+        if self.event_id and self.term_id:
+            dimension = self.term.dimension
+            if dimension.selection_mode == TaxonomyDimension.SelectionMode.SINGLE:
+                conflicting_terms = EventTerm.objects.filter(
+                    event_id=self.event_id,
+                    term__dimension_id=self.term.dimension_id,
+                ).exclude(pk=self.pk)
+                if conflicting_terms.exclude(term_id=self.term_id).exists():
+                    errors["term"] = (
+                        "Single-select dimensions allow only one term per event."
+                    )
+
+        if errors:
+            raise ValidationError(errors)
+
+        super().clean()
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        super().save(*args, **kwargs)

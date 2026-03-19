@@ -7,7 +7,14 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from tosca_api.apps.campaigns.models import Campaign
-from tosca_api.apps.events.models import Event, EventSeries, EventType
+from tosca_api.apps.events.models import (
+    Event,
+    EventSeries,
+    EventTerm,
+    EventType,
+    TaxonomyDimension,
+    TaxonomyTerm,
+)
 from tosca_api.apps.geocontext.models import GeoContext
 
 User = get_user_model()
@@ -438,6 +445,78 @@ def test_events_create(api_client, user, campaign):
 
 
 @pytest.mark.django_db
+def test_events_create_assigns_taxonomy_terms(api_client, user, campaign):
+    """Event creation should persist taxonomy term assignments."""
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    climate = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="climate",
+        label="Climate",
+    )
+    mobility = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="mobility",
+        label="Mobility",
+    )
+
+    api_client.force_authenticate(user=user)
+    data = {
+        "title": "Tagged Event",
+        "campaign": str(campaign.id),
+        "start_datetime": (timezone.now() + timedelta(days=1)).isoformat(),
+        "end_datetime": (timezone.now() + timedelta(days=1, hours=2)).isoformat(),
+        "location_mode": "online",
+        "online_url": "https://example.org/live",
+        "status": "draft",
+        "taxonomy_term_ids": [str(climate.id), str(mobility.id)],
+    }
+    response = api_client.post("/api/v1/events/", data, format="json")
+
+    assert response.status_code == 201
+    event = Event.objects.get(id=response.data["id"])
+    assigned_term_ids = set(
+        EventTerm.objects.filter(event=event).values_list("term_id", flat=True)
+    )
+    assert assigned_term_ids == {climate.id, mobility.id}
+
+
+@pytest.mark.django_db
+def test_events_create_rejects_multiple_single_select_terms(api_client, user, campaign):
+    """Serializer validation should reject conflicting single-select terms."""
+    dimension = TaxonomyDimension.objects.create(
+        code="audience",
+        label="Audience",
+        selection_mode=TaxonomyDimension.SelectionMode.SINGLE,
+    )
+    youth = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="youth",
+        label="Youth",
+    )
+    seniors = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="seniors",
+        label="Seniors",
+    )
+
+    api_client.force_authenticate(user=user)
+    data = {
+        "title": "Conflicting Tagged Event",
+        "campaign": str(campaign.id),
+        "start_datetime": (timezone.now() + timedelta(days=1)).isoformat(),
+        "end_datetime": (timezone.now() + timedelta(days=1, hours=2)).isoformat(),
+        "location_mode": "online",
+        "online_url": "https://example.org/live",
+        "status": "draft",
+        "taxonomy_term_ids": [str(youth.id), str(seniors.id)],
+    }
+    response = api_client.post("/api/v1/events/", data, format="json")
+
+    assert response.status_code == 400
+    assert "taxonomy_term_ids" in response.data
+
+
+@pytest.mark.django_db
 def test_events_create_rejects_online_event_without_access_data(api_client, user, campaign):
     """Online events without access data should be rejected."""
     api_client.force_authenticate(user=user)
@@ -452,6 +531,96 @@ def test_events_create_rejects_online_event_without_access_data(api_client, user
     response = api_client.post("/api/v1/events/", data, format="json")
     assert response.status_code == 400
     assert "online_url" in response.data
+
+
+@pytest.mark.django_db
+def test_events_list_filters_by_term(api_client, user, campaign):
+    """Filtering by term_id should return only tagged matches."""
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    climate = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="climate",
+        label="Climate",
+    )
+    mobility = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="mobility",
+        label="Mobility",
+    )
+    tagged_event = Event.objects.create(
+        campaign=campaign,
+        title="Climate Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    other_event = Event.objects.create(
+        campaign=campaign,
+        title="Mobility Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location=Point(10.1, 53.6, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    EventTerm.objects.create(event=tagged_event, term=climate)
+    EventTerm.objects.create(event=other_event, term=mobility)
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get(f"/api/v1/events/?term_id={climate.id}")
+
+    assert response.status_code == 200
+    titles = [event["title"] for event in response.data["results"]]
+    assert titles == ["Climate Event"]
+
+
+@pytest.mark.django_db
+def test_events_list_filters_by_dimension_and_term(api_client, user, campaign):
+    """Combined dimension_id and term_id filters should return the expected event set."""
+    topic_dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    audience_dimension = TaxonomyDimension.objects.create(code="audience", label="Audience")
+    climate = TaxonomyTerm.objects.create(
+        dimension=topic_dimension,
+        code="climate",
+        label="Climate",
+    )
+    youth = TaxonomyTerm.objects.create(
+        dimension=audience_dimension,
+        code="youth",
+        label="Youth",
+    )
+    climate_event = Event.objects.create(
+        campaign=campaign,
+        title="Climate Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    mixed_event = Event.objects.create(
+        campaign=campaign,
+        title="Climate Youth Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location=Point(10.1, 53.6, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    EventTerm.objects.create(event=climate_event, term=climate)
+    EventTerm.objects.create(event=mixed_event, term=climate)
+    EventTerm.objects.create(event=mixed_event, term=youth)
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get(
+        f"/api/v1/events/?dimension_id={audience_dimension.id}&term_id={climate.id}"
+    )
+
+    assert response.status_code == 200
+    titles = [event["title"] for event in response.data["results"]]
+    assert titles == ["Climate Youth Event"]
 
 
 @pytest.mark.django_db
