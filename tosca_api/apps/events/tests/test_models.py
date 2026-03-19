@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.events.models import Event, EventLayer, EventSeries
+from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.layerrefs.models import LayerRef
 
 User = get_user_model()
@@ -27,6 +28,11 @@ def campaign(user):
 @pytest.fixture
 def layer_ref():
     return LayerRef.objects.create(layer_name="workspace:events_layer")
+
+
+@pytest.fixture
+def geocontext(user):
+    return GeoContext.objects.create(content="Shared event context", created_by=user)
 
 
 # =============================================================================
@@ -394,3 +400,118 @@ def test_standalone_event_without_context_is_valid(user, campaign):
     )
 
     assert event.context is None
+
+
+@pytest.mark.django_db
+def test_event_without_series_and_without_context_resolves_no_context(user, campaign):
+    """Standalone events without overrides resolve no effective context."""
+    now = timezone.now()
+    event = Event.objects.create(
+        campaign=campaign,
+        title="No Context",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        context=None,
+    )
+
+    assert event.effective_context is None
+
+
+@pytest.mark.django_db
+def test_event_resolves_series_default_context(user, campaign, geocontext):
+    """Series default context is used when an event override is absent."""
+    now = timezone.now()
+    series = EventSeries.objects.create(
+        name="Series With Shared Context",
+        default_context=geocontext,
+    )
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Series Event",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        series=series,
+        occurrence_index=1,
+        context=None,
+    )
+
+    assert event.effective_context == geocontext
+
+
+@pytest.mark.django_db
+def test_event_override_context_wins_over_series_default(user, campaign, geocontext):
+    """A direct event override takes precedence over the series default."""
+    now = timezone.now()
+    override_context = GeoContext.objects.create(
+        content="Occurrence override",
+        created_by=user,
+    )
+    series = EventSeries.objects.create(
+        name="Series With Shared Context",
+        default_context=geocontext,
+    )
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Series Event With Override",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        series=series,
+        occurrence_index=1,
+        context=override_context,
+    )
+
+    assert event.effective_context == override_context
+
+
+@pytest.mark.django_db
+def test_editing_event_override_does_not_change_series_default(user, campaign, geocontext):
+    """Changing one event override must not mutate the series default context."""
+    now = timezone.now()
+    series = EventSeries.objects.create(
+        name="Series With Shared Context",
+        default_context=geocontext,
+    )
+    first_override = GeoContext.objects.create(content="Override A", created_by=user)
+    second_override = GeoContext.objects.create(content="Override B", created_by=user)
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Series Event",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        series=series,
+        occurrence_index=1,
+        context=first_override,
+    )
+
+    event.context = second_override
+    event.save()
+    series.refresh_from_db()
+
+    assert series.default_context == geocontext
+    assert event.effective_context == second_override
+
+
+@pytest.mark.django_db
+def test_published_event_without_any_effective_context_is_valid(user, campaign):
+    """Published events remain valid even when no effective context exists."""
+    now = timezone.now()
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Published Without Context",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+        context=None,
+    )
+
+    assert event.effective_context is None

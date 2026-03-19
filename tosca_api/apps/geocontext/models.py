@@ -1,10 +1,10 @@
 """
 GeoContext model - Shared rich text content block.
 
-GeoContext holds the content (text, rich HTML) that is linked 1:1 to
-features like GeoStory, CalendarEvent, or GeoFeedback. This allows
-the content to be managed independently while being tightly coupled
-to its parent feature.
+GeoContext holds the content (text, rich HTML) that can be linked to
+features like GeoStory, Event, or GeoFeedback. This allows content to
+be managed independently while still being associated with parent
+features or shared defaults such as EventSeries.default_context.
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ class GeoContext(TimeStampedModel):
     """
     Shared content block model.
 
-    This model stores text/rich content that is linked 1:1 to other
-    feature models (GeoStory, CalendarEvent, GeoFeedback).
+    This model stores text/rich content that can be linked to other
+    feature models (GeoStory, Event, GeoFeedback).
 
     Attributes:
         id: UUID primary key

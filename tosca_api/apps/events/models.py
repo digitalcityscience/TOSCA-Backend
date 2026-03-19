@@ -52,6 +52,13 @@ class EventSeries(TimeStampedModel):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255, blank=True, default="")
+    default_context = models.ForeignKey(
+        "geocontext.GeoContext",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="default_for_event_series",
+    )
 
     class Meta:
         ordering = ["created_at"]
@@ -71,7 +78,7 @@ class Event(TimeStampedModel):
         campaign: Parent campaign
         title: Event title (sanitized)
         description: Brief description (sanitized)
-        context: 1:1 link to rich content block (optional)
+        context: Optional per-event context override
         start_datetime: When the event starts
         end_datetime: When the event ends
         location: Optional point location (SRID 4326)
@@ -113,12 +120,12 @@ class Event(TimeStampedModel):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True, default="")
 
-    context = models.OneToOneField(
+    context = models.ForeignKey(
         "geocontext.GeoContext",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="event",
+        related_name="events",
     )
 
     start_datetime = models.DateTimeField()
@@ -208,6 +215,22 @@ class Event(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.title} ({self.start_datetime.date()})"
+
+    @property
+    def effective_context(self):
+        """
+        Resolve content precedence for an event occurrence.
+
+        Resolution order:
+        1. Event.context override
+        2. EventSeries.default_context
+        3. None
+        """
+        if self.context_id:
+            return self.context
+        if self.series_id and self.series and self.series.default_context_id:
+            return self.series.default_context
+        return None
 
     def clean(self) -> None:
         """Validate the event."""
