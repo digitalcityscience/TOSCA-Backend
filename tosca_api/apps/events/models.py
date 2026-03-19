@@ -20,6 +20,10 @@ from django.db import models
 from tosca_api.apps.core.models import TimeStampedModel
 from tosca_api.apps.core.sanitization import sanitize_simple
 
+VALID_WEEKDAYS = frozenset(
+    ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+)
+
 
 class EventType(TimeStampedModel):
     """Registry describing how an event type maps to profile behavior."""
@@ -351,12 +355,6 @@ class EventSeries(TimeStampedModel):
         self.full_clean()
         super().save(*args, **kwargs)
 
-
-VALID_WEEKDAYS = frozenset(
-    ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-)
-
-
 class EventSeriesDate(TimeStampedModel):
     """Explicit occurrence date for manual batch event series."""
 
@@ -384,6 +382,13 @@ class EventSeriesDate(TimeStampedModel):
         return f"{self.series} @ {self.occurrence_date}"
 
     def save(self, *args, **kwargs) -> None:
+        if self._state.adding and self.display_order is None:
+            max_order = (
+                EventSeriesDate.objects.filter(series=self.series).aggregate(
+                    models.Max("display_order")
+                )["display_order__max"]
+            )
+            self.display_order = (max_order or 0) + 1
         self.full_clean()
         super().save(*args, **kwargs)
 
@@ -643,9 +648,14 @@ class EventLayer(models.Model):
 
     class Meta:
         ordering = ["display_order", "created_at"]
-        unique_together = ("event", "layer")
         verbose_name = "Event Layer"
         verbose_name_plural = "Event Layers"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "layer"],
+                name="events_event_layer_uniq",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.event} - {self.layer} ({self.display_order})"

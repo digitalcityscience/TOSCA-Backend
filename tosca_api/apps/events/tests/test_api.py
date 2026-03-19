@@ -231,6 +231,38 @@ def test_events_list_filter_by_campaign(api_client, user, campaign, future_event
     assert "Other Event" not in titles
 
 
+@pytest.mark.django_db
+def test_events_list_filter_by_event_type(api_client, user, campaign, event_type):
+    """The shared list filter should support event_type_id."""
+    other_event_type = EventType.objects.create(code="other-type", label="Other Type")
+    Event.objects.create(
+        campaign=campaign,
+        event_type=event_type,
+        title="Typed Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        event_type=other_event_type,
+        title="Other Typed Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location=Point(10.1, 53.6, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get(f"/api/v1/events/?event_type_id={event_type.id}")
+
+    assert response.status_code == 200
+    assert [event["title"] for event in response.data["results"]] == ["Typed Event"]
+
+
 # =============================================================================
 # List API V2 Tests
 # =============================================================================
@@ -434,6 +466,43 @@ def test_events_map_v2_returns_geojson_and_online_buckets(api_client, user, camp
     assert response.data["spatial_events"]["type"] == "FeatureCollection"
     assert "features" in response.data["spatial_events"]
     assert response.data["online_events"][0]["title"] == "Online Event"
+
+
+@pytest.mark.django_db
+def test_events_map_v2_filters_by_event_type(api_client, user, campaign, event_type):
+    """The shared map filter should support event_type_id."""
+    other_event_type = EventType.objects.create(code="map-other-type", label="Map Other")
+    Event.objects.create(
+        campaign=campaign,
+        event_type=event_type,
+        title="Matching Spatial Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location_mode=Event.LocationMode.PHYSICAL,
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        event_type=other_event_type,
+        title="Filtered Spatial Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location_mode=Event.LocationMode.PHYSICAL,
+        location=Point(10.2, 53.6, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get(f"/api/v1/events/map/?event_type_id={event_type.id}")
+
+    assert response.status_code == 200
+    assert [
+        feature["properties"]["title"]
+        for feature in response.data["spatial_events"]["features"]
+    ] == ["Matching Spatial Event"]
 
 
 @pytest.mark.django_db
@@ -971,6 +1040,36 @@ def test_event_series_preview_manual_batch_returns_one_occurrence_per_explicit_d
         "2026-04-10",
         "2026-04-17",
     ]
+
+
+@pytest.mark.django_db
+def test_event_series_preview_rejects_invalid_location_geojson(
+    api_client, user, campaign, event_type
+):
+    """Series preview should return a clear location validation error for bad GeoJSON."""
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/event-series/preview/",
+        {
+            "campaign": str(campaign.id),
+            "event_type": str(event_type.id),
+            "name": "Bad Location Series",
+            "series_mode": "manual_batch",
+            "start_date": "2026-04-01",
+            "start_time": "09:00:00",
+            "end_time": "10:30:00",
+            "timezone": "Europe/Berlin",
+            "explicit_dates": ["2026-04-03"],
+            "title": "Physical Event",
+            "location_mode": "physical",
+            "location": {"type": "LineString", "coordinates": [[10.0, 53.5], [10.1, 53.6]]},
+            "status": "draft",
+        },
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["location"] == ["Location must be a GeoJSON Point."]
 
 
 @pytest.mark.django_db
