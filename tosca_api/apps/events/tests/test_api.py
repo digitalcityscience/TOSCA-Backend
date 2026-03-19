@@ -207,6 +207,174 @@ def test_events_list_filter_by_campaign(api_client, user, campaign, future_event
 
 
 # =============================================================================
+# List API V2 Tests
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_events_list_v2_returns_mixed_modes_ordered_by_start_datetime(
+    api_client, user, campaign
+):
+    """The dedicated list endpoint should return a chronological mixed stream."""
+    Event.objects.create(
+        campaign=campaign,
+        title="Physical Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location_mode=Event.LocationMode.PHYSICAL,
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        title="Online Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.org/live",
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        title="Hybrid Event",
+        start_datetime=timezone.now() + timedelta(days=3),
+        end_datetime=timezone.now() + timedelta(days=3, hours=1),
+        location_mode=Event.LocationMode.HYBRID,
+        location=Point(10.1, 53.6, srid=4326),
+        online_url="https://example.org/hybrid",
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get("/api/v1/events/list/")
+
+    assert response.status_code == 200
+    titles = [event["title"] for event in response.data["results"]]
+    assert titles == ["Online Event", "Physical Event", "Hybrid Event"]
+    assert [event["location_mode"] for event in response.data["results"]] == [
+        "online",
+        "physical",
+        "hybrid",
+    ]
+
+
+@pytest.mark.django_db
+def test_events_list_v2_paginates_mixed_event_types(api_client, user, campaign):
+    """Cursor pagination should work for the dedicated list endpoint."""
+    for index in range(1, 22):
+        mode = [
+            Event.LocationMode.ONLINE,
+            Event.LocationMode.PHYSICAL,
+            Event.LocationMode.HYBRID,
+        ][(index - 1) % 3]
+        kwargs = {
+            "campaign": campaign,
+            "title": f"Event {index}",
+            "start_datetime": timezone.now() + timedelta(days=index),
+            "end_datetime": timezone.now() + timedelta(days=index, hours=1),
+            "location_mode": mode,
+            "organizer": user,
+            "status": Event.Status.PUBLISHED,
+        }
+        if mode == Event.LocationMode.ONLINE:
+            kwargs["online_url"] = "https://example.org/live"
+        else:
+            kwargs["location"] = Point(10.0 + index, 53.5 + index, srid=4326)
+            if mode == Event.LocationMode.HYBRID:
+                kwargs["online_url"] = "https://example.org/hybrid"
+        Event.objects.create(**kwargs)
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get("/api/v1/events/list/")
+
+    assert response.status_code == 200
+    assert len(response.data["results"]) == 20
+    assert response.data["next"]
+
+
+@pytest.mark.django_db
+def test_events_list_v2_area_filter_keeps_eligible_online_events(
+    api_client, user, campaign
+):
+    """Area-filtered list results should include matching mapped events plus online events."""
+    Event.objects.create(
+        campaign=campaign,
+        title="Inside Physical Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        title="Outside Physical Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location=Point(13.4, 52.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        title="Eligible Online Event",
+        start_datetime=timezone.now() + timedelta(days=3),
+        end_datetime=timezone.now() + timedelta(days=3, hours=1),
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.org/live",
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get("/api/v1/events/list/?bbox=9.5,53.0,10.5,54.0")
+
+    assert response.status_code == 200
+    titles = [event["title"] for event in response.data["results"]]
+    assert titles == ["Inside Physical Event", "Eligible Online Event"]
+
+
+@pytest.mark.django_db
+def test_events_list_v2_payload_remains_stable_when_no_online_events_match(
+    api_client, user, campaign
+):
+    """The dedicated list payload should remain a normal paginated list without online matches."""
+    Event.objects.create(
+        campaign=campaign,
+        title="Inside Physical Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+        visibility=Event.Visibility.PRIVATE,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        title="Filtered Online Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.org/live",
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+        visibility=Event.Visibility.PUBLIC,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get(
+        "/api/v1/events/list/?bbox=9.5,53.0,10.5,54.0&visibility=private"
+    )
+
+    assert response.status_code == 200
+    assert "results" in response.data
+    assert response.data["results"][0]["title"] == "Inside Physical Event"
+
+
+# =============================================================================
 # Map View Tests (BBox)
 # =============================================================================
 

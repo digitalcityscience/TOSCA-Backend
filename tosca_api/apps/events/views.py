@@ -71,6 +71,8 @@ class EventViewSet(viewsets.ModelViewSet):
             if self._is_spatial_request():
                 return EventGeoSerializer
             return EventListSerializer
+        if self.action == "list_v2":
+            return EventListSerializer
         if self.action == "retrieve":
             return EventDetailSerializer
         if self.action == "within":
@@ -92,7 +94,7 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         queryset = super().get_queryset()
 
-        if self.action == "list":
+        if self.action in ("list", "list_v2"):
             bbox_serializer = BBoxSerializer(data=self.request.query_params)
             bbox_serializer.is_valid(raise_exception=True)
             validated_filters = dict(bbox_serializer.validated_data)
@@ -129,6 +131,24 @@ class EventViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(queryset, many=True)
             return Response(serializer.data)
         return super().list(request, *args, **kwargs)
+
+    @action(detail=False, methods=["get"], url_path="list")
+    def list_v2(self, request):
+        """
+        Return a paginated chronological mixed stream of events.
+
+        This endpoint keeps list responses in JSON form even when spatial
+        filters are supplied, unlike the legacy `/events/` route which still
+        switches to GeoJSON for bbox requests.
+        """
+        queryset = self.filter_queryset(self.get_queryset()).order_by("start_datetime")
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     @action(detail=False, methods=["post"], url_path="within")
     def within(self, request):
