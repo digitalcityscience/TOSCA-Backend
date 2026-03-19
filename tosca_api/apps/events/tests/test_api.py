@@ -375,6 +375,164 @@ def test_events_list_v2_payload_remains_stable_when_no_online_events_match(
 
 
 # =============================================================================
+# Map API V2 Tests
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_events_map_v2_returns_geojson_and_online_buckets(api_client, user, campaign):
+    """The dedicated map endpoint should split spatial and online results."""
+    Event.objects.create(
+        campaign=campaign,
+        title="Physical Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        title="Online Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.org/live",
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get("/api/v1/events/map/")
+
+    assert response.status_code == 200
+    assert response.data["spatial_events"]["type"] == "FeatureCollection"
+    assert "features" in response.data["spatial_events"]
+    assert response.data["online_events"][0]["title"] == "Online Event"
+
+
+@pytest.mark.django_db
+def test_events_map_v2_spatial_bucket_contains_only_mapped_physical_or_hybrid_events(
+    api_client, user, campaign
+):
+    """The spatial bucket should contain only physical and hybrid events with geometry."""
+    Event.objects.create(
+        campaign=campaign,
+        title="Physical Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location_mode=Event.LocationMode.PHYSICAL,
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        title="Hybrid Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location_mode=Event.LocationMode.HYBRID,
+        location=Point(10.1, 53.6, srid=4326),
+        online_url="https://example.org/hybrid",
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        title="Online Event",
+        start_datetime=timezone.now() + timedelta(days=3),
+        end_datetime=timezone.now() + timedelta(days=3, hours=1),
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.org/live",
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get("/api/v1/events/map/")
+
+    assert response.status_code == 200
+    spatial_titles = [
+        feature["properties"]["title"]
+        for feature in response.data["spatial_events"]["features"]
+    ]
+    assert spatial_titles == ["Physical Event", "Hybrid Event"]
+    assert response.data["online_events"][0]["title"] == "Online Event"
+
+
+@pytest.mark.django_db
+def test_events_map_v2_area_filter_keeps_eligible_online_events_separately(
+    api_client, user, campaign
+):
+    """Map filtering should keep online events in the separate online bucket."""
+    Event.objects.create(
+        campaign=campaign,
+        title="Inside Physical Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        title="Outside Physical Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location=Point(13.4, 52.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        title="Eligible Online Event",
+        start_datetime=timezone.now() + timedelta(days=3),
+        end_datetime=timezone.now() + timedelta(days=3, hours=1),
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.org/live",
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get("/api/v1/events/map/?bbox=9.5,53.0,10.5,54.0")
+
+    assert response.status_code == 200
+    spatial_titles = [
+        feature["properties"]["title"]
+        for feature in response.data["spatial_events"]["features"]
+    ]
+    online_titles = [event["title"] for event in response.data["online_events"]]
+    assert spatial_titles == ["Inside Physical Event"]
+    assert online_titles == ["Eligible Online Event"]
+
+
+@pytest.mark.django_db
+def test_events_map_v2_empty_spatial_bucket_still_returns_feature_collection(
+    api_client, user, campaign
+):
+    """An empty spatial bucket should still return valid GeoJSON structure."""
+    Event.objects.create(
+        campaign=campaign,
+        title="Online Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.org/live",
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get("/api/v1/events/map/?bbox=9.5,53.0,10.5,54.0")
+
+    assert response.status_code == 200
+    assert response.data["spatial_events"]["type"] == "FeatureCollection"
+    assert response.data["spatial_events"]["features"] == []
+    assert response.data["online_events"][0]["title"] == "Online Event"
+
+
+# =============================================================================
 # Map View Tests (BBox)
 # =============================================================================
 

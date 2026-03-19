@@ -11,6 +11,7 @@ from .serializers import (
     EventDetailSerializer,
     EventGeoSerializer,
     EventListSerializer,
+    EventMapOnlineSerializer,
     GeometryFilterSerializer,
 )
 
@@ -73,6 +74,8 @@ class EventViewSet(viewsets.ModelViewSet):
             return EventListSerializer
         if self.action == "list_v2":
             return EventListSerializer
+        if self.action == "map_v2":
+            return EventMapOnlineSerializer
         if self.action == "retrieve":
             return EventDetailSerializer
         if self.action == "within":
@@ -149,6 +152,36 @@ class EventViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], url_path="map")
+    def map_v2(self, request):
+        """
+        Return the dedicated map response with separate spatial and online buckets.
+        """
+        bbox_serializer = BBoxSerializer(data=request.query_params)
+        bbox_serializer.is_valid(raise_exception=True)
+        filters = dict(bbox_serializer.validated_data)
+        filters["spatial_geometry"] = filters.pop("bbox", None)
+
+        queryset = apply_event_filters(
+            Event.objects.all().select_related("campaign", "event_type", "series"),
+            filters=filters,
+        ).order_by("start_datetime")
+
+        spatial_queryset = queryset.filter(
+            location_mode__in=[Event.LocationMode.PHYSICAL, Event.LocationMode.HYBRID],
+            location__isnull=False,
+        )
+        online_queryset = queryset.filter(location_mode=Event.LocationMode.ONLINE)
+
+        spatial_events = EventGeoSerializer(spatial_queryset, many=True).data
+        online_events = EventMapOnlineSerializer(online_queryset, many=True).data
+        return Response(
+            {
+                "spatial_events": spatial_events,
+                "online_events": online_events,
+            }
+        )
 
     @action(detail=False, methods=["post"], url_path="within")
     def within(self, request):
