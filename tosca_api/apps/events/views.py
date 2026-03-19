@@ -1,9 +1,9 @@
-from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import CursorPagination
 from rest_framework.response import Response
 
+from .filters import apply_event_filters
 from .models import Event
 from .serializers import (
     BBoxSerializer,
@@ -81,21 +81,6 @@ class EventViewSet(viewsets.ModelViewSet):
         """Check if request has bbox parameter."""
         return bool(self.request.query_params.get("bbox"))
 
-    def _apply_taxonomy_filters(self, queryset):
-        """Apply optional taxonomy term and dimension filters."""
-        term_id = self.request.query_params.get("term_id")
-        if term_id:
-            queryset = queryset.filter(event_terms__term_id=term_id)
-
-        dimension_id = self.request.query_params.get("dimension_id")
-        if dimension_id:
-            queryset = queryset.filter(event_terms__term__dimension_id=dimension_id)
-
-        if term_id or dimension_id:
-            queryset = queryset.distinct()
-
-        return queryset
-
     def get_queryset(self):
         """
         Filter queryset based on request parameters.
@@ -107,43 +92,13 @@ class EventViewSet(viewsets.ModelViewSet):
         """
         queryset = super().get_queryset()
 
-        # Status filter (default: published for list)
-        if self.action in ("list", "within"):
-            status_param = self.request.query_params.get("status", "published")
-            queryset = queryset.filter(status=status_param)
-
-        # Campaign filter
-        campaign_id = self.request.query_params.get("campaign_id")
-        if campaign_id:
-            queryset = queryset.filter(campaign_id=campaign_id)
-
-        queryset = self._apply_taxonomy_filters(queryset)
-
-        # Time filters
-        include_past = self.request.query_params.get("include_past", "").lower() == "true"
-        if not include_past and self.action == "list":
-            queryset = queryset.filter(start_datetime__gte=timezone.now())
-
-        start_after = self.request.query_params.get("start_after")
-        if start_after:
-            queryset = queryset.filter(start_datetime__gte=start_after)
-
-        start_before = self.request.query_params.get("start_before")
-        if start_before:
-            queryset = queryset.filter(start_datetime__lte=start_before)
-
-        # Spatial filter (bbox)
-        if self._is_spatial_request():
+        if self.action == "list":
             bbox_serializer = BBoxSerializer(data=self.request.query_params)
             bbox_serializer.is_valid(raise_exception=True)
-            bbox_geom = bbox_serializer.validated_data.get("bbox")
+            validated_filters = dict(bbox_serializer.validated_data)
+            validated_filters["spatial_geometry"] = validated_filters.pop("bbox", None)
 
-            if bbox_geom:
-                # Only events with location, within bbox
-                queryset = queryset.filter(
-                    location__isnull=False,
-                    location__within=bbox_geom,
-                )
+            queryset = apply_event_filters(queryset, filters=validated_filters)
 
         # Optimize queries
         if self.action == "retrieve":
@@ -170,7 +125,7 @@ class EventViewSet(viewsets.ModelViewSet):
         Non-spatial requests use standard paginated response.
         """
         if self._is_spatial_request():
-            queryset = self.filter_queryset(self.get_queryset())
+            queryset = self.filter_queryset(self.get_queryset()).order_by("start_datetime")
             serializer = self.get_serializer(queryset, many=True)
             return Response(serializer.data)
         return super().list(request, *args, **kwargs)
@@ -192,49 +147,17 @@ class EventViewSet(viewsets.ModelViewSet):
             "status": "published"
         }
         """
-        # Validate input
         filter_serializer = GeometryFilterSerializer(data=request.data)
         filter_serializer.is_valid(raise_exception=True)
-        data = filter_serializer.validated_data
+        data = dict(filter_serializer.validated_data)
+        data["spatial_geometry"] = data.pop("geometry")
 
-        # Build queryset
-        queryset = Event.objects.filter(
-            location__isnull=False,
-            location__within=data["geometry"],
-            status=data.get("status", Event.Status.PUBLISHED),
-        )
-
-        # Campaign filter
-        if data.get("campaign_id"):
-            queryset = queryset.filter(campaign_id=data["campaign_id"])
-
-        # Time filters
-        if not data.get("include_past", False):
-            queryset = queryset.filter(start_datetime__gte=timezone.now())
-
-        if data.get("start_after"):
-            queryset = queryset.filter(start_datetime__gte=data["start_after"])
-
-        if data.get("start_before"):
-            queryset = queryset.filter(start_datetime__lte=data["start_before"])
-
-        # Order by start_datetime
+        queryset = apply_event_filters(Event.objects.all(), filters=data)
         queryset = queryset.order_by("start_datetime").select_related(
             "campaign",
             "event_type",
             "series",
         )
-
-        if data.get("term_id"):
-            queryset = queryset.filter(event_terms__term_id=data["term_id"])
-
-        if data.get("dimension_id"):
-            queryset = queryset.filter(
-                event_terms__term__dimension_id=data["dimension_id"]
-            )
-
-        if data.get("term_id") or data.get("dimension_id"):
-            queryset = queryset.distinct()
 
         # Serialize as GeoJSON
         serializer = EventGeoSerializer(queryset, many=True)
