@@ -4,11 +4,12 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import Point
 from django.core.exceptions import ValidationError
+from django.db import connection
 from django.db import IntegrityError
 from django.utils import timezone
 
 from tosca_api.apps.campaigns.models import Campaign
-from tosca_api.apps.events.models import Event, EventLayer, EventSeries
+from tosca_api.apps.events.models import Event, EventLayer, EventSeries, EventType
 from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.layerrefs.models import LayerRef
 
@@ -33,6 +34,11 @@ def layer_ref():
 @pytest.fixture
 def geocontext(user):
     return GeoContext.objects.create(content="Shared event context", created_by=user)
+
+
+@pytest.fixture
+def event_type():
+    return EventType.objects.create(code="core", label="Core Event")
 
 
 # =============================================================================
@@ -346,14 +352,19 @@ def test_hybrid_event_requires_geometry_and_access_data(user, campaign):
 
 
 @pytest.mark.django_db
-def test_series_event_requires_occurrence_index(user, campaign):
+def test_series_event_requires_occurrence_index(user, campaign, event_type):
     """Series events must provide an occurrence index."""
     now = timezone.now()
-    series = EventSeries.objects.create(name="Recurring Workshops")
+    series = EventSeries.objects.create(
+        name="Recurring Workshops",
+        campaign=campaign,
+        event_type=event_type,
+    )
 
     with pytest.raises(ValidationError) as exc:
         Event.objects.create(
             campaign=campaign,
+            event_type=event_type,
             title="Series Event",
             start_datetime=now,
             end_datetime=now + timedelta(hours=1),
@@ -420,15 +431,18 @@ def test_event_without_series_and_without_context_resolves_no_context(user, camp
 
 
 @pytest.mark.django_db
-def test_event_resolves_series_default_context(user, campaign, geocontext):
+def test_event_resolves_series_default_context(user, campaign, geocontext, event_type):
     """Series default context is used when an event override is absent."""
     now = timezone.now()
     series = EventSeries.objects.create(
         name="Series With Shared Context",
+        campaign=campaign,
+        event_type=event_type,
         default_context=geocontext,
     )
     event = Event.objects.create(
         campaign=campaign,
+        event_type=event_type,
         title="Series Event",
         start_datetime=now,
         end_datetime=now + timedelta(hours=1),
@@ -443,7 +457,7 @@ def test_event_resolves_series_default_context(user, campaign, geocontext):
 
 
 @pytest.mark.django_db
-def test_event_override_context_wins_over_series_default(user, campaign, geocontext):
+def test_event_override_context_wins_over_series_default(user, campaign, geocontext, event_type):
     """A direct event override takes precedence over the series default."""
     now = timezone.now()
     override_context = GeoContext.objects.create(
@@ -452,10 +466,13 @@ def test_event_override_context_wins_over_series_default(user, campaign, geocont
     )
     series = EventSeries.objects.create(
         name="Series With Shared Context",
+        campaign=campaign,
+        event_type=event_type,
         default_context=geocontext,
     )
     event = Event.objects.create(
         campaign=campaign,
+        event_type=event_type,
         title="Series Event With Override",
         start_datetime=now,
         end_datetime=now + timedelta(hours=1),
@@ -470,17 +487,20 @@ def test_event_override_context_wins_over_series_default(user, campaign, geocont
 
 
 @pytest.mark.django_db
-def test_editing_event_override_does_not_change_series_default(user, campaign, geocontext):
+def test_editing_event_override_does_not_change_series_default(user, campaign, geocontext, event_type):
     """Changing one event override must not mutate the series default context."""
     now = timezone.now()
     series = EventSeries.objects.create(
         name="Series With Shared Context",
+        campaign=campaign,
+        event_type=event_type,
         default_context=geocontext,
     )
     first_override = GeoContext.objects.create(content="Override A", created_by=user)
     second_override = GeoContext.objects.create(content="Override B", created_by=user)
     event = Event.objects.create(
         campaign=campaign,
+        event_type=event_type,
         title="Series Event",
         start_datetime=now,
         end_datetime=now + timedelta(hours=1),
@@ -515,3 +535,125 @@ def test_published_event_without_any_effective_context_is_valid(user, campaign):
     )
 
     assert event.effective_context is None
+
+
+@pytest.mark.django_db
+def test_series_linked_event_rejects_campaign_change(user, campaign, event_type):
+    """Series-linked events must keep the series campaign."""
+    now = timezone.now()
+    other_campaign = Campaign.objects.create(title="Other Campaign", created_by=user)
+    series = EventSeries.objects.create(
+        name="Locked Campaign Series",
+        campaign=campaign,
+        event_type=event_type,
+    )
+    event = Event.objects.create(
+        campaign=campaign,
+        event_type=event_type,
+        title="Series Event",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        series=series,
+        occurrence_index=1,
+    )
+
+    event.campaign = other_campaign
+    with pytest.raises(ValidationError) as exc:
+        event.save()
+
+    assert "campaign" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_series_linked_event_rejects_event_type_change(user, campaign, event_type):
+    """Series-linked events must keep the series event type."""
+    now = timezone.now()
+    other_event_type = EventType.objects.create(code="other", label="Other Event")
+    series = EventSeries.objects.create(
+        name="Locked Event Type Series",
+        campaign=campaign,
+        event_type=event_type,
+    )
+    event = Event.objects.create(
+        campaign=campaign,
+        event_type=event_type,
+        title="Series Event",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        series=series,
+        occurrence_index=1,
+    )
+
+    event.event_type = other_event_type
+    with pytest.raises(ValidationError) as exc:
+        event.save()
+
+    assert "event_type" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_series_occurrence_index_must_be_unique(user, campaign, event_type):
+    """Duplicate series occurrence indexes must be rejected."""
+    now = timezone.now()
+    series = EventSeries.objects.create(
+        name="Unique Occurrence Series",
+        campaign=campaign,
+        event_type=event_type,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        event_type=event_type,
+        title="Occurrence 1",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        series=series,
+        occurrence_index=1,
+    )
+
+    duplicate = Event(
+        campaign=campaign,
+        event_type=event_type,
+        title="Occurrence 1 Duplicate",
+        description="",
+        start_datetime=now + timedelta(days=1),
+        end_datetime=now + timedelta(days=1, hours=1),
+        location=Point(10.1, 53.6, srid=4326),
+        organizer=user,
+        series=series,
+        occurrence_index=1,
+    )
+
+    with pytest.raises(IntegrityError):
+        Event.objects.bulk_create([duplicate])
+
+
+@pytest.mark.django_db
+def test_event_core_indexes_exist():
+    """The agreed event indexes should exist in the schema."""
+    expected_indexes = {
+        "events_evt_cmp_stat_start_idx",
+        "events_evt_type_start_idx",
+        "events_evt_locmode_start_idx",
+        "events_evt_series_start_idx",
+        "events_evt_ser_occ_uniq",
+    }
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT indexname, indexdef
+            FROM pg_indexes
+            WHERE schemaname = 'public' AND tablename = 'events_event'
+            """
+        )
+        rows = cursor.fetchall()
+
+    index_names = {row[0] for row in rows}
+    assert expected_indexes.issubset(index_names)
+    assert any("using gist" in row[1].lower() and "location" in row[1].lower() for row in rows)
