@@ -8,7 +8,7 @@ from django.db import IntegrityError
 from django.utils import timezone
 
 from tosca_api.apps.campaigns.models import Campaign
-from tosca_api.apps.events.models import Event, EventLayer
+from tosca_api.apps.events.models import Event, EventLayer, EventSeries
 from tosca_api.apps.layerrefs.models import LayerRef
 
 User = get_user_model()
@@ -44,6 +44,7 @@ def test_event_create_success(user, campaign):
         description="A workshop about climate action",
         start_datetime=now,
         end_datetime=now + timedelta(hours=2),
+        location=Point(10.0, 53.5, srid=4326),
         organizer=user,
         status=Event.Status.PUBLISHED,
     )
@@ -90,6 +91,7 @@ def test_event_end_before_start_raises_validation_error(user, campaign):
             title="Invalid Event",
             start_datetime=now,
             end_datetime=now - timedelta(hours=1),  # End before start!
+            location=Point(10.0, 53.5, srid=4326),
             organizer=user,
         )
 
@@ -107,6 +109,7 @@ def test_event_db_constraint_end_after_start(user, campaign):
         title="Test Event",
         start_datetime=now,
         end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
         organizer=user,
     )
     # Bypass full_clean to test DB constraint directly
@@ -129,6 +132,7 @@ def test_event_same_start_end_allowed(user, campaign):
         title="Instant Event",
         start_datetime=now,
         end_datetime=now,  # Same as start
+        location=Point(10.0, 53.5, srid=4326),
         organizer=user,
     )
     assert event.start_datetime == event.end_datetime
@@ -148,6 +152,7 @@ def test_event_layer_through_model(user, campaign, layer_ref):
         title="Event with Layers",
         start_datetime=now,
         end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
         organizer=user,
     )
 
@@ -172,6 +177,7 @@ def test_event_layer_auto_increment_order(user, campaign, layer_ref):
         title="Event with Layers",
         start_datetime=now,
         end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
         organizer=user,
     )
 
@@ -195,6 +201,7 @@ def test_event_layer_unique_together(user, campaign, layer_ref):
         title="Event",
         start_datetime=now,
         end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
         organizer=user,
     )
 
@@ -219,6 +226,7 @@ def test_event_sanitizes_title(user, campaign):
         title="<script>alert('xss')</script>Event",
         start_datetime=now,
         end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
         organizer=user,
     )
     # Sanitization should strip tags
@@ -236,7 +244,153 @@ def test_event_status_choices(user, campaign):
             title=f"Event {status}",
             start_datetime=now,
             end_datetime=now + timedelta(hours=1),
+            location=Point(10.0, 53.5, srid=4326),
             organizer=user,
             status=status,
         )
         assert event.status == status
+
+
+@pytest.mark.django_db
+def test_physical_event_requires_geometry(user, campaign):
+    """Physical events must provide geometry."""
+    now = timezone.now()
+
+    with pytest.raises(ValidationError) as exc:
+        Event.objects.create(
+            campaign=campaign,
+            title="Physical Without Geometry",
+            start_datetime=now,
+            end_datetime=now + timedelta(hours=1),
+            organizer=user,
+            location_mode=Event.LocationMode.PHYSICAL,
+        )
+
+    assert "location" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_online_event_requires_access_data(user, campaign):
+    """Online events must provide online access data and can omit geometry."""
+    now = timezone.now()
+
+    with pytest.raises(ValidationError) as exc:
+        Event.objects.create(
+            campaign=campaign,
+            title="Online Without Access",
+            start_datetime=now,
+            end_datetime=now + timedelta(hours=1),
+            organizer=user,
+            location_mode=Event.LocationMode.ONLINE,
+        )
+
+    assert "online_url" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_online_event_rejects_geometry(user, campaign):
+    """Online events cannot include geometry."""
+    now = timezone.now()
+
+    with pytest.raises(ValidationError) as exc:
+        Event.objects.create(
+            campaign=campaign,
+            title="Mapped Online Event",
+            start_datetime=now,
+            end_datetime=now + timedelta(hours=1),
+            organizer=user,
+            location_mode=Event.LocationMode.ONLINE,
+            online_platform="Zoom",
+            location=Point(10.0, 53.5, srid=4326),
+        )
+
+    assert "location" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_hybrid_event_requires_geometry_and_access_data(user, campaign):
+    """Hybrid events require both geometry and online access data."""
+    now = timezone.now()
+
+    with pytest.raises(ValidationError) as exc:
+        Event.objects.create(
+            campaign=campaign,
+            title="Hybrid Missing Access",
+            start_datetime=now,
+            end_datetime=now + timedelta(hours=1),
+            organizer=user,
+            location_mode=Event.LocationMode.HYBRID,
+            location=Point(10.0, 53.5, srid=4326),
+        )
+
+    assert "online_url" in exc.value.message_dict
+
+    with pytest.raises(ValidationError) as exc:
+        Event.objects.create(
+            campaign=campaign,
+            title="Hybrid Missing Geometry",
+            start_datetime=now,
+            end_datetime=now + timedelta(hours=1),
+            organizer=user,
+            location_mode=Event.LocationMode.HYBRID,
+            online_url="https://example.org/live",
+        )
+
+    assert "location" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_series_event_requires_occurrence_index(user, campaign):
+    """Series events must provide an occurrence index."""
+    now = timezone.now()
+    series = EventSeries.objects.create(name="Recurring Workshops")
+
+    with pytest.raises(ValidationError) as exc:
+        Event.objects.create(
+            campaign=campaign,
+            title="Series Event",
+            start_datetime=now,
+            end_datetime=now + timedelta(hours=1),
+            location=Point(10.0, 53.5, srid=4326),
+            organizer=user,
+            series=series,
+            occurrence_index=None,
+        )
+
+    assert "occurrence_index" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_exception_requires_series(user, campaign):
+    """Only series events can be marked as exceptions."""
+    now = timezone.now()
+
+    with pytest.raises(ValidationError) as exc:
+        Event.objects.create(
+            campaign=campaign,
+            title="Standalone Exception",
+            start_datetime=now,
+            end_datetime=now + timedelta(hours=1),
+            location=Point(10.0, 53.5, srid=4326),
+            organizer=user,
+            is_exception=True,
+        )
+
+    assert "is_exception" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_standalone_event_without_context_is_valid(user, campaign):
+    """Standalone events remain valid without a context."""
+    now = timezone.now()
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Standalone Event",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        context=None,
+    )
+
+    assert event.context is None
