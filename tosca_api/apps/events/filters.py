@@ -15,6 +15,10 @@ def apply_event_filters(queryset, *, filters: dict):
     if campaign_id:
         queryset = queryset.filter(campaign_id=campaign_id)
 
+    event_type_id = filters.get("event_type_id")
+    if event_type_id:
+        queryset = queryset.filter(event_type_id=event_type_id)
+
     visibility = filters.get("visibility")
     if visibility:
         queryset = queryset.filter(visibility=visibility)

@@ -990,6 +990,31 @@ def test_event_series_date_occurrence_date_must_be_unique(user, campaign, event_
 
 
 @pytest.mark.django_db
+def test_event_series_date_auto_assigns_display_order(user, campaign, event_type):
+    """Explicit series dates should auto-number when display_order is omitted."""
+    series = EventSeries.objects.create(
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="Auto Ordered Series",
+        )
+    )
+
+    first_date = EventSeriesDate.objects.create(
+        series=series,
+        occurrence_date=series.start_date,
+    )
+    second_date = EventSeriesDate.objects.create(
+        series=series,
+        occurrence_date=series.start_date + timedelta(days=7),
+    )
+
+    assert first_date.display_order == 1
+    assert second_date.display_order == 2
+
+
+@pytest.mark.django_db
 def test_weekly_series_requires_weekday(user, campaign, event_type):
     """Weekly recurrence must define at least one weekday."""
     with pytest.raises(ValidationError) as exc:

@@ -1,3 +1,4 @@
+import json
 from collections import Counter
 from zoneinfo import ZoneInfoNotFoundError
 
@@ -80,7 +81,6 @@ EXCEPTION_TRIGGER_FIELDS = {
     "provider_contact",
     "status",
     "visibility",
-    "context",
 }
 
 
@@ -394,6 +394,14 @@ class EventWriteSerializer(TaxonomyTermResolutionMixin, serializers.ModelSeriali
             if field in validated_data and validated_data[field] != getattr(instance, field):
                 return True
 
+        if "context" in validated_data:
+            incoming_context = validated_data["context"]
+            incoming_context_id = (
+                incoming_context.id if incoming_context is not None else None
+            )
+            if incoming_context_id != instance.context_id:
+                return True
+
         if taxonomy_terms is not serializers.empty:
             current_term_ids = set(
                 EventTerm.objects.filter(event=instance).values_list("term_id", flat=True)
@@ -529,6 +537,28 @@ class EventSeriesWriteSerializer(TaxonomyTermResolutionMixin, serializers.Serial
         required=False,
         allow_null=True,
     )
+
+    def validate_location(self, value):
+        """Validate and normalize series template location input as a GeoJSON point."""
+        if value is None:
+            return None
+
+        try:
+            geometry = GEOSGeometry(json.dumps(value))
+        except Exception as exc:
+            raise serializers.ValidationError(
+                f"Invalid GeoJSON point: {exc}"
+            ) from exc
+
+        if geometry.geom_type != "Point":
+            raise serializers.ValidationError("Location must be a GeoJSON Point.")
+
+        if geometry.srid is None:
+            geometry.srid = 4326
+        elif geometry.srid != 4326:
+            geometry.transform(4326)
+
+        return geometry
 
     def validate(self, attrs):
         taxonomy_term_ids = attrs.pop("taxonomy_term_ids", serializers.empty)
@@ -791,6 +821,7 @@ class BBoxSerializer(serializers.Serializer):
     """Validates shared event filters plus bbox query parameter."""
 
     campaign_id = serializers.UUIDField(required=False)
+    event_type_id = serializers.UUIDField(required=False)
     dimension_id = serializers.UUIDField(required=False)
     term_id = serializers.UUIDField(required=False)
     include_past = serializers.BooleanField(default=False)
@@ -843,6 +874,7 @@ class GeometryFilterSerializer(serializers.Serializer):
 
     geometry = serializers.JSONField(required=True)
     campaign_id = serializers.UUIDField(required=False)
+    event_type_id = serializers.UUIDField(required=False)
     dimension_id = serializers.UUIDField(required=False)
     term_id = serializers.UUIDField(required=False)
     include_past = serializers.BooleanField(default=False)
@@ -860,8 +892,6 @@ class GeometryFilterSerializer(serializers.Serializer):
     def validate_geometry(self, value):
         """Parse GeoJSON into GEOS geometry."""
         try:
-            import json
-
             geojson_str = json.dumps(value)
             geom = GEOSGeometry(geojson_str)
 
