@@ -231,17 +231,17 @@ def test_events_bbox_returns_geojson(api_client, user, future_event):
 
 
 @pytest.mark.django_db
-def test_events_bbox_excludes_events_without_location(
+def test_events_bbox_keeps_online_events_after_non_spatial_filtering(
     api_client, user, future_event, event_without_location
 ):
-    """Test that bbox filter excludes events without location."""
+    """Spatial filters should not drop eligible online events."""
     api_client.force_authenticate(user=user)
     response = api_client.get("/api/v1/events/?bbox=9.0,53.0,11.0,54.0")
     assert response.status_code == 200
 
     titles = [f["properties"]["title"] for f in response.data["features"]]
     assert "Future Event" in titles
-    assert "No Location Event" not in titles
+    assert "No Location Event" in titles
 
 
 @pytest.mark.django_db
@@ -336,6 +336,168 @@ def test_events_within_polygon(api_client, user, campaign):
     titles = [f["properties"]["title"] for f in response.data["features"]]
     assert "Inside Event" in titles
     assert "Outside Event" not in titles
+
+
+@pytest.mark.django_db
+def test_events_within_keeps_online_events_after_spatial_filtering(
+    api_client, user, future_event, event_without_location
+):
+    """Polygon filtering should still keep online events that match non-spatial filters."""
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/events/within/",
+        {
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [[9.0, 53.0], [11.0, 53.0], [11.0, 54.0], [9.0, 54.0], [9.0, 53.0]]
+                ],
+            }
+        },
+        format="json",
+    )
+
+    assert response.status_code == 200
+    titles = [feature["properties"]["title"] for feature in response.data["features"]]
+    assert "Future Event" in titles
+    assert "No Location Event" in titles
+
+
+@pytest.mark.django_db
+def test_events_within_excludes_past_events_by_default(api_client, user, campaign):
+    """The shared filter layer should exclude past events in within/ by default."""
+    Event.objects.create(
+        campaign=campaign,
+        title="Past Inside Event",
+        start_datetime=timezone.now() - timedelta(days=2),
+        end_datetime=timezone.now() - timedelta(days=2, hours=-1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/events/within/",
+        {
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [[9.0, 53.0], [11.0, 53.0], [11.0, 54.0], [9.0, 54.0], [9.0, 53.0]]
+                ],
+            }
+        },
+        format="json",
+    )
+
+    assert response.status_code == 200
+    titles = [feature["properties"]["title"] for feature in response.data["features"]]
+    assert "Past Inside Event" not in titles
+
+
+@pytest.mark.django_db
+def test_events_shared_filters_match_between_list_and_within(api_client, user, campaign):
+    """List and within endpoints should apply the same non-spatial filter contract."""
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    climate = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="climate",
+        label="Climate",
+    )
+    matching_event = Event.objects.create(
+        campaign=campaign,
+        title="Matching Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+        visibility=Event.Visibility.PRIVATE,
+    )
+    filtered_out_online = Event.objects.create(
+        campaign=campaign,
+        title="Filtered Out Online Event",
+        start_datetime=timezone.now() + timedelta(days=2),
+        end_datetime=timezone.now() + timedelta(days=2, hours=1),
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.org/live",
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+        visibility=Event.Visibility.PUBLIC,
+    )
+    EventTerm.objects.create(event=matching_event, term=climate)
+    EventTerm.objects.create(event=filtered_out_online, term=climate)
+
+    start_after = (timezone.now() + timedelta(days=1)).isoformat()
+    start_before = (timezone.now() + timedelta(days=3)).isoformat()
+
+    api_client.force_authenticate(user=user)
+    list_response = api_client.get(
+        "/api/v1/events/",
+        {
+            "campaign_id": str(campaign.id),
+            "status": Event.Status.PUBLISHED,
+            "visibility": Event.Visibility.PRIVATE,
+            "term_id": str(climate.id),
+            "start_after": start_after,
+            "start_before": start_before,
+            "include_past": "false",
+        },
+    )
+    within_response = api_client.post(
+        "/api/v1/events/within/",
+        {
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [[9.0, 53.0], [11.0, 53.0], [11.0, 54.0], [9.0, 54.0], [9.0, 53.0]]
+                ],
+            },
+            "campaign_id": str(campaign.id),
+            "status": Event.Status.PUBLISHED,
+            "visibility": Event.Visibility.PRIVATE,
+            "term_id": str(climate.id),
+            "start_after": start_after,
+            "start_before": start_before,
+            "include_past": False,
+        },
+        format="json",
+    )
+
+    assert list_response.status_code == 200
+    assert within_response.status_code == 200
+
+    list_titles = [event["title"] for event in list_response.data["results"]]
+    within_titles = [feature["properties"]["title"] for feature in within_response.data["features"]]
+    assert list_titles == ["Matching Event"]
+    assert within_titles == ["Matching Event"]
+
+
+@pytest.mark.django_db
+def test_events_bbox_non_spatial_filters_remove_non_matching_online_events(
+    api_client, user, campaign
+):
+    """Online events should still be removed when they fail non-spatial filters."""
+    Event.objects.create(
+        campaign=campaign,
+        title="Private Online Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.org/live",
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+        visibility=Event.Visibility.PRIVATE,
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get(
+        "/api/v1/events/?bbox=9.0,53.0,11.0,54.0&visibility=public"
+    )
+
+    assert response.status_code == 200
+    titles = [feature["properties"]["title"] for feature in response.data["features"]]
+    assert "Private Online Event" not in titles
 
 
 @pytest.mark.django_db

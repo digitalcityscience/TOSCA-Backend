@@ -273,8 +273,22 @@ class EventWriteSerializer(serializers.ModelSerializer):
 
 
 class BBoxSerializer(serializers.Serializer):
-    """Validates and parses bbox query parameter."""
+    """Validates shared event filters plus bbox query parameter."""
 
+    campaign_id = serializers.UUIDField(required=False)
+    dimension_id = serializers.UUIDField(required=False)
+    term_id = serializers.UUIDField(required=False)
+    include_past = serializers.BooleanField(default=False)
+    start_after = serializers.DateTimeField(required=False)
+    start_before = serializers.DateTimeField(required=False)
+    status = serializers.ChoiceField(
+        choices=Event.Status.choices,
+        default=Event.Status.PUBLISHED,
+    )
+    visibility = serializers.ChoiceField(
+        choices=Event.Visibility.choices,
+        required=False,
+    )
     bbox = serializers.CharField(required=False, allow_blank=True)
 
     def validate_bbox(self, value):
@@ -322,6 +336,10 @@ class GeometryFilterSerializer(serializers.Serializer):
     status = serializers.ChoiceField(
         choices=Event.Status.choices,
         default=Event.Status.PUBLISHED,
+    )
+    visibility = serializers.ChoiceField(
+        choices=Event.Visibility.choices,
+        required=False,
     )
 
     def validate_geometry(self, value):
