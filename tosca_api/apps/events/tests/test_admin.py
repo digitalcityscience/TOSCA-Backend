@@ -79,6 +79,7 @@ def test_taxonomy_dimension_admin_form_exposes_expected_fields(admin_request):
     assert {"code", "label", "description", "selection_mode", "is_active", "sort_order"} <= set(
         form_class.base_fields
     )
+    assert "auto-append" in form_class.base_fields["sort_order"].help_text
     assert model_admin.inlines
 
 
@@ -91,6 +92,7 @@ def test_taxonomy_term_admin_form_exposes_expected_fields(admin_request):
     assert {"dimension", "parent", "code", "label", "description", "is_active", "sort_order"} <= set(
         form_class.base_fields
     )
+    assert "auto-append" in form_class.base_fields["sort_order"].help_text
 
 
 @pytest.mark.django_db

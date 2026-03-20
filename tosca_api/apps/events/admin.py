@@ -16,6 +16,18 @@ from .models import (
 )
 
 
+class SortOrderHelpTextMixin:
+    """Explain that sort_order=0 auto-appends within the current scope."""
+
+    def formfield_for_dbfield(self, db_field, request, **kwargs):
+        formfield = super().formfield_for_dbfield(db_field, request, **kwargs)
+        if db_field.name == "sort_order":
+            suffix = " Leave as 0 to auto-append."
+            existing_help_text = formfield.help_text or ""
+            formfield.help_text = f"{existing_help_text}{suffix}".strip()
+        return formfield
+
+
 class EventLayerInline(admin.TabularInline):
     model = EventLayer
     extra = 1
@@ -28,7 +40,7 @@ class EventSeriesDateInline(admin.TabularInline):
     fields = ["occurrence_date", "display_order"]
 
 
-class TaxonomyTermInline(admin.TabularInline):
+class TaxonomyTermInline(SortOrderHelpTextMixin, admin.TabularInline):
     model = TaxonomyTerm
     extra = 0
     fields = ["code", "label", "parent", "is_active", "sort_order"]
@@ -60,7 +72,7 @@ class EventTypeAdmin(admin.ModelAdmin):
 
 
 @admin.register(TaxonomyDimension)
-class TaxonomyDimensionAdmin(admin.ModelAdmin):
+class TaxonomyDimensionAdmin(SortOrderHelpTextMixin, admin.ModelAdmin):
     list_display = ["label", "code", "selection_mode", "is_active", "sort_order"]
     list_filter = ["selection_mode", "is_active"]
     search_fields = ["label", "code", "description"]
@@ -86,7 +98,7 @@ class TaxonomyDimensionAdmin(admin.ModelAdmin):
 
 
 @admin.register(TaxonomyTerm)
-class TaxonomyTermAdmin(admin.ModelAdmin):
+class TaxonomyTermAdmin(SortOrderHelpTextMixin, admin.ModelAdmin):
     list_display = ["label", "code", "dimension", "parent", "is_active", "sort_order"]
     list_filter = ["dimension", "is_active"]
     search_fields = ["label", "code", "description", "dimension__label", "parent__label"]
