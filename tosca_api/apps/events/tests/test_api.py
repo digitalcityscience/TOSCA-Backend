@@ -1287,16 +1287,26 @@ def test_events_create(api_client, user, campaign):
 @pytest.mark.django_db
 def test_events_create_assigns_taxonomy_terms(api_client, user, campaign):
     """Event creation should persist taxonomy term assignments."""
-    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    topic_dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    audience_dimension = TaxonomyDimension.objects.create(
+        code="audience",
+        label="Audience",
+        selection_mode=TaxonomyDimension.SelectionMode.SINGLE,
+    )
     climate = TaxonomyTerm.objects.create(
-        dimension=dimension,
+        dimension=topic_dimension,
         code="climate",
         label="Climate",
     )
     mobility = TaxonomyTerm.objects.create(
-        dimension=dimension,
+        dimension=topic_dimension,
         code="mobility",
         label="Mobility",
+    )
+    youth = TaxonomyTerm.objects.create(
+        dimension=audience_dimension,
+        code="youth",
+        label="Youth",
     )
 
     api_client.force_authenticate(user=user)
@@ -1308,7 +1318,16 @@ def test_events_create_assigns_taxonomy_terms(api_client, user, campaign):
         "location_mode": "online",
         "online_url": "https://example.org/live",
         "status": "draft",
-        "taxonomy_term_ids": [str(climate.id), str(mobility.id)],
+        "taxonomy_assignments": [
+            {
+                "dimension_id": str(topic_dimension.id),
+                "term_ids": [str(climate.id), str(mobility.id)],
+            },
+            {
+                "dimension_id": str(audience_dimension.id),
+                "term_ids": [str(youth.id)],
+            },
+        ],
     }
     response = api_client.post("/api/v1/events/", data, format="json")
 
@@ -1317,7 +1336,7 @@ def test_events_create_assigns_taxonomy_terms(api_client, user, campaign):
     assigned_term_ids = set(
         EventTerm.objects.filter(event=event).values_list("term_id", flat=True)
     )
-    assert assigned_term_ids == {climate.id, mobility.id}
+    assert assigned_term_ids == {climate.id, mobility.id, youth.id}
 
 
 @pytest.mark.django_db
@@ -1348,12 +1367,222 @@ def test_events_create_rejects_multiple_single_select_terms(api_client, user, ca
         "location_mode": "online",
         "online_url": "https://example.org/live",
         "status": "draft",
-        "taxonomy_term_ids": [str(youth.id), str(seniors.id)],
+        "taxonomy_assignments": [
+            {
+                "dimension_id": str(dimension.id),
+                "term_ids": [str(youth.id), str(seniors.id)],
+            }
+        ],
     }
     response = api_client.post("/api/v1/events/", data, format="json")
 
     assert response.status_code == 400
-    assert "taxonomy_term_ids" in response.data
+    assert "taxonomy_assignments" in response.data
+
+
+@pytest.mark.django_db
+def test_events_create_rejects_duplicate_taxonomy_dimensions(api_client, user, campaign):
+    """Grouped taxonomy assignments should not repeat the same dimension."""
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    climate = TaxonomyTerm.objects.create(dimension=dimension, code="climate", label="Climate")
+    mobility = TaxonomyTerm.objects.create(dimension=dimension, code="mobility", label="Mobility")
+
+    api_client.force_authenticate(user=user)
+    data = {
+        "title": "Duplicate Dimension Event",
+        "campaign": str(campaign.id),
+        "start_datetime": (timezone.now() + timedelta(days=1)).isoformat(),
+        "end_datetime": (timezone.now() + timedelta(days=1, hours=2)).isoformat(),
+        "location_mode": "online",
+        "online_url": "https://example.org/live",
+        "status": "published",
+        "taxonomy_assignments": [
+            {"dimension_id": str(dimension.id), "term_ids": [str(climate.id)]},
+            {"dimension_id": str(dimension.id), "term_ids": [str(mobility.id)]},
+        ],
+    }
+
+    response = api_client.post("/api/v1/events/", data, format="json")
+
+    assert response.status_code == 400
+    assert "taxonomy_assignments" in response.data
+
+
+@pytest.mark.django_db
+def test_events_create_rejects_non_leaf_taxonomy_term(api_client, user, campaign):
+    """Only leaf taxonomy terms should be assignable."""
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    parent = TaxonomyTerm.objects.create(dimension=dimension, code="health", label="Health")
+    TaxonomyTerm.objects.create(
+        dimension=dimension,
+        parent=parent,
+        code="mental-health",
+        label="Mental Health",
+    )
+
+    api_client.force_authenticate(user=user)
+    data = {
+        "title": "Parent Tagged Event",
+        "campaign": str(campaign.id),
+        "start_datetime": (timezone.now() + timedelta(days=1)).isoformat(),
+        "end_datetime": (timezone.now() + timedelta(days=1, hours=2)).isoformat(),
+        "location_mode": "online",
+        "online_url": "https://example.org/live",
+        "status": "published",
+        "taxonomy_assignments": [
+            {"dimension_id": str(dimension.id), "term_ids": [str(parent.id)]}
+        ],
+    }
+
+    response = api_client.post("/api/v1/events/", data, format="json")
+
+    assert response.status_code == 400
+    assert "taxonomy_assignments" in response.data
+
+
+@pytest.mark.django_db
+def test_events_create_rejects_inactive_taxonomy_term(api_client, user, campaign):
+    """Inactive taxonomy terms should not be assignable in new writes."""
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    inactive_term = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="inactive-topic",
+        label="Inactive Topic",
+        is_active=False,
+    )
+
+    api_client.force_authenticate(user=user)
+    data = {
+        "title": "Inactive Tagged Event",
+        "campaign": str(campaign.id),
+        "start_datetime": (timezone.now() + timedelta(days=1)).isoformat(),
+        "end_datetime": (timezone.now() + timedelta(days=1, hours=2)).isoformat(),
+        "location_mode": "online",
+        "online_url": "https://example.org/live",
+        "status": "published",
+        "taxonomy_assignments": [
+            {"dimension_id": str(dimension.id), "term_ids": [str(inactive_term.id)]}
+        ],
+    }
+
+    response = api_client.post("/api/v1/events/", data, format="json")
+
+    assert response.status_code == 400
+    assert "taxonomy_assignments" in response.data
+
+
+@pytest.mark.django_db
+def test_event_series_create_assigns_grouped_taxonomy_to_generated_occurrences(
+    api_client, user, campaign, event_type
+):
+    """Series creation should persist grouped taxonomy assignments onto occurrences."""
+    topic_dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    audience_dimension = TaxonomyDimension.objects.create(
+        code="audience",
+        label="Audience",
+        selection_mode=TaxonomyDimension.SelectionMode.SINGLE,
+    )
+    climate = TaxonomyTerm.objects.create(
+        dimension=topic_dimension,
+        code="climate",
+        label="Climate",
+    )
+    youth = TaxonomyTerm.objects.create(
+        dimension=audience_dimension,
+        code="youth",
+        label="Youth",
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/event-series/",
+        {
+            "campaign": str(campaign.id),
+            "event_type": str(event_type.id),
+            "name": "Tagged Series",
+            "series_mode": "recurring",
+            "recurrence_type": "weekly",
+            "start_date": "2026-04-06",
+            "occurrence_count": 2,
+            "interval": 1,
+            "start_time": "18:00:00",
+            "end_time": "19:30:00",
+            "timezone": "Europe/Berlin",
+            "by_weekday": ["monday"],
+            "title": "Recurring Tagged Event",
+            "location_mode": "online",
+            "online_url": "https://example.org/live",
+            "status": "draft",
+            "taxonomy_assignments": [
+                {"dimension_id": str(topic_dimension.id), "term_ids": [str(climate.id)]},
+                {"dimension_id": str(audience_dimension.id), "term_ids": [str(youth.id)]},
+            ],
+        },
+        format="json",
+    )
+
+    assert response.status_code == 201
+    series = EventSeries.objects.get(id=response.data["id"])
+    for event in series.events.all():
+        assigned_term_ids = set(
+            EventTerm.objects.filter(event=event).values_list("term_id", flat=True)
+        )
+        assert assigned_term_ids == {climate.id, youth.id}
+
+
+@pytest.mark.django_db
+def test_event_series_create_rejects_invalid_grouped_taxonomy_assignments(
+    api_client, user, campaign, event_type
+):
+    """Series creation should reject invalid grouped taxonomy combinations."""
+    dimension = TaxonomyDimension.objects.create(
+        code="audience",
+        label="Audience",
+        selection_mode=TaxonomyDimension.SelectionMode.SINGLE,
+    )
+    youth = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="youth",
+        label="Youth",
+    )
+    seniors = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="seniors",
+        label="Seniors",
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/event-series/",
+        {
+            "campaign": str(campaign.id),
+            "event_type": str(event_type.id),
+            "name": "Invalid Tagged Series",
+            "series_mode": "recurring",
+            "recurrence_type": "weekly",
+            "start_date": "2026-04-06",
+            "occurrence_count": 2,
+            "interval": 1,
+            "start_time": "18:00:00",
+            "end_time": "19:30:00",
+            "timezone": "Europe/Berlin",
+            "by_weekday": ["monday"],
+            "title": "Recurring Invalid Tagged Event",
+            "location_mode": "online",
+            "online_url": "https://example.org/live",
+            "status": "draft",
+            "taxonomy_assignments": [
+                {
+                    "dimension_id": str(dimension.id),
+                    "term_ids": [str(youth.id), str(seniors.id)],
+                }
+            ],
+        },
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert "taxonomy_assignments" in response.data
 
 
 @pytest.mark.django_db

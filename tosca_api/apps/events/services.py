@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from calendar import monthrange
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -16,6 +17,7 @@ from .models import (
     EventSeries,
     EventSeriesDate,
     EventTerm,
+    TaxonomyDimension,
     EventType,
     PublicHealthEventProfile,
     SportsEventProfile,
@@ -239,6 +241,146 @@ def serialize_occurrence_events(events: list[Event]) -> list[dict[str, Any]]:
         }
         for event in events
     ]
+
+
+def resolve_taxonomy_assignments(
+    taxonomy_assignments: list[dict[str, Any]],
+) -> list[TaxonomyTerm]:
+    """Validate grouped taxonomy assignments and return the resolved terms."""
+    if not taxonomy_assignments:
+        return []
+
+    errors: list[str] = []
+    dimension_ids = [assignment["dimension_id"] for assignment in taxonomy_assignments]
+    duplicate_dimension_ids = [
+        str(dimension_id)
+        for dimension_id, count in Counter(dimension_ids).items()
+        if count > 1
+    ]
+    if duplicate_dimension_ids:
+        errors.append(
+            "Duplicate taxonomy dimensions are not allowed: "
+            f"{', '.join(duplicate_dimension_ids)}"
+        )
+
+    dimension_map = TaxonomyDimension.objects.in_bulk(dimension_ids)
+    missing_dimension_ids = [
+        str(dimension_id)
+        for dimension_id in dimension_ids
+        if dimension_id not in dimension_map
+    ]
+    if missing_dimension_ids:
+        errors.append(
+            "Unknown taxonomy dimensions: " f"{', '.join(missing_dimension_ids)}"
+        )
+
+    inactive_dimension_ids = [
+        str(dimension.id)
+        for dimension in dimension_map.values()
+        if not dimension.is_active
+    ]
+    if inactive_dimension_ids:
+        errors.append(
+            "Inactive taxonomy dimensions cannot be assigned: "
+            f"{', '.join(sorted(inactive_dimension_ids))}"
+        )
+
+    all_term_ids: list[Any] = []
+    duplicate_term_ids: list[str] = []
+    for assignment in taxonomy_assignments:
+        term_ids = assignment["term_ids"]
+        if not term_ids:
+            errors.append(
+                f"Taxonomy dimension {assignment['dimension_id']} must include at least one term."
+            )
+            continue
+
+        repeated_ids = [
+            str(term_id)
+            for term_id, count in Counter(term_ids).items()
+            if count > 1
+        ]
+        duplicate_term_ids.extend(repeated_ids)
+        all_term_ids.extend(term_ids)
+
+    if duplicate_term_ids:
+        errors.append(
+            "Duplicate taxonomy term IDs are not allowed within a dimension: "
+            f"{', '.join(sorted(set(duplicate_term_ids)))}"
+        )
+
+    term_map = TaxonomyTerm.objects.select_related("dimension").in_bulk(all_term_ids)
+    missing_term_ids = [
+        str(term_id)
+        for term_id in all_term_ids
+        if term_id not in term_map
+    ]
+    if missing_term_ids:
+        errors.append("Unknown taxonomy terms: " f"{', '.join(missing_term_ids)}")
+
+    inactive_term_ids = [
+        str(term.id)
+        for term in term_map.values()
+        if not term.is_active
+    ]
+    if inactive_term_ids:
+        errors.append(
+            "Inactive taxonomy terms cannot be assigned: "
+            f"{', '.join(sorted(inactive_term_ids))}"
+        )
+
+    parent_term_ids = set(
+        TaxonomyTerm.objects.filter(parent_id__in=all_term_ids).values_list(
+            "parent_id",
+            flat=True,
+        )
+    )
+    non_leaf_term_ids = [
+        str(term_id) for term_id in all_term_ids if term_id in parent_term_ids
+    ]
+    if non_leaf_term_ids:
+        errors.append(
+            "Only leaf taxonomy terms may be assigned: "
+            f"{', '.join(non_leaf_term_ids)}"
+        )
+
+    resolved_terms: list[TaxonomyTerm] = []
+    for assignment in taxonomy_assignments:
+        dimension_id = assignment["dimension_id"]
+        dimension = dimension_map.get(dimension_id)
+        term_ids = assignment["term_ids"]
+        resolved_dimension_terms = [term_map[term_id] for term_id in term_ids if term_id in term_map]
+
+        if dimension is None:
+            continue
+
+        mismatched_terms = [
+            str(term.id)
+            for term in resolved_dimension_terms
+            if term.dimension_id != dimension_id
+        ]
+        if mismatched_terms:
+            errors.append(
+                "Taxonomy terms do not belong to dimension "
+                f"{dimension_id}: {', '.join(mismatched_terms)}"
+            )
+
+        if (
+            dimension.selection_mode == TaxonomyDimension.SelectionMode.SINGLE
+            and len(resolved_dimension_terms) > 1
+        ):
+            errors.append(
+                f"Single-select taxonomy dimension {dimension_id} allows only one term."
+            )
+
+        resolved_terms.extend(
+            term for term in resolved_dimension_terms if term.dimension_id == dimension_id
+        )
+
+    if errors:
+        raise ValidationError({"taxonomy_assignments": errors})
+
+    return resolved_terms
 
 
 def _apply_occurrence_to_event(
