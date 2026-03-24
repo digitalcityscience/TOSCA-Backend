@@ -1,16 +1,14 @@
 from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
 
+from .forms import EventAdminForm, EventSeriesAdminForm
 from .models import (
-    CultureEventProfile,
     Event,
     EventLayer,
     EventSeries,
     EventSeriesDate,
     EventTerm,
     EventType,
-    PublicHealthEventProfile,
-    SportsEventProfile,
     TaxonomyDimension,
     TaxonomyTerm,
 )
@@ -36,7 +34,7 @@ class EventLayerInline(admin.TabularInline):
 
 class EventSeriesDateInline(admin.TabularInline):
     model = EventSeriesDate
-    extra = 0
+    extra = 1
     fields = ["occurrence_date", "display_order"]
 
 
@@ -126,6 +124,7 @@ class TaxonomyTermAdmin(SortOrderHelpTextMixin, admin.ModelAdmin):
 
 @admin.register(EventSeries)
 class EventSeriesAdmin(admin.ModelAdmin):
+    form = EventSeriesAdminForm
     list_display = [
         "name",
         "series_mode",
@@ -135,53 +134,76 @@ class EventSeriesAdmin(admin.ModelAdmin):
         "created_at",
     ]
     search_fields = ["name"]
-    readonly_fields = ["id", "created_at", "updated_at"]
-    autocomplete_fields = ["campaign", "event_type", "default_context", "created_by"]
+    readonly_fields = ["id", "created_by", "created_at", "updated_at"]
+    autocomplete_fields = ["campaign", "default_context"]
     inlines = [EventSeriesDateInline]
-    fieldsets = (
-        (
-            None,
-            {
-                "fields": (
-                    "id",
-                    "campaign",
-                    "event_type",
-                    "created_by",
-                    "name",
-                    "default_context",
-                    "series_mode",
-                )
-            },
-        ),
-        (
-            "Recurrence",
-            {
-                "fields": (
-                    "recurrence_type",
-                    "start_date",
-                    "end_date",
-                    "occurrence_count",
-                    "interval",
-                    "start_time",
-                    "end_time",
-                    "timezone",
-                    "by_weekday",
-                    "monthly_rule_type",
-                    "day_of_month",
-                    "week_of_month",
-                    "weekday_of_month",
-                    "notes",
-                )
-            },
-        ),
-        ("Timestamps", {"fields": ("created_at", "updated_at")}),
-    )
+
+    def get_form(self, request, obj=None, change=False, **kwargs):
+        base_form = super().get_form(request, obj, change=change, **kwargs)
+
+        class RequestAwareEventSeriesAdminForm(base_form):
+            def __init__(self, *args, **inner_kwargs):
+                inner_kwargs.setdefault("created_by_user", request.user)
+                super().__init__(*args, **inner_kwargs)
+
+        return RequestAwareEventSeriesAdminForm
+
+    def get_fieldsets(self, request, obj=None):
+        fieldsets = [
+            (
+                None,
+                {
+                    "fields": (
+                        "campaign",
+                        "event_type",
+                        "name",
+                        "default_context",
+                        "series_mode",
+                    )
+                },
+            ),
+            (
+                "Recurrence",
+                {
+                    "classes": ("events-series-recurrence",),
+                    "fields": (
+                        "recurrence_type",
+                        "start_date",
+                        "end_date",
+                        "occurrence_count",
+                        "interval",
+                        "start_time",
+                        "end_time",
+                        "timezone",
+                        "by_weekday",
+                        "monthly_rule_type",
+                        "day_of_month",
+                        "week_of_month",
+                        "weekday_of_month",
+                        "notes",
+                    ),
+                },
+            ),
+        ]
+        if obj and not obj._state.adding:
+            fieldsets.append(("Metadata", {"fields": ("id", "created_by")}))
+            fieldsets.append(("Timestamps", {"fields": ("created_at", "updated_at")}))
+        return fieldsets
+
+    def save_model(self, request, obj, form, change):
+        if obj.created_by_id is None:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+    class Media:
+        js = ("events/js/admin_events.js",)
 
 
 @admin.register(Event)
 class EventAdmin(GISModelAdmin):
     """Admin interface for Event with map widget for location."""
 
+    form = EventAdminForm
     list_display = [
         "title",
         "campaign",
@@ -195,32 +217,80 @@ class EventAdmin(GISModelAdmin):
     ]
     list_filter = ["campaign", "event_type", "location_mode", "status", "visibility", "start_datetime"]
     search_fields = ["title", "description"]
-    readonly_fields = ["id", "created_at", "updated_at"]
-    autocomplete_fields = ["campaign", "organizer", "context", "event_type", "series"]
+    readonly_fields = [
+        "id",
+        "occurrence_index",
+        "is_exception",
+        "original_start_datetime",
+        "created_at",
+        "updated_at",
+    ]
+    autocomplete_fields = ["campaign", "organizer", "context", "series"]
     inlines = [EventLayerInline]
     date_hierarchy = "start_datetime"
 
-    fieldsets = (
-        (None, {"fields": ("id", "campaign", "event_type", "series", "title", "description")}),
-        ("Schedule", {"fields": ("start_datetime", "end_datetime")}),
-        (
-            "Delivery",
-            {
-                "fields": (
-                    "location_mode",
-                    "location",
-                    "online_url",
-                    "online_platform",
-                    "access_notes",
+    def get_fieldsets(self, request, obj=None):
+        fieldsets = [
+            (None, {"fields": ("campaign", "event_type", "series", "title", "description")}),
+            ("Schedule", {"fields": ("start_datetime", "end_datetime")}),
+            (
+                "Delivery",
+                {
+                    "classes": ("events-location-section",),
+                    "fields": (
+                        "location_mode",
+                        "location",
+                        "online_url",
+                        "online_platform",
+                        "access_notes",
+                    ),
+                },
+            ),
+            ("Provider", {"fields": ("provider_name", "provider_url", "provider_contact")}),
+            (
+                "Public Health Details",
+                {
+                    "classes": ("events-profile-section", "events-profile-public_health"),
+                    "fields": (
+                        "public_health_insurance_eligible",
+                        "public_health_referral_required",
+                    ),
+                },
+            ),
+            (
+                "Sports Details",
+                {
+                    "classes": ("events-profile-section", "events-profile-sports"),
+                    "fields": (
+                        "sports_sport_name",
+                        "sports_skill_level",
+                    ),
+                },
+            ),
+            (
+                "Culture Details",
+                {
+                    "classes": ("events-profile-section", "events-profile-culture"),
+                    "fields": (
+                        "culture_format_label",
+                        "culture_age_rating",
+                    ),
+                },
+            ),
+            ("Content", {"fields": ("context",)}),
+            ("Settings", {"fields": ("status", "visibility", "organizer")}),
+        ]
+
+        if obj and not obj._state.adding:
+            fieldsets.append(
+                (
+                    "Series Metadata",
+                    {"fields": ("occurrence_index", "is_exception", "original_start_datetime")},
                 )
-            },
-        ),
-        ("Provider", {"fields": ("provider_name", "provider_url", "provider_contact")}),
-        ("Series Metadata", {"fields": ("occurrence_index", "is_exception", "original_start_datetime")}),
-        ("Content", {"fields": ("context",)}),
-        ("Settings", {"fields": ("status", "visibility", "organizer")}),
-        ("Timestamps", {"fields": ("created_at", "updated_at")}),
-    )
+            )
+            fieldsets.append(("Timestamps", {"fields": ("id", "created_at", "updated_at")}))
+
+        return fieldsets
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related(
@@ -230,6 +300,13 @@ class EventAdmin(GISModelAdmin):
             "organizer",
         )
 
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        form.save_profile(obj)
+
+    class Media:
+        js = ("events/js/admin_events.js",)
+
 
 @admin.register(EventTerm)
 class EventTermAdmin(admin.ModelAdmin):
@@ -238,24 +315,3 @@ class EventTermAdmin(admin.ModelAdmin):
     search_fields = ["event__title", "term__label", "term__code", "term__dimension__label"]
     readonly_fields = ["id", "created_at", "updated_at"]
     autocomplete_fields = ["event", "term"]
-
-
-class EventProfileAdmin(admin.ModelAdmin):
-    readonly_fields = ["created_at", "updated_at"]
-    autocomplete_fields = ["event"]
-    search_fields = ["event__title"]
-
-
-@admin.register(PublicHealthEventProfile)
-class PublicHealthEventProfileAdmin(EventProfileAdmin):
-    list_display = ["event", "insurance_eligible", "referral_required", "created_at"]
-
-
-@admin.register(SportsEventProfile)
-class SportsEventProfileAdmin(EventProfileAdmin):
-    list_display = ["event", "sport_name", "skill_level", "created_at"]
-
-
-@admin.register(CultureEventProfile)
-class CultureEventProfileAdmin(EventProfileAdmin):
-    list_display = ["event", "format_label", "age_rating", "created_at"]
