@@ -21,9 +21,14 @@ from .models import (
     VALID_WEEKDAYS,
 )
 from .services import (
+    EVENT_TEMPLATE_FIELDS,
     KEEP_EXISTING_TERMS,
     build_occurrence_specs,
     create_occurrence_events,
+    get_base_template_event,
+    orchestrate_series_create,
+    orchestrate_series_update,
+    persist_explicit_dates,
     serialize_occurrence_events,
     sync_occurrence_events,
 )
@@ -48,22 +53,6 @@ EVENT_SERIES_FIELDS = {
     "weekday_of_month",
     "by_weekday",
     "notes",
-}
-
-EVENT_TEMPLATE_FIELDS = {
-    "title",
-    "description",
-    "location_mode",
-    "location",
-    "online_url",
-    "online_platform",
-    "access_notes",
-    "provider_name",
-    "provider_url",
-    "provider_contact",
-    "status",
-    "visibility",
-    "context",
 }
 
 EXCEPTION_TRIGGER_FIELDS = {
@@ -625,17 +614,17 @@ class EventSeriesWriteSerializer(TaxonomyTermResolutionMixin, serializers.Serial
         series_attrs = validated_data.pop("_series_attrs")
         explicit_dates = validated_data.pop("_explicit_dates")
         event_template = validated_data.pop("_event_template")
-        occurrences = validated_data.pop("_occurrences")
+        validated_data.pop("_occurrences")
+        validated_data.pop("_template_event", None)
 
         with transaction.atomic():
             series = EventSeries.objects.create(
                 **series_attrs,
                 created_by=self.context["request"].user,
             )
-            self._persist_explicit_dates(series, explicit_dates)
-            created_events = create_occurrence_events(
+            persist_explicit_dates(series, explicit_dates)
+            created_events = orchestrate_series_create(
                 series=series,
-                occurrences=occurrences,
                 event_template=event_template,
                 organizer=self.context["request"].user,
                 taxonomy_terms=taxonomy_terms,
@@ -649,20 +638,18 @@ class EventSeriesWriteSerializer(TaxonomyTermResolutionMixin, serializers.Serial
         series_attrs = validated_data.pop("_series_attrs")
         explicit_dates = validated_data.pop("_explicit_dates")
         event_template = validated_data.pop("_event_template")
-        occurrences = validated_data.pop("_occurrences")
-        template_event = self._base_template_event()
+        validated_data.pop("_occurrences")
+        validated_data.pop("_template_event", None)
 
         for field, value in series_attrs.items():
             setattr(instance, field, value)
 
         with transaction.atomic():
             instance.save()
-            self._persist_explicit_dates(instance, explicit_dates)
-            sync_result = sync_occurrence_events(
+            persist_explicit_dates(instance, explicit_dates)
+            sync_result = orchestrate_series_update(
                 series=instance,
-                occurrences=occurrences,
                 event_template=event_template,
-                template_event=template_event,
                 organizer=self.context["request"].user,
                 taxonomy_terms=taxonomy_terms,
             )
@@ -779,37 +766,10 @@ class EventSeriesWriteSerializer(TaxonomyTermResolutionMixin, serializers.Serial
     def _base_template_event(self):
         if self.instance is None:
             return None
-        base_event = (
-            self.instance.events.filter(is_exception=False)
-            .order_by("occurrence_index", "start_datetime")
-            .prefetch_related("event_terms__term")
-            .first()
-        )
-        if base_event is not None:
-            return base_event
-        return (
-            self.instance.events.order_by("occurrence_index", "start_datetime")
-            .prefetch_related("event_terms__term")
-            .first()
-        )
+        return get_base_template_event(self.instance)
 
     def _persist_explicit_dates(self, series, explicit_dates):
-        if series.series_mode != EventSeries.SeriesMode.MANUAL_BATCH:
-            if series.pk:
-                series.dates.all().delete()
-            return
-
-        series.dates.all().delete()
-        EventSeriesDate.objects.bulk_create(
-            [
-                EventSeriesDate(
-                    series=series,
-                    occurrence_date=occurrence_date,
-                    display_order=index,
-                )
-                for index, occurrence_date in enumerate(explicit_dates, start=1)
-            ]
-        )
+        persist_explicit_dates(series, explicit_dates)
 
 
 # =============================================================================

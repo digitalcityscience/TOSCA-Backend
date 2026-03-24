@@ -371,3 +371,449 @@ def test_event_term_admin_form_rejects_second_term_in_single_select_dimension(
 
     assert not form.is_valid()
     assert "term" in form.errors
+
+
+# =============================================================================
+# Task 2B.15: Admin Event-Series Authoring and Occurrence Generation
+# =============================================================================
+
+
+def _build_series_admin_form_data(
+    *,
+    campaign,
+    event_type,
+    admin_user,
+    series_mode=EventSeries.SeriesMode.RECURRING,
+    recurrence_type=EventSeries.RecurrenceType.DAILY,
+    title="Admin Series Event",
+    location_mode=Event.LocationMode.ONLINE,
+    location="",
+    online_url="https://example.com/meet",
+    online_platform="Zoom",
+    status=Event.Status.DRAFT,
+    by_weekday=None,
+    end_date=None,
+    occurrence_count="3",
+    **overrides,
+):
+    """Build a complete admin form data dict for EventSeriesAdminForm."""
+    start_date = timezone.localdate() + timedelta(days=5)
+    data = {
+        "campaign": str(campaign.id),
+        "event_type": str(event_type.id),
+        "name": "Test Admin Series",
+        "default_context": "",
+        "series_mode": series_mode,
+        "recurrence_type": recurrence_type,
+        "start_date": str(start_date),
+        "end_date": str(end_date) if end_date else "",
+        "occurrence_count": occurrence_count,
+        "interval": "1",
+        "start_time": "09:00:00",
+        "end_time": "10:00:00",
+        "timezone": "UTC",
+        "by_weekday": by_weekday or [],
+        "monthly_rule_type": "",
+        "day_of_month": "",
+        "week_of_month": "",
+        "weekday_of_month": "",
+        "notes": "",
+        # Event template fields
+        "title": title,
+        "description": "Admin-generated event",
+        "location_mode": location_mode,
+        "location": location,
+        "online_url": online_url,
+        "online_platform": online_platform,
+        "access_notes": "",
+        "provider_name": "",
+        "provider_url": "",
+        "provider_contact": "",
+        "status": status,
+        "visibility": Event.Visibility.PUBLIC,
+        "context": "",
+        # Profile fields
+        "public_health_insurance_eligible": "",
+        "public_health_referral_required": "",
+        "sports_sport_name": "",
+        "sports_skill_level": "",
+        "culture_format_label": "",
+        "culture_age_rating": "",
+        # Taxonomy
+        "taxonomy_term_ids": [],
+        # Inline formset management data
+        "dates-TOTAL_FORMS": "0",
+        "dates-INITIAL_FORMS": "0",
+        "dates-MIN_NUM_FORMS": "0",
+        "dates-MAX_NUM_FORMS": "1000",
+    }
+    data.update(overrides)
+    return data
+
+
+@pytest.mark.django_db
+def test_event_series_admin_recurring_create_generates_events(admin_request, admin_user):
+    """Admin can create a daily recurring series and generate occurrence events."""
+    campaign = Campaign.objects.create(title="Admin Recurring Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(code="admin-recur", label="Admin Recurring")
+    model_admin = admin.site._registry[EventSeries]
+
+    data = _build_series_admin_form_data(
+        campaign=campaign,
+        event_type=event_type,
+        admin_user=admin_user,
+    )
+
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+
+    assert form.is_valid(), form.errors
+    series = form.save(commit=False)
+    model_admin.save_model(admin_request, series, form, change=False)
+    # Simulate save_related with empty formsets
+    model_admin.save_related(admin_request, form, [], change=False)
+
+    events = Event.objects.filter(series=series)
+    assert events.count() == 3
+    for event in events:
+        assert event.title == "Admin Series Event"
+        assert event.series_id == series.id
+        assert event.occurrence_index is not None
+        assert event.original_start_datetime is not None
+
+
+@pytest.mark.django_db
+def test_event_series_admin_manual_batch_create_generates_events(admin_request, admin_user):
+    """Manual-batch admin create generates one event per inline explicit date."""
+    campaign = Campaign.objects.create(title="Admin Batch Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(code="admin-batch", label="Admin Batch")
+
+    from tosca_api.apps.events.models import EventSeriesDate
+    model_admin = admin.site._registry[EventSeries]
+
+    start_date = timezone.localdate() + timedelta(days=5)
+    data = _build_series_admin_form_data(
+        campaign=campaign,
+        event_type=event_type,
+        admin_user=admin_user,
+        series_mode=EventSeries.SeriesMode.MANUAL_BATCH,
+        recurrence_type="",
+        occurrence_count="",
+    )
+
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+    assert form.is_valid(), form.errors
+
+    series = form.save(commit=False)
+    model_admin.save_model(admin_request, series, form, change=False)
+
+    # Create inline dates manually (simulating formset save)
+    date1 = start_date + timedelta(days=1)
+    date2 = start_date + timedelta(days=3)
+    EventSeriesDate.objects.create(series=series, occurrence_date=date1, display_order=1)
+    EventSeriesDate.objects.create(series=series, occurrence_date=date2, display_order=2)
+
+    model_admin.save_related(admin_request, form, [], change=False)
+
+    events = Event.objects.filter(series=series).order_by("occurrence_index")
+    assert events.count() == 2
+    assert events[0].start_datetime.date() == date1
+    assert events[1].start_datetime.date() == date2
+
+
+@pytest.mark.django_db
+def test_event_series_admin_update_syncs_future_occurrences(admin_request, admin_user):
+    """Admin update changes future non-exception event titles."""
+    campaign = Campaign.objects.create(title="Admin Sync Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(code="admin-sync", label="Admin Sync")
+    model_admin = admin.site._registry[EventSeries]
+
+    # Create series via admin
+    data = _build_series_admin_form_data(
+        campaign=campaign,
+        event_type=event_type,
+        admin_user=admin_user,
+    )
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+    assert form.is_valid(), form.errors
+    series = form.save(commit=False)
+    model_admin.save_model(admin_request, series, form, change=False)
+    model_admin.save_related(admin_request, form, [], change=False)
+    assert Event.objects.filter(series=series).count() == 3
+
+    # Now update with new title
+    data["title"] = "Updated Title"
+    form_class = model_admin.get_form(admin_request, obj=series)
+    form = form_class(data=data, instance=series)
+    assert form.is_valid(), form.errors
+    form.save(commit=False)  # creates save_m2m for save_related
+    model_admin.save_model(admin_request, series, form, change=True)
+    model_admin.save_related(admin_request, form, [], change=True)
+
+    future_events = Event.objects.filter(series=series, is_exception=False)
+    for event in future_events:
+        assert event.title == "Updated Title"
+
+
+@pytest.mark.django_db
+def test_event_series_admin_update_preserves_exceptions(admin_request, admin_user):
+    """Admin update preserves exception occurrences during sync."""
+    campaign = Campaign.objects.create(title="Admin Exception Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(code="admin-exc", label="Admin Exception")
+    model_admin = admin.site._registry[EventSeries]
+
+    # Create series
+    data = _build_series_admin_form_data(
+        campaign=campaign,
+        event_type=event_type,
+        admin_user=admin_user,
+    )
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+    assert form.is_valid(), form.errors
+    series = form.save(commit=False)
+    model_admin.save_model(admin_request, series, form, change=False)
+    model_admin.save_related(admin_request, form, [], change=False)
+
+    # Mark one event as exception with different title
+    exception_event = Event.objects.filter(series=series).first()
+    exception_event.title = "Exception Title"
+    exception_event.is_exception = True
+    Event.objects.filter(pk=exception_event.pk).update(
+        title="Exception Title", is_exception=True
+    )
+
+    # Update series
+    data["title"] = "Bulk Updated Title"
+    form_class = model_admin.get_form(admin_request, obj=series)
+    form = form_class(data=data, instance=series)
+    assert form.is_valid(), form.errors
+    form.save(commit=False)  # creates save_m2m for save_related
+    model_admin.save_model(admin_request, series, form, change=True)
+    model_admin.save_related(admin_request, form, [], change=True)
+
+    # Exception should be preserved
+    exception_event.refresh_from_db()
+    assert exception_event.title == "Exception Title"
+    assert exception_event.is_exception is True
+
+
+@pytest.mark.django_db
+def test_event_series_admin_resave_no_duplicate_occurrences(admin_request, admin_user):
+    """Re-saving an existing generated series should not create duplicate events."""
+    campaign = Campaign.objects.create(title="Admin Dedup Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(code="admin-dedup", label="Admin Dedup")
+    model_admin = admin.site._registry[EventSeries]
+
+    # Create series
+    data = _build_series_admin_form_data(
+        campaign=campaign,
+        event_type=event_type,
+        admin_user=admin_user,
+    )
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+    assert form.is_valid(), form.errors
+    series = form.save(commit=False)
+    model_admin.save_model(admin_request, series, form, change=False)
+    model_admin.save_related(admin_request, form, [], change=False)
+    original_count = Event.objects.filter(series=series).count()
+    assert original_count == 3
+
+    # Re-save without changes
+    form_class = model_admin.get_form(admin_request, obj=series)
+    form = form_class(data=data, instance=series)
+    assert form.is_valid(), form.errors
+    form.save(commit=False)  # creates save_m2m for save_related
+    model_admin.save_model(admin_request, series, form, change=True)
+    model_admin.save_related(admin_request, form, [], change=True)
+
+    assert Event.objects.filter(series=series).count() == original_count
+
+
+@pytest.mark.django_db
+def test_event_series_admin_rejects_invalid_location_geojson(admin_request, admin_user):
+    """Admin form rejects invalid GeoJSON in location field."""
+    campaign = Campaign.objects.create(title="Admin Invalid GeoJSON Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(code="admin-geojson", label="Admin GeoJSON")
+    model_admin = admin.site._registry[EventSeries]
+
+    data = _build_series_admin_form_data(
+        campaign=campaign,
+        event_type=event_type,
+        admin_user=admin_user,
+        location_mode=Event.LocationMode.PHYSICAL,
+        location="not-valid-geojson",
+        online_url="",
+        online_platform="",
+    )
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+
+    assert not form.is_valid()
+    assert "location" in form.errors
+
+
+@pytest.mark.django_db
+def test_event_series_admin_rejects_missing_template_title(admin_request, admin_user):
+    """Admin form rejects empty title for event generation."""
+    campaign = Campaign.objects.create(title="Admin No Title Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(code="admin-notitle", label="Admin No Title")
+    model_admin = admin.site._registry[EventSeries]
+
+    data = _build_series_admin_form_data(
+        campaign=campaign,
+        event_type=event_type,
+        admin_user=admin_user,
+        title="",
+    )
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+
+    assert not form.is_valid()
+    assert "title" in form.errors
+
+
+@pytest.mark.django_db
+def test_event_series_admin_rejects_missing_location_mode(admin_request, admin_user):
+    """Admin form rejects empty location_mode for event generation."""
+    campaign = Campaign.objects.create(title="Admin No LocMode Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(code="admin-nolocmode", label="Admin No Loc")
+    model_admin = admin.site._registry[EventSeries]
+
+    data = _build_series_admin_form_data(
+        campaign=campaign,
+        event_type=event_type,
+        admin_user=admin_user,
+        location_mode="",
+    )
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+
+    assert not form.is_valid()
+    assert "location_mode" in form.errors
+
+
+@pytest.mark.django_db
+def test_event_series_admin_rollback_on_template_failure(admin_request, admin_user):
+    """Physical mode with no location should block form validation."""
+    campaign = Campaign.objects.create(title="Admin Rollback Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(code="admin-rollback", label="Admin Rollback")
+    model_admin = admin.site._registry[EventSeries]
+
+    data = _build_series_admin_form_data(
+        campaign=campaign,
+        event_type=event_type,
+        admin_user=admin_user,
+        location_mode=Event.LocationMode.PHYSICAL,
+        location="",
+        online_url="",
+        online_platform="",
+    )
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+
+    assert not form.is_valid()
+    # Should fail due to missing geometry for physical events
+    assert Event.objects.filter(campaign=campaign).count() == 0
+    assert EventSeries.objects.filter(campaign=campaign).count() == 0
+
+
+@pytest.mark.django_db
+def test_event_series_admin_campaign_immutable_after_occurrences(admin_request, admin_user):
+    """Campaign cannot be changed after occurrences exist."""
+    campaign1 = Campaign.objects.create(title="Original Campaign", created_by=admin_user)
+    campaign2 = Campaign.objects.create(title="New Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(code="admin-immut", label="Admin Immut")
+    model_admin = admin.site._registry[EventSeries]
+
+    # Create series with events
+    data = _build_series_admin_form_data(
+        campaign=campaign1,
+        event_type=event_type,
+        admin_user=admin_user,
+    )
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+    assert form.is_valid(), form.errors
+    series = form.save(commit=False)
+    model_admin.save_model(admin_request, series, form, change=False)
+    model_admin.save_related(admin_request, form, [], change=False)
+    assert Event.objects.filter(series=series).count() == 3
+
+    # Try to change campaign
+    data["campaign"] = str(campaign2.id)
+    form_class = model_admin.get_form(admin_request, obj=series)
+    form = form_class(data=data, instance=series)
+
+    assert not form.is_valid()
+    assert "campaign" in form.errors
+
+
+@pytest.mark.django_db
+def test_event_series_admin_taxonomy_terms_applied(admin_request, admin_user):
+    """Taxonomy terms should be applied to generated events."""
+    campaign = Campaign.objects.create(title="Admin Taxonomy Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(code="admin-tax", label="Admin Taxonomy")
+    dimension = TaxonomyDimension.objects.create(
+        code="target-group", label="Target Group",
+        selection_mode=TaxonomyDimension.SelectionMode.MULTIPLE,
+    )
+    term1 = TaxonomyTerm.objects.create(dimension=dimension, code="youth", label="Youth")
+    term2 = TaxonomyTerm.objects.create(dimension=dimension, code="seniors", label="Seniors")
+    model_admin = admin.site._registry[EventSeries]
+
+    data = _build_series_admin_form_data(
+        campaign=campaign,
+        event_type=event_type,
+        admin_user=admin_user,
+        taxonomy_term_ids=[str(term1.id), str(term2.id)],
+    )
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+    assert form.is_valid(), form.errors
+    series = form.save(commit=False)
+    model_admin.save_model(admin_request, series, form, change=False)
+    model_admin.save_related(admin_request, form, [], change=False)
+
+    events = Event.objects.filter(series=series)
+    for event in events:
+        event_term_ids = set(EventTerm.objects.filter(event=event).values_list("term_id", flat=True))
+        assert term1.id in event_term_ids
+        assert term2.id in event_term_ids
+
+
+@pytest.mark.django_db
+def test_event_series_admin_profile_fields_applied(admin_request, admin_user):
+    """Profile extension fields should apply to generated events."""
+    campaign = Campaign.objects.create(title="Admin Profile Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(
+        code="admin-ph",
+        label="Admin Public Health",
+        profile_mode=EventType.ProfileMode.EXTENSION,
+        profile_key="public_health",
+    )
+    model_admin = admin.site._registry[EventSeries]
+
+    data = _build_series_admin_form_data(
+        campaign=campaign,
+        event_type=event_type,
+        admin_user=admin_user,
+        public_health_insurance_eligible="on",
+        public_health_referral_required="",
+    )
+    form_class = model_admin.get_form(admin_request)
+    form = form_class(data=data)
+    assert form.is_valid(), form.errors
+    series = form.save(commit=False)
+    model_admin.save_model(admin_request, series, form, change=False)
+    model_admin.save_related(admin_request, form, [], change=False)
+
+    events = Event.objects.filter(series=series)
+    assert events.count() == 3
+    for event in events:
+        assert event.public_health_profile.insurance_eligible is True
+        assert event.public_health_profile.referral_required is False
+

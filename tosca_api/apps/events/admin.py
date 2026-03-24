@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
+from django.db import transaction
 
 from .forms import EventAdminForm, EventSeriesAdminForm
 from .models import (
@@ -11,6 +12,11 @@ from .models import (
     EventType,
     TaxonomyDimension,
     TaxonomyTerm,
+)
+from .services import (
+    orchestrate_series_create,
+    orchestrate_series_update,
+    serialize_occurrence_events,
 )
 
 
@@ -184,6 +190,83 @@ class EventSeriesAdmin(admin.ModelAdmin):
                     ),
                 },
             ),
+            (
+                "Event Template",
+                {
+                    "description": (
+                        "These fields define the event that will be generated "
+                        "for each occurrence in the series."
+                    ),
+                    "fields": (
+                        "title",
+                        "description",
+                        "status",
+                        "visibility",
+                    ),
+                },
+            ),
+            (
+                "Event Delivery",
+                {
+                    "classes": ("events-location-section",),
+                    "fields": (
+                        "location_mode",
+                        "location",
+                        "online_url",
+                        "online_platform",
+                        "access_notes",
+                    ),
+                },
+            ),
+            (
+                "Event Provider",
+                {
+                    "fields": (
+                        "provider_name",
+                        "provider_url",
+                        "provider_contact",
+                    ),
+                },
+            ),
+            (
+                "Public Health Details",
+                {
+                    "classes": ("events-profile-section", "events-profile-public_health"),
+                    "fields": (
+                        "public_health_insurance_eligible",
+                        "public_health_referral_required",
+                    ),
+                },
+            ),
+            (
+                "Sports Details",
+                {
+                    "classes": ("events-profile-section", "events-profile-sports"),
+                    "fields": (
+                        "sports_sport_name",
+                        "sports_skill_level",
+                    ),
+                },
+            ),
+            (
+                "Culture Details",
+                {
+                    "classes": ("events-profile-section", "events-profile-culture"),
+                    "fields": (
+                        "culture_format_label",
+                        "culture_age_rating",
+                    ),
+                },
+            ),
+            (
+                "Content & Taxonomy",
+                {
+                    "fields": (
+                        "context",
+                        "taxonomy_term_ids",
+                    ),
+                },
+            ),
         ]
         if obj and not obj._state.adding:
             fieldsets.append(("Metadata", {"fields": ("id", "created_by")}))
@@ -194,6 +277,36 @@ class EventSeriesAdmin(admin.ModelAdmin):
         if obj.created_by_id is None:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
+
+    def save_related(self, request, form, formsets, change):
+        """Run occurrence generation/sync after inline dates are saved."""
+        super().save_related(request, form, formsets, change)
+
+        series = form.instance
+        template_data = getattr(form, "_template_data", None)
+        taxonomy_terms = getattr(form, "_taxonomy_terms", [])
+        profile_data = getattr(form, "_profile_data", None)
+
+        if not template_data:
+            return
+
+        with transaction.atomic():
+            if not change:
+                orchestrate_series_create(
+                    series=series,
+                    event_template=template_data,
+                    organizer=request.user,
+                    taxonomy_terms=taxonomy_terms,
+                    profile_data=profile_data,
+                )
+            else:
+                orchestrate_series_update(
+                    series=series,
+                    event_template=template_data,
+                    organizer=request.user,
+                    taxonomy_terms=taxonomy_terms,
+                    profile_data=profile_data,
+                )
 
     class Media:
         js = ("events/js/admin_events.js",)

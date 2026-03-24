@@ -4,14 +4,41 @@ from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Event, EventSeries, EventTerm, TaxonomyTerm
+from .models import (
+    CultureEventProfile,
+    Event,
+    EventSeries,
+    EventSeriesDate,
+    EventTerm,
+    EventType,
+    PublicHealthEventProfile,
+    SportsEventProfile,
+    TaxonomyTerm,
+)
 
 KEEP_EXISTING_TERMS = object()
+
+EVENT_TEMPLATE_FIELDS = frozenset({
+    "title",
+    "description",
+    "location_mode",
+    "location",
+    "online_url",
+    "online_platform",
+    "access_notes",
+    "provider_name",
+    "provider_url",
+    "provider_contact",
+    "status",
+    "visibility",
+    "context",
+})
 
 WEEKDAY_TO_INDEX = {
     "monday": 0,
@@ -368,3 +395,199 @@ def _can_continue(existing_dates: list[date], candidate: date, series: EventSeri
     if series.occurrence_count and len(existing_dates) >= series.occurrence_count:
         return False
     return True
+
+
+# =============================================================================
+# Orchestration functions — shared between admin and API
+# =============================================================================
+
+
+def get_base_template_event(series: EventSeries) -> Event | None:
+    """Return the first non-exception occurrence to use as a template for updates.
+
+    Falls back to the first occurrence of any kind if no non-exception exists.
+    Returns None for series with no occurrences yet.
+    """
+    base_event = (
+        series.events.filter(is_exception=False)
+        .order_by("occurrence_index", "start_datetime")
+        .prefetch_related("event_terms__term")
+        .first()
+    )
+    if base_event is not None:
+        return base_event
+    return (
+        series.events.order_by("occurrence_index", "start_datetime")
+        .prefetch_related("event_terms__term")
+        .first()
+    )
+
+
+def validate_event_template(
+    *,
+    series: EventSeries,
+    event_template: dict[str, Any],
+    organizer,
+    explicit_dates: list[date] | None = None,
+) -> list[OccurrenceSpec]:
+    """Validate series + template and return occurrence specs.
+
+    Raises ``ValidationError`` if the series recurrence rules, event template
+    fields, or combined exemplar event fail validation.
+    """
+    series.clean()
+
+    try:
+        occurrences = build_occurrence_specs(series, explicit_dates=explicit_dates)
+    except ZoneInfoNotFoundError as exc:
+        raise ValidationError({"timezone": f"Unknown timezone: {exc}"}) from exc
+
+    if not occurrences:
+        raise ValidationError(
+            {"explicit_dates": "This series definition produces no occurrences."}
+        )
+
+    exemplar_event = Event(
+        campaign=series.campaign,
+        event_type=series.event_type,
+        organizer=organizer,
+        series=series if series.pk else None,
+        occurrence_index=occurrences[0].occurrence_index,
+        original_start_datetime=occurrences[0].original_start_datetime,
+        start_datetime=occurrences[0].start_datetime,
+        end_datetime=occurrences[0].end_datetime,
+        **event_template,
+    )
+    exemplar_event.clean()
+
+    return occurrences
+
+
+def orchestrate_series_create(
+    *,
+    series: EventSeries,
+    event_template: dict[str, Any],
+    organizer,
+    taxonomy_terms: list[TaxonomyTerm] | None = None,
+    explicit_dates: list[date] | None = None,
+    profile_data: dict[str, Any] | None = None,
+) -> list[Event]:
+    """Generate occurrence events for a newly created series.
+
+    The series must already be saved (have a PK). Explicit dates should
+    already be persisted as ``EventSeriesDate`` rows for manual-batch series.
+    """
+    occurrences = build_occurrence_specs(series, explicit_dates=explicit_dates)
+    created_events = create_occurrence_events(
+        series=series,
+        occurrences=occurrences,
+        event_template=event_template,
+        organizer=organizer,
+        taxonomy_terms=taxonomy_terms or [],
+    )
+    if profile_data:
+        apply_profiles_to_events(
+            events=created_events,
+            event_type=series.event_type,
+            profile_data=profile_data,
+        )
+    return created_events
+
+
+def orchestrate_series_update(
+    *,
+    series: EventSeries,
+    event_template: dict[str, Any],
+    organizer,
+    taxonomy_terms: list[TaxonomyTerm] | object = KEEP_EXISTING_TERMS,
+    explicit_dates: list[date] | None = None,
+    profile_data: dict[str, Any] | None = None,
+) -> SyncResult:
+    """Synchronize occurrence events for an existing generated series.
+
+    The series must already be saved. Explicit dates should already be
+    persisted as ``EventSeriesDate`` rows for manual-batch series.
+    """
+    template_event = get_base_template_event(series)
+    occurrences = build_occurrence_specs(series, explicit_dates=explicit_dates)
+    sync_result = sync_occurrence_events(
+        series=series,
+        occurrences=occurrences,
+        event_template=event_template,
+        template_event=template_event,
+        organizer=organizer,
+        taxonomy_terms=taxonomy_terms,
+    )
+    if profile_data:
+        non_exception_events = [
+            event for event in sync_result.events
+            if not event.is_exception
+        ]
+        apply_profiles_to_events(
+            events=non_exception_events,
+            event_type=series.event_type,
+            profile_data=profile_data,
+        )
+    return sync_result
+
+
+def apply_profiles_to_events(
+    events: list[Event],
+    event_type: EventType | None,
+    profile_data: dict[str, Any],
+) -> None:
+    """Create or update profile extension rows for each event based on event type."""
+    if not event_type or not events:
+        return
+
+    profile_key = (
+        event_type.profile_key
+        if event_type.profile_mode == EventType.ProfileMode.EXTENSION
+        else None
+    )
+    if not profile_key:
+        return
+
+    for event in events:
+        if profile_key == PublicHealthEventProfile.expected_profile_key:
+            profile, _ = PublicHealthEventProfile.objects.get_or_create(event=event)
+            profile.insurance_eligible = profile_data.get("insurance_eligible", False)
+            profile.referral_required = profile_data.get("referral_required", False)
+            profile.save()
+        elif profile_key == SportsEventProfile.expected_profile_key:
+            profile, _ = SportsEventProfile.objects.get_or_create(event=event)
+            profile.sport_name = profile_data.get("sport_name", "")
+            profile.skill_level = profile_data.get("skill_level", "")
+            profile.save()
+        elif profile_key == CultureEventProfile.expected_profile_key:
+            profile, _ = CultureEventProfile.objects.get_or_create(event=event)
+            profile.format_label = profile_data.get("format_label", "")
+            profile.age_rating = profile_data.get("age_rating", "")
+            profile.save()
+
+
+def persist_explicit_dates(
+    series: EventSeries,
+    explicit_dates: list[date],
+) -> None:
+    """Persist explicit dates for a manual-batch series.
+
+    Replaces any existing dates. For non-manual-batch series, clears
+    any stale date rows.
+    """
+    if series.series_mode != EventSeries.SeriesMode.MANUAL_BATCH:
+        if series.pk:
+            series.dates.all().delete()
+        return
+
+    series.dates.all().delete()
+    EventSeriesDate.objects.bulk_create(
+        [
+            EventSeriesDate(
+                series=series,
+                occurrence_date=occurrence_date,
+                display_order=index,
+            )
+            for index, occurrence_date in enumerate(explicit_dates, start=1)
+        ]
+    )
