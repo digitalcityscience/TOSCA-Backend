@@ -19,6 +19,7 @@ from .serializers import (
     GeometryFilterSerializer,
 )
 from .services import serialize_occurrence_specs
+from .services import get_base_template_event
 
 
 class EventCursorPagination(CursorPagination):
@@ -249,6 +250,21 @@ class EventSeriesViewSet(
         series = serializer.save()
         response_serializer = EventSeriesResponseSerializer(series)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+    def retrieve(self, request, *args, **kwargs):
+        series = self.get_object()
+        if get_base_template_event(series) is None:
+            return Response(
+                {
+                    "detail": (
+                        "This series has no usable base occurrence/template for taxonomy hydration."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        response_serializer = EventSeriesResponseSerializer(series)
+        return Response(response_serializer.data)
 
     def partial_update(self, request, *args, **kwargs):
         series = self.get_object()

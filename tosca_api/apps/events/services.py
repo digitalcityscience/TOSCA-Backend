@@ -245,10 +245,16 @@ def serialize_occurrence_events(events: list[Event]) -> list[dict[str, Any]]:
 
 def resolve_taxonomy_assignments(
     taxonomy_assignments: list[dict[str, Any]],
+    *,
+    allow_inactive_dimension_ids: set[Any] | None = None,
+    allow_inactive_term_ids: set[Any] | None = None,
 ) -> list[TaxonomyTerm]:
     """Validate grouped taxonomy assignments and return the resolved terms."""
     if not taxonomy_assignments:
         return []
+
+    allow_inactive_dimension_ids = allow_inactive_dimension_ids or set()
+    allow_inactive_term_ids = allow_inactive_term_ids or set()
 
     errors: list[str] = []
     dimension_ids = [assignment["dimension_id"] for assignment in taxonomy_assignments]
@@ -277,7 +283,7 @@ def resolve_taxonomy_assignments(
     inactive_dimension_ids = [
         str(dimension.id)
         for dimension in dimension_map.values()
-        if not dimension.is_active
+        if not dimension.is_active and dimension.id not in allow_inactive_dimension_ids
     ]
     if inactive_dimension_ids:
         errors.append(
@@ -321,7 +327,7 @@ def resolve_taxonomy_assignments(
     inactive_term_ids = [
         str(term.id)
         for term in term_map.values()
-        if not term.is_active
+        if not term.is_active and term.id not in allow_inactive_term_ids
     ]
     if inactive_term_ids:
         errors.append(
@@ -381,6 +387,57 @@ def resolve_taxonomy_assignments(
         raise ValidationError({"taxonomy_assignments": errors})
 
     return resolved_terms
+
+
+def serialize_taxonomy_assignments(
+    taxonomy_terms: list[TaxonomyTerm],
+) -> list[dict[str, Any]]:
+    """Group taxonomy terms by dimension for read hydration."""
+    grouped_assignments: dict[Any, dict[str, Any]] = {}
+    ordered_terms = sorted(
+        taxonomy_terms,
+        key=lambda term: (
+            term.dimension.sort_order,
+            term.dimension.label,
+            term.sort_order,
+            term.label,
+        ),
+    )
+
+    for term in ordered_terms:
+        group = grouped_assignments.setdefault(
+            term.dimension_id,
+            {
+                "dimension_id": term.dimension_id,
+                "dimension_code": term.dimension.code,
+                "dimension_label": term.dimension.label,
+                "selection_mode": term.dimension.selection_mode,
+                "term_ids": [],
+                "terms": [],
+            },
+        )
+        group["term_ids"].append(term.id)
+        group["terms"].append(
+            {
+                "id": term.id,
+                "code": term.code,
+                "label": term.label,
+                "parent_id": term.parent_id,
+                "is_active": term.is_active,
+            }
+        )
+
+    return list(grouped_assignments.values())
+
+
+def get_event_taxonomy_assignments(event: Event) -> list[dict[str, Any]]:
+    """Return grouped taxonomy assignments for an event."""
+    taxonomy_terms = list(
+        TaxonomyTerm.objects.select_related("dimension")
+        .filter(event_terms__event=event)
+        .distinct()
+    )
+    return serialize_taxonomy_assignments(taxonomy_terms)
 
 
 def _apply_occurrence_to_event(

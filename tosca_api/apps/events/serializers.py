@@ -22,6 +22,7 @@ from .services import (
     EVENT_TEMPLATE_FIELDS,
     KEEP_EXISTING_TERMS,
     build_occurrence_specs,
+    get_event_taxonomy_assignments,
     get_base_template_event,
     orchestrate_series_create,
     orchestrate_series_update,
@@ -133,6 +134,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
 
     context = serializers.SerializerMethodField()
     layers = serializers.SerializerMethodField()
+    taxonomy_assignments = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -160,6 +162,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "visibility",
             "organizer",
             "context",
+            "taxonomy_assignments",
             "layers",
             "created_at",
             "updated_at",
@@ -177,6 +180,10 @@ class EventDetailSerializer(serializers.ModelSerializer):
         if context is None:
             return None
         return EventGeoContextSerializer(context).data
+
+    def get_taxonomy_assignments(self, obj):
+        assignments = get_event_taxonomy_assignments(obj)
+        return TaxonomyAssignmentReadSerializer(assignments, many=True).data
 
 
 class EventGeoSerializer(GeoFeatureModelSerializer):
@@ -233,6 +240,27 @@ class TaxonomyAssignmentSerializer(serializers.Serializer):
         child=serializers.UUIDField(),
         allow_empty=False,
     )
+
+
+class TaxonomyAssignmentReadTermSerializer(serializers.Serializer):
+    """Hydrated taxonomy term payload for read responses."""
+
+    id = serializers.UUIDField()
+    code = serializers.CharField()
+    label = serializers.CharField()
+    parent_id = serializers.UUIDField(allow_null=True)
+    is_active = serializers.BooleanField()
+
+
+class TaxonomyAssignmentReadSerializer(serializers.Serializer):
+    """Grouped taxonomy assignment payload for read responses."""
+
+    dimension_id = serializers.UUIDField()
+    dimension_code = serializers.CharField()
+    dimension_label = serializers.CharField()
+    selection_mode = serializers.CharField()
+    term_ids = serializers.ListField(child=serializers.UUIDField())
+    terms = TaxonomyAssignmentReadTermSerializer(many=True)
 
 
 class TaxonomyAssignmentResolutionMixin:
@@ -386,6 +414,7 @@ class EventSeriesResponseSerializer(serializers.ModelSerializer):
     """Response serializer for event-series create and update operations."""
 
     occurrences = serializers.SerializerMethodField()
+    taxonomy_assignments = serializers.SerializerMethodField()
 
     class Meta:
         model = EventSeries
@@ -403,6 +432,7 @@ class EventSeriesResponseSerializer(serializers.ModelSerializer):
             "start_time",
             "end_time",
             "timezone",
+            "taxonomy_assignments",
             "occurrences",
         ]
         read_only_fields = fields
@@ -410,6 +440,13 @@ class EventSeriesResponseSerializer(serializers.ModelSerializer):
     def get_occurrences(self, obj):
         occurrences = getattr(obj, "_response_occurrences", [])
         return EventSeriesOccurrenceSerializer(occurrences, many=True).data
+
+    def get_taxonomy_assignments(self, obj):
+        base_event = get_base_template_event(obj)
+        if base_event is None:
+            return []
+        assignments = get_event_taxonomy_assignments(base_event)
+        return TaxonomyAssignmentReadSerializer(assignments, many=True).data
 
 
 class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.Serializer):

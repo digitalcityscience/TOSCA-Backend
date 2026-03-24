@@ -2,7 +2,13 @@ from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
 from django.db import transaction
 
-from .forms import EventAdminForm, EventSeriesAdminForm
+from .forms import (
+    EventAdminForm,
+    EventSeriesAdminForm,
+    build_taxonomy_dimension_form_fields,
+    get_taxonomy_dimensions_for_source,
+    taxonomy_dimension_field_name,
+)
 from .models import (
     Event,
     EventLayer,
@@ -14,10 +20,19 @@ from .models import (
     TaxonomyTerm,
 )
 from .services import (
+    get_base_template_event,
     orchestrate_series_create,
     orchestrate_series_update,
     serialize_occurrence_events,
 )
+
+
+def build_admin_taxonomy_form_class(form_class, *, source_event=None, class_name: str):
+    """Return a form subclass with taxonomy fields declared at class creation time."""
+    _, _, taxonomy_form_fields, _, _ = build_taxonomy_dimension_form_fields(source_event)
+    if not taxonomy_form_fields:
+        return form_class
+    return type(class_name, (form_class,), taxonomy_form_fields)
 
 
 class SortOrderHelpTextMixin:
@@ -145,6 +160,12 @@ class EventSeriesAdmin(admin.ModelAdmin):
     inlines = [EventSeriesDateInline]
 
     def get_form(self, request, obj=None, change=False, **kwargs):
+        base_event = get_base_template_event(obj) if obj else None
+        kwargs["form"] = build_admin_taxonomy_form_class(
+            self.form,
+            source_event=base_event,
+            class_name="DynamicEventSeriesAdminForm",
+        )
         base_form = super().get_form(request, obj, change=change, **kwargs)
 
         class RequestAwareEventSeriesAdminForm(base_form):
@@ -155,6 +176,11 @@ class EventSeriesAdmin(admin.ModelAdmin):
         return RequestAwareEventSeriesAdminForm
 
     def get_fieldsets(self, request, obj=None):
+        base_event = get_base_template_event(obj) if obj else None
+        taxonomy_fields = tuple(
+            taxonomy_dimension_field_name(dimension)
+            for dimension in get_taxonomy_dimensions_for_source(base_event)
+        )
         fieldsets = [
             (
                 None,
@@ -263,7 +289,7 @@ class EventSeriesAdmin(admin.ModelAdmin):
                 {
                     "fields": (
                         "context",
-                        "taxonomy_term_ids",
+                        *taxonomy_fields,
                     ),
                 },
             ),
@@ -342,7 +368,21 @@ class EventAdmin(GISModelAdmin):
     inlines = [EventLayerInline]
     date_hierarchy = "start_datetime"
 
+    def get_form(self, request, obj=None, change=False, **kwargs):
+        source_event = obj if obj and obj.pk else None
+        kwargs["form"] = build_admin_taxonomy_form_class(
+            self.form,
+            source_event=source_event,
+            class_name="DynamicEventAdminForm",
+        )
+        return super().get_form(request, obj, change=change, **kwargs)
+
     def get_fieldsets(self, request, obj=None):
+        source_event = obj if obj and obj.pk else None
+        taxonomy_fields = tuple(
+            taxonomy_dimension_field_name(dimension)
+            for dimension in get_taxonomy_dimensions_for_source(source_event)
+        )
         fieldsets = [
             (None, {"fields": ("campaign", "event_type", "series", "title", "description")}),
             ("Schedule", {"fields": ("start_datetime", "end_datetime")}),
@@ -393,6 +433,8 @@ class EventAdmin(GISModelAdmin):
             ("Content", {"fields": ("context",)}),
             ("Settings", {"fields": ("status", "visibility", "organizer")}),
         ]
+        if taxonomy_fields:
+            fieldsets.insert(-1, ("Taxonomy", {"fields": taxonomy_fields}))
 
         if obj and not obj._state.adding:
             fieldsets.append(
@@ -416,6 +458,7 @@ class EventAdmin(GISModelAdmin):
     def save_model(self, request, obj, form, change):
         super().save_model(request, obj, form, change)
         form.save_profile(obj)
+        form.save_taxonomy(obj)
 
     class Media:
         js = ("events/js/admin_events.js",)

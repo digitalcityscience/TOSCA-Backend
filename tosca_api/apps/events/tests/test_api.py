@@ -966,6 +966,7 @@ def test_events_retrieve_detail(api_client, user, future_event):
     assert response.data["title"] == "Future Event"
     assert "layers" in response.data
     assert "context" in response.data
+    assert "taxonomy_assignments" in response.data
 
 
 @pytest.mark.django_db
@@ -1000,6 +1001,123 @@ def test_events_retrieve_detail_uses_series_default_context(
     response = api_client.get(f"/api/v1/events/{event.id}/")
     assert response.status_code == 200
     assert response.data["context"]["id"] == str(geocontext.id)
+
+
+@pytest.mark.django_db
+def test_events_retrieve_detail_returns_grouped_taxonomy_assignments(
+    api_client, user, campaign, event_type
+):
+    """Detail responses should return grouped taxonomy assignments."""
+    topic_dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    audience_dimension = TaxonomyDimension.objects.create(
+        code="audience",
+        label="Audience",
+        selection_mode=TaxonomyDimension.SelectionMode.SINGLE,
+    )
+    climate = TaxonomyTerm.objects.create(
+        dimension=topic_dimension,
+        code="climate",
+        label="Climate",
+    )
+    youth = TaxonomyTerm.objects.create(
+        dimension=audience_dimension,
+        code="youth",
+        label="Youth",
+    )
+    event = Event.objects.create(
+        campaign=campaign,
+        event_type=event_type,
+        title="Taxonomy Detail Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        status=Event.Status.PUBLISHED,
+    )
+    EventTerm.objects.create(event=event, term=climate)
+    EventTerm.objects.create(event=event, term=youth)
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get(f"/api/v1/events/{event.id}/")
+
+    assert response.status_code == 200
+    assignments = response.data["taxonomy_assignments"]
+    assert len(assignments) == 2
+    assert {
+        assignment["dimension_code"]: set(assignment["term_ids"])
+        for assignment in assignments
+    } == {
+        "topic": {str(climate.id)},
+        "audience": {str(youth.id)},
+    }
+
+
+@pytest.mark.django_db
+def test_event_series_retrieve_returns_grouped_taxonomy_assignments(
+    api_client, user, campaign, event_type
+):
+    """Series retrieve should derive grouped taxonomy assignments from the base occurrence."""
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    climate = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="climate",
+        label="Climate",
+    )
+
+    api_client.force_authenticate(user=user)
+    create_response = api_client.post(
+        "/api/v1/event-series/",
+        {
+            "campaign": str(campaign.id),
+            "event_type": str(event_type.id),
+            "name": "Retrieve Series",
+            "series_mode": "recurring",
+            "recurrence_type": "weekly",
+            "start_date": "2026-04-06",
+            "occurrence_count": 2,
+            "interval": 1,
+            "start_time": "18:00:00",
+            "end_time": "19:00:00",
+            "timezone": "Europe/Berlin",
+            "by_weekday": ["monday"],
+            "title": "Retrieve Event",
+            "location_mode": "online",
+            "online_url": "https://example.org/live",
+            "status": "draft",
+            "taxonomy_assignments": [
+                {"dimension_id": str(dimension.id), "term_ids": [str(climate.id)]}
+            ],
+        },
+        format="json",
+    )
+    series_id = create_response.data["id"]
+
+    response = api_client.get(f"/api/v1/event-series/{series_id}/")
+
+    assert response.status_code == 200
+    assert response.data["taxonomy_assignments"][0]["dimension_code"] == "topic"
+    assert response.data["taxonomy_assignments"][0]["term_ids"] == [str(climate.id)]
+
+
+@pytest.mark.django_db
+def test_event_series_retrieve_fails_without_base_occurrence_template(
+    api_client, user, campaign, event_type
+):
+    """Series retrieve should fail clearly when no base occurrence/template exists."""
+    series = EventSeries.objects.create(
+        **build_series_kwargs(
+            user,
+            campaign,
+            event_type,
+            name="Legacy Empty Series",
+        )
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get(f"/api/v1/event-series/{series.id}/")
+
+    assert response.status_code == 409
+    assert "base occurrence/template" in response.data["detail"]
 
 
 # =============================================================================

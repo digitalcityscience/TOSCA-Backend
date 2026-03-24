@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
+from uuid import UUID
 from zoneinfo import available_timezones
 
 from django import forms
 from django.conf import settings
+from django.contrib.gis import forms as gis_forms
 from django.contrib.gis.geos import GEOSGeometry
 from django.core.exceptions import ValidationError
 from django.forms.models import ModelChoiceIteratorValue
@@ -14,21 +15,190 @@ from tosca_api.apps.geocontext.models import GeoContext
 from .models import (
     CultureEventProfile,
     Event,
+    EventTerm,
     EventSeries,
     EventType,
     PublicHealthEventProfile,
     SportsEventProfile,
+    TaxonomyDimension,
     TaxonomyTerm,
     VALID_WEEKDAYS,
 )
 from .services import (
     EVENT_TEMPLATE_FIELDS,
     get_base_template_event,
+    resolve_taxonomy_assignments,
     validate_event_template,
 )
 
 TIMEZONE_CHOICES = [(timezone_name, timezone_name) for timezone_name in sorted(available_timezones())]
-WEEKDAY_CHOICES = [(weekday, weekday.title()) for weekday in sorted(VALID_WEEKDAYS)]
+WEEKDAY_ORDER = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
+WEEKDAY_CHOICES = [(weekday, weekday.title()) for weekday in WEEKDAY_ORDER if weekday in VALID_WEEKDAYS]
+
+
+def taxonomy_dimension_field_name(dimension: TaxonomyDimension) -> str:
+    """Build the dynamic admin field name for a taxonomy dimension."""
+    return f"taxonomy_dimension_{dimension.id.hex}"
+
+
+def get_taxonomy_dimensions_for_source(source_event: Event | None = None) -> list[TaxonomyDimension]:
+    """Return active dimensions plus any inactive dimensions already assigned."""
+    dimensions = list(TaxonomyDimension.objects.filter(is_active=True).order_by("sort_order", "label"))
+    seen_dimension_ids = {dimension.id for dimension in dimensions}
+
+    if source_event is None:
+        return dimensions
+
+    assigned_dimensions = (
+        TaxonomyDimension.objects.filter(terms__event_terms__event=source_event)
+        .distinct()
+        .order_by("sort_order", "label")
+    )
+    for dimension in assigned_dimensions:
+        if dimension.id in seen_dimension_ids:
+            continue
+        dimensions.append(dimension)
+        seen_dimension_ids.add(dimension.id)
+
+    return dimensions
+
+
+def build_taxonomy_dimension_form_fields(
+    source_event: Event | None = None,
+) -> tuple[
+    list[TaxonomyDimension],
+    dict[str, TaxonomyDimension],
+    dict[str, forms.Field],
+    set[UUID],
+    set[UUID],
+]:
+    """Build reusable dynamic admin fields for taxonomy dimensions."""
+    taxonomy_dimensions = get_taxonomy_dimensions_for_source(source_event)
+    taxonomy_dimension_fields: dict[str, TaxonomyDimension] = {}
+    form_fields: dict[str, forms.Field] = {}
+
+    assigned_terms = (
+        list(source_event.event_terms.select_related("term__dimension").all())
+        if source_event is not None
+        else []
+    )
+    assigned_term_ids = {event_term.term_id for event_term in assigned_terms}
+    allowed_inactive_term_ids = {
+        event_term.term_id for event_term in assigned_terms if not event_term.term.is_active
+    }
+    allowed_inactive_dimension_ids = {
+        event_term.term.dimension_id
+        for event_term in assigned_terms
+        if not event_term.term.dimension.is_active
+    }
+    assigned_term_ids_by_dimension: dict[UUID, list[str]] = {}
+    for event_term in assigned_terms:
+        assigned_term_ids_by_dimension.setdefault(event_term.term.dimension_id, []).append(
+            str(event_term.term_id)
+        )
+
+    for dimension in taxonomy_dimensions:
+        field_name = taxonomy_dimension_field_name(dimension)
+        terms = list(
+            TaxonomyTerm.objects.filter(dimension=dimension).order_by(
+                "parent_id", "sort_order", "label"
+            )
+        )
+        choices = [
+            (
+                str(term.id),
+                f"{term.label}{' (inactive)' if not term.is_active else ''}",
+            )
+            for term in terms
+            if term.is_active or term.id in assigned_term_ids
+        ]
+        help_bits = [dimension.description] if dimension.description else []
+        if dimension.selection_mode == TaxonomyDimension.SelectionMode.SINGLE:
+            field = forms.ChoiceField(
+                required=False,
+                choices=[("", "---------"), *choices],
+                label=dimension.label,
+                help_text=" ".join(help_bits).strip(),
+            )
+            field.initial = assigned_term_ids_by_dimension.get(dimension.id, [""])[0]
+        else:
+            field = forms.MultipleChoiceField(
+                required=False,
+                choices=choices,
+                label=dimension.label,
+                help_text=" ".join(help_bits).strip(),
+                widget=forms.CheckboxSelectMultiple,
+            )
+            field.initial = assigned_term_ids_by_dimension.get(dimension.id, [])
+
+        form_fields[field_name] = field
+        taxonomy_dimension_fields[field_name] = dimension
+
+    return (
+        taxonomy_dimensions,
+        taxonomy_dimension_fields,
+        form_fields,
+        allowed_inactive_dimension_ids,
+        allowed_inactive_term_ids,
+    )
+
+
+class TaxonomyAssignmentAdminMixin:
+    """Shared dynamic taxonomy-dimension fields for admin authoring forms."""
+
+    _taxonomy_dimensions: list[TaxonomyDimension]
+    _taxonomy_dimension_fields: dict[str, TaxonomyDimension]
+    _taxonomy_allowed_inactive_dimension_ids: set
+    _taxonomy_allowed_inactive_term_ids: set
+
+    def _initialize_taxonomy_dimension_fields(
+        self,
+        *,
+        source_event: Event | None = None,
+    ) -> None:
+        (
+            self._taxonomy_dimensions,
+            self._taxonomy_dimension_fields,
+            taxonomy_form_fields,
+            self._taxonomy_allowed_inactive_dimension_ids,
+            self._taxonomy_allowed_inactive_term_ids,
+        ) = build_taxonomy_dimension_form_fields(source_event)
+        self.fields.update(taxonomy_form_fields)
+
+    def clean_taxonomy_assignments(self, cleaned_data: dict) -> list[TaxonomyTerm]:
+        """Resolve grouped taxonomy assignments from dynamic admin fields."""
+        taxonomy_assignments = []
+        for field_name, dimension in self._taxonomy_dimension_fields.items():
+            raw_value = cleaned_data.get(field_name)
+            if raw_value in (None, "", []):
+                continue
+
+            term_ids = raw_value if isinstance(raw_value, list) else [raw_value]
+            taxonomy_assignments.append(
+                {
+                    "dimension_id": dimension.id,
+                    "term_ids": [UUID(str(term_id)) for term_id in term_ids],
+                }
+            )
+
+        try:
+            return resolve_taxonomy_assignments(
+                taxonomy_assignments,
+                allow_inactive_dimension_ids=self._taxonomy_allowed_inactive_dimension_ids,
+                allow_inactive_term_ids=self._taxonomy_allowed_inactive_term_ids,
+            )
+        except ValidationError as exc:
+            error_messages = exc.message_dict.get("taxonomy_assignments", exc.messages)
+            self.add_error(None, error_messages)
+            return []
 
 
 class EventTypeSelect(forms.Select):
@@ -50,7 +220,7 @@ class EventTypeSelect(forms.Select):
         return option
 
 
-class EventSeriesAdminForm(forms.ModelForm):
+class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
     """Admin form with structured recurrence widgets and event-template fields."""
 
     # --- Recurrence widgets ---
@@ -69,10 +239,9 @@ class EventSeriesAdminForm(forms.ModelForm):
         choices=[("", "---------")] + list(Event.LocationMode.choices),
         required=False,
     )
-    location = forms.CharField(
-        widget=forms.Textarea(attrs={"rows": 3, "placeholder": '{"type": "Point", "coordinates": [lng, lat]}'}),
+    location = gis_forms.PointField(
         required=False,
-        help_text="GeoJSON Point, e.g. {\"type\": \"Point\", \"coordinates\": [10.0, 53.5]}",
+        help_text="Pick a point on the map for physical or hybrid events.",
     )
     online_url = forms.URLField(required=False)
     online_platform = forms.CharField(max_length=255, required=False)
@@ -104,14 +273,6 @@ class EventSeriesAdminForm(forms.ModelForm):
     culture_format_label = forms.CharField(required=False, max_length=255, label="Format label")
     culture_age_rating = forms.CharField(required=False, max_length=50, label="Age rating")
 
-    # --- Taxonomy ---
-    taxonomy_term_ids = forms.ModelMultipleChoiceField(
-        queryset=TaxonomyTerm.objects.filter(is_active=True).select_related("dimension"),
-        required=False,
-        label="Taxonomy terms",
-        help_text="Select terms to apply to generated occurrences.",
-    )
-
     class Meta:
         model = EventSeries
         fields = "__all__"
@@ -137,23 +298,24 @@ class EventSeriesAdminForm(forms.ModelForm):
         )
 
         # Pre-populate template fields from the base occurrence on edit
-        self._load_template_from_base_occurrence()
+        base_event = self._load_template_from_base_occurrence()
+        self._initialize_taxonomy_dimension_fields(source_event=base_event)
 
-    def _load_template_from_base_occurrence(self) -> None:
+    def _load_template_from_base_occurrence(self) -> Event | None:
         """Pre-fill event template fields from the first non-exception occurrence."""
         if not self.instance.pk:
-            return
+            return None
 
         base_event = get_base_template_event(self.instance)
         if base_event is None:
-            return
+            return None
 
         # Event template fields
         self.fields["title"].initial = base_event.title
         self.fields["description"].initial = base_event.description
         self.fields["location_mode"].initial = base_event.location_mode
         if base_event.location:
-            self.fields["location"].initial = base_event.location.geojson
+            self.fields["location"].initial = base_event.location
         self.fields["online_url"].initial = base_event.online_url
         self.fields["online_platform"].initial = base_event.online_platform
         self.fields["access_notes"].initial = base_event.access_notes
@@ -167,12 +329,7 @@ class EventSeriesAdminForm(forms.ModelForm):
         # Profile extension fields
         self._load_profile_initials(base_event)
 
-        # Taxonomy terms
-        term_ids = list(
-            base_event.event_terms.values_list("term_id", flat=True)
-        )
-        if term_ids:
-            self.fields["taxonomy_term_ids"].initial = term_ids
+        return base_event
 
     def _load_profile_initials(self, base_event: Event) -> None:
         """Pre-fill profile fields from the base occurrence's profile."""
@@ -224,6 +381,7 @@ class EventSeriesAdminForm(forms.ModelForm):
 
         # --- Validate template fields ---
         self._clean_event_template(cleaned_data)
+        self._taxonomy_terms = self.clean_taxonomy_assignments(cleaned_data)
 
         return cleaned_data
 
@@ -241,16 +399,19 @@ class EventSeriesAdminForm(forms.ModelForm):
             return
 
         # Parse and validate location GeoJSON
-        location_raw = cleaned_data.get("location", "")
+        location_value = cleaned_data.get("location")
         location_geom = None
-        if location_raw:
-            try:
-                location_geom = GEOSGeometry(location_raw)
-            except Exception:
-                self.add_error("location", "Invalid GeoJSON. Expected a valid GeoJSON Point.")
-                return
+        if location_value:
+            if isinstance(location_value, GEOSGeometry):
+                location_geom = location_value
+            else:
+                try:
+                    location_geom = GEOSGeometry(location_value)
+                except Exception:
+                    self.add_error("location", "Invalid location geometry.")
+                    return
             if location_geom.geom_type != "Point":
-                self.add_error("location", "Location must be a GeoJSON Point.")
+                self.add_error("location", "Location must be a point.")
                 return
             if location_geom.srid is None:
                 location_geom.srid = 4326
@@ -318,7 +479,6 @@ class EventSeriesAdminForm(forms.ModelForm):
         # If there are already form errors, skip service-level validation
         if self.errors:
             self._template_data = event_template
-            self._taxonomy_terms = list(cleaned_data.get("taxonomy_term_ids") or [])
             self._profile_data = self._build_profile_data(cleaned_data)
             return
 
@@ -342,7 +502,6 @@ class EventSeriesAdminForm(forms.ModelForm):
 
         # Stash validated data for use in admin save_related
         self._template_data = event_template
-        self._taxonomy_terms = list(cleaned_data.get("taxonomy_term_ids") or [])
         self._profile_data = self._build_profile_data(cleaned_data)
 
     @staticmethod
@@ -358,7 +517,7 @@ class EventSeriesAdminForm(forms.ModelForm):
         }
 
 
-class EventAdminForm(forms.ModelForm):
+class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
     """Admin form that keeps extension profile fields on the event page."""
 
     public_health_insurance_eligible = forms.BooleanField(required=False)
@@ -381,7 +540,14 @@ class EventAdminForm(forms.ModelForm):
         self.fields["sports_skill_level"].label = "Skill level"
         self.fields["culture_format_label"].label = "Format label"
         self.fields["culture_age_rating"].label = "Age rating"
+        source_event = self.instance if self.instance.pk else None
+        self._initialize_taxonomy_dimension_fields(source_event=source_event)
         self._load_existing_profile_initials()
+
+    def clean(self):
+        cleaned_data = super().clean()
+        self._taxonomy_terms = self.clean_taxonomy_assignments(cleaned_data)
+        return cleaned_data
 
     def _load_existing_profile_initials(self) -> None:
         if not self.instance.pk:
@@ -416,6 +582,7 @@ class EventAdminForm(forms.ModelForm):
         event = super().save(commit=commit)
         if commit:
             self.save_profile(event)
+            self.save_taxonomy(event)
         return event
 
     def save_profile(self, event: Event) -> None:
@@ -463,3 +630,8 @@ class EventAdminForm(forms.ModelForm):
                 CultureEventProfile.DoesNotExist,
             ):
                 continue
+
+    def save_taxonomy(self, event: Event) -> None:
+        EventTerm.objects.filter(event=event).delete()
+        for term in getattr(self, "_taxonomy_terms", []):
+            EventTerm.objects.create(event=event, term=term)

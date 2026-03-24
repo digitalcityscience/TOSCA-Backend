@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 from django.contrib import admin
 from django.contrib.auth import get_user_model
+from django.contrib.gis import forms as gis_forms
 from django.contrib.gis.geos import Point
 from django.forms import CheckboxSelectMultiple, ChoiceField, MultipleChoiceField
 from django.test import RequestFactory
@@ -10,7 +11,11 @@ from django.utils import timezone
 
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.events.admin import EventAdmin, EventSeriesAdmin, EventTypeAdmin, TaxonomyDimensionAdmin, TaxonomyTermAdmin
-from tosca_api.apps.events.forms import EventAdminForm, EventSeriesAdminForm
+from tosca_api.apps.events.forms import (
+    EventAdminForm,
+    EventSeriesAdminForm,
+    taxonomy_dimension_field_name,
+)
 from tosca_api.apps.events.models import (
     Event,
     EventSeries,
@@ -122,6 +127,17 @@ def test_event_series_admin_uses_structured_recurrence_form(admin_request):
     assert isinstance(form.fields["by_weekday"], MultipleChoiceField)
     assert isinstance(form.fields["by_weekday"].widget, CheckboxSelectMultiple)
     assert isinstance(form.fields["weekday_of_month"], ChoiceField)
+    assert [value for value, _label in form.fields["by_weekday"].choices] == [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    ]
+    assert isinstance(form.fields["location"], gis_forms.PointField)
+    assert isinstance(form.fields["location"].widget, gis_forms.OpenLayersWidget)
     assert form.fields["timezone"].initial
     assert len(list(form.fields["event_type"].widget.choices)) > 1
     assert "Stop after this many occurrences" in form.fields["occurrence_count"].help_text
@@ -130,6 +146,16 @@ def test_event_series_admin_uses_structured_recurrence_form(admin_request):
         title for title, _options in model_admin.get_fieldsets(admin_request, obj=EventSeries())
     }
     assert "Metadata" not in unsaved_sections
+
+
+@pytest.mark.django_db
+def test_event_series_admin_get_form_exposes_taxonomy_dimension_fields(admin_request):
+    """Series admin add form should declare taxonomy fields before fieldset validation."""
+    model_admin = admin.site._registry[EventSeries]
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    form_class = model_admin.get_form(admin_request)
+
+    assert taxonomy_dimension_field_name(dimension) in form_class.base_fields
 
 
 @pytest.mark.django_db
@@ -194,16 +220,21 @@ def test_event_series_admin_form_validation_uses_request_user_for_creator(admin_
 def test_event_admin_form_embeds_profile_fields(admin_request):
     """Event admin should expose extension profile inputs on the event form itself."""
     model_admin = admin.site._registry[Event]
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
     form_class = model_admin.get_form(admin_request)
+    form = form_class()
 
     assert model_admin.form is EventAdminForm
     assert {"public_health_insurance_eligible", "sports_sport_name", "culture_format_label"} <= set(
         form_class.base_fields
     )
+    assert taxonomy_dimension_field_name(dimension) in form_class.base_fields
+    assert taxonomy_dimension_field_name(dimension) in form.fields
     add_sections = {
         title for title, _options in model_admin.get_fieldsets(admin_request, obj=None)
     }
     assert "Series Metadata" not in add_sections
+    assert "Taxonomy" in add_sections
     unsaved_sections = {
         title for title, _options in model_admin.get_fieldsets(admin_request, obj=Event())
     }
@@ -335,6 +366,57 @@ def test_event_admin_save_model_replaces_old_profile_when_event_type_changes(adm
 
 
 @pytest.mark.django_db
+def test_event_admin_save_model_persists_dimension_based_taxonomy(admin_request, admin_user):
+    """Saving an event through admin should persist taxonomy chosen per dimension."""
+    campaign = Campaign.objects.create(title="Taxonomy Campaign", created_by=admin_user)
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    climate = TaxonomyTerm.objects.create(dimension=dimension, code="climate", label="Climate")
+    mobility = TaxonomyTerm.objects.create(dimension=dimension, code="mobility", label="Mobility")
+    taxonomy_field = taxonomy_dimension_field_name(dimension)
+    model_admin = admin.site._registry[Event]
+
+    form = EventAdminForm(
+        data={
+            "campaign": str(campaign.id),
+            "event_type": "",
+            "series": "",
+            "title": "Taxonomy Admin Event",
+            "description": "Event with taxonomy",
+            "start_datetime": (timezone.now() + timedelta(days=1)).isoformat(),
+            "end_datetime": (timezone.now() + timedelta(days=1, hours=2)).isoformat(),
+            "location_mode": Event.LocationMode.ONLINE,
+            "location": "",
+            "online_url": "https://example.com/join",
+            "online_platform": "Zoom",
+            "access_notes": "",
+            "provider_name": "",
+            "provider_url": "",
+            "provider_contact": "",
+            "context": "",
+            taxonomy_field: [str(climate.id), str(mobility.id)],
+            "status": Event.Status.DRAFT,
+            "visibility": Event.Visibility.PUBLIC,
+            "organizer": str(admin_user.id),
+            "public_health_insurance_eligible": "",
+            "public_health_referral_required": "",
+            "sports_sport_name": "",
+            "sports_skill_level": "",
+            "culture_format_label": "",
+            "culture_age_rating": "",
+        }
+    )
+
+    assert form.is_valid(), form.errors
+    event = form.save(commit=False)
+
+    model_admin.save_model(admin_request, event, form, change=False)
+
+    event.refresh_from_db()
+    term_ids = set(EventTerm.objects.filter(event=event).values_list("term_id", flat=True))
+    assert term_ids == {climate.id, mobility.id}
+
+
+@pytest.mark.django_db
 def test_event_term_admin_form_rejects_second_term_in_single_select_dimension(
     admin_request, admin_user
 ):
@@ -394,6 +476,7 @@ def _build_series_admin_form_data(
     by_weekday=None,
     end_date=None,
     occurrence_count="3",
+    taxonomy_dimension_values=None,
     **overrides,
 ):
     """Build a complete admin form data dict for EventSeriesAdminForm."""
@@ -439,14 +522,14 @@ def _build_series_admin_form_data(
         "sports_skill_level": "",
         "culture_format_label": "",
         "culture_age_rating": "",
-        # Taxonomy
-        "taxonomy_term_ids": [],
         # Inline formset management data
         "dates-TOTAL_FORMS": "0",
         "dates-INITIAL_FORMS": "0",
         "dates-MIN_NUM_FORMS": "0",
         "dates-MAX_NUM_FORMS": "1000",
     }
+    if taxonomy_dimension_values:
+        data.update(taxonomy_dimension_values)
     data.update(overrides)
     return data
 
@@ -763,13 +846,16 @@ def test_event_series_admin_taxonomy_terms_applied(admin_request, admin_user):
     )
     term1 = TaxonomyTerm.objects.create(dimension=dimension, code="youth", label="Youth")
     term2 = TaxonomyTerm.objects.create(dimension=dimension, code="seniors", label="Seniors")
+    taxonomy_field = taxonomy_dimension_field_name(dimension)
     model_admin = admin.site._registry[EventSeries]
 
     data = _build_series_admin_form_data(
         campaign=campaign,
         event_type=event_type,
         admin_user=admin_user,
-        taxonomy_term_ids=[str(term1.id), str(term2.id)],
+        taxonomy_dimension_values={
+            taxonomy_field: [str(term1.id), str(term2.id)],
+        },
     )
     form_class = model_admin.get_form(admin_request)
     form = form_class(data=data)
@@ -816,4 +902,3 @@ def test_event_series_admin_profile_fields_applied(admin_request, admin_user):
     for event in events:
         assert event.public_health_profile.insurance_eligible is True
         assert event.public_health_profile.referral_required is False
-
