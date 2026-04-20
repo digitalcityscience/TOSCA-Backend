@@ -11,7 +11,7 @@ from rest_framework.authtoken.models import Token
 from tosca_api.apps.geo_console.exceptions import APIError, APINotFoundError, APITimeoutError
 from tosca_api.apps.geo_console.forms import EngineForm, LayerEditForm, LayerPublishForm, StoreDetailForm, StoreForm, WorkspaceForm
 from tosca_api.apps.geo_console.services.api_client import GeoConsoleAPIClient
-from tosca_api.apps.geodata_engine.models import GeodataEngine, Layer, Store, Workspace
+from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Workspace
 
 logger = logging.getLogger(__name__)
 

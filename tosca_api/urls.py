@@ -11,7 +11,7 @@ urlpatterns = [
     path('admin/logout/', KeycloakLogoutView.as_view(), name='admin_logout'),
     path('', base, name='base'),
     path('accounts/', include('tosca_api.apps.authentication.urls')),  # Include allauth URLs for authentication
-    path('api/geoengine/', include('tosca_api.apps.geodata_engine.api.urls'), name='geodata_engine_api'),
+    path('api/geoengine/', include('tosca_api.apps.geodata_providers.api.urls'), name='geodata_engine_api'),
     path("console/", include("tosca_api.apps.geo_console.urls"), name="geo_console"),
     # Backward-compatible alias (can be removed after clients migrate).
     path('admin/', admin.site.urls),

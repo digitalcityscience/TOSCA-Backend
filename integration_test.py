@@ -176,7 +176,7 @@ def test_django_api_endpoints():
     try:
         from rest_framework.test import APIClient
         from django.contrib.auth.models import User
-        from tosca_api.apps.geodata_engine.models import GeodataEngine
+        from tosca_api.apps.geodata_providers.models import GeodataEngine
         from django.test import override_settings
         
         # Override ALLOWED_HOSTS for test client

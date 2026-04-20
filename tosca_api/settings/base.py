@@ -65,7 +65,7 @@ INSTALLED_APPS = [
     # Local apps
     "tosca_api.apps.core",
     "tosca_api.apps.tosca_web",
-    "tosca_api.apps.geodata_engine",
+    "tosca_api.apps.geodata_providers.apps.GeodataProvidersConfig",
     "tosca_api.apps.geo_console",
 ]
 
