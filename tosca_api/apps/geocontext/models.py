@@ -1,10 +1,9 @@
 """
-GeoContext model - Shared rich text content block.
+GeoContext model - Shared Editor.js content block.
 
-GeoContext holds the content (text, rich HTML) that can be linked to
-features like GeoStory, Event, or GeoFeedback. This allows content to
-be managed independently while still being associated with parent
-features or shared defaults such as EventSeries.default_context.
+GeoContext holds canonical Editor.js JSON content that can be linked to
+features like GeoStory, Event, or GeoFeedback. Content is stored as a
+structured JSON document rather than freeform text or HTML.
 """
 
 from __future__ import annotations
@@ -15,34 +14,31 @@ from django.conf import settings
 from django.db import models
 
 from tosca_api.apps.core.models import TimeStampedModel
-from tosca_api.apps.core.sanitization import sanitize_content
+
+
+def empty_editorjs_document() -> dict:
+    """Return the canonical empty Editor.js document."""
+    return {"blocks": []}
 
 
 class GeoContext(TimeStampedModel):
     """
-    Shared content block model.
+    Shared Editor.js content block model.
 
-    This model stores text/rich content that can be linked to other
-    feature models (GeoStory, Event, GeoFeedback).
+    Stores canonical Editor.js JSON that can be linked to feature models
+    (GeoStory, Event, GeoFeedback). Deep validation and normalization of
+    block structure is handled by the Editor.js layer (see Task 7.2);
+    this model only guarantees that empty content is represented as
+    ``{"blocks": []}`` rather than ``None``.
 
     Attributes:
         id: UUID primary key
-        content: The actual text content (can be plain or rich HTML)
-        content_type: Whether the content is simple text or rich HTML
+        content: Canonical Editor.js JSON document
         created_by: The user who created this content block
     """
 
-    class ContentType(models.TextChoices):
-        SIMPLE = "simple", "Simple Text"
-        RICH = "rich", "Rich HTML"
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    content = models.TextField(blank=True, default="")
-    content_type = models.CharField(
-        max_length=20,
-        choices=ContentType.choices,
-        default=ContentType.SIMPLE,
-    )
+    content = models.JSONField(default=empty_editorjs_document, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -55,11 +51,13 @@ class GeoContext(TimeStampedModel):
         verbose_name_plural = "GeoContexts"
 
     def __str__(self) -> str:
-        # Return first 50 chars of content or a placeholder
-        preview = self.content[:50] if self.content else "(empty)"
-        return f"GeoContext: {preview}..."
+        blocks = (self.content or {}).get("blocks") or []
+        if not blocks:
+            return "GeoContext: (empty)"
+        return f"GeoContext: {len(blocks)} block(s)"
 
     def save(self, *args, **kwargs) -> None:
-        """Override save to sanitize content before persistence."""
-        self.content = sanitize_content(self.content, self.content_type)
+        """Normalize missing/empty content to the canonical empty document."""
+        if self.content in (None, "", {}, []):
+            self.content = empty_editorjs_document()
         super().save(*args, **kwargs)
