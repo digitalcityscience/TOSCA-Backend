@@ -65,7 +65,10 @@ def layer_ref():
 
 @pytest.fixture
 def geocontext(user):
-    return GeoContext.objects.create(content="Shared event context", created_by=user)
+    return GeoContext.objects.create(
+        content={"blocks": [{"type": "paragraph", "data": {"text": "Shared event context"}}]},
+        created_by=user,
+    )
 
 
 @pytest.fixture
@@ -499,7 +502,7 @@ def test_event_override_context_wins_over_series_default(user, campaign, geocont
     """A direct event override takes precedence over the series default."""
     now = timezone.now()
     override_context = GeoContext.objects.create(
-        content="Occurrence override",
+        content={"blocks": [{"type": "paragraph", "data": {"text": "Occurrence override"}}]},
         created_by=user,
     )
     series = EventSeries.objects.create(
@@ -540,8 +543,14 @@ def test_editing_event_override_does_not_change_series_default(user, campaign, g
         ),
         default_context=geocontext,
     )
-    first_override = GeoContext.objects.create(content="Override A", created_by=user)
-    second_override = GeoContext.objects.create(content="Override B", created_by=user)
+    first_override = GeoContext.objects.create(
+        content={"blocks": [{"type": "paragraph", "data": {"text": "Override A"}}]},
+        created_by=user,
+    )
+    second_override = GeoContext.objects.create(
+        content={"blocks": [{"type": "paragraph", "data": {"text": "Override B"}}]},
+        created_by=user,
+    )
     event = Event.objects.create(
         campaign=campaign,
         event_type=event_type,

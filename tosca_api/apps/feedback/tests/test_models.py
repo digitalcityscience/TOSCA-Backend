@@ -707,7 +707,10 @@ class TestGeoFeedbackRelationships:
         """Deleting a GeoContext should set FK to null (not cascade)."""
         from tosca_api.apps.geocontext.models import GeoContext
 
-        ctx = GeoContext.objects.create(content="Test content", created_by=user)
+        ctx = GeoContext.objects.create(
+            content={"blocks": [{"type": "paragraph", "data": {"text": "Test content"}}]},
+            created_by=user,
+        )
         fb = GeoFeedback.objects.create(
             campaign=campaign,
             title="Context Delete Test",

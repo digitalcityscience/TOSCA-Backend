@@ -69,7 +69,10 @@ def campaign(user):
 
 @pytest.fixture
 def geocontext(user):
-    return GeoContext.objects.create(content="Shared API context", created_by=user)
+    return GeoContext.objects.create(
+        content={"blocks": [{"type": "paragraph", "data": {"text": "Shared API context"}}]},
+        created_by=user,
+    )
 
 
 @pytest.fixture

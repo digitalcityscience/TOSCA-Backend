@@ -1,11 +1,11 @@
 """
-Tests for GeoContext model.
+Tests for GeoContext model - canonical Editor.js JSON contract.
 """
 
 import pytest
 from django.contrib.auth import get_user_model
 
-from tosca_api.apps.geocontext.models import GeoContext
+from tosca_api.apps.geocontext.models import GeoContext, empty_editorjs_document
 
 User = get_user_model()
 
@@ -20,71 +20,57 @@ def test_user(db):
 
 
 @pytest.mark.django_db
-def test_geocontext_creation(test_user):
-    """Test that a geocontext can be created with minimal fields."""
-    ctx = GeoContext.objects.create(
-        content="Sample content",
-        created_by=test_user,
-    )
-    assert ctx.id is not None
-    assert ctx.content_type == GeoContext.ContentType.SIMPLE
-    assert ctx.content == "Sample content"
-    assert ctx.created_at is not None
+def test_geocontext_empty_defaults_to_empty_blocks(test_user):
+    """A new GeoContext with no content resolves to {"blocks": []}."""
+    ctx = GeoContext.objects.create(created_by=test_user)
+    assert ctx.content == {"blocks": []}
 
 
 @pytest.mark.django_db
-def test_geocontext_str(test_user):
-    """Test the string representation of a geocontext."""
-    ctx = GeoContext.objects.create(
-        content="This is some sample content for testing",
-        created_by=test_user,
-    )
-    assert "This is some sample" in str(ctx)
+def test_geocontext_persists_editorjs_json_content(test_user):
+    """Valid Editor.js documents are persisted as JSON."""
+    doc = {
+        "blocks": [
+            {"type": "paragraph", "data": {"text": "Hello"}},
+            {"type": "header", "data": {"text": "Title", "level": 2}},
+        ]
+    }
+    ctx = GeoContext.objects.create(content=doc, created_by=test_user)
+    ctx.refresh_from_db()
+    assert ctx.content == doc
+    assert ctx.content["blocks"][0]["data"]["text"] == "Hello"
 
 
 @pytest.mark.django_db
-def test_geocontext_empty_content(test_user):
-    """Test geocontext with empty content."""
-    ctx = GeoContext.objects.create(
-        content="",
-        created_by=test_user,
-    )
-    assert ctx.content == ""
-    assert "(empty)" in str(ctx)
+def test_geocontext_none_normalizes_to_empty_blocks(test_user):
+    """Explicit None content is normalized to the canonical empty doc."""
+    ctx = GeoContext(content=None, created_by=test_user)
+    ctx.save()
+    assert ctx.content == {"blocks": []}
 
 
 @pytest.mark.django_db
-def test_geocontext_rich_content_type(test_user):
-    """Test geocontext with rich HTML content type."""
-    ctx = GeoContext.objects.create(
-        content="<h1>Title</h1><p>Body text</p>",
-        content_type=GeoContext.ContentType.RICH,
-        created_by=test_user,
-    )
-    assert ctx.content_type == "rich"
+def test_geocontext_missing_content_defaults_safely(test_user):
+    """Creating without a content argument defaults to the canonical empty doc."""
+    ctx = GeoContext.objects.create(created_by=test_user)
+    assert ctx.content == empty_editorjs_document()
 
 
 @pytest.mark.django_db
-def test_geocontext_sanitization_integration(test_user):
-    """Test that content is sanitized upon saving."""
-    # Test simple content (should lose all tags)
-    unsafe_simple = "<b>Bold</b><script>alert(1)</script>"
-    ctx_simple = GeoContext.objects.create(
-        content=unsafe_simple,
-        content_type=GeoContext.ContentType.SIMPLE,
+def test_geocontext_has_no_content_type_field():
+    """The legacy content_type field must not exist on the model."""
+    field_names = {f.name for f in GeoContext._meta.get_fields()}
+    assert "content_type" not in field_names
+
+
+@pytest.mark.django_db
+def test_geocontext_str_representation(test_user):
+    """String representation reflects block count, not raw text."""
+    empty = GeoContext.objects.create(created_by=test_user)
+    assert "(empty)" in str(empty)
+
+    populated = GeoContext.objects.create(
+        content={"blocks": [{"type": "paragraph", "data": {"text": "Hi"}}]},
         created_by=test_user,
     )
-    assert "<script>" not in ctx_simple.content
-    assert "<b>" not in ctx_simple.content
-    assert ctx_simple.content == "Bold"
-    # nh3 removes script tags and their content entirely, ensuring safety.
-    
-    # Test rich content (should allow formatting but strip script)
-    unsafe_rich = "<h1>Title</h1><script>alert(1)</script>"
-    ctx_rich = GeoContext.objects.create(
-        content=unsafe_rich,
-        content_type=GeoContext.ContentType.RICH,
-        created_by=test_user,
-    )
-    assert "<h1>Title</h1>" in ctx_rich.content
-    assert "<script>" not in ctx_rich.content
+    assert "1 block" in str(populated)

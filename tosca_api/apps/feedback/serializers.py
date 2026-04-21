@@ -10,7 +10,7 @@ class FeedbackGeoContextSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = GeoContext
-        fields = ["id", "content", "content_type"]
+        fields = ["id", "content"]
         read_only_fields = fields
 
 

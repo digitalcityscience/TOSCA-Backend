@@ -35,8 +35,11 @@ def campaign(user):
 @pytest.fixture
 def geocontext(user):
     return GeoContext.objects.create(
-        content="This is the story content.",
-        content_type=GeoContext.ContentType.SIMPLE,
+        content={
+            "blocks": [
+                {"type": "paragraph", "data": {"text": "This is the story content."}},
+            ]
+        },
         created_by=user,
     )
 
@@ -178,9 +181,13 @@ def test_geostory_detail_has_nested_context(api_client, user, geostory):
     context = response.data["context"]
     assert context is not None
     assert "content" in context
-    assert context["content"] == "This is the story content."
-    assert "content_type" in context
-    assert context["content_type"] == "simple"
+    assert isinstance(context["content"], dict)
+    assert context["content"] == {
+        "blocks": [
+            {"type": "paragraph", "data": {"text": "This is the story content."}},
+        ]
+    }
+    assert "content_type" not in context
 
 
 @pytest.mark.django_db

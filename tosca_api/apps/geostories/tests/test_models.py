@@ -54,8 +54,7 @@ def test_geostory_sanitization(user, campaign):
 def test_geostory_context_linking(user, campaign):
     """Test linking a GeoContext."""
     context = GeoContext.objects.create(
-        content="<p>Rich</p>",
-        content_type="rich",
+        content={"blocks": [{"type": "paragraph", "data": {"text": "Rich"}}]},
         created_by=user,
     )
     story = GeoStory.objects.create(
