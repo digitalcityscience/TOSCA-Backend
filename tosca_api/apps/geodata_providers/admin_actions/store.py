@@ -1,6 +1,7 @@
 # Phase 3 — Store admin actions
 from django.contrib import admin, messages
 from django.http import HttpResponseRedirect
+from django.urls import reverse
 
 
 @admin.action(description='Clone store — set new name, target workspace & create in GeoServer')
@@ -19,4 +20,4 @@ def clone_store(modeladmin, request, queryset):
 
     store = queryset.first()
     # Redirect to the existing clone form view wired at /<store_id>/clone/
-    return HttpResponseRedirect(f'/admin/geodata_engine/store/{store.pk}/clone/')
+    return HttpResponseRedirect(reverse('admin:store_clone', args=[store.pk]))

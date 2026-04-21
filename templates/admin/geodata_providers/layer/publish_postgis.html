@@ -48,7 +48,7 @@
                     {% if field.name == 'table_name' and field.errors %}
                         <p class="help">
                             <a href="{% url 'admin:geodata_providers_layer_changelist' %}?q={{ field.value }}">
-                                Find and delete the conflicting layer →
+                                Find and delete the conflicting layer
                             </a>
                         </p>
                     {% endif %}
@@ -197,7 +197,6 @@ document.addEventListener('DOMContentLoaded', function() {
     function updateStores() {
         const workspaceId = workspaceSelect.value;
         if (!workspaceId) {
-            // Clear stores if no workspace selected
             storeSelect.innerHTML = '<option value="">---------</option>';
             resetTables('---------');
             return;
@@ -233,12 +232,10 @@ document.addEventListener('DOMContentLoaded', function() {
             });
     }
 
-    // Update stores when workspace changes
     workspaceSelect.addEventListener('change', updateStores);
     storeSelect.addEventListener('change', updateTables);
     tableSelect.addEventListener('change', updateFieldsFromSelectedTable);
 
-    // Pre-select store on initial load if form has a value
     if (selectedStoreId) {
         updateStores();
     } else if (storeSelect.value) {

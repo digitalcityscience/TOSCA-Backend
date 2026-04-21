@@ -6,6 +6,7 @@ Admin views for Store.
 from django.contrib import messages
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.views.decorators.http import require_GET
 
 from ..engine_factory import EngineClientFactory
@@ -119,7 +120,7 @@ def store_clone_view(request, store_id):
                         )
                     except GeoServerPublishError as e:
                         form.add_error(None, f'GeoServer create failed: {e}')
-                        return render(request, 'admin/geodata_engine/store/clone.html', {
+                        return render(request, 'admin/geodata_providers/store/clone.html', {
                             'form': form,
                             'source': source,
                             'title': f'Clone store: {source.name}',
@@ -127,7 +128,7 @@ def store_clone_view(request, store_id):
                         })
                     except GeoServerConnectionError as e:
                         form.add_error(None, f'Engine unreachable: {e}')
-                        return render(request, 'admin/geodata_engine/store/clone.html', {
+                        return render(request, 'admin/geodata_providers/store/clone.html', {
                             'form': form,
                             'source': source,
                             'title': f'Clone store: {source.name}',
@@ -159,9 +160,26 @@ def store_clone_view(request, store_id):
                         f"Store '{new_name}' cloned from '{source.name}' "
                         f"into workspace '{target_ws.name}' successfully.",
                     )
-                    return redirect(
-                        f'/admin/geodata_engine/store/{new_store.pk}/change/'
-                    )
+                    if engine:
+                        try:
+                            service = EngineClientFactory.create_sync_service(engine)
+                            sync_result = service.sync_stores_for_workspace(target_ws, created_by=request.user)
+                            if sync_result.get('errors'):
+                                messages.warning(
+                                    request,
+                                    f"Store sync completed with issues: {' | '.join(sync_result.get('errors', [])[:2])}",
+                                )
+                            else:
+                                messages.success(
+                                    request,
+                                    f"Workspace '{target_ws.name}' store sync completed.",
+                                )
+                        except Exception as exc:
+                            messages.warning(
+                                request,
+                                f"Store clone succeeded but sync failed: {exc}",
+                            )
+                    return redirect(reverse('admin:geodata_providers_store_change', args=[new_store.pk]))
     else:
         # Pre-fill from source, blank out name and password
         form = StoreCloneForm(initial={
@@ -176,7 +194,7 @@ def store_clone_view(request, store_id):
             # password intentionally not pre-filled
         })
 
-    return render(request, 'admin/geodata_engine/store/clone.html', {
+    return render(request, 'admin/geodata_providers/store/clone.html', {
         'form': form,
         'source': source,
         'title': f'Clone store: {source.name}',

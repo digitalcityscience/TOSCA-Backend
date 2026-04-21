@@ -45,7 +45,7 @@ def publish_layer(modeladmin, request, queryset):
             already = client.verify_featuretype(
                 workspace=layer.workspace.name,
                 store_name=layer.store.name,
-                table_name=layer.table_name,
+                featuretype_name=layer.name,
             )
             if already:
                 modeladmin.message_user(
@@ -65,13 +65,14 @@ def publish_layer(modeladmin, request, queryset):
                 srid=layer.srid,
                 geometry_type=layer.geometry_type,
                 layer_name=layer.name,
+                title=layer.title or layer.name,
             )
 
             # Step 3: verify
             verified = client.verify_featuretype(
                 workspace=layer.workspace.name,
                 store_name=layer.store.name,
-                table_name=layer.table_name,
+                featuretype_name=layer.name,
             )
             if not verified:
                 modeladmin.message_user(
@@ -144,7 +145,7 @@ def unpublish_layer(modeladmin, request, queryset):
             still_there = client.verify_featuretype(
                 workspace=layer.workspace.name,
                 store_name=layer.store.name,
-                table_name=layer.table_name,
+                featuretype_name=layer.name,
             )
             if still_there:
                 modeladmin.message_user(

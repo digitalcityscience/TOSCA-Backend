@@ -491,6 +491,8 @@ class GeoServerSyncService:
             result['detail'] = 'Django object NOT deleted — engine deletion must succeed first.'
             return result
 
+        was_already_deleted = bool(delete_result.get('already_deleted'))
+
         # 2. Verify: workspace is actually gone from engine
         try:
             workspaces_after = self.client.get_workspaces()
@@ -512,6 +514,8 @@ class GeoServerSyncService:
         # 3. Engine deletion confirmed (or unverifiable after success) — safe to delete Django object
         workspace.delete()
         logger.info(f"delete_workspace_safe '{workspace.name}': deleted from engine and Django.")
-        result.update({'success': True, 'deleted': 'both'})
+        result.update({
+            'success': True,
+            'deleted': 'engine_already_absent' if was_already_deleted else 'both',
+        })
         return result
-

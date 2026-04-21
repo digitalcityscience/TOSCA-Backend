@@ -2,6 +2,27 @@
 
 Tarih: 2026-04-20
 
+## Kısa Log
+
+- `2026-04-21` GeodataEngine add kırığı düzeltildi: olmayan custom template referansları kaldırıldı. `geri alindi`
+- `2026-04-21` Engine formunda connection validation eklendi. `yapildi`
+- `2026-04-21` Workspace create için remote create + verify eklendi. `yapildi`
+- `2026-04-21` Store create için PostGIS remote create + verify eklendi. `yapildi`
+- `2026-04-21` Workspace editte `name` ve `geodata_engine` readonly yapıldı. `yapildi`
+- `2026-04-21` Hardcoded admin linklerinin bir kısmı `reverse(...)` ile düzeltildi. `kismen yapildi`
+- `2026-04-21` Store clone template eklendi. `yapildi`
+- `2026-04-21` Layer add ekranı normal model formdan çıkarılıp Publish PostGIS akışına yönlendirildi. `yapildi`
+- `2026-04-21` Engine / Workspace / Store / Layer create-update sonrası ilgili sync otomatik tetiklenir kuralı eklendi. `yapildi`
+- `2026-04-21` Workspace create post-verify strict hale getirildi; GeoServer'da yoksa Django save olmaz. `yapildi`
+- `2026-04-21` Workspace verify liste yerine direct workspace detail endpoint ile sıkılaştırıldı. `yapildi`
+- `2026-04-21` Workspace verify hem detail hem list ile zorunlu hale getirildi; save sonrası workspace-level sync kullanildi. `yapildi`
+
+## Hemen Sonraki İşler
+
+- `GeodataEngine` delete bağlı kayıt varsa bloklanacak
+- `Workspace / Store / Layer` admin path stringleri tek namespace altında temizlenecek
+- Layer publish ve metadata update sonrası verify sertleştirilecek
+
 ## Amaç
 
 `geodata_providers` app'i için PoC seviyesinde, tamamen Django Admin üzerinden çalışan CRUD akışlarını sağlamlaştırmak.
@@ -141,7 +162,7 @@ Bu zaten [sync_service.py](/Users/hsadmin/Desktop/coding/dcs-django-api/tosca_ap
 
 ## 1. GeodataEngine CRUD
 
-### Create
+### Create ✅
 
 PoC seviyesinde sadece Django'da create edilebilir.
 
@@ -156,20 +177,23 @@ Akış:
 2. `validate_connection`
 3. Başarılıysa Django save
 4. Başarısızsa save etme
+5. Save sonrası otomatik `engine sync` çalışmalı
 
-### Update
+### Update ✅
 
 - `base_url`, `admin_username`, `admin_password` değişince yeniden `validate_connection`
 - Yeni connection doğrulanmadan kayıt update edilmemeli
+- Update sonrası otomatik `engine sync` çalışmalı
 
-### Delete
+### Delete ✅
 
-- Engine silmeden önce bağlı workspace/store/layer var mı kontrol edilmeli
-- PoC için bağlı kayıt varsa engine delete yasaklanmalı
+- Engine bir remote resource değil, connection tanımıdır
+- Bu yüzden engine delete local delete olarak çalışır
+- Bağlı `workspace/store/layer` kayıtları Django cascade ile birlikte silinir
 
 ## 2. Workspace CRUD
 
-### Create
+### Create ✅
 
 Akış:
 
@@ -178,25 +202,28 @@ Akış:
 3. Remote `create workspace`
 4. Remote `workspace exists` verify
 5. Başarılıysa Django save
+6. Save sonrası otomatik `workspace-level sync` çalışmalı
 
 Not:
 
 - `vector` gibi reserved workspace isimleri merkezi policy ile korunmalı
 
-### Update
+### Update ✅
 
 PoC için:
 
 - `name` readonly olsun
 - `geodata_engine` readonly olsun
 - Sadece `description` update edilsin
+- Update sonrası otomatik `workspace-level sync` çalışmalı
+- Update sonrası otomatik `engine sync` çalışmalı
 
 Gerekçe:
 
 - Workspace rename remote tarafta riskli
 - Engine taşıma fiilen başka obje lifecycle'ı demek
 
-### Delete
+### Delete ✅
 
 Akış:
 
@@ -208,6 +235,12 @@ Ek kontrol:
 
 - İçinde store/layer varsa silent delete değil, açık policy ile davranılmalı
 - PoC için cascade delete ancak remote başarıdan sonra olmalı
+
+Uygulanan policy:
+
+- İçinde `store` veya `layer` olan workspace admin'den silinmez
+- Önce bağımlı kayıtlar temizlenir
+- Sonra remote delete + verify + Django delete çalışır
 
 ## 3. Store CRUD
 
@@ -223,6 +256,7 @@ Akış:
 4. Remote create store
 5. Remote verify: ilgili workspace altında store gerçekten oluşmuş mu
 6. Başarılıysa Django save
+7. Save sonrası otomatik ilgili workspace için sync çalışmalı
 
 Burada özellikle sadece HTTP response'a güvenilmeyecek.
 
@@ -244,6 +278,7 @@ Pragmatik karar:
 - `name`, `workspace`, `store_type` readonly kalsın
 - Connection değişince GeoServer datastore update servisi yazılsın
 - Remote update güvenli değilse "recreate required" mesajı verilsin
+- Desteklenen update sonrası otomatik ilgili workspace için sync çalışmalı
 
 ### Delete
 
@@ -278,6 +313,7 @@ Akış:
 3. Remote publish
 4. Remote verify
 5. Django `Layer` kaydı oluştur
+6. Create sonrası otomatik ilgili workspace için layer sync çalışmalı
 
 ### Update
 
@@ -292,6 +328,7 @@ Eğer layer `PUBLISHED` ise:
 1. Remote metadata update
 2. Remote detail fetch ile verify
 3. Sonra Django update
+4. Update sonrası otomatik ilgili workspace için layer sync çalışmalı
 
 `table_name`, `workspace`, `store`, `geometry_column`, `geometry_type` readonly kalmalı.
 

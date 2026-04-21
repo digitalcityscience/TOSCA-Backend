@@ -567,7 +567,7 @@ class LayerViewSet(viewsets.ModelViewSet):
                     gs_client.update_featuretype(
                         workspace=layer.workspace.name,
                         store_name=layer.store.name,
-                        table_name=layer.table_name,
+                        featuretype_name=layer.name,
                         title=incoming.get('title', layer.title) or layer.title,
                         abstract=incoming.get('description', layer.description) or None,
                     )
@@ -763,6 +763,7 @@ class LayerViewSet(viewsets.ModelViewSet):
                 srid=srid,
                 geometry_type=geometry_type,
                 layer_name=layer_name,
+                title=title or layer_name,
             )
         except Exception as exc:
             logger.error('GeoServer publish_featuretype failed for %s/%s: %s', workspace.name, layer_name, exc)
@@ -778,7 +779,7 @@ class LayerViewSet(viewsets.ModelViewSet):
         verified = client.verify_featuretype(
             workspace=workspace.name,
             store_name=store.name,
-            table_name=table_name,
+            featuretype_name=layer_name,
         )
         if not verified:
             logger.error(
@@ -791,11 +792,11 @@ class LayerViewSet(viewsets.ModelViewSet):
             )
 
         # Step 4: Persist in Django.
-        # Layer.name is the GeoServer featuretype identifier (= table_name).
-        # Layer.title is the user-supplied display name (= layer_name).
+        # Layer.name is the GeoServer resource/featuretype identifier.
+        # Layer.table_name is the native PostGIS table/view name.
         layer, created = Layer.objects.get_or_create(
             workspace=workspace,
-            name=table_name,
+            name=layer_name,
             defaults={
                 'store': store,
                 'title': title,

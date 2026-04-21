@@ -1,19 +1,121 @@
+import logging
+
 from django.contrib import admin
 from django.contrib.admin import SimpleListFilter
 from django import forms
+from django.http import HttpResponseRedirect
+from django.shortcuts import redirect
 from django.utils.html import format_html
 from django.contrib import messages
 from django.db.models import Count
-from django.urls import path
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.urls import path, reverse
 from .admin_actions import sync_engines, test_connection, set_as_default, sync_workspaces, clone_store, publish_layer, unpublish_layer
 from .admin_views import (
     engine_test_connection_view, engine_sync_view,
     workspace_sync_view,
     store_postgis_tables_view, store_clone_view,
-    publish_postgis_view, stores_for_workspace_view,
+    publish_postgis_view, stores_for_workspace_view, tables_for_store_view,
 )
 from .engine_factory import EngineClientFactory
+from .exceptions import GeoServerConnectionError, GeodataEngineError
 from .models import GeodataEngine, Workspace, Store, Layer
+
+logger = logging.getLogger(__name__)
+
+
+class DeleteAborted(Exception):
+    """Abort admin delete flow without turning it into a 403."""
+
+    def __init__(self, message):
+        self.message = message
+        super().__init__(message)
+
+
+def _admin_change_url(obj):
+    return reverse(
+        f'admin:{obj._meta.app_label}_{obj._meta.model_name}_change',
+        args=[obj.pk],
+    )
+
+
+class RemoteDeleteAdminMixin:
+    def delete_view(self, request, object_id, extra_context=None):
+        try:
+            return super().delete_view(request, object_id, extra_context=extra_context)
+        except DeleteAborted as exc:
+            self.message_user(request, exc.message, messages.ERROR)
+            try:
+                obj = self.get_object(request, object_id)
+            except Exception:
+                obj = None
+            if obj is not None:
+                return redirect(_admin_change_url(obj))
+            return redirect(reverse(f'admin:{self.model._meta.app_label}_{self.model._meta.model_name}_changelist'))
+
+
+def _message_sync_result(modeladmin, request, label, result):
+    if result.get('success'):
+        modeladmin.message_user(
+            request,
+            f"{label} sync completed.",
+            messages.SUCCESS,
+        )
+        return
+
+    modeladmin.message_user(
+        request,
+        f"{label} sync failed: {result.get('error', 'unknown error')}",
+        messages.WARNING,
+    )
+
+
+def _run_engine_sync(modeladmin, request, engine):
+    if not engine:
+        return
+    try:
+        service = EngineClientFactory.create_sync_service(engine)
+        result = service.sync_all_resources(created_by=request.user)
+        _message_sync_result(modeladmin, request, f"Engine '{engine.name}'", result)
+    except (GeoServerConnectionError, GeodataEngineError) as exc:
+        modeladmin.message_user(
+            request,
+            f"Engine '{engine.name}' sync failed: {exc}",
+            messages.WARNING,
+        )
+
+
+def _run_workspace_sync(modeladmin, request, workspace):
+    engine = workspace.geodata_engine if workspace else None
+    if not engine:
+        return
+
+    try:
+        service = EngineClientFactory.create_sync_service(engine)
+        store_result = service.sync_stores_for_workspace(workspace, created_by=request.user)
+        layer_result = service.sync_layers_for_workspace(workspace, created_by=request.user)
+    except (GeoServerConnectionError, GeodataEngineError) as exc:
+        modeladmin.message_user(
+            request,
+            f"Workspace '{workspace.name}' sync failed: {exc}",
+            messages.WARNING,
+        )
+        return
+
+    if store_result.get('errors') or layer_result.get('errors'):
+        errors = store_result.get('errors', []) + layer_result.get('errors', [])
+        modeladmin.message_user(
+            request,
+            f"Workspace '{workspace.name}' sync completed with issues: {' | '.join(errors[:2])}",
+            messages.WARNING,
+        )
+        return
+
+    modeladmin.message_user(
+        request,
+        f"Workspace '{workspace.name}' sync completed.",
+        messages.SUCCESS,
+    )
 
 
 # Admin Forms
@@ -27,11 +129,90 @@ class GeodataEngineForm(forms.ModelForm):
             'base_url': forms.TextInput(attrs={'size': 60}),
             'description': forms.Textarea(attrs={'rows': 3}),
         }
-    
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if self.errors:
+            return cleaned_data
+
+        engine_type = cleaned_data.get('engine_type') or self.instance.engine_type
+        if engine_type != 'geoserver':
+            return cleaned_data
+
+        password = cleaned_data.get('admin_password')
+        if not self.instance._state.adding and not password:
+            password = self.instance.decrypted_admin_password
+
+        temp_engine = GeodataEngine(
+            name=cleaned_data.get('name') or self.instance.name,
+            description=cleaned_data.get('description') or self.instance.description,
+            engine_type=engine_type,
+            base_url=cleaned_data.get('base_url') or self.instance.base_url,
+            admin_username=cleaned_data.get('admin_username') or self.instance.admin_username,
+            admin_password=password or '',
+            api_key=cleaned_data.get('api_key') or self.instance.api_key,
+            is_active=cleaned_data.get('is_active', self.instance.is_active),
+            is_default=cleaned_data.get('is_default', self.instance.is_default),
+        )
+
+        try:
+            client = EngineClientFactory.create_client(temp_engine)
+            client.validate_connection()
+        except (GeoServerConnectionError, GeodataEngineError) as exc:
+            raise ValidationError(f'Engine connection could not be validated: {exc}')
+
+        return cleaned_data
+
+
+class WorkspaceAdminForm(forms.ModelForm):
+    class Meta:
+        model = Workspace
+        fields = '__all__'
+        widgets = {
+            'description': forms.Textarea(attrs={'rows': 3}),
+        }
+
+    def clean_name(self):
+        name = (self.cleaned_data.get('name') or '').strip()
+        if name.lower() == 'vector':
+            raise ValidationError("Workspace name 'vector' is reserved.")
+        return name
+
+    def _post_clean(self):
+        super()._post_clean()
+        if self.errors or not self.instance._state.adding:
+            return
+
+        engine = self.cleaned_data.get('geodata_engine')
+        name = self.cleaned_data.get('name')
+        if not engine or not name:
+            return
+
+        try:
+            client = EngineClientFactory.create_client(engine)
+            result = client.create_workspace(name)
+        except (GeoServerConnectionError, GeodataEngineError) as exc:
+            self.add_error(None, f"Workspace could not be created in engine: {exc}")
+            return
+
+        if not result.get('success'):
+            self.add_error(
+                None,
+                result.get('error') or result.get('message') or 'Workspace create failed in engine.',
+            )
+            return
+
+        verification = client.post_verify_workspace(name, expected_exists=True)
+        if not verification.get('verified'):
+            self.add_error(
+                None,
+                verification.get('message') or 'Workspace creation could not be verified in engine.',
+            )
+
 
 # GeodataEngine Admin - Engine Management
 @admin.register(GeodataEngine)
-class GeodataEngineAdmin(admin.ModelAdmin):
+class GeodataEngineAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     form = GeodataEngineForm
     list_display = [
         'name', 'engine_type', 'base_url',
@@ -43,7 +224,6 @@ class GeodataEngineAdmin(admin.ModelAdmin):
     readonly_fields = ['id', 'created_at', 'updated_at']
     list_per_page = 25
     actions = [sync_engines, test_connection, set_as_default]
-    change_form_template = 'admin/geodata_providers/geodataengine/change_form.html'
 
     fieldsets = (
         ('Identity', {
@@ -122,13 +302,54 @@ class GeodataEngineAdmin(admin.ModelAdmin):
     # Save / exclude helpers
     # ------------------------------------------------------------------
     def save_model(self, request, obj, form, change):
+        if change and not form.cleaned_data.get('admin_password'):
+            obj.admin_password = (
+                GeodataEngine.objects.filter(pk=obj.pk).values_list('admin_password', flat=True).first() or ''
+            )
+        if change and not form.cleaned_data.get('api_key'):
+            obj.api_key = GeodataEngine.objects.filter(pk=obj.pk).values_list('api_key', flat=True).first() or ''
         if not change:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
+        _run_engine_sync(self, request, obj)
 
     def get_exclude(self, request, obj=None):
         """Hide auto-managed fields from form."""
         return ['created_by']
+
+    def delete_model(self, request, obj):
+        dependency_counts = {
+            'workspaces': obj.workspaces.count(),
+            'stores': Store.objects.filter(workspace__geodata_engine=obj).count(),
+            'layers': Layer.objects.filter(workspace__geodata_engine=obj).count(),
+        }
+        if any(dependency_counts.values()):
+            details = ", ".join(
+                f"{label}={value}" for label, value in dependency_counts.items() if value
+            )
+            raise DeleteAborted(
+                f"Cannot delete engine '{obj.name}': dependent records exist ({details})."
+            )
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        for obj in queryset:
+            dependency_counts = {
+                'workspaces': obj.workspaces.count(),
+                'stores': Store.objects.filter(workspace__geodata_engine=obj).count(),
+                'layers': Layer.objects.filter(workspace__geodata_engine=obj).count(),
+            }
+            if any(dependency_counts.values()):
+                details = ", ".join(
+                    f"{label}={value}" for label, value in dependency_counts.items() if value
+                )
+                self.message_user(
+                    request,
+                    f"Engine '{obj.name}' NOT deleted: dependent records exist ({details}).",
+                    messages.ERROR,
+                )
+                continue
+            super().delete_model(request, obj)
     
 # ──────────────────────────────────────────────────────────────────────────────
 # Phase 2 — Workspace Admin
@@ -158,7 +379,8 @@ class StoreInline(admin.TabularInline):
 
 
 @admin.register(Workspace)
-class WorkspaceAdmin(admin.ModelAdmin):
+class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
+    form = WorkspaceAdminForm
     list_display = ['name', 'engine_link', 'description', 'store_count', 'layer_count', 'created_at']
     list_filter = ['geodata_engine', 'geodata_engine__engine_type']
     search_fields = ['name', 'geodata_engine__name']
@@ -166,7 +388,6 @@ class WorkspaceAdmin(admin.ModelAdmin):
     inlines = [StoreInline]
     actions = [sync_workspaces]
     list_per_page = 25
-    change_form_template = 'admin/geodata_providers/workspace/change_form.html'
 
     fieldsets = (
         ('Identity', {
@@ -204,7 +425,7 @@ class WorkspaceAdmin(admin.ModelAdmin):
     def get_readonly_fields(self, request, obj=None):
         readonly = list(self.readonly_fields)
         if obj:  # lock engine when editing existing
-            readonly.append('geodata_engine')
+            readonly += ['geodata_engine', 'name']
         return readonly
 
     def get_form(self, request, obj=None, **kwargs):
@@ -221,8 +442,7 @@ class WorkspaceAdmin(admin.ModelAdmin):
     def engine_link(self, obj):
         if not obj.geodata_engine:
             return '—'
-        url = f'/admin/geodata_providers/geodataengine/{obj.geodata_engine.pk}/change/'
-        return format_html('<a href="{}">{}</a>', url, obj.geodata_engine.name)
+        return format_html('<a href="{}">{}</a>', _admin_change_url(obj.geodata_engine), obj.geodata_engine.name)
     engine_link.short_description = 'Engine'
     engine_link.admin_order_field = 'geodata_engine__name'
 
@@ -240,9 +460,38 @@ class WorkspaceAdmin(admin.ModelAdmin):
     # Save
     # ------------------------------------------------------------------
     def save_model(self, request, obj, form, change):
+        logger.info(
+            "WorkspaceAdmin.save_model start: change=%s name=%s engine_id=%s",
+            change,
+            obj.name,
+            obj.geodata_engine_id,
+        )
         if not change:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
+        exists_after_save = Workspace.objects.filter(pk=obj.pk).exists()
+        logger.info(
+            "WorkspaceAdmin.save_model persisted: pk=%s exists_after_save=%s",
+            obj.pk,
+            exists_after_save,
+        )
+        _run_workspace_sync(self, request, obj)
+
+    def _workspace_dependency_counts(self, obj):
+        return {
+            'stores': obj.stores.count(),
+            'layers': obj.layers.count(),
+        }
+
+    def _ensure_workspace_can_be_deleted(self, obj):
+        counts = self._workspace_dependency_counts(obj)
+        if any(counts.values()):
+            details = ", ".join(
+                f"{label}={value}" for label, value in counts.items() if value
+            )
+            raise DeleteAborted(
+                f"Cannot delete workspace '{obj.name}': dependent records exist ({details})."
+            )
 
     # ------------------------------------------------------------------
     # Delete safety (task 2.4) — engine-first, never delete Django if GeoServer fails
@@ -257,19 +506,26 @@ class WorkspaceAdmin(admin.ModelAdmin):
             )
             return
 
+        self._ensure_workspace_can_be_deleted(obj)
+
         engine = obj.geodata_engine
         if not engine:
             obj.delete()
             return
 
         from .sync_service import GeoServerSyncService
-        from django.core.exceptions import PermissionDenied
         service = GeoServerSyncService(engine)
         result = service.delete_workspace_safe(obj)
         if not result.get('success'):
-            raise PermissionDenied(
+            raise DeleteAborted(
                 f"Cannot delete workspace '{obj.name}': "
                 f"{result.get('error', 'Engine deletion failed.')}"
+            )
+        if result.get('deleted') == 'engine_already_absent':
+            self.message_user(
+                request,
+                f"Workspace '{obj.name}' was already absent in GeoServer. Django record was removed.",
+                messages.WARNING,
             )
 
     def delete_queryset(self, request, queryset):
@@ -285,6 +541,12 @@ class WorkspaceAdmin(admin.ModelAdmin):
                 )
                 continue
 
+            try:
+                self._ensure_workspace_can_be_deleted(obj)
+            except DeleteAborted as exc:
+                self.message_user(request, str(exc), messages.ERROR)
+                continue
+
             engine = obj.geodata_engine
             if not engine:
                 obj.delete()
@@ -298,6 +560,12 @@ class WorkspaceAdmin(admin.ModelAdmin):
                     f"Workspace '{obj.name}' NOT deleted — GeoServer error: "
                     f"{result.get('error', 'unknown')}",
                     messages.ERROR,
+                )
+            elif result.get('deleted') == 'engine_already_absent':
+                self.message_user(
+                    request,
+                    f"Workspace '{obj.name}' was already absent in GeoServer. Django record was removed.",
+                    messages.WARNING,
                 )
     
 # ──────────────────────────────────────────────────────────────────────────────
@@ -319,6 +587,89 @@ class StoreAdminForm(forms.ModelForm):
         help_texts = {
             'password': 'Leave blank to keep existing password.',
         }
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if self.errors:
+            return cleaned_data
+
+        workspace = cleaned_data.get('workspace') or self.instance.workspace
+        store_type = cleaned_data.get('store_type') or self.instance.store_type
+        engine = workspace.geodata_engine if workspace else None
+
+        if not self.instance._state.adding:
+            if engine and store_type == 'postgis':
+                blocked_fields = ['host', 'port', 'database', 'username', 'schema']
+                changed_fields = [
+                    field for field in blocked_fields
+                    if cleaned_data.get(field) != getattr(self.instance, field)
+                ]
+                if cleaned_data.get('password'):
+                    changed_fields.append('password')
+                if changed_fields:
+                    raise ValidationError(
+                        "Updating an existing store's remote connection fields is not supported yet. "
+                        "Recreate the store or use an explicit sync-safe flow."
+                    )
+        return cleaned_data
+
+    def _post_clean(self):
+        super()._post_clean()
+        if self.errors or not self.instance._state.adding:
+            return
+
+        workspace = self.cleaned_data.get('workspace')
+        store_type = self.cleaned_data.get('store_type')
+        engine = workspace.geodata_engine if workspace else None
+
+        if not engine or store_type != 'postgis':
+            return
+
+        password = self.cleaned_data.get('password')
+        if not password:
+            self.add_error('password', 'Password is required to create a PostGIS store in the engine.')
+            return
+
+        try:
+            client = EngineClientFactory.create_client(engine)
+            result = client.create_postgis_store(
+                name=self.cleaned_data.get('name'),
+                workspace=workspace.name,
+                host=self.cleaned_data.get('host'),
+                port=self.cleaned_data.get('port') or 5432,
+                database=self.cleaned_data.get('database'),
+                username=self.cleaned_data.get('username'),
+                password=password,
+                schema=self.cleaned_data.get('schema') or 'public',
+            )
+        except (GeoServerConnectionError, GeodataEngineError) as exc:
+            self.add_error(None, f"Store could not be created in engine: {exc}")
+            return
+
+        if not result.get('success'):
+            self.add_error(
+                None,
+                result.get('error') or result.get('message') or 'Store create failed in engine.',
+            )
+            return
+
+        verification = client.post_verify_store(
+            workspace.name,
+            self.cleaned_data.get('name'),
+            expected_exists=True,
+            expected_details={
+                'host': self.cleaned_data.get('host'),
+                'port': self.cleaned_data.get('port') or 5432,
+                'database': self.cleaned_data.get('database'),
+                'username': self.cleaned_data.get('username'),
+                'schema': self.cleaned_data.get('schema') or 'public',
+            },
+        )
+        if not verification.get('verified'):
+            self.add_error(
+                None,
+                verification.get('message') or 'Store creation could not be verified in engine.',
+            )
 
 
 class StoreCloneForm(forms.Form):
@@ -382,12 +733,12 @@ class NoCredentialFilter(SimpleListFilter):
 
 
 @admin.register(Store)
-class StoreAdmin(admin.ModelAdmin):
+class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     form = StoreAdminForm
     actions = [clone_store]
     list_display = [
         'name', 'workspace_link', 'store_type',
-        'host', 'schema', 'has_password_badge', 'layer_count',
+        'host', 'schema', 'geoserver_access_badge', 'layer_count',
     ]
     list_filter = ['store_type', 'workspace__geodata_engine', 'workspace', NoCredentialFilter]
     search_fields = ['name', 'workspace__name', 'host', 'schema']
@@ -464,23 +815,31 @@ class StoreAdmin(admin.ModelAdmin):
     def workspace_link(self, obj):
         if not obj.workspace:
             return '—'
-        url = f'/admin/geodata_providersers/workspace/{obj.workspace.pk}/change/'
-        return format_html('<a href="{}">{}</a>', url, obj.workspace.name)
+        return format_html('<a href="{}">{}</a>', _admin_change_url(obj.workspace), obj.workspace.name)
     workspace_link.short_description = 'Workspace'
     workspace_link.admin_order_field = 'workspace__name'
 
-    def has_password_badge(self, obj):
-        # Use decrypted_password — NOT bool(obj.password) — so a corrupt
-        # encrypted token (decrypt raises ValueError) shows ✗ Missing, not ✓ Set.
+    def geoserver_access_badge(self, obj):
+        engine = obj.workspace.geodata_engine if obj.workspace else None
+        workspace_name = obj.workspace.name if obj.workspace else None
+        if not engine or not workspace_name:
+            return format_html('<span style="color:#666;font-weight:600;">&#8212; No engine</span>')
+
         try:
-            usable = bool(obj.decrypted_password)
-        except (ValueError, Exception):
-            usable = False
-        if usable:
-            return format_html('<span style="color:#3ecf8e;font-weight:600;">&#10003; Set</span>')
-        return format_html('<span style="color:#e54d4d;font-weight:600;">&#10007; Missing</span>')
-    has_password_badge.short_description = 'Credential'
-    has_password_badge.admin_order_field = 'password'
+            client = EngineClientFactory.create_client(engine)
+            result = client.probe_store_access(workspace_name, obj.name)
+        except (GeoServerConnectionError, GeodataEngineError) as exc:
+            result = {'success': False, 'message': str(exc)}
+
+        if result.get('success'):
+            return format_html(
+                '<span style="color:#3ecf8e;font-weight:600;">&#10003; GeoServer OK</span>'
+            )
+
+        return format_html(
+            '<span style="color:#e54d4d;font-weight:600;">&#10007; GeoServer Error</span>'
+        )
+    geoserver_access_badge.short_description = 'GeoServer Access'
 
     def layer_count(self, obj):
         return obj._layer_count
@@ -494,16 +853,34 @@ class StoreAdmin(admin.ModelAdmin):
         if change and not form.cleaned_data.get('password'):
             # Reload the stored encrypted value so we never overwrite with ''
             obj.password = Store.objects.filter(pk=obj.pk).values_list('password', flat=True).first() or ''
+        if obj.workspace and not obj.geodata_engine:
+            obj.geodata_engine = obj.workspace.geodata_engine
         if not change:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
+        if obj.workspace:
+            _run_workspace_sync(self, request, obj.workspace)
+
+    def _store_dependency_counts(self, obj):
+        return {
+            'layers': obj.layers.count(),
+        }
+
+    def _ensure_store_can_be_deleted(self, obj):
+        counts = self._store_dependency_counts(obj)
+        if any(counts.values()):
+            details = ", ".join(
+                f"{label}={value}" for label, value in counts.items() if value
+            )
+            raise DeleteAborted(
+                f"Cannot delete store '{obj.name}': dependent records exist ({details})."
+            )
 
     # ------------------------------------------------------------------
     # Delete safety (task 3.5) — engine-first
     # ------------------------------------------------------------------
     def delete_model(self, request, obj):
-        from django.core.exceptions import PermissionDenied
-
+        self._ensure_store_can_be_deleted(obj)
         engine = obj.workspace.geodata_engine if obj.workspace else None
         workspace_name = obj.workspace.name if obj.workspace else None
 
@@ -514,16 +891,26 @@ class StoreAdmin(admin.ModelAdmin):
         client = EngineClientFactory.create_client(engine)
         result = client.delete_store(workspace_name, obj.name)
         if not result.get('success'):
-            raise PermissionDenied(
+            raise DeleteAborted(
                 f"Cannot delete store '{obj.name}': "
                 f"{result.get('error', 'Engine deletion failed.')}"
+            )
+        if result.get('already_deleted'):
+            self.message_user(
+                request,
+                f"Store '{obj.name}' was already absent in GeoServer. Django record was removed.",
+                messages.WARNING,
             )
         obj.delete()
 
     def delete_queryset(self, request, queryset):
-        from django.core.exceptions import PermissionDenied
-
         for obj in queryset.select_related('workspace__geodata_engine'):
+            try:
+                self._ensure_store_can_be_deleted(obj)
+            except DeleteAborted as exc:
+                self.message_user(request, str(exc), messages.ERROR)
+                continue
+
             engine = obj.workspace.geodata_engine if obj.workspace else None
             workspace_name = obj.workspace.name if obj.workspace else None
 
@@ -541,6 +928,12 @@ class StoreAdmin(admin.ModelAdmin):
                     messages.ERROR,
                 )
             else:
+                if result.get('already_deleted'):
+                    self.message_user(
+                        request,
+                        f"Store '{obj.name}' was already absent in GeoServer. Django record was removed.",
+                        messages.WARNING,
+                    )
                 obj.delete()
 
 
@@ -549,7 +942,7 @@ class StoreAdmin(admin.ModelAdmin):
 # ======================================================================
 
 @admin.register(Layer)
-class LayerAdmin(admin.ModelAdmin):
+class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     actions = [publish_layer, unpublish_layer]
     list_display = [
         'name', 'title', 'workspace_link', 'store_name',
@@ -563,7 +956,6 @@ class LayerAdmin(admin.ModelAdmin):
         'published_url', 'publishing_error',
     ]
     list_per_page = 25
-    change_list_template = 'admin/geodata_providers/layer/change_list.html'
 
     fieldsets = (
         ('Identity', {
@@ -599,21 +991,32 @@ class LayerAdmin(admin.ModelAdmin):
                 self.admin_site.admin_view(stores_for_workspace_view),
                 name='layer_stores_for_workspace',
             ),
+            path(
+                'tables-for-store/',
+                self.admin_site.admin_view(tables_for_store_view),
+                name='layer_tables_for_store',
+            ),
         ]
         return custom + super().get_urls()
+
+    def add_view(self, request, form_url='', extra_context=None):
+        self.message_user(
+            request,
+            "Layer creation is handled via the Publish PostGIS flow.",
+            messages.INFO,
+        )
+        return HttpResponseRedirect(reverse('admin:layer_publish_postgis'))
 
     # ------------------------------------------------------------------
     # Computed list_display columns
     # ------------------------------------------------------------------
     def workspace_link(self, obj):
-        url = f'/admin/geodata_providers/workspace/{obj.workspace_id}/change/'
-        return format_html('<a href="{}">{}</a>', url, obj.workspace.name)
+        return format_html('<a href="{}">{}</a>', _admin_change_url(obj.workspace), obj.workspace.name)
     workspace_link.short_description = 'Workspace'
     workspace_link.admin_order_field = 'workspace__name'
 
     def store_name(self, obj):
-        url = f'/admin/geodata_providers/store/{obj.store_id}/change/'
-        return format_html('<a href="{}">{}</a>', url, obj.store.name)
+        return format_html('<a href="{}">{}</a>', _admin_change_url(obj.store), obj.store.name)
     store_name.short_description = 'Store'
     store_name.admin_order_field = 'store__name'
 
@@ -655,7 +1058,7 @@ class LayerAdmin(admin.ModelAdmin):
                     client.update_featuretype(
                         workspace=obj.workspace.name,
                         store_name=obj.store.name,
-                        table_name=obj.table_name,
+                        featuretype_name=obj.name,
                         title=obj.title or obj.name,
                         abstract=obj.description or None,
                     )
@@ -668,51 +1071,71 @@ class LayerAdmin(admin.ModelAdmin):
                     return   # abort Django save too
 
         super().save_model(request, obj, form, change)
+        _run_workspace_sync(self, request, obj.workspace)
 
     # ------------------------------------------------------------------
     # 4.5 — Delete safety: GeoServer-first for PUBLISHED layers
     # ------------------------------------------------------------------
     def delete_model(self, request, obj):
-        from django.core.exceptions import PermissionDenied
-
         if obj.publishing_state == 'PUBLISHED':
             engine = obj.workspace.geodata_engine if obj.workspace else None
             if engine:
-                try:
-                    client = EngineClientFactory.create_client(engine)
-                    client.delete_layer(obj.workspace.name, obj.name)
-                except Exception as exc:
-                    raise PermissionDenied(
-                        f"Cannot delete layer '{obj.name}': GeoServer deletion failed — {exc}"
+                client = EngineClientFactory.create_client(engine)
+                result = client.delete_layer(obj.workspace.name, obj.name)
+                if not result.get('success'):
+                    raise DeleteAborted(
+                        f"Cannot delete layer '{obj.name}': "
+                        f"{result.get('error', result.get('message', 'GeoServer deletion failed.'))}"
+                    )
+                if result.get('already_deleted'):
+                    self.message_user(
+                        request,
+                        f"Layer '{obj.name}' was already absent in GeoServer. Django record was removed.",
+                        messages.WARNING,
                     )
                 # Verify gone
                 still_there = client.verify_featuretype(
                     workspace=obj.workspace.name,
                     store_name=obj.store.name,
-                    table_name=obj.table_name,
+                    featuretype_name=obj.name,
                 )
                 if still_there:
-                    raise PermissionDenied(
+                    raise DeleteAborted(
                         f"Cannot delete layer '{obj.name}': still exists in GeoServer after delete call."
                     )
         obj.delete()
 
     def delete_queryset(self, request, queryset):
-        from django.core.exceptions import PermissionDenied
-
         for obj in queryset.select_related('workspace__geodata_engine', 'store'):
             if obj.publishing_state == 'PUBLISHED':
                 engine = obj.workspace.geodata_engine if obj.workspace else None
                 if engine:
-                    try:
-                        client = EngineClientFactory.create_client(engine)
-                        client.delete_layer(obj.workspace.name, obj.name)
-                    except Exception as exc:
+                    client = EngineClientFactory.create_client(engine)
+                    result = client.delete_layer(obj.workspace.name, obj.name)
+                    if not result.get('success'):
                         self.message_user(
                             request,
-                            f"Layer '{obj.name}' NOT deleted — GeoServer error: {exc}",
+                            f"Layer '{obj.name}' NOT deleted — GeoServer error: "
+                            f"{result.get('error', result.get('message', 'unknown'))}",
+                            messages.ERROR,
+                        )
+                        continue
+                    if result.get('already_deleted'):
+                        self.message_user(
+                            request,
+                            f"Layer '{obj.name}' was already absent in GeoServer. Django record was removed.",
+                            messages.WARNING,
+                        )
+                    still_there = client.verify_featuretype(
+                        workspace=obj.workspace.name,
+                        store_name=obj.store.name,
+                        featuretype_name=obj.name,
+                    )
+                    if still_there:
+                        self.message_user(
+                            request,
+                            f"Layer '{obj.name}' NOT deleted — still exists in GeoServer after delete call.",
                             messages.ERROR,
                         )
                         continue
             obj.delete()
-

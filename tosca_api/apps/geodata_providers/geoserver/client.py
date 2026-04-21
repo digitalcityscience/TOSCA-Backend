@@ -5,6 +5,7 @@ import sys
 import os
 import logging
 from typing import Dict, Optional
+import requests
 
 # Add geoserver-rest to Python path
 geoserver_rest_path = os.path.join(os.path.dirname(__file__), 'geoserver-rest')
@@ -34,12 +35,50 @@ class GeoServerClient:
         """
         self.url = url
         self.username = username
+        self.password = password
         try:
             self._client = GeoServerRestClient(url, username=username, password=password)
             logger.info(f"GeoServer client initialized for {url}")
         except Exception as e:
             logger.error(f"Failed to initialize GeoServer client: {e}")
             raise GeoServerConnectionError(f"Failed to connect to GeoServer: {e}")
+
+    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
+        url = f"{self.url.rstrip('/')}{path}"
+        try:
+            response = requests.request(
+                method=method,
+                url=url,
+                auth=(self.username, self.password),
+                timeout=30,
+                **kwargs,
+            )
+            logger.info(
+                "GeoServer %s %s -> HTTP %s",
+                method.upper(),
+                url,
+                response.status_code,
+            )
+            return response
+        except Exception as e:
+            logger.error("GeoServer request failed: %s %s -> %s", method, url, e)
+            raise GeoServerConnectionError(f"GeoServer request failed for {url}: {e}")
+
+    @staticmethod
+    def _exception_status(exc) -> Optional[int]:
+        status = getattr(exc, 'status', None)
+        if isinstance(status, int):
+            return status
+        message = str(exc)
+        if 'Status : 404' in message or 'HTTP 404' in message:
+            return 404
+        if 'Status : 403' in message or 'HTTP 403' in message:
+            return 403
+        return None
+
+    @classmethod
+    def _is_not_found_error(cls, exc) -> bool:
+        return cls._exception_status(exc) == 404
 
     # Workspace operations
 
@@ -70,7 +109,26 @@ class GeoServerClient:
 
             # 2) OPERATION: Create workspace in GeoServer.
             logger.info(f"Creating workspace in GeoServer: {name}")
-            raw_result = self._client.create_workspace(workspace=name)
+            payload = f"<workspace><name>{name}</name></workspace>"
+            logger.info("GeoServer create_workspace payload for '%s': %s", name, payload)
+            response = self._request(
+                "post",
+                "/rest/workspaces",
+                data=payload,
+                headers={"content-type": "text/xml"},
+            )
+            logger.info(
+                "GeoServer create_workspace response for '%s': status=%s body=%r",
+                name,
+                response.status_code,
+                response.text[:500],
+            )
+            raw_result = {
+                'success': response.status_code == 201,
+                'validated': response.status_code == 201,
+                'status_code': response.status_code,
+                'message': response.text.strip() or f"HTTP {response.status_code}",
+            }
 
             # 3) RESPONSE VALIDATION: Validate GeoServer response.
             validated_result = self.validate_response(raw_result, f"create_workspace({name})")
@@ -85,7 +143,10 @@ class GeoServerClient:
 
             if not verification.get('verified', False):
                 logger.error(f"Post-verification failed for workspace {name}: {verification['message']}")
-                # Rollback logic can be added here.
+                raise GeoServerPublishError(
+                    verification.get('message')
+                    or f"Workspace '{name}' could not be verified in GeoServer after create."
+                )
 
             # 5) FINAL RESPONSE: Return aggregated result details.
             final_result = {
@@ -95,7 +156,7 @@ class GeoServerClient:
                 'created': True,
                 'pre_existed': False,
                 'validated': validated_result.get('validated', False),
-                'verified': verification.get('verified', False),
+                'verified': True,
                 'geoserver_response': validated_result,
             }
 
@@ -139,10 +200,18 @@ class GeoServerClient:
                 }
 
             # Delete workspace from GeoServer.
-            result = self._client.delete_workspace(workspace=name)
+            response = self._request("delete", f"/rest/workspaces/{name}", params={"recurse": "true"})
 
             # Validate response.
-            validated_result = self.validate_response(result, f"delete_workspace({name})")
+            validated_result = self.validate_response(
+                {
+                    'success': response.status_code == 200,
+                    'validated': response.status_code == 200,
+                    'status_code': response.status_code,
+                    'message': response.text.strip() or f"HTTP {response.status_code}",
+                },
+                f"delete_workspace({name})",
+            )
 
             if not validated_result.get('success', False):
                 raise GeoServerPublishError(
@@ -183,11 +252,35 @@ class GeoServerClient:
             True if workspace exists
         """
         try:
-            workspaces = self.get_workspaces()
-            return workspace in workspaces
+            self.get_workspace(workspace)
+            return True
         except Exception as e:
             logger.warning(f"Failed to check workspace {workspace}: {e}")
             return False
+
+    def get_workspace(self, workspace: str) -> Dict:
+        """
+        Get a single workspace from GeoServer.
+        Raises GeoServerConnectionError on any network or HTTP failure.
+        """
+        try:
+            response = self._request("get", f"/rest/workspaces/{workspace}.json", params={"recurse": "true"})
+            if response.status_code != 200:
+                raise GeoServerConnectionError(
+                    f"Workspace detail failed with HTTP {response.status_code}: {response.text}"
+                )
+            result = response.json()
+            workspace_data = result.get('workspace', {})
+            if workspace_data.get('name') != workspace:
+                raise GeoServerConnectionError(
+                    f"Workspace detail response mismatch for '{workspace}' at {self.url}"
+                )
+            return workspace_data
+        except Exception as e:
+            logger.error(f"Failed to get workspace '{workspace}' from GeoServer: {e}")
+            raise GeoServerConnectionError(
+                f"Failed to get workspace '{workspace}' from GeoServer at {self.url}: {e}"
+            )
 
     def get_workspaces(self) -> list:
         """
@@ -195,7 +288,12 @@ class GeoServerClient:
         Raises GeoServerConnectionError on any network or HTTP failure.
         """
         try:
-            workspaces = self._client.get_workspaces()
+            response = self._request("get", "/rest/workspaces")
+            if response.status_code != 200:
+                raise GeoServerConnectionError(
+                    f"Workspace list failed with HTTP {response.status_code}: {response.text}"
+                )
+            workspaces = response.json()
             logger.info(f"GeoServer workspaces response: {workspaces}")
 
             if workspaces and 'workspaces' in workspaces:
@@ -222,7 +320,29 @@ class GeoServerClient:
             Verification result dict
         """
         try:
-            actual_exists = self.workspace_exists(workspace_name)
+            detail_exists = False
+            list_exists = False
+
+            try:
+                self.get_workspace(workspace_name)
+                detail_exists = True
+            except GeoServerConnectionError:
+                detail_exists = False
+
+            try:
+                list_exists = workspace_name in self.get_workspaces()
+            except GeoServerConnectionError:
+                list_exists = False
+
+            actual_exists = detail_exists and list_exists
+            logger.info(
+                "Workspace verify '%s': expected_exists=%s detail_exists=%s list_exists=%s actual_exists=%s",
+                workspace_name,
+                expected_exists,
+                detail_exists,
+                list_exists,
+                actual_exists,
+            )
 
             if actual_exists == expected_exists:
                 return {
@@ -230,7 +350,10 @@ class GeoServerClient:
                     'verified': True,
                     'workspace': workspace_name,
                     'exists': actual_exists,
-                    'message': f'Workspace verification passed: exists={actual_exists}',
+                    'message': (
+                        f'Workspace verification passed: detail_exists={detail_exists}, '
+                        f'list_exists={list_exists}'
+                    ),
                 }
             return {
                 'success': False,
@@ -238,7 +361,10 @@ class GeoServerClient:
                 'workspace': workspace_name,
                 'exists': actual_exists,
                 'expected': expected_exists,
-                'message': f'Workspace verification failed: expected={expected_exists}, actual={actual_exists}',
+                'message': (
+                    f'Workspace verification failed: expected={expected_exists}, '
+                    f'detail_exists={detail_exists}, list_exists={list_exists}'
+                ),
             }
 
         except Exception as e:
@@ -264,42 +390,20 @@ class GeoServerClient:
         schema: str = "public",
     ) -> Dict:
         """
-        Create PostGIS datastore in GeoServer
-
-        Args:
-            name: Store name
-            workspace: Workspace name
-            host: PostGIS host
-            port: PostGIS port
-            database: PostGIS database name
-            username: PostGIS username
-            password: PostGIS password
-            schema: PostGIS schema (default: 'public')
-
-        Returns:
-            Dict with success status and details
+        Create PostGIS datastore in GeoServer using strict create + verify flow.
         """
-        try:
-            self._client.create_featurestore(
-                store_name=name,
-                workspace=workspace,
-                db=database,
-                host=host,
-                port=port,
-                schema=schema,
-                pg_user=username,
-                pg_password=password,
-            )
-            logger.info(f"Created PostGIS store: {workspace}/{name}")
-            return {
-                'success': True,
-                'store': name,
-                'workspace': workspace,
-                'message': f"PostGIS store '{name}' created successfully in workspace '{workspace}'",
-            }
-        except Exception as e:
-            logger.error(f"Failed to create PostGIS store {workspace}/{name}: {e}")
-            raise GeoServerPublishError(f"Failed to create PostGIS store '{name}': {e}")
+        return self.create_store(
+            workspace=workspace,
+            store_data={
+                'name': name,
+                'host': host,
+                'port': port,
+                'database': database,
+                'user': username,
+                'passwd': password,
+                'schema': schema or 'public',
+            },
+        )
 
     def store_exists(self, workspace: str, store_name: str) -> bool:
         """
@@ -434,6 +538,149 @@ class GeoServerClient:
                 'store_type': 'postgis',
             }
 
+    def probe_store_access(self, workspace: str, store_name: str) -> Dict:
+        """
+        Probe whether GeoServer can read a store and enumerate its feature types.
+
+        This is a better operational signal than checking whether Django stores
+        the DB password locally.
+        """
+        detail_path = f"/rest/workspaces/{workspace}/datastores/{store_name}.json"
+        featuretypes_path = f"/rest/workspaces/{workspace}/datastores/{store_name}/featuretypes.json"
+
+        try:
+            detail_response = self._request("get", detail_path)
+            if detail_response.status_code != 200:
+                return {
+                    'success': False,
+                    'status': 'error',
+                    'workspace': workspace,
+                    'store': store_name,
+                    'message': f"GeoServer datastore detail returned HTTP {detail_response.status_code}.",
+                }
+
+            featuretypes_response = self._request("get", featuretypes_path)
+            if featuretypes_response.status_code != 200:
+                return {
+                    'success': False,
+                    'status': 'error',
+                    'workspace': workspace,
+                    'store': store_name,
+                    'message': f"GeoServer featuretypes probe returned HTTP {featuretypes_response.status_code}.",
+                }
+
+            payload = featuretypes_response.json()
+            feature_types = payload.get('featureTypes') if isinstance(payload, dict) else None
+            items = []
+            if isinstance(feature_types, dict):
+                items = feature_types.get('featureType', []) or []
+            if isinstance(items, dict):
+                items = [items]
+            if not isinstance(items, list):
+                items = []
+
+            return {
+                'success': True,
+                'status': 'usable',
+                'workspace': workspace,
+                'store': store_name,
+                'featuretype_count': len(items),
+                'message': f"GeoServer store probe succeeded with {len(items)} feature type(s).",
+            }
+        except Exception as exc:
+            logger.warning(
+                "GeoServer store probe failed for %s/%s: %s",
+                workspace,
+                store_name,
+                exc,
+            )
+            return {
+                'success': False,
+                'status': 'error',
+                'workspace': workspace,
+                'store': store_name,
+                'message': str(exc),
+            }
+
+    def get_available_featuretypes(self, workspace: str, store_name: str) -> list:
+        """
+        Return publishable featuretypes GeoServer sees under a datastore.
+
+        GeoServer commonly exposes unpublished resources via
+        `?list=available_with_geom`. Some deployments only support
+        `?list=available`, so we try both and normalize the payload.
+        """
+        path = f"/rest/workspaces/{workspace}/datastores/{store_name}/featuretypes.json"
+
+        for list_mode in ("available_with_geom", "available"):
+            try:
+                response = self._request("get", path, params={"list": list_mode})
+            except Exception as exc:
+                logger.warning(
+                    "GeoServer available featuretypes request failed for %s/%s (%s): %s",
+                    workspace,
+                    store_name,
+                    list_mode,
+                    exc,
+                )
+                continue
+
+            if response.status_code != 200:
+                logger.info(
+                    "GeoServer available featuretypes returned HTTP %s for %s/%s (%s)",
+                    response.status_code,
+                    workspace,
+                    store_name,
+                    list_mode,
+                )
+                continue
+
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                logger.warning(
+                    "GeoServer available featuretypes JSON parse failed for %s/%s (%s): %s",
+                    workspace,
+                    store_name,
+                    list_mode,
+                    exc,
+                )
+                continue
+
+            names = []
+            raw_list = payload.get("list") if isinstance(payload, dict) else None
+            if isinstance(raw_list, dict):
+                raw_items = raw_list.get("string", []) or []
+                if isinstance(raw_items, str):
+                    raw_items = [raw_items]
+                if isinstance(raw_items, list):
+                    names = [item for item in raw_items if isinstance(item, str) and item]
+
+            if not names:
+                feature_types = payload.get("featureTypes") if isinstance(payload, dict) else None
+                if isinstance(feature_types, dict):
+                    raw_items = feature_types.get("featureType", []) or []
+                    if isinstance(raw_items, dict):
+                        raw_items = [raw_items]
+                    if isinstance(raw_items, list):
+                        names = [
+                            item.get("name")
+                            for item in raw_items
+                            if isinstance(item, dict) and item.get("name")
+                        ]
+
+            if names:
+                logger.info(
+                    "GeoServer available featuretypes for %s/%s (%s): %s",
+                    workspace,
+                    store_name,
+                    list_mode,
+                    names,
+                )
+                return names
+
+        return []
+
     def create_store(self, workspace: str, store_data: dict) -> Dict:
         """
         Create PostGIS datastore in GeoServer using GeoServer-first pattern.
@@ -463,19 +710,19 @@ class GeoServerClient:
 
             # 2) OPERATION: Create datastore in GeoServer.
             logger.info(f"Creating PostGIS store in GeoServer: {store_name}")
-            raw_result = self._client.create_datastore(
-                store_name,
+            raw_result = self._client.create_featurestore(
+                store_name=store_name,
                 workspace=workspace,
+                db=store_data['database'],
                 host=store_data['host'],
                 port=store_data['port'],
-                database=store_data['database'],
-                user=store_data['user'],
-                passwd=store_data['passwd'],
                 schema=store_data.get('schema', 'public'),
+                pg_user=store_data['user'],
+                pg_password=store_data['passwd'],
             )
 
             # 3) RESPONSE VALIDATION.
-            validated_result = self.validate_response(raw_result, f"create_datastore({store_name})")
+            validated_result = self.validate_response(raw_result, f"create_featurestore({store_name})")
 
             if not validated_result.get('success', False):
                 raise GeoServerPublishError(
@@ -483,7 +730,23 @@ class GeoServerClient:
                 )
 
             # 4) POST-CHECK: Verify datastore creation.
-            verification = self.post_verify_store(workspace, store_name, expected_exists=True)
+            verification = self.post_verify_store(
+                workspace,
+                store_name,
+                expected_exists=True,
+                expected_details={
+                    'host': store_data.get('host', ''),
+                    'port': store_data.get('port', 5432),
+                    'database': store_data.get('database', ''),
+                    'username': store_data.get('user', ''),
+                    'schema': store_data.get('schema', 'public'),
+                },
+            )
+            if not verification.get('verified', False):
+                raise GeoServerPublishError(
+                    verification.get('message')
+                    or f"Store '{store_name}' could not be verified in GeoServer after create."
+                )
 
             # 5) FINAL RESPONSE.
             final_result = {
@@ -547,6 +810,11 @@ class GeoServerClient:
 
             # Post-check: verify deletion.
             verification = self.post_verify_store(workspace, store, expected_exists=False)
+            if not verification.get('verified', False):
+                raise GeoServerPublishError(
+                    verification.get('message')
+                    or f"Store '{store}' could not be verified as deleted in GeoServer."
+                )
 
             logger.info(f"Store deleted successfully: {store} from workspace {workspace}")
             return {
@@ -584,15 +852,55 @@ class GeoServerClient:
         except Exception as e:
             return {'success': False, 'error': str(e), 'exists': False}
 
-    def post_verify_store(self, workspace: str, store_name: str, expected_exists: bool = True) -> Dict:
-        """Verify store creation/deletion."""
+    def post_verify_store(
+        self,
+        workspace: str,
+        store_name: str,
+        expected_exists: bool = True,
+        expected_details: Optional[dict] = None,
+    ) -> Dict:
+        """Verify store creation/deletion and optionally its resolved connection details."""
         try:
-            stores = self._client.get_datastores(workspace)
-            actual_exists = store_name in [
-                store['name'] for store in stores.get('dataStores', {}).get('dataStore', [])
-            ]
+            stores = self.get_datastores(workspace)
+            actual_store = next((store for store in stores if store.get('name') == store_name), None)
+            actual_exists = actual_store is not None
 
             if (expected_exists and actual_exists) or (not expected_exists and not actual_exists):
+                mismatch_fields = {}
+                if expected_exists and actual_exists and expected_details:
+                    actual_detail = actual_store or self.get_datastore_detail(workspace, store_name)
+                    for field, expected_value in expected_details.items():
+                        actual_value = actual_detail.get(field)
+                        if field == 'port':
+                            try:
+                                actual_value = int(actual_value)
+                            except (ValueError, TypeError):
+                                actual_value = 5432
+                            try:
+                                expected_value = int(expected_value)
+                            except (ValueError, TypeError):
+                                expected_value = 5432
+                        else:
+                            actual_value = (actual_value or '').strip() if isinstance(actual_value, str) else actual_value
+                            expected_value = (expected_value or '').strip() if isinstance(expected_value, str) else expected_value
+
+                        if actual_value != expected_value:
+                            mismatch_fields[field] = {
+                                'expected': expected_value,
+                                'actual': actual_value,
+                            }
+
+                if mismatch_fields:
+                    return {
+                        'success': False,
+                        'verified': False,
+                        'store': store_name,
+                        'workspace': workspace,
+                        'exists': actual_exists,
+                        'mismatch_fields': mismatch_fields,
+                        'message': f"Store verification failed: detail mismatch for {', '.join(sorted(mismatch_fields))}",
+                    }
+
                 return {
                     'success': True,
                     'verified': True,
@@ -630,6 +938,7 @@ class GeoServerClient:
         srid: int = 4326,
         geometry_type: str = "Point",
         layer_name: Optional[str] = None,
+        title: Optional[str] = None,
     ) -> Dict:
         """
         Publish FeatureType from PostGIS table
@@ -647,36 +956,36 @@ class GeoServerClient:
         """
         if layer_name is None:
             layer_name = pg_table
-
-        # Check if featuretype already exists
-        featuretype_exists = self.verify_featuretype(workspace, store_name, pg_table)
-        if featuretype_exists:
-            # Featuretype exists, just create the layer
-            result = self.create_layer(workspace, layer_name, pg_table, store_name)
-            return {
-                'success': True,
-                'workspace': workspace,
-                'layer': layer_name,
-                'title': layer_name,
-                'store': store_name,
-                'table': pg_table,
-                'message': f"Layer '{layer_name}' created from existing featuretype '{pg_table}'",
-            }
+        if title is None:
+            title = layer_name
 
         try:
-            # publish_featurestore POSTs a new featureType to an EXISTING store.
-            # The feature type name in GeoServer will be pg_table; layer_name is
-            # used as the display title when it differs.
-            status_code = self._client.publish_featurestore(
-                store_name=store_name,
-                pg_table=pg_table,
-                workspace=workspace,
-                title=layer_name,
-                advertised=True,   # default:  advertised until explicitly enabled
+            featuretype_url = "{}/rest/workspaces/{}/datastores/{}/featuretypes".format(
+                self.url.rstrip('/'),
+                workspace,
+                store_name,
             )
-            if status_code != 201:
+            featuretype_xml = """<featureType>
+                    <name>{name}</name>
+                    <nativeName>{native_name}</nativeName>
+                    <title>{title}</title>
+                    <srs>EPSG:{srid}</srs>
+                    <advertised>true</advertised>
+                </featureType>""".format(
+                name=layer_name,
+                native_name=pg_table,
+                title=title,
+                srid=srid,
+            )
+            response = self._client._requests(
+                "post",
+                featuretype_url,
+                data=featuretype_xml,
+                headers={"content-type": "text/xml"},
+            )
+            if response.status_code not in (200, 201):
                 raise GeoServerPublishError(
-                    f"publish_featurestore returned unexpected status {status_code}"
+                    f"publish featuretype returned unexpected status {response.status_code}: {response.text}"
                 )
 
             # Trigger GeoServer to recalculate native + lat/lon bounding box.
@@ -684,32 +993,35 @@ class GeoServerClient:
                 self._client.edit_featuretype(
                     store_name=store_name,
                     workspace=workspace,
-                    pg_table=pg_table,
-                    name=pg_table,
-                    title=layer_name,
+                    pg_table=layer_name,
+                    name=layer_name,
+                    title=title,
                     recalculate='nativebbox,latlonbbox',
                 )
             except Exception as bbox_exc:
                 # bbox recalc failure is non-fatal — log and continue
                 logger.warning(
-                    f"bbox recalculation failed for {workspace}/{pg_table}: {bbox_exc}"
+                    f"bbox recalculation failed for {workspace}/{layer_name}: {bbox_exc}"
                 )
 
-            logger.info(f"Published layer: {workspace}/{pg_table} (title: {layer_name})")
+            logger.info(
+                "Published featuretype: %s/%s (native table: %s, title: %s)",
+                workspace,
+                layer_name,
+                pg_table,
+                title,
+            )
             return {
                 'success': True,
                 'workspace': workspace,
-                'layer': pg_table,
-                'title': layer_name,
+                'layer': layer_name,
+                'title': title,
                 'store': store_name,
                 'table': pg_table,
-                'message': f"Layer '{pg_table}' published successfully in workspace '{workspace}'",
+                'message': f"Layer '{layer_name}' published successfully in workspace '{workspace}'",
             }
         except Exception as e:
-            logger.error(f"Failed to publish featuretype {workspace}/{pg_table}: {e}")
-            raise GeoServerPublishError(f"Failed to publish layer '{layer_name}': {e}")
-        except Exception as e:
-            logger.error(f"Failed to publish layer {workspace}/{layer_name}: {e}")
+            logger.error(f"Failed to publish featuretype {workspace}/{layer_name}: {e}")
             raise GeoServerPublishError(f"Failed to publish layer '{layer_name}': {e}")
 
     def delete_layer(self, workspace: str, layer_name: str) -> Dict:
@@ -733,8 +1045,29 @@ class GeoServerClient:
                 'message': f"Layer '{layer_name}' deleted successfully",
             }
         except Exception as e:
+            if self._is_not_found_error(e):
+                logger.info(
+                    "Layer already absent in GeoServer, treating delete as idempotent success: %s/%s",
+                    workspace,
+                    layer_name,
+                )
+                return {
+                    'success': True,
+                    'workspace': workspace,
+                    'layer': layer_name,
+                    'deleted': False,
+                    'already_deleted': True,
+                    'message': f"Layer '{layer_name}' was already absent in GeoServer.",
+                }
             logger.error(f"Failed to delete layer {workspace}/{layer_name}: {e}")
-            raise GeoServerPublishError(f"Failed to delete layer '{layer_name}': {e}")
+            return {
+                'success': False,
+                'workspace': workspace,
+                'layer': layer_name,
+                'deleted': False,
+                'error': str(e),
+                'message': f"Failed to delete layer '{layer_name}': {e}",
+            }
 
     def create_layer(
         self,
@@ -820,7 +1153,7 @@ class GeoServerClient:
         self,
         workspace: str,
         store_name: str,
-        table_name: str,
+        featuretype_name: str,
         title: str,
         abstract: Optional[str] = None,
     ) -> Dict:
@@ -828,8 +1161,8 @@ class GeoServerClient:
         Update title and/or abstract of an existing featuretype in GeoServer.
 
         Wraps geoserver-rest edit_featuretype PUT.
-        `table_name` is used both as the URL path param and the immutable <name>
-        element — we never rename the featuretype identifier via this method.
+        `featuretype_name` is both the URL path param and the immutable <name>
+        element — we never rename the resource identifier via this method.
 
         Returns:
             {'success': True, ...} on success.
@@ -840,8 +1173,8 @@ class GeoServerClient:
             status_code = self._client.edit_featuretype(
                 store_name=store_name,
                 workspace=workspace,
-                pg_table=table_name,
-                name=table_name,      # keep featuretype name unchanged
+                pg_table=featuretype_name,
+                name=featuretype_name,
                 title=title,
                 abstract=abstract or None,
             )
@@ -851,25 +1184,25 @@ class GeoServerClient:
                 )
             logger.info(
                 'update_featuretype: %s/%s/%s updated (title=%r)',
-                workspace, store_name, table_name, title,
+                workspace, store_name, featuretype_name, title,
             )
             return {
                 'success': True,
                 'workspace': workspace,
                 'store': store_name,
-                'table': table_name,
+                'featuretype': featuretype_name,
                 'title': title,
-                'message': f"Featuretype '{table_name}' updated in GeoServer.",
+                'message': f"Featuretype '{featuretype_name}' updated in GeoServer.",
             }
         except GeoServerPublishError:
             raise
         except Exception as exc:
             logger.error(
                 'update_featuretype failed for %s/%s/%s: %s',
-                workspace, store_name, table_name, exc,
+                workspace, store_name, featuretype_name, exc,
             )
             raise GeoServerPublishError(
-                f"Failed to update featuretype '{table_name}': {exc}"
+                f"Failed to update featuretype '{featuretype_name}': {exc}"
             )
 
     def set_layer_advertised(
@@ -878,7 +1211,7 @@ class GeoServerClient:
         layer_name: str,
         advertised: bool,
         store_name: Optional[str] = None,
-        table_name: Optional[str] = None,
+        featuretype_name: Optional[str] = None,
     ) -> Dict:
         """
         Set the advertised flag on a GeoServer layer.
@@ -887,7 +1220,7 @@ class GeoServerClient:
           1. Layer   → PUT /rest/workspaces/{ws}/layers/{name}.xml
           2. FeatureType → PUT /rest/workspaces/{ws}/datastores/{store}/featuretypes/{ft}.xml
 
-        We always write to (1). When store_name + table_name are provided we
+        We always write to (1). When store_name + featuretype_name are provided we
         also write to (2), which is where _get_featuretype_advertised reads from.
         Both must agree to ensure the UI reflects the real GeoServer state.
 
@@ -919,9 +1252,9 @@ class GeoServerClient:
 
             # 2) Also update the FeatureType resource when store info is available.
             #    _get_featuretype_advertised reads from here, so both must match.
-            if store_name and table_name:
+            if store_name and featuretype_name:
                 ft_url = "{}/rest/workspaces/{}/datastores/{}/featuretypes/{}.xml".format(
-                    self.url.rstrip('/'), workspace, store_name, table_name
+                    self.url.rstrip('/'), workspace, store_name, featuretype_name
                 )
                 ft_body = "<featureType><advertised>{}</advertised></featureType>".format(adv_str)
                 r2 = self._client._requests('put', ft_url, data=ft_body, headers=headers)
@@ -931,7 +1264,7 @@ class GeoServerClient:
                     )
                 logger.info(
                     'set_layer_advertised featuretype resource: %s/%s/%s advertised=%s',
-                    workspace, store_name, table_name, advertised,
+                    workspace, store_name, featuretype_name, advertised,
                 )
 
             return {
@@ -952,7 +1285,7 @@ class GeoServerClient:
                 f"Failed to set advertised on layer '{layer_name}': {exc}"
             )
 
-    def verify_featuretype(self, workspace: str, store_name: str, table_name: str) -> bool:
+    def verify_featuretype(self, workspace: str, store_name: str, featuretype_name: str) -> bool:
         """
         Confirm that a featuretype really exists in GeoServer after publishing.
 
@@ -967,16 +1300,16 @@ class GeoServerClient:
             ft_names = self._client.get_featuretypes(
                 workspace=workspace, store_name=store_name
             )
-            exists = table_name in ft_names
+            exists = featuretype_name in ft_names
             if exists:
                 logger.info(
                     'verify_featuretype: %s/%s/%s — FOUND',
-                    workspace, store_name, table_name,
+                    workspace, store_name, featuretype_name,
                 )
             else:
                 logger.warning(
                     'verify_featuretype: %s/%s/%s — NOT FOUND (featuretypes: %s)',
-                    workspace, store_name, table_name, ft_names,
+                    workspace, store_name, featuretype_name, ft_names,
                 )
             return exists
         except Exception as exc:
@@ -1030,18 +1363,19 @@ class GeoServerClient:
                                     if ':' in ft_name
                                     else ft_name
                                 )
-                                # Fetch featuretype detail to get advertised flag
-                                advertised = self._get_featuretype_advertised(
+                                featuretype_detail = self.get_featuretype_detail(
                                     workspace, store_name, clean
                                 )
                                 result.append({
                                     'name': clean,
                                     'store_name': store_name,
-                                    'advertised': advertised,
+                                    'advertised': featuretype_detail.get('advertised', True),
+                                    'title': featuretype_detail.get('title', clean),
+                                    'table_name': featuretype_detail.get('native_name', clean),
                                 })
                                 logger.debug(
                                     f"Layer discovered: {workspace}/{store_name}/{clean} "
-                                    f"(advertised={advertised})"
+                                    f"(advertised={featuretype_detail.get('advertised', True)})"
                                 )
                         except Exception as ft_err:
                             logger.warning(
@@ -1062,13 +1396,13 @@ class GeoServerClient:
                 f"Failed to get layers for workspace '{workspace}' from GeoServer at {self.url}: {e}"
             )
 
-    def _get_featuretype_advertised(self, workspace: str, store_name: str, ft_name: str) -> bool:
+    def get_featuretype_detail(self, workspace: str, store_name: str, ft_name: str) -> Dict:
         """
-        Fetch the advertised flag for a single featuretype from GeoServer.
+        Fetch detail for a single featuretype from GeoServer.
 
         GET /rest/workspaces/{ws}/datastores/{store}/featuretypes/{name}.json
-        Returns True if advertised, False if not advertised.
-        Defaults to True on any error (safe assumption: published = advertised).
+        Returns normalized detail dict.
+        Defaults advertised=True and native_name=name on any error.
         """
         url = "{}/rest/workspaces/{}/datastores/{}/featuretypes/{}.json".format(
             self.url.rstrip('/'), workspace, store_name, ft_name
@@ -1077,19 +1411,34 @@ class GeoServerClient:
             r = self._client._requests('get', url)
             if r.status_code != 200:
                 logger.warning(
-                    '_get_featuretype_advertised: HTTP %s for %s/%s/%s — defaulting True',
+                    'get_featuretype_detail: HTTP %s for %s/%s/%s — using fallback values',
                     r.status_code, workspace, store_name, ft_name,
                 )
-                return True
+                return {
+                    'name': ft_name,
+                    'title': ft_name,
+                    'native_name': ft_name,
+                    'advertised': True,
+                }
             data = r.json()
-            advertised = data.get('featureType', {}).get('advertised', True)
-            return bool(advertised)
+            featuretype = data.get('featureType', {}) if isinstance(data, dict) else {}
+            return {
+                'name': featuretype.get('name', ft_name),
+                'title': featuretype.get('title', featuretype.get('name', ft_name)),
+                'native_name': featuretype.get('nativeName', featuretype.get('name', ft_name)),
+                'advertised': bool(featuretype.get('advertised', True)),
+            }
         except Exception as exc:
             logger.warning(
-                '_get_featuretype_advertised: error for %s/%s/%s: %s — defaulting True',
+                'get_featuretype_detail: error for %s/%s/%s: %s — using fallback values',
                 workspace, store_name, ft_name, exc,
             )
-            return True
+            return {
+                'name': ft_name,
+                'title': ft_name,
+                'native_name': ft_name,
+                'advertised': True,
+            }
 
     def validate_connection(self) -> Dict:
         """
