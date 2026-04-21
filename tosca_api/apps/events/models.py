@@ -97,6 +97,15 @@ class TaxonomyDimension(TimeStampedModel):
     def __str__(self) -> str:
         return self.label
 
+    def save(self, *args, **kwargs) -> None:
+        if self._state.adding and self.sort_order == 0:
+            max_order = TaxonomyDimension.objects.aggregate(
+                models.Max("sort_order")
+            )["sort_order__max"]
+            self.sort_order = (max_order or 0) + 1
+        self.full_clean()
+        super().save(*args, **kwargs)
+
 
 class TaxonomyTerm(TimeStampedModel):
     """Term within a taxonomy dimension, with optional parent nesting."""
@@ -121,7 +130,7 @@ class TaxonomyTerm(TimeStampedModel):
     sort_order = models.PositiveIntegerField(default=0)
 
     class Meta:
-        ordering = ["dimension_id", "sort_order", "label"]
+        ordering = ["dimension_id", "parent_id", "sort_order", "label"]
         verbose_name = "Taxonomy Term"
         verbose_name_plural = "Taxonomy Terms"
         constraints = [
@@ -149,6 +158,12 @@ class TaxonomyTerm(TimeStampedModel):
         super().clean()
 
     def save(self, *args, **kwargs) -> None:
+        if self._state.adding and self.sort_order == 0 and self.dimension_id:
+            max_order = TaxonomyTerm.objects.filter(
+                dimension_id=self.dimension_id,
+                parent_id=self.parent_id,
+            ).aggregate(models.Max("sort_order"))["sort_order__max"]
+            self.sort_order = (max_order or 0) + 1
         self.full_clean()
         super().save(*args, **kwargs)
 

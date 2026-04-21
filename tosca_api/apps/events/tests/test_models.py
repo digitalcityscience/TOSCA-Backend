@@ -1159,6 +1159,16 @@ def test_taxonomy_dimension_supports_active_and_inactive_states():
 
 
 @pytest.mark.django_db
+def test_taxonomy_dimension_auto_assigns_sort_order():
+    """Dimensions should auto-append when sort_order is left at the default 0."""
+    first = TaxonomyDimension.objects.create(code="audience", label="Audience")
+    second = TaxonomyDimension.objects.create(code="theme", label="Theme")
+
+    assert first.sort_order == 1
+    assert second.sort_order == 2
+
+
+@pytest.mark.django_db
 def test_taxonomy_term_code_must_be_unique_within_dimension():
     """Term codes are unique per dimension."""
     dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
@@ -1198,6 +1208,39 @@ def test_taxonomy_term_parent_must_belong_to_same_dimension():
         )
 
     assert "parent" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_taxonomy_term_auto_assigns_sort_order_within_parent_scope():
+    """Terms should auto-append within their dimension and parent scope."""
+    dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
+    parent = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="planning",
+        label="Planning",
+    )
+    first_child = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        parent=parent,
+        code="mobility",
+        label="Mobility",
+    )
+    second_child = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        parent=parent,
+        code="housing",
+        label="Housing",
+    )
+    root_term = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="climate",
+        label="Climate",
+    )
+
+    assert parent.sort_order == 1
+    assert first_child.sort_order == 1
+    assert second_child.sort_order == 2
+    assert root_term.sort_order == 2
 
 
 @pytest.mark.django_db

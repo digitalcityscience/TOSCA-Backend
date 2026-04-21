@@ -3,6 +3,7 @@ from collections import Counter
 from zoneinfo import ZoneInfoNotFoundError
 
 from django.contrib.gis.geos import GEOSGeometry, Polygon
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 from rest_framework_gis.serializers import GeoFeatureModelSerializer
@@ -13,19 +14,21 @@ from .models import (
     Event,
     EventLayer,
     EventSeries,
-    EventSeriesDate,
     EventTerm,
-    TaxonomyDimension,
-    TaxonomyTerm,
     EventType,
     VALID_WEEKDAYS,
 )
 from .services import (
+    EVENT_TEMPLATE_FIELDS,
     KEEP_EXISTING_TERMS,
     build_occurrence_specs,
-    create_occurrence_events,
+    get_event_taxonomy_assignments,
+    get_base_template_event,
+    orchestrate_series_create,
+    orchestrate_series_update,
+    persist_explicit_dates,
+    resolve_taxonomy_assignments,
     serialize_occurrence_events,
-    sync_occurrence_events,
 )
 
 EVENT_SERIES_FIELDS = {
@@ -48,22 +51,6 @@ EVENT_SERIES_FIELDS = {
     "weekday_of_month",
     "by_weekday",
     "notes",
-}
-
-EVENT_TEMPLATE_FIELDS = {
-    "title",
-    "description",
-    "location_mode",
-    "location",
-    "online_url",
-    "online_platform",
-    "access_notes",
-    "provider_name",
-    "provider_url",
-    "provider_contact",
-    "status",
-    "visibility",
-    "context",
 }
 
 EXCEPTION_TRIGGER_FIELDS = {
@@ -147,6 +134,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
 
     context = serializers.SerializerMethodField()
     layers = serializers.SerializerMethodField()
+    taxonomy_assignments = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -174,6 +162,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "visibility",
             "organizer",
             "context",
+            "taxonomy_assignments",
             "layers",
             "created_at",
             "updated_at",
@@ -191,6 +180,10 @@ class EventDetailSerializer(serializers.ModelSerializer):
         if context is None:
             return None
         return EventGeoContextSerializer(context).data
+
+    def get_taxonomy_assignments(self, obj):
+        assignments = get_event_taxonomy_assignments(obj)
+        return TaxonomyAssignmentReadSerializer(assignments, many=True).data
 
 
 class EventGeoSerializer(GeoFeatureModelSerializer):
@@ -239,55 +232,45 @@ class EventMapOnlineSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class TaxonomyTermResolutionMixin:
-    """Shared taxonomy term validation and replacement helpers."""
+class TaxonomyAssignmentSerializer(serializers.Serializer):
+    """Single grouped taxonomy assignment entry."""
 
-    def _resolve_taxonomy_terms(self, taxonomy_term_ids):
-        duplicate_ids = [
-            term_id
-            for term_id, count in Counter(taxonomy_term_ids).items()
-            if count > 1
-        ]
-        if duplicate_ids:
-            raise serializers.ValidationError(
-                {"taxonomy_term_ids": "Duplicate taxonomy term IDs are not allowed."}
-            )
+    dimension_id = serializers.UUIDField()
+    term_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        allow_empty=False,
+    )
 
-        terms = list(
-            TaxonomyTerm.objects.select_related("dimension").filter(
-                id__in=taxonomy_term_ids
-            )
-        )
-        if len(terms) != len(taxonomy_term_ids):
-            found_ids = {term.id for term in terms}
-            missing_ids = [
-                str(term_id)
-                for term_id in taxonomy_term_ids
-                if term_id not in found_ids
-            ]
-            raise serializers.ValidationError(
-                {
-                    "taxonomy_term_ids": (
-                        f"Unknown taxonomy term IDs: {', '.join(missing_ids)}"
-                    )
-                }
-            )
 
-        single_select_counts = Counter(
-            term.dimension_id
-            for term in terms
-            if term.dimension.selection_mode == TaxonomyDimension.SelectionMode.SINGLE
-        )
-        if any(count > 1 for count in single_select_counts.values()):
-            raise serializers.ValidationError(
-                {
-                    "taxonomy_term_ids": (
-                        "Single-select dimensions allow only one term per event."
-                    )
-                }
-            )
+class TaxonomyAssignmentReadTermSerializer(serializers.Serializer):
+    """Hydrated taxonomy term payload for read responses."""
 
-        return terms
+    id = serializers.UUIDField()
+    code = serializers.CharField()
+    label = serializers.CharField()
+    parent_id = serializers.UUIDField(allow_null=True)
+    is_active = serializers.BooleanField()
+
+
+class TaxonomyAssignmentReadSerializer(serializers.Serializer):
+    """Grouped taxonomy assignment payload for read responses."""
+
+    dimension_id = serializers.UUIDField()
+    dimension_code = serializers.CharField()
+    dimension_label = serializers.CharField()
+    selection_mode = serializers.CharField()
+    term_ids = serializers.ListField(child=serializers.UUIDField())
+    terms = TaxonomyAssignmentReadTermSerializer(many=True)
+
+
+class TaxonomyAssignmentResolutionMixin:
+    """Shared taxonomy assignment validation and replacement helpers."""
+
+    def _resolve_taxonomy_assignments(self, taxonomy_assignments):
+        try:
+            return resolve_taxonomy_assignments(taxonomy_assignments)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.message_dict) from exc
 
     def _replace_event_terms(self, event, taxonomy_terms):
         with transaction.atomic():
@@ -296,13 +279,12 @@ class TaxonomyTermResolutionMixin:
                 EventTerm.objects.create(event=event, term=term)
 
 
-class EventWriteSerializer(TaxonomyTermResolutionMixin, serializers.ModelSerializer):
+class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelSerializer):
     """Serializer for creating/updating events."""
 
-    taxonomy_term_ids = serializers.ListField(
-        child=serializers.UUIDField(),
+    taxonomy_assignments = TaxonomyAssignmentSerializer(
+        many=True,
         required=False,
-        allow_empty=True,
         write_only=True,
     )
 
@@ -332,20 +314,22 @@ class EventWriteSerializer(TaxonomyTermResolutionMixin, serializers.ModelSeriali
             "visibility",
             "organizer",
             "context",
-            "taxonomy_term_ids",
+            "taxonomy_assignments",
         ]
         read_only_fields = ["id", "organizer"]
 
     def validate(self, attrs):
         """Invoke model clean() to ensure DB constraints surface as API 400s."""
-        taxonomy_term_ids = attrs.pop("taxonomy_term_ids", serializers.empty)
-        if taxonomy_term_ids is not serializers.empty:
-            attrs["_taxonomy_terms"] = self._resolve_taxonomy_terms(taxonomy_term_ids)
+        taxonomy_assignments = attrs.pop("taxonomy_assignments", serializers.empty)
+        if taxonomy_assignments is not serializers.empty:
+            attrs["_taxonomy_terms"] = self._resolve_taxonomy_assignments(
+                taxonomy_assignments
+            )
 
         instance = Event()
         if self.instance is not None:
             for field in self.Meta.fields:
-                if field in {"id", "taxonomy_term_ids"}:
+                if field in {"id", "taxonomy_assignments"}:
                     continue
                 setattr(instance, field, getattr(self.instance, field))
             instance.pk = self.instance.pk
@@ -430,6 +414,7 @@ class EventSeriesResponseSerializer(serializers.ModelSerializer):
     """Response serializer for event-series create and update operations."""
 
     occurrences = serializers.SerializerMethodField()
+    taxonomy_assignments = serializers.SerializerMethodField()
 
     class Meta:
         model = EventSeries
@@ -447,6 +432,7 @@ class EventSeriesResponseSerializer(serializers.ModelSerializer):
             "start_time",
             "end_time",
             "timezone",
+            "taxonomy_assignments",
             "occurrences",
         ]
         read_only_fields = fields
@@ -455,14 +441,20 @@ class EventSeriesResponseSerializer(serializers.ModelSerializer):
         occurrences = getattr(obj, "_response_occurrences", [])
         return EventSeriesOccurrenceSerializer(occurrences, many=True).data
 
+    def get_taxonomy_assignments(self, obj):
+        base_event = get_base_template_event(obj)
+        if base_event is None:
+            return []
+        assignments = get_event_taxonomy_assignments(base_event)
+        return TaxonomyAssignmentReadSerializer(assignments, many=True).data
 
-class EventSeriesWriteSerializer(TaxonomyTermResolutionMixin, serializers.Serializer):
+
+class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.Serializer):
     """Validate preview/create/update payloads for event series generation."""
 
-    taxonomy_term_ids = serializers.ListField(
-        child=serializers.UUIDField(),
+    taxonomy_assignments = TaxonomyAssignmentSerializer(
+        many=True,
         required=False,
-        allow_empty=True,
         write_only=True,
     )
 
@@ -561,9 +553,11 @@ class EventSeriesWriteSerializer(TaxonomyTermResolutionMixin, serializers.Serial
         return geometry
 
     def validate(self, attrs):
-        taxonomy_term_ids = attrs.pop("taxonomy_term_ids", serializers.empty)
-        if taxonomy_term_ids is not serializers.empty:
-            attrs["_taxonomy_terms"] = self._resolve_taxonomy_terms(taxonomy_term_ids)
+        taxonomy_assignments = attrs.pop("taxonomy_assignments", serializers.empty)
+        if taxonomy_assignments is not serializers.empty:
+            attrs["_taxonomy_terms"] = self._resolve_taxonomy_assignments(
+                taxonomy_assignments
+            )
 
         series_attrs = self._merged_series_attrs(attrs)
         explicit_dates = self._resolved_explicit_dates(attrs)
@@ -625,17 +619,17 @@ class EventSeriesWriteSerializer(TaxonomyTermResolutionMixin, serializers.Serial
         series_attrs = validated_data.pop("_series_attrs")
         explicit_dates = validated_data.pop("_explicit_dates")
         event_template = validated_data.pop("_event_template")
-        occurrences = validated_data.pop("_occurrences")
+        validated_data.pop("_occurrences")
+        validated_data.pop("_template_event", None)
 
         with transaction.atomic():
             series = EventSeries.objects.create(
                 **series_attrs,
                 created_by=self.context["request"].user,
             )
-            self._persist_explicit_dates(series, explicit_dates)
-            created_events = create_occurrence_events(
+            persist_explicit_dates(series, explicit_dates)
+            created_events = orchestrate_series_create(
                 series=series,
-                occurrences=occurrences,
                 event_template=event_template,
                 organizer=self.context["request"].user,
                 taxonomy_terms=taxonomy_terms,
@@ -649,20 +643,18 @@ class EventSeriesWriteSerializer(TaxonomyTermResolutionMixin, serializers.Serial
         series_attrs = validated_data.pop("_series_attrs")
         explicit_dates = validated_data.pop("_explicit_dates")
         event_template = validated_data.pop("_event_template")
-        occurrences = validated_data.pop("_occurrences")
-        template_event = self._base_template_event()
+        validated_data.pop("_occurrences")
+        validated_data.pop("_template_event", None)
 
         for field, value in series_attrs.items():
             setattr(instance, field, value)
 
         with transaction.atomic():
             instance.save()
-            self._persist_explicit_dates(instance, explicit_dates)
-            sync_result = sync_occurrence_events(
+            persist_explicit_dates(instance, explicit_dates)
+            sync_result = orchestrate_series_update(
                 series=instance,
-                occurrences=occurrences,
                 event_template=event_template,
-                template_event=template_event,
                 organizer=self.context["request"].user,
                 taxonomy_terms=taxonomy_terms,
             )
@@ -779,37 +771,10 @@ class EventSeriesWriteSerializer(TaxonomyTermResolutionMixin, serializers.Serial
     def _base_template_event(self):
         if self.instance is None:
             return None
-        base_event = (
-            self.instance.events.filter(is_exception=False)
-            .order_by("occurrence_index", "start_datetime")
-            .prefetch_related("event_terms__term")
-            .first()
-        )
-        if base_event is not None:
-            return base_event
-        return (
-            self.instance.events.order_by("occurrence_index", "start_datetime")
-            .prefetch_related("event_terms__term")
-            .first()
-        )
+        return get_base_template_event(self.instance)
 
     def _persist_explicit_dates(self, series, explicit_dates):
-        if series.series_mode != EventSeries.SeriesMode.MANUAL_BATCH:
-            if series.pk:
-                series.dates.all().delete()
-            return
-
-        series.dates.all().delete()
-        EventSeriesDate.objects.bulk_create(
-            [
-                EventSeriesDate(
-                    series=series,
-                    occurrence_date=occurrence_date,
-                    display_order=index,
-                )
-                for index, occurrence_date in enumerate(explicit_dates, start=1)
-            ]
-        )
+        persist_explicit_dates(series, explicit_dates)
 
 
 # =============================================================================

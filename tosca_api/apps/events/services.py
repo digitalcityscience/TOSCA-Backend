@@ -1,17 +1,46 @@
 from __future__ import annotations
 
 from calendar import monthrange
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Event, EventSeries, EventTerm, TaxonomyTerm
+from .models import (
+    CultureEventProfile,
+    Event,
+    EventSeries,
+    EventSeriesDate,
+    EventTerm,
+    TaxonomyDimension,
+    EventType,
+    PublicHealthEventProfile,
+    SportsEventProfile,
+    TaxonomyTerm,
+)
 
 KEEP_EXISTING_TERMS = object()
+
+EVENT_TEMPLATE_FIELDS = frozenset({
+    "title",
+    "description",
+    "location_mode",
+    "location",
+    "online_url",
+    "online_platform",
+    "access_notes",
+    "provider_name",
+    "provider_url",
+    "provider_contact",
+    "status",
+    "visibility",
+    "context",
+})
 
 WEEKDAY_TO_INDEX = {
     "monday": 0,
@@ -214,6 +243,203 @@ def serialize_occurrence_events(events: list[Event]) -> list[dict[str, Any]]:
     ]
 
 
+def resolve_taxonomy_assignments(
+    taxonomy_assignments: list[dict[str, Any]],
+    *,
+    allow_inactive_dimension_ids: set[Any] | None = None,
+    allow_inactive_term_ids: set[Any] | None = None,
+) -> list[TaxonomyTerm]:
+    """Validate grouped taxonomy assignments and return the resolved terms."""
+    if not taxonomy_assignments:
+        return []
+
+    allow_inactive_dimension_ids = allow_inactive_dimension_ids or set()
+    allow_inactive_term_ids = allow_inactive_term_ids or set()
+
+    errors: list[str] = []
+    dimension_ids = [assignment["dimension_id"] for assignment in taxonomy_assignments]
+    duplicate_dimension_ids = [
+        str(dimension_id)
+        for dimension_id, count in Counter(dimension_ids).items()
+        if count > 1
+    ]
+    if duplicate_dimension_ids:
+        errors.append(
+            "Duplicate taxonomy dimensions are not allowed: "
+            f"{', '.join(duplicate_dimension_ids)}"
+        )
+
+    dimension_map = TaxonomyDimension.objects.in_bulk(dimension_ids)
+    missing_dimension_ids = [
+        str(dimension_id)
+        for dimension_id in dimension_ids
+        if dimension_id not in dimension_map
+    ]
+    if missing_dimension_ids:
+        errors.append(
+            "Unknown taxonomy dimensions: " f"{', '.join(missing_dimension_ids)}"
+        )
+
+    inactive_dimension_ids = [
+        str(dimension.id)
+        for dimension in dimension_map.values()
+        if not dimension.is_active and dimension.id not in allow_inactive_dimension_ids
+    ]
+    if inactive_dimension_ids:
+        errors.append(
+            "Inactive taxonomy dimensions cannot be assigned: "
+            f"{', '.join(sorted(inactive_dimension_ids))}"
+        )
+
+    all_term_ids: list[Any] = []
+    duplicate_term_ids: list[str] = []
+    for assignment in taxonomy_assignments:
+        term_ids = assignment["term_ids"]
+        if not term_ids:
+            errors.append(
+                f"Taxonomy dimension {assignment['dimension_id']} must include at least one term."
+            )
+            continue
+
+        repeated_ids = [
+            str(term_id)
+            for term_id, count in Counter(term_ids).items()
+            if count > 1
+        ]
+        duplicate_term_ids.extend(repeated_ids)
+        all_term_ids.extend(term_ids)
+
+    if duplicate_term_ids:
+        errors.append(
+            "Duplicate taxonomy term IDs are not allowed within a dimension: "
+            f"{', '.join(sorted(set(duplicate_term_ids)))}"
+        )
+
+    term_map = TaxonomyTerm.objects.select_related("dimension").in_bulk(all_term_ids)
+    missing_term_ids = [
+        str(term_id)
+        for term_id in all_term_ids
+        if term_id not in term_map
+    ]
+    if missing_term_ids:
+        errors.append("Unknown taxonomy terms: " f"{', '.join(missing_term_ids)}")
+
+    inactive_term_ids = [
+        str(term.id)
+        for term in term_map.values()
+        if not term.is_active and term.id not in allow_inactive_term_ids
+    ]
+    if inactive_term_ids:
+        errors.append(
+            "Inactive taxonomy terms cannot be assigned: "
+            f"{', '.join(sorted(inactive_term_ids))}"
+        )
+
+    parent_term_ids = set(
+        TaxonomyTerm.objects.filter(parent_id__in=all_term_ids).values_list(
+            "parent_id",
+            flat=True,
+        )
+    )
+    non_leaf_term_ids = [
+        str(term_id) for term_id in all_term_ids if term_id in parent_term_ids
+    ]
+    if non_leaf_term_ids:
+        errors.append(
+            "Only leaf taxonomy terms may be assigned: "
+            f"{', '.join(non_leaf_term_ids)}"
+        )
+
+    resolved_terms: list[TaxonomyTerm] = []
+    for assignment in taxonomy_assignments:
+        dimension_id = assignment["dimension_id"]
+        dimension = dimension_map.get(dimension_id)
+        term_ids = assignment["term_ids"]
+        resolved_dimension_terms = [term_map[term_id] for term_id in term_ids if term_id in term_map]
+
+        if dimension is None:
+            continue
+
+        mismatched_terms = [
+            str(term.id)
+            for term in resolved_dimension_terms
+            if term.dimension_id != dimension_id
+        ]
+        if mismatched_terms:
+            errors.append(
+                "Taxonomy terms do not belong to dimension "
+                f"{dimension_id}: {', '.join(mismatched_terms)}"
+            )
+
+        if (
+            dimension.selection_mode == TaxonomyDimension.SelectionMode.SINGLE
+            and len(resolved_dimension_terms) > 1
+        ):
+            errors.append(
+                f"Single-select taxonomy dimension {dimension_id} allows only one term."
+            )
+
+        resolved_terms.extend(
+            term for term in resolved_dimension_terms if term.dimension_id == dimension_id
+        )
+
+    if errors:
+        raise ValidationError({"taxonomy_assignments": errors})
+
+    return resolved_terms
+
+
+def serialize_taxonomy_assignments(
+    taxonomy_terms: list[TaxonomyTerm],
+) -> list[dict[str, Any]]:
+    """Group taxonomy terms by dimension for read hydration."""
+    grouped_assignments: dict[Any, dict[str, Any]] = {}
+    ordered_terms = sorted(
+        taxonomy_terms,
+        key=lambda term: (
+            term.dimension.sort_order,
+            term.dimension.label,
+            term.sort_order,
+            term.label,
+        ),
+    )
+
+    for term in ordered_terms:
+        group = grouped_assignments.setdefault(
+            term.dimension_id,
+            {
+                "dimension_id": term.dimension_id,
+                "dimension_code": term.dimension.code,
+                "dimension_label": term.dimension.label,
+                "selection_mode": term.dimension.selection_mode,
+                "term_ids": [],
+                "terms": [],
+            },
+        )
+        group["term_ids"].append(term.id)
+        group["terms"].append(
+            {
+                "id": term.id,
+                "code": term.code,
+                "label": term.label,
+                "parent_id": term.parent_id,
+                "is_active": term.is_active,
+            }
+        )
+
+    return list(grouped_assignments.values())
+
+
+def get_event_taxonomy_assignments(event: Event) -> list[dict[str, Any]]:
+    """Return grouped taxonomy assignments for an event."""
+    taxonomy_terms = list(
+        TaxonomyTerm.objects.select_related("dimension")
+        .filter(event_terms__event=event)
+        .distinct()
+    )
+    return serialize_taxonomy_assignments(taxonomy_terms)
+
+
 def _apply_occurrence_to_event(
     event: Event,
     *,
@@ -368,3 +594,199 @@ def _can_continue(existing_dates: list[date], candidate: date, series: EventSeri
     if series.occurrence_count and len(existing_dates) >= series.occurrence_count:
         return False
     return True
+
+
+# =============================================================================
+# Orchestration functions — shared between admin and API
+# =============================================================================
+
+
+def get_base_template_event(series: EventSeries) -> Event | None:
+    """Return the first non-exception occurrence to use as a template for updates.
+
+    Falls back to the first occurrence of any kind if no non-exception exists.
+    Returns None for series with no occurrences yet.
+    """
+    base_event = (
+        series.events.filter(is_exception=False)
+        .order_by("occurrence_index", "start_datetime")
+        .prefetch_related("event_terms__term")
+        .first()
+    )
+    if base_event is not None:
+        return base_event
+    return (
+        series.events.order_by("occurrence_index", "start_datetime")
+        .prefetch_related("event_terms__term")
+        .first()
+    )
+
+
+def validate_event_template(
+    *,
+    series: EventSeries,
+    event_template: dict[str, Any],
+    organizer,
+    explicit_dates: list[date] | None = None,
+) -> list[OccurrenceSpec]:
+    """Validate series + template and return occurrence specs.
+
+    Raises ``ValidationError`` if the series recurrence rules, event template
+    fields, or combined exemplar event fail validation.
+    """
+    series.clean()
+
+    try:
+        occurrences = build_occurrence_specs(series, explicit_dates=explicit_dates)
+    except ZoneInfoNotFoundError as exc:
+        raise ValidationError({"timezone": f"Unknown timezone: {exc}"}) from exc
+
+    if not occurrences:
+        raise ValidationError(
+            {"explicit_dates": "This series definition produces no occurrences."}
+        )
+
+    exemplar_event = Event(
+        campaign=series.campaign,
+        event_type=series.event_type,
+        organizer=organizer,
+        series=series if series.pk else None,
+        occurrence_index=occurrences[0].occurrence_index,
+        original_start_datetime=occurrences[0].original_start_datetime,
+        start_datetime=occurrences[0].start_datetime,
+        end_datetime=occurrences[0].end_datetime,
+        **event_template,
+    )
+    exemplar_event.clean()
+
+    return occurrences
+
+
+def orchestrate_series_create(
+    *,
+    series: EventSeries,
+    event_template: dict[str, Any],
+    organizer,
+    taxonomy_terms: list[TaxonomyTerm] | None = None,
+    explicit_dates: list[date] | None = None,
+    profile_data: dict[str, Any] | None = None,
+) -> list[Event]:
+    """Generate occurrence events for a newly created series.
+
+    The series must already be saved (have a PK). Explicit dates should
+    already be persisted as ``EventSeriesDate`` rows for manual-batch series.
+    """
+    occurrences = build_occurrence_specs(series, explicit_dates=explicit_dates)
+    created_events = create_occurrence_events(
+        series=series,
+        occurrences=occurrences,
+        event_template=event_template,
+        organizer=organizer,
+        taxonomy_terms=taxonomy_terms or [],
+    )
+    if profile_data:
+        apply_profiles_to_events(
+            events=created_events,
+            event_type=series.event_type,
+            profile_data=profile_data,
+        )
+    return created_events
+
+
+def orchestrate_series_update(
+    *,
+    series: EventSeries,
+    event_template: dict[str, Any],
+    organizer,
+    taxonomy_terms: list[TaxonomyTerm] | object = KEEP_EXISTING_TERMS,
+    explicit_dates: list[date] | None = None,
+    profile_data: dict[str, Any] | None = None,
+) -> SyncResult:
+    """Synchronize occurrence events for an existing generated series.
+
+    The series must already be saved. Explicit dates should already be
+    persisted as ``EventSeriesDate`` rows for manual-batch series.
+    """
+    template_event = get_base_template_event(series)
+    occurrences = build_occurrence_specs(series, explicit_dates=explicit_dates)
+    sync_result = sync_occurrence_events(
+        series=series,
+        occurrences=occurrences,
+        event_template=event_template,
+        template_event=template_event,
+        organizer=organizer,
+        taxonomy_terms=taxonomy_terms,
+    )
+    if profile_data:
+        non_exception_events = [
+            event for event in sync_result.events
+            if not event.is_exception
+        ]
+        apply_profiles_to_events(
+            events=non_exception_events,
+            event_type=series.event_type,
+            profile_data=profile_data,
+        )
+    return sync_result
+
+
+def apply_profiles_to_events(
+    events: list[Event],
+    event_type: EventType | None,
+    profile_data: dict[str, Any],
+) -> None:
+    """Create or update profile extension rows for each event based on event type."""
+    if not event_type or not events:
+        return
+
+    profile_key = (
+        event_type.profile_key
+        if event_type.profile_mode == EventType.ProfileMode.EXTENSION
+        else None
+    )
+    if not profile_key:
+        return
+
+    for event in events:
+        if profile_key == PublicHealthEventProfile.expected_profile_key:
+            profile, _ = PublicHealthEventProfile.objects.get_or_create(event=event)
+            profile.insurance_eligible = profile_data.get("insurance_eligible", False)
+            profile.referral_required = profile_data.get("referral_required", False)
+            profile.save()
+        elif profile_key == SportsEventProfile.expected_profile_key:
+            profile, _ = SportsEventProfile.objects.get_or_create(event=event)
+            profile.sport_name = profile_data.get("sport_name", "")
+            profile.skill_level = profile_data.get("skill_level", "")
+            profile.save()
+        elif profile_key == CultureEventProfile.expected_profile_key:
+            profile, _ = CultureEventProfile.objects.get_or_create(event=event)
+            profile.format_label = profile_data.get("format_label", "")
+            profile.age_rating = profile_data.get("age_rating", "")
+            profile.save()
+
+
+def persist_explicit_dates(
+    series: EventSeries,
+    explicit_dates: list[date],
+) -> None:
+    """Persist explicit dates for a manual-batch series.
+
+    Replaces any existing dates. For non-manual-batch series, clears
+    any stale date rows.
+    """
+    if series.series_mode != EventSeries.SeriesMode.MANUAL_BATCH:
+        if series.pk:
+            series.dates.all().delete()
+        return
+
+    series.dates.all().delete()
+    EventSeriesDate.objects.bulk_create(
+        [
+            EventSeriesDate(
+                series=series,
+                occurrence_date=occurrence_date,
+                display_order=index,
+            )
+            for index, occurrence_date in enumerate(explicit_dates, start=1)
+        ]
+    )
