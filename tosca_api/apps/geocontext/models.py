@@ -13,12 +13,13 @@ import uuid
 from django.conf import settings
 from django.db import models
 
+from tosca_api.apps.core.editorjs import empty_document, validate_and_normalize
 from tosca_api.apps.core.models import TimeStampedModel
 
 
 def empty_editorjs_document() -> dict:
     """Return the canonical empty Editor.js document."""
-    return {"blocks": []}
+    return empty_document()
 
 
 class GeoContext(TimeStampedModel):
@@ -57,7 +58,6 @@ class GeoContext(TimeStampedModel):
         return f"GeoContext: {len(blocks)} block(s)"
 
     def save(self, *args, **kwargs) -> None:
-        """Normalize missing/empty content to the canonical empty document."""
-        if self.content in (None, "", {}, []):
-            self.content = empty_editorjs_document()
+        """Validate and normalize Editor.js content before persistence."""
+        self.content = validate_and_normalize(self.content)
         super().save(*args, **kwargs)
