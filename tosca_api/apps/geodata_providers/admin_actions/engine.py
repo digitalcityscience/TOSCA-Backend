@@ -3,6 +3,7 @@ Admin actions for GeodataEngine.
     sync_engines      — pull GeoServer → Django for selected engines
     test_connection   — validate connection, report latency + version
     set_as_default    — mark one engine as the default, unset others
+    deactivate_engines / reactivate_engines — toggle engine activity state
 """
 import time
 
@@ -11,6 +12,7 @@ from django.contrib import admin, messages
 from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeodataEngineError
 from ..models import GeodataEngine
+from ..services.commands.geodata_engine_service import GeodataEngineService
 from ..sync_service import GeoServerSyncService
 
 
@@ -107,3 +109,25 @@ def set_as_default(modeladmin, request, queryset):
         f"'{engine.name}' is now the default engine.",
         messages.SUCCESS,
     )
+
+
+@admin.action(description="Deactivate selected engines")
+def deactivate_engines(modeladmin, request, queryset):
+    for engine in queryset:
+        result = GeodataEngineService.deactivate_engine(engine)
+        modeladmin.message_user(
+            request,
+            result['message'],
+            messages.WARNING if not engine.is_active else messages.INFO,
+        )
+
+
+@admin.action(description="Reactivate selected engines")
+def reactivate_engines(modeladmin, request, queryset):
+    for engine in queryset:
+        result = GeodataEngineService.reactivate_engine(engine)
+        modeladmin.message_user(
+            request,
+            result['message'],
+            messages.SUCCESS,
+        )

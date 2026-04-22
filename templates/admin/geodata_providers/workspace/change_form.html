@@ -5,9 +5,6 @@
   {{ block.super }}
 
   {% if object.pk %}
-  {# ------------------------------------------------------------------ #}
-  {# Workspace action buttons — only shown on the change form (not add)  #}
-  {# ------------------------------------------------------------------ #}
   <div id="workspace-action-panel" style="
     margin: 18px 0 8px 0;
     padding: 14px 18px;
@@ -18,8 +15,6 @@
     <strong style="display:block; margin-bottom:12px; font-size:13px;">Workspace Actions</strong>
 
     <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-
-      {# ── Sync Workspace ────────────────────────────────────────────── #}
       <button
         type="button"
         id="btn-workspace-sync"
@@ -42,7 +37,6 @@
       </span>
     </div>
 
-    {# Result box — hidden until a call completes #}
     <div id="workspace-action-result" style="
       display: none;
       margin-top: 12px;
@@ -55,8 +49,6 @@
 
   <script>
   (function () {
-    var WORKSPACE_ID = "{{ object.pk }}";
-
     function getCsrf() {
       var name = 'csrftoken';
       var cookies = document.cookie.split(';');
@@ -67,16 +59,16 @@
       return '';
     }
 
-    window.workspaceAction = function (action, btn) {
+    window.workspaceAction = function (action) {
       var url = window.location.pathname.replace(/\/$/, '')
                   .replace(/\/change$/, '') + '/' + action + '/';
 
-      var spinner   = document.getElementById('workspace-action-spinner');
+      var spinner = document.getElementById('workspace-action-spinner');
       var resultBox = document.getElementById('workspace-action-result');
-      var allBtns   = document.querySelectorAll('#workspace-action-panel button');
+      var allBtns = document.querySelectorAll('#workspace-action-panel button');
 
       allBtns.forEach(function (b) { b.disabled = true; });
-      spinner.style.display   = 'inline';
+      spinner.style.display = 'inline';
       resultBox.style.display = 'none';
 
       fetch(url, {
@@ -95,8 +87,8 @@
 
         if (data.success) {
           resultBox.style.background = '#eaf7ee';
-          resultBox.style.border     = '1px solid #3ecf8e';
-          resultBox.style.color      = '#1a6b41';
+          resultBox.style.border = '1px solid #3ecf8e';
+          resultBox.style.color = '#1a6b41';
 
           var st = data.stores, ly = data.layers;
           var msg = '&#10003; Sync complete &mdash; '
@@ -109,8 +101,8 @@
           resultBox.innerHTML = msg;
         } else {
           resultBox.style.background = '#fdf0f0';
-          resultBox.style.border     = '1px solid #e54d4d';
-          resultBox.style.color      = '#a31515';
+          resultBox.style.border = '1px solid #e54d4d';
+          resultBox.style.color = '#a31515';
           resultBox.innerHTML = '&#10007; ' + (data.error || 'An error occurred.');
         }
         resultBox.style.display = 'block';
@@ -119,8 +111,8 @@
         spinner.style.display = 'none';
         allBtns.forEach(function (b) { b.disabled = false; });
         resultBox.style.background = '#fdf0f0';
-        resultBox.style.border     = '1px solid #e54d4d';
-        resultBox.style.color      = '#a31515';
+        resultBox.style.border = '1px solid #e54d4d';
+        resultBox.style.color = '#a31515';
         resultBox.innerHTML = '&#10007; Network error: ' + err;
         resultBox.style.display = 'block';
       });

@@ -8,7 +8,10 @@ from django.http import QueryDict
 from django.test import RequestFactory
 from django.test import TestCase
 
-from tosca_api.apps.geodata_providers.admin import LayerAdmin, StoreAdmin, StoreAdminForm, WorkspaceAdminForm
+from tosca_api.apps.geodata_providers.admin import DeleteAborted, LayerAdmin, StoreAdmin, StoreAdminForm, WorkspaceAdminForm
+from tosca_api.apps.geodata_providers.admin_actions.layer import publish_layer, unpublish_layer
+from tosca_api.apps.geodata_providers.admin_views.layer import publish_postgis_view
+from tosca_api.apps.geodata_providers.admin_views.store import store_clone_view
 from tosca_api.apps.geodata_providers.geoserver.client import GeoServerClient
 from tosca_api.apps.geodata_providers.admin_views.layer import tables_for_store_view
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Workspace
@@ -33,24 +36,18 @@ class AdminFormCreateFlowTests(TestCase):
         self.site = AdminSite()
         self.request_factory = RequestFactory()
 
-    @patch('tosca_api.apps.geodata_providers.admin.EngineClientFactory.create_client')
-    def test_workspace_add_form_runs_remote_create_for_unsaved_uuid_instance(self, mock_create_client):
-        client = MagicMock()
-        client.create_workspace.return_value = {'success': True, 'created': True}
-        client.post_verify_workspace.return_value = {'verified': True, 'success': True}
-        mock_create_client.return_value = client
-
+    def test_workspace_add_form_rejects_reserved_name(self):
         form = WorkspaceAdminForm(
             data={
                 'geodata_engine': str(self.engine.pk),
-                'name': 'new_workspace',
+                'name': 'vector',
                 'description': 'desc',
+                'created_by': str(self.user.pk),
             }
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
-        client.create_workspace.assert_called_once_with('new_workspace')
-        client.post_verify_workspace.assert_called_once_with('new_workspace', expected_exists=True)
+        self.assertFalse(form.is_valid())
+        self.assertIn('reserved', form.errors['name'][0])
 
     @patch('tosca_api.apps.geodata_providers.admin.EngineClientFactory.create_client')
     def test_store_add_form_runs_remote_create_for_unsaved_uuid_instance(self, mock_create_client):
@@ -81,6 +78,7 @@ class AdminFormCreateFlowTests(TestCase):
                 'schema': 'public',
                 'file_path': '',
                 'charset': 'UTF-8',
+                'created_by': str(self.user.pk),
             }
         )
 
@@ -177,8 +175,84 @@ class AdminFormCreateFlowTests(TestCase):
         request.user = self.user
         model_admin = StoreAdmin(Store, self.site)
 
-        with self.assertRaises(PermissionDenied):
+        with self.assertRaises(DeleteAborted):
             model_admin.delete_model(request, store)
+
+    @patch('tosca_api.apps.geodata_providers.admin.StoreService.delete_store_safe')
+    def test_store_admin_delete_model_uses_service(self, mock_delete_store_safe):
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='delete_service_ws',
+            description='desc',
+            created_by=self.user,
+        )
+        store = Store.objects.create(
+            workspace=workspace,
+            geodata_engine=self.engine,
+            name='delete_service_store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='desc',
+            created_by=self.user,
+        )
+        mock_delete_store_safe.return_value = {'success': True, 'message': 'deleted'}
+        request = self.request_factory.post('/admin/geodata_providers/store/')
+        request.user = self.user
+        model_admin = StoreAdmin(Store, self.site)
+
+        model_admin.delete_model(request, store)
+
+        mock_delete_store_safe.assert_called_once_with(store)
+
+    @patch('tosca_api.apps.geodata_providers.admin.StoreService.delete_store_safe')
+    def test_store_admin_delete_queryset_uses_service(self, mock_delete_store_safe):
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='delete_queryset_ws',
+            description='desc',
+            created_by=self.user,
+        )
+        first = Store.objects.create(
+            workspace=workspace,
+            geodata_engine=self.engine,
+            name='delete_queryset_store_1',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='desc',
+            created_by=self.user,
+        )
+        second = Store.objects.create(
+            workspace=workspace,
+            geodata_engine=self.engine,
+            name='delete_queryset_store_2',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='desc',
+            created_by=self.user,
+        )
+        mock_delete_store_safe.return_value = {'success': True, 'message': 'deleted'}
+        request = self.request_factory.post('/admin/geodata_providers/store/')
+        request.user = self.user
+        model_admin = StoreAdmin(Store, self.site)
+
+        model_admin.delete_queryset(request, Store.objects.filter(pk__in=[first.pk, second.pk]))
+
+        self.assertEqual(mock_delete_store_safe.call_count, 2)
 
     @patch('tosca_api.apps.geodata_providers.admin.EngineClientFactory.create_client')
     def test_store_admin_uses_geoserver_probe_for_access_badge(self, mock_create_client):
@@ -215,6 +289,78 @@ class AdminFormCreateFlowTests(TestCase):
 
         client.probe_store_access.assert_called_once_with('probe_ws', 'probe_store')
         self.assertIn('GeoServer OK', badge)
+
+    @patch('tosca_api.apps.geodata_providers.admin_views.store.messages.warning')
+    @patch('tosca_api.apps.geodata_providers.admin_views.store.messages.success')
+    @patch('tosca_api.apps.geodata_providers.admin_views.store.StoreService.clone_store')
+    def test_store_clone_view_uses_service(self, mock_clone_store, mock_success, mock_warning):
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='clone_ws',
+            description='desc',
+            created_by=self.user,
+        )
+        source = Store.objects.create(
+            workspace=workspace,
+            geodata_engine=self.engine,
+            name='source_clone_store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='desc',
+            created_by=self.user,
+        )
+        cloned = Store.objects.create(
+            workspace=workspace,
+            geodata_engine=self.engine,
+            name='cloned_store_result',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='desc',
+            created_by=self.user,
+        )
+        mock_clone_store.return_value = {
+            'success': True,
+            'resource': cloned,
+            'sync_result': {'success': True, 'errors': []},
+        }
+        request = self.request_factory.post(
+            f'/admin/geodata_providers/store/{source.pk}/clone/',
+            data={
+                'name': 'cloned_store',
+                'workspace': str(workspace.pk),
+                'description': 'desc',
+                'host': 'db',
+                'port': 5432,
+                'database': 'gis',
+                'schema': 'public',
+                'username': 'postgres',
+                'password': 'secret',
+            },
+        )
+        request.user = User.objects.create_user(
+            username='clone-admin',
+            email='clone@example.com',
+            password='testpass123',
+            is_staff=True,
+            is_superuser=True,
+        )
+
+        response = store_clone_view(request, source.pk)
+
+        self.assertEqual(response.status_code, 302)
+        mock_clone_store.assert_called_once()
+        mock_success.assert_called()
+        mock_warning.assert_not_called()
 
 
 class LayerAdminAjaxTests(TestCase):
@@ -359,24 +505,182 @@ class LayerDeleteBehaviorTests(TestCase):
         self.site = AdminSite()
         self.request_factory = RequestFactory()
 
-    @patch('tosca_api.apps.geodata_providers.admin.EngineClientFactory.create_client')
-    def test_layer_delete_model_allows_remote_already_deleted(self, mock_create_client):
-        client = MagicMock()
-        client.delete_layer.return_value = {
+    @patch('tosca_api.apps.geodata_providers.admin.LayerService.delete_layer_safe')
+    def test_layer_delete_model_allows_remote_already_deleted(self, mock_delete_layer_safe):
+        mock_delete_layer_safe.return_value = {
             'success': True,
             'already_deleted': True,
             'message': "Layer 'apotheken' was already absent in GeoServer.",
         }
-        client.verify_featuretype.return_value = False
-        mock_create_client.return_value = client
 
         request = self.request_factory.post(f'/admin/geodata_providers/layer/{self.layer.pk}/delete/')
         request.user = self.user
         model_admin = LayerAdmin(Layer, self.site)
+        model_admin.message_user = MagicMock()
 
         model_admin.delete_model(request, self.layer)
 
-        self.assertFalse(Layer.objects.filter(pk=self.layer.pk).exists())
+        mock_delete_layer_safe.assert_called_once_with(self.layer)
+        model_admin.message_user.assert_called_once()
+
+    @patch('tosca_api.apps.geodata_providers.admin.LayerService.delete_layer_safe')
+    def test_layer_delete_queryset_uses_service_for_each_object(self, mock_delete_layer_safe):
+        second_layer = Layer.objects.create(
+            workspace=self.workspace,
+            store=self.store,
+            name='hastane',
+            title='Hastane',
+            table_name='hastane',
+            geometry_column='geom',
+            geometry_type='Point',
+            srid=4326,
+            publishing_state='PUBLISHED',
+            created_by=self.user,
+        )
+        mock_delete_layer_safe.return_value = {'success': True, 'message': 'deleted'}
+
+        request = self.request_factory.post('/admin/geodata_providers/layer/')
+        request.user = self.user
+        model_admin = LayerAdmin(Layer, self.site)
+
+        model_admin.delete_queryset(request, Layer.objects.filter(pk__in=[self.layer.pk, second_layer.pk]))
+
+        self.assertEqual(mock_delete_layer_safe.call_count, 2)
+
+    @patch('tosca_api.apps.geodata_providers.admin._run_workspace_sync')
+    @patch('tosca_api.apps.geodata_providers.admin.LayerService.update_published_metadata')
+    def test_layer_save_model_uses_service_for_published_metadata_only_changes(self, mock_update_metadata, mock_run_workspace_sync):
+        request = self.request_factory.post(f'/admin/geodata_providers/layer/{self.layer.pk}/change/')
+        request.user = self.user
+        model_admin = LayerAdmin(Layer, self.site)
+        self.layer.title = 'Updated Apotheken'
+        form = MagicMock()
+        form.changed_data = ['title']
+
+        model_admin.save_model(request, self.layer, form, change=True)
+
+        mock_update_metadata.assert_called_once_with(
+            layer=self.layer,
+            title='Updated Apotheken',
+            description=self.layer.description,
+        )
+        mock_run_workspace_sync.assert_called_once()
+
+
+class LayerSurfaceRefactorTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='layersurface',
+            email='layersurface@example.com',
+            password='testpass123',
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.engine = GeodataEngine.objects.create(
+            name='Surface Engine',
+            description='test',
+            base_url='http://example.com/geoserver',
+            admin_username='admin',
+            admin_password='secret',
+            is_active=True,
+            created_by=self.user,
+        )
+        self.workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='surface_ws',
+            description='desc',
+            created_by=self.user,
+        )
+        self.store = Store.objects.create(
+            workspace=self.workspace,
+            geodata_engine=self.engine,
+            name='surface_store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='desc',
+            created_by=self.user,
+        )
+        self.layer = Layer.objects.create(
+            workspace=self.workspace,
+            store=self.store,
+            name='surface_layer',
+            title='Surface Layer',
+            description='desc',
+            table_name='surface_layer',
+            geometry_column='geom',
+            geometry_type='Point',
+            srid=4326,
+            publishing_state='PUBLISHED',
+            created_by=self.user,
+        )
+        self.request_factory = RequestFactory()
+        self.site = AdminSite()
+
+    @patch('tosca_api.apps.geodata_providers.admin_actions.layer.LayerService.publish_existing_layer')
+    def test_publish_action_uses_layer_service(self, mock_publish_existing_layer):
+        self.layer.publishing_state = 'DRAFT'
+        self.layer.save(update_fields=['publishing_state'])
+        mock_publish_existing_layer.return_value = {'success': True, 'message': 'published'}
+        model_admin = LayerAdmin(Layer, self.site)
+        model_admin.message_user = MagicMock()
+        request = self.request_factory.post('/admin/geodata_providers/layer/')
+        request.user = self.user
+
+        publish_layer(model_admin, request, Layer.objects.filter(pk=self.layer.pk))
+
+        mock_publish_existing_layer.assert_called_once()
+
+    @patch('tosca_api.apps.geodata_providers.admin_actions.layer.LayerService.unpublish_layer')
+    def test_unpublish_action_uses_layer_service(self, mock_unpublish_layer):
+        mock_unpublish_layer.return_value = {'success': True, 'message': 'unpublished'}
+        model_admin = LayerAdmin(Layer, self.site)
+        model_admin.message_user = MagicMock()
+        request = self.request_factory.post('/admin/geodata_providers/layer/')
+        request.user = self.user
+
+        unpublish_layer(model_admin, request, Layer.objects.filter(pk=self.layer.pk))
+
+        mock_unpublish_layer.assert_called_once()
+
+    @patch('tosca_api.apps.geodata_providers.admin_views.layer.messages.warning')
+    @patch('tosca_api.apps.geodata_providers.admin_views.layer.messages.success')
+    @patch('tosca_api.apps.geodata_providers.admin_views.layer.GeoServerSyncService')
+    @patch('tosca_api.apps.geodata_providers.admin_views.layer.LayerService.publish_postgis')
+    def test_publish_postgis_view_uses_layer_service(self, mock_publish_postgis, mock_sync_service, mock_success, mock_warning):
+        mock_publish_postgis.return_value = {
+            'success': True,
+            'created': True,
+            'message': 'published',
+            'resource': self.layer,
+        }
+        mock_sync_service.return_value.sync_layers_for_workspace.return_value = {'errors': []}
+        request = self.request_factory.post(
+            '/admin/geodata_providers/layer/publish-postgis/',
+            data={
+                'workspace': str(self.workspace.pk),
+                'store': str(self.store.pk),
+                'table_name': 'surface_layer',
+                'layer_name': 'surface_layer',
+                'title': 'Surface Layer',
+                'description': 'desc',
+                'geometry_column': 'geom',
+                'geometry_type': 'Point',
+                'srid': 4326,
+            },
+        )
+        request.user = self.user
+
+        response = publish_postgis_view(request)
+
+        self.assertEqual(response.status_code, 302)
+        mock_publish_postgis.assert_called_once()
+        mock_success.assert_called()
+        mock_warning.assert_not_called()
 
 
 class GeoServerClientDeleteLayerTests(TestCase):
@@ -418,3 +722,25 @@ class GeoServerClientDeleteLayerTests(TestCase):
         self.assertIn('<name>apotheken_v2</name>', payload)
         self.assertIn('<nativeName>apotheken</nativeName>', payload)
         self.assertIn('<title>Apotheken V2</title>', payload)
+
+    def test_verify_featuretype_metadata_detects_mismatch(self):
+        client = GeoServerClient.__new__(GeoServerClient)
+        client.get_featuretype_detail = MagicMock(return_value={
+            'name': 'apotheken_v2',
+            'title': 'Wrong Title',
+            'native_name': 'apotheken',
+            'abstract': '',
+            'advertised': True,
+        })
+
+        result = client.verify_featuretype_metadata(
+            workspace='demo_ws',
+            store_name='demo_store',
+            featuretype_name='apotheken_v2',
+            expected_title='Apotheken V2',
+            expected_abstract='Expected abstract',
+        )
+
+        self.assertFalse(result['verified'])
+        self.assertIn('title', result['mismatches'])
+        self.assertIn('abstract', result['mismatches'])

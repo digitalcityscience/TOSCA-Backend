@@ -1,0 +1,33 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+<div id="content-main">
+  <h1>Force Delete Provider Tree</h1>
+
+  <p>
+    This will permanently delete <strong>{{ engine.name }}</strong>, then remove all dependent resources in this order:
+    layers, stores, workspaces, and finally the provider itself.
+  </p>
+
+  <div style="margin: 18px 0; padding: 14px 18px; background: #fff4e5; border: 1px solid #e0b66d; border-radius: 4px;">
+    <strong>Current dependency summary</strong>
+    <ul style="margin: 10px 0 0 18px;">
+      <li>Workspaces: {{ summary.workspaces }}</li>
+      <li>Stores: {{ summary.stores }}</li>
+      <li>Layers: {{ summary.layers }}</li>
+    </ul>
+  </div>
+
+  <form method="post" style="display:inline-block; margin-right: 12px;">
+    {% csrf_token %}
+    <button type="submit" class="button deletelink" style="padding: 8px 16px; border: none; cursor: pointer;">
+      Confirm Force Delete
+    </button>
+  </form>
+
+  <a href="{% url 'admin:geodata_providers_geodataengine_change' engine.pk %}" class="button cancel-link">
+    Cancel
+  </a>
+</div>
+{% endblock %}

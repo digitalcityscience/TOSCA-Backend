@@ -70,8 +70,8 @@ class GeodataEngine(models.Model, EncryptedCharField):
 
     class Meta:
         app_label = 'geodata_providers'
-        verbose_name = "Geodata Provider Instance"
-        verbose_name_plural = "Geodata Provider Instances"
+        verbose_name = "Geodata Provider"
+        verbose_name_plural = "Geodata Providers"
         ordering = ['-is_default', 'name']
 
     def __str__(self):

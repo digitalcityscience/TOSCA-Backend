@@ -1418,6 +1418,7 @@ class GeoServerClient:
                     'name': ft_name,
                     'title': ft_name,
                     'native_name': ft_name,
+                    'abstract': '',
                     'advertised': True,
                 }
             data = r.json()
@@ -1426,6 +1427,7 @@ class GeoServerClient:
                 'name': featuretype.get('name', ft_name),
                 'title': featuretype.get('title', featuretype.get('name', ft_name)),
                 'native_name': featuretype.get('nativeName', featuretype.get('name', ft_name)),
+                'abstract': featuretype.get('abstract', '') or '',
                 'advertised': bool(featuretype.get('advertised', True)),
             }
         except Exception as exc:
@@ -1437,8 +1439,48 @@ class GeoServerClient:
                 'name': ft_name,
                 'title': ft_name,
                 'native_name': ft_name,
+                'abstract': '',
                 'advertised': True,
             }
+
+    def verify_featuretype_metadata(
+        self,
+        workspace: str,
+        store_name: str,
+        featuretype_name: str,
+        expected_title: Optional[str] = None,
+        expected_abstract: Optional[str] = None,
+    ) -> Dict:
+        """
+        Verify metadata fields for a featuretype after a remote update.
+
+        Returns:
+            {
+                'verified': bool,
+                'mismatches': {...},
+                'actual': {...},
+            }
+        """
+        actual = self.get_featuretype_detail(workspace, store_name, featuretype_name)
+        mismatches = {}
+
+        if expected_title is not None and actual.get('title', '') != expected_title:
+            mismatches['title'] = {
+                'expected': expected_title,
+                'actual': actual.get('title', ''),
+            }
+
+        if expected_abstract is not None and (actual.get('abstract', '') or '') != (expected_abstract or ''):
+            mismatches['abstract'] = {
+                'expected': expected_abstract or '',
+                'actual': actual.get('abstract', '') or '',
+            }
+
+        return {
+            'verified': not mismatches,
+            'mismatches': mismatches,
+            'actual': actual,
+        }
 
     def validate_connection(self) -> Dict:
         """

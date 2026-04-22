@@ -13,7 +13,7 @@ from ..sync_service import GeoServerSyncService
 @require_POST
 def workspace_sync_view(request, workspace_id):
     """
-    POST /admin/geodata_engine/workspace/<id>/sync/
+    POST /admin/geodata_providers/workspace/<id>/sync/
     Wrapped by admin_site.admin_view() in get_urls() — auth handled there.
     Syncs stores + layers for this workspace's engine.
     Returns JSON with store/layer delta counts.

@@ -10,7 +10,7 @@ from ..models import GeodataEngine
 register = template.Library()
 
 
-@register.inclusion_tag('admin/geodata_engine/engine_selector.html', takes_context=True)
+@register.inclusion_tag('admin/geodata_providers/engine_selector.html', takes_context=True)
 def engine_selector(context):
     """Render engine selector dropdown in admin header"""
     request = context['request']

@@ -8,7 +8,7 @@ could filter Workspace/Store/Layer records by that engine.
 STATUS (14 March 2026): INACTIVE
 - Removed from MIDDLEWARE and CONTEXT_PROCESSORS in settings/base.py
 - admin.py no longer calls get_active_engine()
-- engine_selector.html template is in backup_unused/
+- engine selector template, if reused, lives under templates/admin/geodata_providers/
 
 FUTURE (geo_console Phase 2+):
 An equivalent concept will be implemented inside geo_console — but using

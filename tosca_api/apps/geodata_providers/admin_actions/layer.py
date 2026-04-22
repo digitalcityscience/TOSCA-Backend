@@ -2,10 +2,9 @@
 import logging
 
 from django.contrib import admin, messages
-from django.utils import timezone
 
-from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeoServerPublishError
+from ..services.commands.layer_service import LayerService
 
 logger = logging.getLogger(__name__)
 
@@ -29,69 +28,18 @@ def publish_layer(modeladmin, request, queryset):
             )
             continue
 
-        engine = layer.workspace.geodata_engine if layer.workspace else None
-        if not engine:
-            modeladmin.message_user(
-                request,
-                f"Layer '{layer.name}' has no engine — skipped.",
-                messages.WARNING,
-            )
-            continue
-
         try:
-            client = EngineClientFactory.create_client(engine)
-
-            # Step 1: pre-check
-            already = client.verify_featuretype(
-                workspace=layer.workspace.name,
-                store_name=layer.store.name,
-                featuretype_name=layer.name,
-            )
-            if already:
-                modeladmin.message_user(
-                    request,
-                    f"Layer '{layer.name}' already exists in GeoServer — updating state to PUBLISHED.",
-                    messages.WARNING,
-                )
-                layer.publishing_state = 'PUBLISHED'
-                layer.save(update_fields=['publishing_state'])
-                continue
-
-            # Step 2: publish
-            client.publish_featuretype(
-                store_name=layer.store.name,
-                workspace=layer.workspace.name,
-                pg_table=layer.table_name,
-                srid=layer.srid,
-                geometry_type=layer.geometry_type,
-                layer_name=layer.name,
-                title=layer.title or layer.name,
-            )
-
-            # Step 3: verify
-            verified = client.verify_featuretype(
-                workspace=layer.workspace.name,
-                store_name=layer.store.name,
-                featuretype_name=layer.name,
-            )
-            if not verified:
-                modeladmin.message_user(
-                    request,
-                    f"Layer '{layer.name}': publish reported success but verification failed.",
-                    messages.ERROR,
-                )
-                continue
-
-            # Step 4: persist
-            layer.publishing_state = 'PUBLISHED'
-            layer.published_at = timezone.now()
-            layer.publishing_error = ''
-            layer.save(update_fields=['publishing_state', 'published_at', 'publishing_error'])
+            result = LayerService.publish_existing_layer(layer)
+            level = messages.SUCCESS
+            if result.get('already_exists'):
+                level = messages.WARNING
+            elif not result.get('success'):
+                level = messages.ERROR
 
             modeladmin.message_user(
                 request,
-                f"Layer '{layer.name}' published successfully.",
-                messages.SUCCESS,
+                result.get('error', result.get('message', f"Layer '{layer.name}' publish failed.")),
+                level,
             )
 
         except GeoServerConnectionError as exc:
@@ -126,43 +74,13 @@ def unpublish_layer(modeladmin, request, queryset):
             )
             continue
 
-        engine = layer.workspace.geodata_engine if layer.workspace else None
-        if not engine:
-            modeladmin.message_user(
-                request,
-                f"Layer '{layer.name}' has no engine — skipped.",
-                messages.WARNING,
-            )
-            continue
-
         try:
-            client = EngineClientFactory.create_client(engine)
-
-            # Step 1: delete from GeoServer
-            client.delete_layer(layer.workspace.name, layer.name)
-
-            # Step 2: verify gone
-            still_there = client.verify_featuretype(
-                workspace=layer.workspace.name,
-                store_name=layer.store.name,
-                featuretype_name=layer.name,
-            )
-            if still_there:
-                modeladmin.message_user(
-                    request,
-                    f"Layer '{layer.name}': delete reported success but layer still exists in GeoServer.",
-                    messages.ERROR,
-                )
-                continue
-
-            # Step 3: update Django
-            layer.publishing_state = 'UNPUBLISHED'
-            layer.save(update_fields=['publishing_state'])
-
+            result = LayerService.unpublish_layer(layer)
+            level = messages.SUCCESS if result.get('success') else messages.ERROR
             modeladmin.message_user(
                 request,
-                f"Layer '{layer.name}' unpublished successfully.",
-                messages.SUCCESS,
+                result.get('error', result.get('message', f"Layer '{layer.name}' unpublish failed.")),
+                level,
             )
 
         except GeoServerConnectionError as exc:

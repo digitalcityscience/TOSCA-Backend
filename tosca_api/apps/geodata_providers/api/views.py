@@ -1,20 +1,44 @@
+"""
+API endpoints for the geodata_providers app.
+
+Purpose:
+- expose CRUD APIs for engines, workspaces, stores, and layers
+- wrap GeoServer-aware operations behind Django REST endpoints
+- enforce the app's sync contract: mutate remote state first when needed,
+  verify the result, then persist or update Django state
+- provide operational actions such as sync, connection test, PostGIS table
+  inspection, layer publish, and layer unpublish
+
+This file exists so the frontend and admin-adjacent tools can use a stable
+HTTP API instead of calling GeoServer directly or duplicating orchestration
+logic in multiple places.
+"""
+
 import logging
-import os
 
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from ..engine_factory import EngineClientFactory
-from ..exceptions import GeoServerConnectionError
+from ..exceptions import GeoServerConnectionError, GeodataEngineError
 from ..geoserver.client import GeoServerClient
 from ..models import GeodataEngine, Layer, Store, Workspace
 from ..postgis_inspector import PostGISInspectorError, get_geometry_tables, get_table_bbox
+from ..services.commands.geodata_engine_service import GeodataEngineService
+from ..services.commands.layer_service import LayerService
+from ..services.commands.store_service import StoreService
+from ..services.commands.workspace_service import WorkspaceService
 from .serializers import GeodataEngineSerializer, LayerSerializer, StoreSerializer, WorkspaceSerializer
 
 logger = logging.getLogger(__name__)
+
+
+def _api_result(result: dict) -> dict:
+    if not isinstance(result, dict):
+        return result
+    return {key: value for key, value in result.items() if key != 'resource'}
 
 
 class GeodataEngineViewSet(viewsets.ModelViewSet):
@@ -23,20 +47,25 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        engine, sync_result = GeodataEngineService.create_engine(
+            user=self.request.user,
+            **serializer.validated_data,
+        )
+        self._last_engine = engine
+        self._last_sync_result = sync_result
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        engine = serializer.instance
-
-        # Immediately sync to populate workspaces/stores/layers from the new engine.
-        sync_result = self._trigger_initial_sync(engine, request.user)
-
-        headers = self.get_success_headers(serializer.data)
+        try:
+            self.perform_create(serializer)
+        except (GeoServerConnectionError, GeodataEngineError) as e:
+            return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        engine = self._last_engine
+        payload = self.get_serializer(engine).data
+        headers = self.get_success_headers(payload)
         return Response(
-            {'engine': serializer.data, 'initial_sync': sync_result},
+            {'engine': payload, 'initial_sync': self._last_sync_result},
             status=status.HTTP_201_CREATED,
             headers=headers,
         )
@@ -46,50 +75,26 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
-        engine = serializer.instance
-
-        # Re-sync on update (e.g. URL or credentials changed).
-        sync_result = self._trigger_initial_sync(engine, request.user)
-
-        return Response({'engine': serializer.data, 'sync': sync_result})
-
-    def _trigger_initial_sync(self, engine: GeodataEngine, user) -> dict:
-        """
-        Pull workspaces/stores/layers from the engine into Django.
-        Called after create or update.  Never raises — sync failure must NOT
-        prevent the engine record from being persisted.
-        """
-        if engine.engine_type != 'geoserver':
-            return {
-                'success': None,
-                'skipped': True,
-                'reason': f'Auto-sync not supported for engine type: {engine.engine_type}',
-            }
         try:
-            sync_service = EngineClientFactory.create_sync_service(engine)
-            result = sync_service.sync_all_resources(created_by=user)
-            logger.info("Auto-sync after engine save '%s': %s", engine.name, result)
-            return result
-        except GeoServerConnectionError as e:
-            logger.warning(
-                "Auto-sync skipped for engine '%s' — GeoServer unreachable: %s",
-                engine.name, e,
-            )
-            return {'success': False, 'skipped': False, 'error': f'GeoServer unreachable: {e}'}
-        except Exception as e:
-            logger.error("Auto-sync unexpected error for engine '%s': %s", engine.name, e)
-            return {'success': False, 'skipped': False, 'error': str(e)}
+            self.perform_update(serializer)
+        except (GeoServerConnectionError, GeodataEngineError) as e:
+            return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        engine = self._last_engine
+        return Response({'engine': self.get_serializer(engine).data, 'sync': self._last_sync_result})
+
+    def perform_update(self, serializer):
+        engine, sync_result = GeodataEngineService.update_engine(
+            serializer.instance,
+            user=self.request.user,
+            **serializer.validated_data,
+        )
+        self._last_engine = engine
+        self._last_sync_result = sync_result
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
     def sync(self, request, pk=None):
         engine = get_object_or_404(GeodataEngine, pk=pk)
-        sync_service = EngineClientFactory.create_sync_service(engine)
-        result = sync_service.sync_all_resources(created_by=request.user)
-        # Attach fresh DB counts so the UI card can update accurately
-        result['db_workspace_count'] = Workspace.objects.filter(geodata_engine=engine).count()
-        from ..models import Layer as LayerModel
-        result['db_layer_count'] = LayerModel.objects.filter(workspace__geodata_engine=engine).count()
+        result = GeodataEngineService.sync_engine(engine, user=request.user)
         code = status.HTTP_200_OK if result.get('success', False) else status.HTTP_400_BAD_REQUEST
         return Response(result, status=code)
 
@@ -99,8 +104,7 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
         results = []
 
         for engine in engines:
-            sync_service = EngineClientFactory.create_sync_service(engine)
-            engine_result = sync_service.sync_all_resources(created_by=request.user)
+            engine_result = GeodataEngineService.sync_engine(engine, user=request.user)
             results.append(
                 {
                     'engine': engine.name,
@@ -122,14 +126,13 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
     def validate(self, request, pk=None):
         engine = get_object_or_404(GeodataEngine, pk=pk)
-        client = EngineClientFactory.create_client(engine)
         try:
-            result = client.validate_connection()
+            result = GeodataEngineService.validate_engine_connection(engine=engine)
             return Response(
                 {'success': True, 'message': result.get('message', 'Connection validated'), 'version': result.get('version')},
                 status=status.HTTP_200_OK,
             )
-        except Exception as e:
+        except (GeoServerConnectionError, GeodataEngineError) as e:
             return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=False, methods=['post'], url_path='test_connection', permission_classes=[permissions.IsAuthenticated])
@@ -151,27 +154,25 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if engine_type == 'geoserver':
-            try:
-                client = GeoServerClient(url=base_url, username=admin_username, password=admin_password)
-                result = client.validate_connection()
-                return Response(
-                    {
-                        'success': True,
-                        'message': result.get('message', 'Connection validated'),
-                        'version': result.get('version'),
-                    },
-                    status=status.HTTP_200_OK,
-                )
-            except GeoServerConnectionError as e:
-                return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-            except Exception as e:
-                return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        else:
-            return Response(
-                {'success': False, 'error': f'Connection test not supported for engine type: {engine_type}'},
-                status=status.HTTP_400_BAD_REQUEST,
+        try:
+            result = GeodataEngineService.validate_engine_connection(
+                config={
+                    'base_url': base_url,
+                    'admin_username': admin_username,
+                    'admin_password': admin_password,
+                    'engine_type': engine_type,
+                }
             )
+            return Response(
+                {
+                    'success': True,
+                    'message': result.get('message', 'Connection validated'),
+                    'version': result.get('version'),
+                },
+                status=status.HTTP_200_OK,
+            )
+        except (GeoServerConnectionError, GeodataEngineError) as e:
+            return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
     def push(self, request, pk=None):
@@ -206,79 +207,25 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-
-        workspace, created = Workspace.objects.get_or_create(
-            geodata_engine=data.get('geodata_engine'),
+        result = WorkspaceService.create_workspace(
+            engine=data.get('geodata_engine'),
             name=data['name'],
-            defaults={
-                'description': data.get('description', ''),
-                'created_by': request.user,
-            },
+            description=data.get('description', ''),
+            user=request.user,
         )
+        if not result.get('success'):
+            return Response(_api_result(result), status=status.HTTP_400_BAD_REQUEST)
 
-        if not created:
-            payload = self.get_serializer(workspace).data
-            return Response(
-                {'workspace': payload, 'result': {'success': True, 'idempotent': True, 'message': 'Workspace already exists'}},
-                status=status.HTTP_200_OK,
-            )
-
-        engine_result = {'success': True, 'message': 'Created in DB'}
-        if workspace.geodata_engine:
-            client = EngineClientFactory.create_client(workspace.geodata_engine)
-            engine_result = client.create_workspace(workspace.name)
-
+        workspace = result['resource']
         payload = self.get_serializer(workspace).data
-        return Response({'workspace': payload, 'result': engine_result}, status=status.HTTP_201_CREATED)
+        response_status = status.HTTP_200_OK if result.get('already_exists') else status.HTTP_201_CREATED
+        return Response({'workspace': payload, 'result': _api_result(result)}, status=response_status)
 
     def destroy(self, request, *args, **kwargs):
         workspace = self.get_object()
-
-        # Sync rule: delete in engine FIRST, verify, THEN delete Django object.
-        # Never delete Django if engine operation fails.
-        if workspace.geodata_engine:
-            client = EngineClientFactory.create_client(workspace.geodata_engine)
-            result = client.delete_workspace(workspace.name)
-
-            if not result.get('success', False):
-                # Engine delete failed — do NOT touch Django.
-                return Response(
-                    {
-                        'success': False,
-                        'error': result.get('error', result.get('message', 'Engine delete failed')),
-                        'detail': 'Workspace was NOT deleted from Django — engine deletion must succeed first.',
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            # Verify: confirm workspace is gone from the engine before removing from DB.
-            # If we cannot reach the engine to verify (connection error), we treat this as
-            # "unconfirmed but probably gone" — the delete call already returned success.
-            # We log a warning and proceed rather than leaving a Django orphan.
-            try:
-                workspaces_after = client.get_workspaces()
-                if workspace.name in workspaces_after:
-                    return Response(
-                        {
-                            'success': False,
-                            'error': 'Workspace still exists in GeoServer after delete — aborting Django delete.',
-                        },
-                        status=status.HTTP_409_CONFLICT,
-                    )
-            except Exception as verify_exc:
-                # Could not reach engine to verify — delete returned success earlier,
-                # so proceed with Django deletion and log the unverified state.
-                import logging as _logging
-                _logging.getLogger(__name__).warning(
-                    'workspace %s: engine delete succeeded but verify step failed (%s) — '
-                    'proceeding with Django deletion.',
-                    workspace.name, verify_exc,
-                )
-
-        # Engine delete confirmed (or no engine attached, or unverifiable after success)
-        # — safe to delete from Django.
-        workspace.delete()
-        return Response({'success': True, 'message': 'Workspace deleted from engine and Django.'}, status=status.HTTP_200_OK)
+        result = WorkspaceService.delete_workspace_safe(workspace)
+        code = status.HTTP_200_OK if result.get('success', False) else status.HTTP_400_BAD_REQUEST
+        return Response(_api_result(result), status=code)
 
 
 class StoreViewSet(viewsets.ModelViewSet):
@@ -302,98 +249,48 @@ class StoreViewSet(viewsets.ModelViewSet):
         data = serializer.validated_data
 
         workspace = data['workspace']
-        geodata_engine = data.get('geodata_engine') or workspace.geodata_engine
-
-        store, created = Store.objects.get_or_create(
+        result = StoreService.create_postgis_store(
             workspace=workspace,
             name=data['name'],
-            defaults={
-                'geodata_engine': geodata_engine,
-                'store_type': data.get('store_type', 'postgis'),
-                'host': data.get('host', ''),
-                'port': data.get('port', 5432),
-                'database': data.get('database', ''),
-                'username': data.get('username', ''),
-                'password': data.get('password', ''),
-                'schema': data.get('schema', 'public'),
-                'file_path': data.get('file_path', ''),
-                'charset': data.get('charset', 'UTF-8'),
-                'description': data.get('description', ''),
-                'created_by': request.user,
-            },
+            user=request.user,
+            store_type=data.get('store_type', 'postgis'),
+            description=data.get('description', ''),
+            host=data.get('host', ''),
+            port=data.get('port', 5432),
+            database=data.get('database', ''),
+            username=data.get('username', ''),
+            password=data.get('password', ''),
+            schema=data.get('schema', 'public'),
+            file_path=data.get('file_path', ''),
+            charset=data.get('charset', 'UTF-8'),
         )
 
-        if not created:
+        store = result.get('resource')
+        if result.get('already_exists'):
             payload = self.get_serializer(store).data
             return Response(
-                {'store': payload, 'result': {'success': True, 'idempotent': True, 'message': 'Store already exists'}},
+                {'store': payload, 'result': _api_result(result)},
                 status=status.HTTP_200_OK,
             )
 
-        engine_result = {'success': True, 'message': 'Created in DB'}
-        if geodata_engine:
-            client = EngineClientFactory.create_client(geodata_engine)
-            engine_result = self._create_store_in_engine(client, store)
+        if not result.get('success'):
+            return Response(_api_result(result), status=status.HTTP_400_BAD_REQUEST)
 
         payload = self.get_serializer(store).data
-        return Response({'store': payload, 'result': engine_result}, status=status.HTTP_201_CREATED)
-
-    def _create_store_in_engine(self, client, store: Store):
-        if store.store_type == 'postgis':
-            return client.create_postgis_store(
-                name=store.name,
-                workspace=store.workspace.name,
-                host=store.host,
-                port=store.port,
-                database=store.database,
-                username=store.username,
-                password=store.decrypted_password,
-                schema=store.schema,
-            )
-
-        if store.store_type == 'file':
-            ext = os.path.splitext(store.file_path)[1].lower()
-            base = {'name': store.name, 'url': f'file:{store.file_path}'}
-            if ext == '.gpkg':
-                return client.create_geopackage_store(workspace=store.workspace.name, store_data=base)
-            if ext == '.geojson':
-                return client.create_geojson_store(workspace=store.workspace.name, store_data=base)
-            if ext == '.shp' or os.path.isdir(store.file_path):
-                payload = {**base, 'charset': store.charset}
-                if os.path.isdir(store.file_path):
-                    return client.create_directory_store(workspace=store.workspace.name, store_data=payload)
-                return client.create_shapefile_store(workspace=store.workspace.name, store_data=payload)
-            return {'success': False, 'error': f'Unsupported file type: {ext}'}
-
-        if store.store_type == 'geotiff':
-            return client.create_geotiff_store(
-                workspace=store.workspace.name,
-                store_data={'name': store.name, 'url': f'file:{store.file_path}'},
-            )
-
-        return {'success': False, 'error': f'Unsupported store type: {store.store_type}'}
+        return Response({'store': payload, 'result': _api_result(result)}, status=status.HTTP_201_CREATED)
 
     def destroy(self, request, *args, **kwargs):
         store = self.get_object()
-
-        # Sync rule: delete from engine FIRST, verify, THEN delete Django object.
-        # Never delete Django if engine operation fails.
-        if store.workspace and store.workspace.geodata_engine:
-            client = EngineClientFactory.create_client(store.workspace.geodata_engine)
-            result = client.delete_store(workspace=store.workspace.name, store=store.name)
-
-            if not result.get('success', False):
-                engine_error = result.get('error', result.get('message', 'Engine failed to delete the store.'))
-                return Response(
-                    {
-                        'success': False,
-                        'detail': engine_error,
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        store.delete()
-        return Response({'success': True, 'message': 'Store deleted from engine and Django.'}, status=status.HTTP_200_OK)
+        result = StoreService.delete_store_safe(store)
+        if not result.get('success', False):
+            return Response(
+                {
+                    'success': False,
+                    'detail': result.get('error', result.get('message', 'Engine failed to delete the store.')),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(_api_result(result), status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):
@@ -557,110 +454,62 @@ class LayerViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # GeoServer sync for PUBLISHED layers
-        if layer.publishing_state == 'PUBLISHED':
-            gs_client = EngineClientFactory.create_client(layer.workspace.geodata_engine)
+        if layer.publishing_state == 'PUBLISHED' and {'title', 'description'} & set(incoming):
+            try:
+                LayerService.update_published_metadata(
+                    layer=layer,
+                    title=incoming.get('title', layer.title),
+                    description=incoming.get('description', layer.description),
+                )
+            except Exception as exc:
+                logger.error(
+                    'LayerViewSet.update: featuretype update failed for %s/%s: %s',
+                    layer.workspace.name, layer.name, exc,
+                )
+                return Response(
+                    {'success': False, 'error': f'GeoServer featuretype update failed: {exc}'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            incoming = {key: value for key, value in incoming.items() if key not in {'title', 'description'}}
+            layer.refresh_from_db()
 
-            # title / description → featuretype
-            if {'title', 'description'} & set(incoming):
-                try:
-                    gs_client.update_featuretype(
-                        workspace=layer.workspace.name,
-                        store_name=layer.store.name,
-                        featuretype_name=layer.name,
-                        title=incoming.get('title', layer.title) or layer.title,
-                        abstract=incoming.get('description', layer.description) or None,
-                    )
-                except Exception as exc:
-                    logger.error(
-                        'LayerViewSet.update: featuretype update failed for %s/%s: %s',
-                        layer.workspace.name, layer.name, exc,
-                    )
-                    return Response(
-                        {'success': False, 'error': f'GeoServer featuretype update failed: {exc}'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+        if incoming:
+            serializer = self.get_serializer(layer, data=incoming, partial=True)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)
+            return Response(serializer.data)
 
-        # Persist in Django
-        serializer = self.get_serializer(layer, data=incoming, partial=True)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
-        return Response(serializer.data)
+        return Response(self.get_serializer(layer).data)
 
     def destroy(self, request, *args, **kwargs):
         layer = self.get_object()
 
-        # Sync rule: unpublish from engine FIRST, verify, THEN delete Django object.
-        if layer.publishing_state == 'PUBLISHED':
-            result = self._unpublish_layer(layer)
-            if not result.get('success', False) and not result.get('idempotent', False):
-                return Response(
-                    {
-                        'success': False,
-                        'error': result.get('error', result.get('message', 'Engine unpublish failed')),
-                        'detail': 'Layer was NOT deleted from Django — engine unpublish must succeed first.',
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        # Engine unpublish confirmed (or layer was not published) — safe to delete Django object.
-        layer.delete()
+        result = LayerService.delete_layer_safe(layer)
+        if not result.get('success', False):
+            return Response(
+                {
+                    'success': False,
+                    'error': result.get('error', result.get('message', 'Engine unpublish failed')),
+                    'detail': 'Layer was NOT deleted from Django — engine unpublish must succeed first.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         return Response({'success': True, 'message': 'Layer unpublished and deleted.'}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
     def publish(self, request, pk=None):
         layer = self.get_object()
-        if layer.publishing_state == 'PUBLISHED':
-            return Response({'success': True, 'idempotent': True, 'message': 'Layer already published'}, status=status.HTTP_200_OK)
-
-        client = EngineClientFactory.create_client(layer.workspace.geodata_engine)
-        result = client.publish_featuretype(
-            store_name=layer.store.name,
-            workspace=layer.workspace.name,
-            pg_table=layer.table_name,
-            srid=layer.srid,
-            geometry_type=layer.geometry_type,
-            layer_name=layer.name,
-        )
-
+        result = LayerService.publish_existing_layer(layer)
         if result.get('success', True):
-            Layer.objects.filter(pk=layer.pk).update(
-                publishing_state='PUBLISHED',
-                publishing_error='',
-                published_url='',
-                published_at=timezone.now(),
-            )
             return Response(result, status=status.HTTP_200_OK)
-
-        Layer.objects.filter(pk=layer.pk).update(
-            publishing_state='FAILED',
-            publishing_error=result.get('error', result.get('message', 'Unknown publish error')),
-        )
         return Response(result, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['post'])
     def unpublish(self, request, pk=None):
         layer = self.get_object()
-        result = self._unpublish_layer(layer)
+        result = LayerService.unpublish_layer(layer)
         code = status.HTTP_200_OK if result.get('success', False) else status.HTTP_400_BAD_REQUEST
         return Response(result, status=code)
-
-    def _unpublish_layer(self, layer: Layer):
-        if layer.publishing_state in {'DRAFT', 'UNPUBLISHED'}:
-            return {'success': True, 'idempotent': True, 'message': 'Layer already unpublished'}
-
-        client = EngineClientFactory.create_client(layer.workspace.geodata_engine)
-        result = client.delete_layer(workspace=layer.workspace.name, layer_name=layer.name)
-
-        if result.get('success', True):
-            Layer.objects.filter(pk=layer.pk).update(
-                publishing_state='UNPUBLISHED',
-                publishing_error='',
-                published_url='',
-                published_at=None,
-            )
-
-        return result
 
     @action(detail=False, methods=['post'])
     def publish_postgis(self, request):
@@ -710,135 +559,56 @@ class LayerViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        engine = workspace.geodata_engine
-        if not engine:
-            return Response(
-                {'success': False, 'error': 'Workspace has no associated GeoServer engine.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         geometry_column = data.get('geometry_column', 'geom')
         geometry_type = data.get('geometry_type', 'Point')
         srid = int(data.get('srid', 4326))
         title = data.get('title', layer_name)
         description = data.get('description', '')
 
-        # Retrieve bounding box from PostGIS (non-fatal if empty table).
-        bbox = None
-        if store.store_type == 'postgis' and store.host:
-            try:
-                bbox = get_table_bbox(
-                    host=store.host,
-                    port=store.port or 5432,
-                    database=store.database,
-                    username=store.username,
-                    password=store.decrypted_password,
-                    schema=store.schema or 'public',
-                    table=table_name,
-                    geometry_column=geometry_column,
-                )
-            except PostGISInspectorError as exc:
-                logger.warning('Could not retrieve bbox for %s.%s: %s', store.schema, table_name, exc)
-
-        # Step 1: Pre-check — does a layer with this name already exist in GeoServer?
-        # This allows multiple layers from the same PostGIS table as long as layer names are unique.
-        client = EngineClientFactory.create_client(engine)
-        already_in_geoserver = client.get_layer_info(workspace=workspace.name, layer_name=layer_name)
-        if already_in_geoserver:
-            return Response(
-                {
-                    'success': False,
-                    'error': f"Layer '{layer_name}' already exists in workspace '{workspace.name}'. Choose a different layer name.",
-                    'error_code': 'LAYER_ALREADY_EXISTS',
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        # Step 1-3: Publish in GeoServer + verify.
         try:
-            publish_result = client.publish_featuretype(
-                store_name=store.name,
-                workspace=workspace.name,
-                pg_table=table_name,
-                srid=srid,
-                geometry_type=geometry_type,
+            result = LayerService.publish_postgis(
+                workspace=workspace,
+                store=store,
+                table_name=table_name,
                 layer_name=layer_name,
-                title=title or layer_name,
+                title=title,
+                description=description,
+                geometry_column=geometry_column,
+                geometry_type=geometry_type,
+                srid=srid,
+                user=request.user,
             )
         except Exception as exc:
-            logger.error('GeoServer publish_featuretype failed for %s/%s: %s', workspace.name, layer_name, exc)
+            logger.error('publish_postgis failed for %s/%s: %s', workspace.name, layer_name, exc)
             return Response(
                 {'success': False, 'error': f'GeoServer publish failed: {exc}'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Step 3: Verify featuretype exists in GeoServer.
-        # Use the datastore's featuretypes endpoint — same resource that
-        # publish_featurestore writes to.  The global /layers/ endpoint is
-        # unreliable for unadvertised layers, so we never use get_layer_info here.
-        verified = client.verify_featuretype(
-            workspace=workspace.name,
-            store_name=store.name,
-            featuretype_name=layer_name,
-        )
-        if not verified:
-            logger.error(
-                'publish_postgis: featuretype %s/%s/%s not found in GeoServer after publish',
-                workspace.name, store.name, table_name,
-            )
+        if not result.get('success'):
+            code = status.HTTP_409_CONFLICT if result.get('error_code') == 'LAYER_ALREADY_EXISTS' else status.HTTP_400_BAD_REQUEST
             return Response(
-                {'success': False, 'error': 'Layer publish_featurestore reported success but featuretype could not be verified in GeoServer.'},
-                status=status.HTTP_400_BAD_REQUEST,
+                {
+                    'success': False,
+                    'error': result.get('error', result.get('message', 'Layer publish failed')),
+                    'error_code': result.get('error_code'),
+                },
+                status=code,
             )
 
-        # Step 4: Persist in Django.
-        # Layer.name is the GeoServer resource/featuretype identifier.
-        # Layer.table_name is the native PostGIS table/view name.
-        layer, created = Layer.objects.get_or_create(
-            workspace=workspace,
-            name=layer_name,
-            defaults={
-                'store': store,
-                'title': title,
-                'description': description,
-                'table_name': table_name,
-                'geometry_column': geometry_column,
-                'geometry_type': geometry_type,
-                'srid': srid,
-                'is_public': True,   # matches advertised=True set in GeoServer during publish
-                'publishing_state': 'PUBLISHED',
-                'published_url': '',
-                'published_at': timezone.now(),
-                'created_by': request.user,
-            },
-        )
-
-        if not created:
-            # Layer already existed in Django — update state to reflect publish.
-            Layer.objects.filter(pk=layer.pk).update(
-                publishing_state='PUBLISHED',
-                published_url='',
-                published_at=timezone.now(),
-                publishing_error='',
-            )
-            layer.refresh_from_db()
-
+        layer = result['resource']
         payload = self.get_serializer(layer).data
-        logger.info(
-            'publish_postgis: layer %s/%s published (created=%s, bbox=%s)',
-            workspace.name, layer_name, created, bbox,
-        )
         return Response(
             {
                 'layer': payload,
                 'result': {
                     'success': True,
-                    'created': created,
-                    'message': f"Layer '{layer_name}' published in workspace '{workspace.name}'.",
-                    'bbox': bbox,
+                    'created': result.get('created', False),
+                    'message': result.get('message'),
+                    'bbox': result.get('bbox'),
                 },
             },
-            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+            status=status.HTTP_201_CREATED if result.get('created') else status.HTTP_200_OK,
         )
 
     @action(detail=False, methods=['post'])

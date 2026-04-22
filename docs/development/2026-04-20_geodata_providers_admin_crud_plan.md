@@ -2,6 +2,125 @@
 
 Tarih: 2026-04-20
 
+## 2026-04-21 — Yarın İçin Uygulama Planı
+
+Amaç: CRUD orchestration logic'ini admin/view dosyalarından servis katmanına çıkarmak.
+
+Bu ne demek:
+
+- Admin, API view ve admin action dosyalarında tekrarlanan iş kuralları tek yerde toplanacak
+- `pre-check -> remote mutate -> verify -> local persist/delete` akışı servis katmanında standart hale getirilecek
+- Admin sadece form/input ve kullanıcı mesajı yönetecek
+- API view sadece request/response yönetecek
+- Aynı operasyon admin ve API tarafında aynı servis fonksiyonunu kullanacak
+
+Yapılacaklar, sıralı:
+
+1. `layer_service.py` oluştur
+- İlk adım sadece `Layer` tarafını servisleştirmek
+- Çünkü publish / update / delete / unpublish tarafında en fazla orchestration burada var
+
+2. `LayerService.publish_postgis(...)` yaz
+- Girdi: `workspace`, `store`, `table_name`, `layer_name`, `title`, `description`, `geometry_*`, `srid`, `user`
+- Akış:
+  - target layer name pre-check
+  - remote publish
+  - remote verify
+  - `transaction.atomic()` ile Django persist
+  - sonucu normalize edilmiş dict/object olarak dön
+
+3. `LayerService.update_published_metadata(...)` yaz
+- Girdi: `layer`, `title`, `description`
+- Akış:
+  - remote metadata update
+  - remote detail verify
+  - başarılıysa local update
+
+4. `LayerService.delete_layer_safe(...)` yaz
+- Girdi: `layer`
+- Akış:
+  - published ise remote delete
+  - remote verify
+  - already deleted durumunu idempotent success say
+  - sonra local delete
+
+5. `LayerService.unpublish_layer(...)` yaz
+- Girdi: `layer`
+- Akış:
+  - remote delete/unpublish
+  - verify
+  - local state update
+
+6. Admin Layer akışlarını servis kullanacak şekilde refactor et
+- `LayerAdmin.save_model`
+- `LayerAdmin.delete_model`
+- `LayerAdmin.delete_queryset`
+- `admin_views/layer.py`
+- `admin_actions/layer.py`
+
+7. API Layer akışlarını servis kullanacak şekilde refactor et
+- `LayerViewSet.update`
+- `LayerViewSet.destroy`
+- `LayerViewSet.unpublish`
+- `LayerViewSet.publish_postgis`
+
+8. Sonra aynı yaklaşımı `Store` tarafına uygula
+- `store_service.py`
+- create / clone / delete safe flow
+
+9. Sonra `Workspace` tarafını servisleştir
+- `workspace_service.py`
+- create / delete safe flow
+
+10. Son aşamada ortak result contract tanımla
+- Tüm servisler benzer yapı dönsün:
+  - `success`
+  - `message`
+  - `error`
+  - `already_deleted` / `already_exists`
+  - `verified`
+  - `resource`
+
+11. Test planı
+- Layer service için unit test
+- publish success + verify fail
+- delete already deleted
+- metadata update verify mismatch
+- admin ve API aynı service'i kullandığı için sadece ince entegrasyon testi bırak
+
+Not:
+
+- Yarın implementasyona `LayerService` ile başlanacak
+- `Store` ve `Workspace` sonraki adım olacak
+- Bu sırayla gitmek en düşük riskli yol
+
+## 2026-04-21 — Kalan Hardening İşleri
+
+Bu noktada temel CRUD akışları çalışıyor. Bundan sonraki odak, akışları
+operasyonel olarak güvenli ve tutarlı hale getirmek:
+
+- ✅ `remote-first` standardını create/publish ve delete akışlarında daha net hale getir; local persist noktalarını `transaction.atomic()` içine al
+- ✅ Layer metadata update için `verify-after-mutate` kontrolü ekle
+- ✅ `already exists` / `already deleted` durumlarını idempotent davranış olarak ele al
+- Django DB ve GeoServer arasında drift oluştuğunda sync ile toparlanan akışları standardize et
+- ✅ CRUD ve sync tarafında aynı naming semantiğini zorunlu kıl:
+  - `Layer.name` = GeoServer resource / featuretype adı
+  - `Layer.table_name` = PostGIS native tablo adı
+  - `Layer.title` = GeoServer title
+- ✅ Layer publish naming semantiğini düzelt; update ve delete tarafında verify kapsamını kısmen sertleştir
+- ✅ Workspace / Store / Layer delete akışlarında kullanıcıya 403 yerine operasyonel admin mesajları dön
+- `Workspace / Store / Layer` admin path ve template namespace karışıklıklarını temizle
+- CRUD orchestration logic'ini mümkün olduğunca admin class içinden servis katmanına taşı
+- ✅ Happy-path dışındaki bazı durumlar için test ekle:
+  - ✅ remote resource zaten silinmiş
+  - ✅ publish request name/nativeName/title semantiği
+  - ✅ metadata verify mismatch
+  - remote create success ama verify fail
+  - remote delete success ama resource hâlâ var
+  - sync sonrası local/remote convergence
+
+Bu bölüm, aşağıdaki plan maddelerinin bugünkü fiili öncelik özetidir.
+
 ## Kısa Log
 
 - `2026-04-21` GeodataEngine add kırığı düzeltildi: olmayan custom template referansları kaldırıldı. `geri alindi`

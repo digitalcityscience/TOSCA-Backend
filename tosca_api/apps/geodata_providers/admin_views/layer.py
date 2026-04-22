@@ -1,9 +1,9 @@
 """
 Admin views for Layer (Phase 4).
 
-    publish_postgis_view       — GET/POST /admin/geodata_engine/layer/publish-postgis/
-    stores_for_workspace_view  — GET      /admin/geodata_engine/layer/stores-for-workspace/?workspace_id=<uuid>
-    tables_for_store_view      — GET      /admin/geodata_engine/layer/tables-for-store/?store_id=<uuid>
+    publish_postgis_view       — GET/POST /admin/geodata_providers/layer/publish-postgis/
+    stores_for_workspace_view  — GET      /admin/geodata_providers/layer/stores-for-workspace/?workspace_id=<uuid>
+    tables_for_store_view      — GET      /admin/geodata_providers/layer/tables-for-store/?store_id=<uuid>
 """
 import logging
 
@@ -11,13 +11,13 @@ from django.contrib import messages
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
-from django.utils import timezone
 
 from ..admin_forms import PublishPostGISForm
 from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeoServerPublishError
 from ..models import Layer, Store, Workspace
 from ..postgis_inspector import PostGISInspectorError, get_geometry_tables, get_table_bbox
+from ..services.commands.layer_service import LayerService
 from ..sync_service import GeoServerSyncService
 
 logger = logging.getLogger(__name__)
@@ -47,125 +47,58 @@ def publish_postgis_view(request):
             geometry_type: str = cd['geometry_type']
             srid: int = cd['srid']
 
-            engine = workspace.geodata_engine
-            if not engine:
-                form.add_error('workspace', 'This workspace has no associated GeoServer engine.')
+            try:
+                result = LayerService.publish_postgis(
+                    workspace=workspace,
+                    store=store,
+                    table_name=table_name,
+                    layer_name=layer_name,
+                    title=title,
+                    description=description,
+                    geometry_column=geometry_column,
+                    geometry_type=geometry_type,
+                    srid=srid,
+                    user=request.user,
+                )
+            except GeoServerPublishError as exc:
+                form.add_error(None, f'GeoServer publish failed: {exc}')
+            except GeoServerConnectionError as exc:
+                form.add_error(None, f'Engine unreachable: {exc}')
+            except Exception as exc:
+                form.add_error(None, str(exc))
             else:
-                client = EngineClientFactory.create_client(engine)
-
-                # Step 1: pre-check — target layer name already exists?
-                try:
-                    already_in_geoserver = client.get_layer_info(
-                        workspace=workspace.name,
-                        layer_name=layer_name,
-                    )
-                except (GeoServerConnectionError, GeoServerPublishError) as exc:
-                    form.add_error(None, f'Cannot check existing publications: {exc}')
-                    already_in_geoserver = False
-
-                if already_in_geoserver:
-                    form.add_error(
-                        'layer_name',
-                        f"Layer '{layer_name}' already exists in workspace '{workspace.name}'. "
-                        f"Choose a different layer name.",
-                    )
-                else:
-                    # Step 2: Optional — retrieve bbox (non-fatal)
-                    bbox = None
-                    if store.store_type == 'postgis' and store.host:
-                        try:
-                            bbox = get_table_bbox(
-                                host=store.host,
-                                port=store.port or 5432,
-                                database=store.database,
-                                username=store.username,
-                                password=store.decrypted_password,
-                                schema=store.schema or 'public',
-                                table=table_name,
-                                geometry_column=geometry_column,
-                            )
-                        except (PostGISInspectorError, Exception) as exc:
-                            logger.warning('Could not retrieve bbox for %s.%s: %s', store.schema, table_name, exc)
-
-                    # Step 3: Publish in GeoServer
-                    try:
-                        client.publish_featuretype(
-                            store_name=store.name,
-                            workspace=workspace.name,
-                            pg_table=table_name,
-                            srid=srid,
-                            geometry_type=geometry_type,
-                            layer_name=layer_name,
-                            title=title or layer_name,
-                        )
-                    except GeoServerPublishError as exc:
-                        form.add_error(None, f'GeoServer publish failed: {exc}')
-                    except GeoServerConnectionError as exc:
-                        form.add_error(None, f'Engine unreachable: {exc}')
+                if not result.get('success'):
+                    if result.get('error_code') == 'LAYER_ALREADY_EXISTS':
+                        form.add_error('layer_name', result.get('error'))
+                    elif result.get('error'):
+                        form.add_error(None, result.get('error'))
                     else:
-                        # Step 4: Verify in GeoServer
-                        verified = client.verify_featuretype(
-                            workspace=workspace.name,
-                            store_name=store.name,
-                            featuretype_name=layer_name,
-                        )
-                        if not verified:
-                            form.add_error(
-                                None,
-                                'Publish reported success but layer could not be verified in GeoServer.',
+                        form.add_error(None, result.get('message', 'Layer publish failed.'))
+                else:
+                    messages.success(
+                        request,
+                        f"Layer '{layer_name}' published from table '{table_name}' "
+                        f"in workspace '{workspace.name}'.",
+                    )
+                    try:
+                        service = GeoServerSyncService(workspace.geodata_engine)
+                        sync_result = service.sync_layers_for_workspace(workspace, created_by=request.user)
+                        if sync_result.get('errors'):
+                            messages.warning(
+                                request,
+                                f"Layer sync completed with issues: {' | '.join(sync_result.get('errors', [])[:2])}",
                             )
                         else:
-                            # Step 5: Persist in Django
-                            layer, created = Layer.objects.get_or_create(
-                                workspace=workspace,
-                                name=layer_name,  # Changed from table_name to layer_name
-                                defaults={
-                                    'store': store,
-                                    'title': title,
-                                    'description': description,
-                                    'table_name': table_name,
-                                    'geometry_column': geometry_column,
-                                    'geometry_type': geometry_type,
-                                    'srid': srid,
-                                    'is_public': True,
-                                    'publishing_state': 'PUBLISHED',
-                                    'published_url': '',
-                                    'published_at': timezone.now(),
-                                    'created_by': request.user,
-                                },
-                            )
-                            if not created:
-                                Layer.objects.filter(pk=layer.pk).update(
-                                    publishing_state='PUBLISHED',
-                                    published_url='',
-                                    published_at=timezone.now(),
-                                    publishing_error='',
-                                )
-
                             messages.success(
                                 request,
-                                f"Layer '{layer_name}' published from table '{table_name}' "
-                                f"in workspace '{workspace.name}'.",
+                                f"Workspace '{workspace.name}' layer sync completed.",
                             )
-                            try:
-                                service = GeoServerSyncService(engine)
-                                sync_result = service.sync_layers_for_workspace(workspace, created_by=request.user)
-                                if sync_result.get('errors'):
-                                    messages.warning(
-                                        request,
-                                        f"Layer sync completed with issues: {' | '.join(sync_result.get('errors', [])[:2])}",
-                                    )
-                                else:
-                                    messages.success(
-                                        request,
-                                        f"Workspace '{workspace.name}' layer sync completed.",
-                                    )
-                            except Exception as exc:
-                                messages.warning(
-                                    request,
-                                    f"Layer publish succeeded but sync failed: {exc}",
-                                )
-                            return redirect(reverse('admin:geodata_providers_layer_changelist'))
+                    except Exception as exc:
+                        messages.warning(
+                            request,
+                            f"Layer publish succeeded but sync failed: {exc}",
+                        )
+                    return redirect(reverse('admin:geodata_providers_layer_changelist'))
     else:
         form = PublishPostGISForm()
 
@@ -178,7 +111,7 @@ def publish_postgis_view(request):
 
 def stores_for_workspace_view(request):
     """
-    GET /admin/geodata_engine/layer/stores-for-workspace/?workspace_id=<uuid>
+    GET /admin/geodata_providers/layer/stores-for-workspace/?workspace_id=<uuid>
     Returns JSON list of stores belonging to the workspace.
     Used by PublishPostGISForm JS to filter store dropdown.
     """
@@ -203,7 +136,7 @@ def stores_for_workspace_view(request):
 
 def tables_for_store_view(request):
     """
-    GET /admin/geodata_engine/layer/tables-for-store/?store_id=<uuid>[&workspace_id=<uuid>]
+    GET /admin/geodata_providers/layer/tables-for-store/?store_id=<uuid>[&workspace_id=<uuid>]
     Returns JSON list of geometry tables/views available in the selected store.
     Used by PublishPostGISForm JS to populate the table dropdown and geometry metadata.
     """

@@ -10,15 +10,16 @@ from django.urls import reverse
 from django.views.decorators.http import require_GET
 
 from ..engine_factory import EngineClientFactory
-from ..exceptions import GeoServerConnectionError, GeoServerPublishError, GeodataEngineError
+from ..exceptions import GeodataEngineError
 from ..models import Store, Workspace
 from ..postgis_inspector import PostGISInspectorError, get_geometry_tables
+from ..services.commands.store_service import StoreService
 
 
 @require_GET
 def store_postgis_tables_view(request, store_id):
     """
-    GET /admin/geodata_engine/store/<id>/postgis-tables/
+    GET /admin/geodata_providers/store/<id>/postgis-tables/
     Wrapped by admin_site.admin_view() — auth handled there.
     Decrypts credentials from Store, queries PostGIS geometry_columns view,
     returns JSON list of geometry tables.
@@ -70,8 +71,8 @@ def store_postgis_tables_view(request, store_id):
 
 def store_clone_view(request, store_id):
     """
-    GET  /admin/geodata_engine/store/<id>/clone/ — render pre-filled clone form
-    POST /admin/geodata_engine/store/<id>/clone/ — validate → GeoServer → Django → redirect
+    GET  /admin/geodata_providers/store/<id>/clone/ — render pre-filled clone form
+    POST /admin/geodata_providers/store/<id>/clone/ — validate → GeoServer → Django → redirect
 
     Clone sequence (CREATE sync philosophy):
         1. Check if store name already exists in target workspace (engine + Django)
@@ -97,89 +98,47 @@ def store_clone_view(request, store_id):
             cd = form.cleaned_data
             target_ws: Workspace = cd['workspace']
             new_name: str = cd['name']
-            engine = target_ws.geodata_engine
-
-            # ── 1. Check Django uniqueness ────────────────────────────
-            if Store.objects.filter(workspace=target_ws, name=new_name).exists():
+            result = StoreService.clone_store(
+                source_store=source,
+                target_workspace=target_ws,
+                name=new_name,
+                user=request.user,
+                description=cd.get('description') or '',
+                host=cd.get('host') or source.host,
+                port=cd.get('port') or source.port or 5432,
+                database=cd.get('database') or source.database,
+                username=cd.get('username') or source.username,
+                password=cd['password'],
+                schema=cd.get('schema') or source.schema or 'public',
+            )
+            if result.get('already_exists'):
                 form.add_error('name', f"A store named '{new_name}' already exists in workspace '{target_ws.name}'.")
+            elif not result.get('success', True):
+                form.add_error(None, result.get('error') or result.get('message') or 'Store clone failed.')
             else:
-                # ── 2. Create in GeoServer (PostGIS only) ─────────────
-                engine_result = {'success': True, 'message': 'No engine attached — DB only.'}
-                if engine and source.store_type == 'postgis':
-                    try:
-                        client = EngineClientFactory.create_client(engine)
-                        engine_result = client.create_postgis_store(
-                            name=new_name,
-                            workspace=target_ws.name,
-                            host=cd.get('host') or source.host,
-                            port=cd.get('port') or source.port or 5432,
-                            database=cd.get('database') or source.database,
-                            username=cd.get('username') or source.username,
-                            password=cd['password'],
-                            schema=cd.get('schema') or source.schema or 'public',
-                        )
-                    except GeoServerPublishError as e:
-                        form.add_error(None, f'GeoServer create failed: {e}')
-                        return render(request, 'admin/geodata_providers/store/clone.html', {
-                            'form': form,
-                            'source': source,
-                            'title': f'Clone store: {source.name}',
-                            'opts': Store._meta,
-                        })
-                    except GeoServerConnectionError as e:
-                        form.add_error(None, f'Engine unreachable: {e}')
-                        return render(request, 'admin/geodata_providers/store/clone.html', {
-                            'form': form,
-                            'source': source,
-                            'title': f'Clone store: {source.name}',
-                            'opts': Store._meta,
-                        })
-
-                if not engine_result.get('success', True):
-                    form.add_error(None, f"GeoServer error: {engine_result.get('error', 'unknown')}")
-                else:
-                    # ── 3. Persist in Django ───────────────────────────
-                    new_store = Store.objects.create(
-                        workspace=target_ws,
-                        geodata_engine=engine,
-                        name=new_name,
-                        store_type=source.store_type,
-                        host=cd.get('host') or source.host,
-                        port=cd.get('port') or source.port or 5432,
-                        database=cd.get('database') or source.database,
-                        username=cd.get('username') or source.username,
-                        password=cd['password'],
-                        schema=cd.get('schema') or source.schema or 'public',
-                        file_path=source.file_path,
-                        charset=source.charset,
-                        description=cd.get('description') or '',
-                        created_by=request.user,
+                new_store = result['resource']
+                messages.success(
+                    request,
+                    f"Store '{new_name}' cloned from '{source.name}' "
+                    f"into workspace '{target_ws.name}' successfully.",
+                )
+                sync_result = result.get('sync_result', {})
+                if sync_result.get('errors'):
+                    messages.warning(
+                        request,
+                        f"Store sync completed with issues: {' | '.join(sync_result.get('errors', [])[:2])}",
                     )
+                elif sync_result.get('success'):
                     messages.success(
                         request,
-                        f"Store '{new_name}' cloned from '{source.name}' "
-                        f"into workspace '{target_ws.name}' successfully.",
+                        f"Workspace '{target_ws.name}' store sync completed.",
                     )
-                    if engine:
-                        try:
-                            service = EngineClientFactory.create_sync_service(engine)
-                            sync_result = service.sync_stores_for_workspace(target_ws, created_by=request.user)
-                            if sync_result.get('errors'):
-                                messages.warning(
-                                    request,
-                                    f"Store sync completed with issues: {' | '.join(sync_result.get('errors', [])[:2])}",
-                                )
-                            else:
-                                messages.success(
-                                    request,
-                                    f"Workspace '{target_ws.name}' store sync completed.",
-                                )
-                        except Exception as exc:
-                            messages.warning(
-                                request,
-                                f"Store clone succeeded but sync failed: {exc}",
-                            )
-                    return redirect(reverse('admin:geodata_providers_store_change', args=[new_store.pk]))
+                elif sync_result.get('error'):
+                    messages.warning(
+                        request,
+                        f"Store clone succeeded but sync failed: {sync_result.get('error')}",
+                    )
+                return redirect(reverse('admin:geodata_providers_store_change', args=[new_store.pk]))
     else:
         # Pre-fill from source, blank out name and password
         form = StoreCloneForm(initial={

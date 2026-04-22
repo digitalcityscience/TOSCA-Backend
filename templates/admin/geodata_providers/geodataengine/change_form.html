@@ -4,10 +4,7 @@
 {% block submit_buttons_bottom %}
   {{ block.super }}
 
-  {% if object.pk %}
-  {# ------------------------------------------------------------------ #}
-  {# Engine action buttons — only shown on the change form (not add)    #}
-  {# ------------------------------------------------------------------ #}
+  {% if original and original.pk %}
   <div id="engine-action-panel" style="
     margin: 18px 0 8px 0;
     padding: 14px 18px;
@@ -17,50 +14,63 @@
   ">
     <strong style="display:block; margin-bottom:12px; font-size:13px;">Engine Actions</strong>
 
-    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-
-      {# ── Test Connection ────────────────────────────────────────── #}
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom: 10px;">
       <button
         type="button"
         id="btn-test-connection"
-        style="
-          padding: 7px 16px;
-          background: #417690;
-          color: #fff;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          font-size: 13px;
-        "
+        style="padding: 7px 16px; background: #417690; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;"
         onclick="engineAction('test-connection', this)"
       >
         Test Connection
       </button>
 
-      {# ── Sync Now ────────────────────────────────────────────────── #}
       <button
         type="button"
         id="btn-sync-now"
-        style="
-          padding: 7px 16px;
-          background: #5a9e6f;
-          color: #fff;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          font-size: 13px;
-        "
+        style="padding: 7px 16px; background: #5a9e6f; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;"
         onclick="engineAction('sync', this)"
       >
         Sync Now
       </button>
+
+      {% if original.is_active %}
+      <form method="post" action="{% url 'admin:geodataengine_deactivate' original.pk %}" style="display:inline;">
+        {% csrf_token %}
+        <button
+          type="submit"
+          style="padding: 7px 16px; background: #a86d2d; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;"
+        >
+          Deactivate Provider
+        </button>
+      </form>
+      {% else %}
+      <form method="post" action="{% url 'admin:geodataengine_reactivate' original.pk %}" style="display:inline;">
+        {% csrf_token %}
+        <button
+          type="submit"
+          style="padding: 7px 16px; background: #2d7a43; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;"
+        >
+          Reactivate Provider
+        </button>
+      </form>
+      {% endif %}
+
+      <a
+        href="{% url 'admin:geodataengine_force_delete' original.pk %}"
+        style="padding: 7px 16px; background: #b33434; color: #fff; border-radius: 4px; cursor: pointer; font-size: 13px; text-decoration: none;"
+      >
+        Force Delete Provider Tree
+      </a>
 
       <span id="engine-action-spinner" style="display:none; font-size:13px; color:#666;">
         &#9203; Running&hellip;
       </span>
     </div>
 
-    {# Result box — hidden until a call completes #}
+    <div style="font-size:12px; color:#555; margin-bottom: 8px;">
+      Deactivate is the safe default for duplicate or temporary providers. Force Delete removes layers, stores, workspaces, and finally the provider.
+    </div>
+
     <div id="engine-action-result" style="
       display: none;
       margin-top: 12px;
@@ -73,8 +83,6 @@
 
   <script>
   (function () {
-    var ENGINE_ID = "{{ object.pk }}";
-
     function getCsrf() {
       var name = 'csrftoken';
       var cookies = document.cookie.split(';');
@@ -85,7 +93,7 @@
       return '';
     }
 
-    window.engineAction = function (action, btn) {
+    window.engineAction = function (action) {
       var url = window.location.pathname.replace(/\/$/, '')
                   .replace(/\/change$/, '') + '/' + action + '/';
 
@@ -102,9 +110,9 @@
         headers: {
           'X-CSRFToken': getCsrf(),
           'Content-Type': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest',
+          'X-Requested-With': 'XMLHttpRequest'
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({})
       })
       .then(function (resp) { return resp.json(); })
       .then(function (data) {
