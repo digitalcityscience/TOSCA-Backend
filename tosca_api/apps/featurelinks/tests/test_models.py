@@ -48,7 +48,10 @@ def story_b(user, campaign_b):
 
 @pytest.fixture
 def geocontext(user):
-    return GeoContext.objects.create(content="Test content", created_by=user)
+    return GeoContext.objects.create(
+        content={"blocks": [{"type": "paragraph", "data": {"text": "Test content"}}]},
+        created_by=user,
+    )
 
 
 @pytest.fixture

@@ -1,0 +1,11 @@
+<div class="geocontext-editorjs-field">
+    <textarea name="{{ widget.name }}"
+              data-editorjs-target
+              cols="80"
+              rows="12"
+              {% include "django/forms/widgets/attrs.html" %}>{% if widget.value %}{{ widget.value }}{% endif %}</textarea>
+    <p class="geocontext-editorjs-help">
+        Editor.js authoring loads on top of this field. If JavaScript is disabled,
+        paste or edit canonical Editor.js JSON directly.
+    </p>
+</div>
