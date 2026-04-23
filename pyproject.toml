@@ -27,7 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0.0",
+    "pytest>=9.0.3",
     "pytest-django>=4.8.0",
     "ruff>=0.5.0",
     "mypy>=1.11.0",
@@ -55,7 +55,7 @@ python-preference = "managed"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.1",
+    "pytest>=9.0.3",
     "pytest-django>=4.11.1",
     "ruff>=0.14.7",
 ]
