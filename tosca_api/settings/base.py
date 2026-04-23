@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     # Third-party
     "rest_framework",
     "rest_framework.authtoken",
+    "drf_spectacular",
     "allauth",
     "allauth.account",
     "allauth.socialaccount",
@@ -65,6 +66,7 @@ INSTALLED_APPS = [
     # Local apps
     "tosca_api.apps.core",
     "tosca_api.apps.tosca_web",
+    "tosca_api.apps.catalog_api.apps.CatalogApiConfig",
     "tosca_api.apps.geodata_providers.apps.GeodataProvidersConfig",
     "tosca_api.apps.geo_console",
 ]
@@ -165,8 +167,16 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.TokenAuthentication",  # DRF token — used by geo_console internal calls
         "rest_framework.authentication.SessionAuthentication",  # Browser session
     ],
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "tosca_api.apps.core.pagination.StandardResultsSetPagination",
     "PAGE_SIZE": 20,
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "TOSCA API",
+    "DESCRIPTION": "Swagger/OpenAPI documentation for TOSCA Django REST endpoints.",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
 }
 
 AUTHENTICATION_BACKENDS = [
