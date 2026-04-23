@@ -1,8 +1,34 @@
+import hashlib
+import uuid
+
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.contrib.auth.models import User
 from .encryption import EncryptedCharField
-import uuid
+
+
+STYLE_FORMATS = [
+    ("sld", "SLD"),
+    ("mbstyle", "MBStyle"),
+]
+
+VALIDATION_STATES = [
+    ("UNKNOWN", "Unknown"),
+    ("VALID", "Valid"),
+    ("INVALID", "Invalid"),
+]
+
+REMOTE_STATES = [
+    ("LOCAL_ONLY", "Local only"),
+    ("UPLOADED", "Uploaded"),
+    ("FAILED", "Failed"),
+    ("DELETED", "Deleted"),
+]
+
+LAYER_STYLE_ROLES = [
+    ("default", "Default"),
+    ("alternate", "Alternate"),
+]
 
 
 class GeodataEngine(models.Model, EncryptedCharField):
@@ -310,3 +336,163 @@ class Layer(models.Model):
     def is_published(self):
         """Check if layer is currently published."""
         return self.publishing_state == 'PUBLISHED'
+
+
+class Style(models.Model):
+    """
+    Provider-owned style definition backed by GeoServer SLD or MBStyle content.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    geodata_engine = models.ForeignKey(
+        GeodataEngine,
+        on_delete=models.CASCADE,
+        related_name='styles',
+    )
+    workspace = models.ForeignKey(
+        Workspace,
+        on_delete=models.CASCADE,
+        related_name='styles',
+        null=True,
+        blank=True,
+        help_text="Workspace-scoped style. Leave blank for a global engine style.",
+    )
+    name = models.CharField(max_length=100, help_text="GeoServer style identifier")
+    title = models.CharField(max_length=200, blank=True, help_text="Human-readable title")
+    description = models.TextField(blank=True)
+    format = models.CharField(max_length=20, choices=STYLE_FORMATS)
+    file_name = models.CharField(max_length=255, help_text="Original uploaded file name")
+    file_content = models.TextField(help_text="Raw SLD XML or MBStyle JSON content")
+    content_hash = models.CharField(max_length=64, editable=False)
+    validation_state = models.CharField(
+        max_length=20,
+        choices=VALIDATION_STATES,
+        default="UNKNOWN",
+    )
+    validation_errors = models.JSONField(default=list, blank=True)
+    remote_state = models.CharField(
+        max_length=20,
+        choices=REMOTE_STATES,
+        default="LOCAL_ONLY",
+    )
+    remote_error = models.TextField(blank=True)
+    remote_uploaded_at = models.DateTimeField(null=True, blank=True)
+    remote_verified_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+
+    class Meta:
+        app_label = 'geodata_providers'
+        verbose_name = "Style"
+        verbose_name_plural = "Styles"
+        ordering = ['geodata_engine__name', 'workspace__name', 'name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['geodata_engine', 'workspace', 'name'],
+                condition=models.Q(workspace__isnull=False),
+                name='unique_style_per_engine_workspace_name',
+            ),
+            models.UniqueConstraint(
+                fields=['geodata_engine', 'name'],
+                condition=models.Q(workspace__isnull=True),
+                name='unique_global_style_per_engine_name',
+            ),
+        ]
+
+    def __str__(self):
+        return self.qualified_name
+
+    def clean(self):
+        super().clean()
+        if self.workspace and self.workspace.geodata_engine_id != self.geodata_engine_id:
+            raise ValidationError({
+                'workspace': 'Style workspace must belong to the selected geodata engine.'
+            })
+        if self.validation_errors is None:
+            self.validation_errors = []
+
+    def save(self, *args, **kwargs):
+        self.content_hash = hashlib.sha256((self.file_content or '').encode('utf-8')).hexdigest()
+        self.clean()
+        super().save(*args, **kwargs)
+
+    @property
+    def is_global(self):
+        return self.workspace_id is None
+
+    @property
+    def is_valid(self):
+        return self.validation_state == "VALID"
+
+    @property
+    def is_uploaded(self):
+        return self.remote_state == "UPLOADED"
+
+    @property
+    def qualified_name(self):
+        if self.workspace:
+            return f"{self.workspace.name}:{self.name}"
+        return self.name
+
+
+class LayerStyle(models.Model):
+    """
+    Assignment of a provider style to a layer as default or alternate.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    layer = models.ForeignKey(
+        Layer,
+        on_delete=models.CASCADE,
+        related_name='style_links',
+    )
+    style = models.ForeignKey(
+        Style,
+        on_delete=models.CASCADE,
+        related_name='layer_links',
+    )
+    role = models.CharField(max_length=20, choices=LAYER_STYLE_ROLES, default='default')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+
+    class Meta:
+        app_label = 'geodata_providers'
+        verbose_name = "Layer Style"
+        verbose_name_plural = "Layer Styles"
+        ordering = ['layer__workspace__name', 'layer__name', 'role', 'style__name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['layer'],
+                condition=models.Q(role='default', is_active=True),
+                name='unique_active_default_style_per_layer',
+            ),
+            models.UniqueConstraint(
+                fields=['layer', 'style', 'role'],
+                name='unique_layer_style_role',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.layer} -> {self.style} ({self.role})"
+
+    def clean(self):
+        super().clean()
+        if not self.layer_id or not self.style_id:
+            return
+
+        layer_engine_id = self.layer.workspace.geodata_engine_id
+        if layer_engine_id != self.style.geodata_engine_id:
+            raise ValidationError({
+                'style': 'Style and layer must belong to the same geodata engine.'
+            })
+        if self.style.workspace_id and self.style.workspace_id != self.layer.workspace_id:
+            raise ValidationError({
+                'style': 'Workspace-scoped style must belong to the same workspace as the layer.'
+            })
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)

@@ -1,0 +1,144 @@
+from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError
+from django.test import TestCase
+
+from tosca_api.apps.geodata_providers.models import (
+    GeodataEngine,
+    Layer,
+    LayerStyle,
+    Store,
+    Style,
+    Workspace,
+)
+
+
+class StyleModelTestCase(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='style-model-user', password='testpass123')
+        self.engine = GeodataEngine.objects.create(
+            name='Style Engine',
+            description='test',
+            engine_type='geoserver',
+            base_url='http://example.com/geoserver',
+            admin_username='admin',
+            admin_password='secret',
+            created_by=self.user,
+        )
+        self.other_engine = GeodataEngine.objects.create(
+            name='Other Style Engine',
+            description='test',
+            engine_type='geoserver',
+            base_url='http://other.example.com/geoserver',
+            admin_username='admin',
+            admin_password='secret',
+            created_by=self.user,
+        )
+        self.workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='style_ws',
+            description='workspace',
+            created_by=self.user,
+        )
+        self.other_workspace = Workspace.objects.create(
+            geodata_engine=self.other_engine,
+            name='other_style_ws',
+            description='workspace',
+            created_by=self.user,
+        )
+        self.store = Store.objects.create(
+            geodata_engine=self.engine,
+            workspace=self.workspace,
+            name='style_store',
+            description='store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            created_by=self.user,
+        )
+        self.layer = Layer.objects.create(
+            workspace=self.workspace,
+            store=self.store,
+            name='roads',
+            title='Roads',
+            description='roads',
+            table_name='roads',
+            geometry_column='geom',
+            geometry_type='LineString',
+            srid=4326,
+            created_by=self.user,
+        )
+
+    def _style(self, **overrides):
+        defaults = {
+            'geodata_engine': self.engine,
+            'workspace': self.workspace,
+            'name': 'roads_style',
+            'title': 'Roads Style',
+            'format': 'sld',
+            'file_name': 'roads_style.sld',
+            'file_content': '<StyledLayerDescriptor><NamedLayer /></StyledLayerDescriptor>',
+            'validation_state': 'VALID',
+            'created_by': self.user,
+        }
+        defaults.update(overrides)
+        return Style.objects.create(**defaults)
+
+    def test_style_sets_hash_and_helper_properties(self):
+        style = self._style(remote_state='UPLOADED')
+
+        self.assertEqual(len(style.content_hash), 64)
+        self.assertFalse(style.is_global)
+        self.assertTrue(style.is_valid)
+        self.assertTrue(style.is_uploaded)
+        self.assertEqual(style.qualified_name, 'style_ws:roads_style')
+
+    def test_global_style_qualified_name_uses_plain_name(self):
+        style = self._style(workspace=None)
+
+        self.assertTrue(style.is_global)
+        self.assertEqual(style.qualified_name, 'roads_style')
+
+    def test_style_rejects_workspace_from_different_engine(self):
+        with self.assertRaises(ValidationError):
+            self._style(workspace=self.other_workspace)
+
+    def test_layer_style_rejects_style_from_different_engine(self):
+        style = self._style(
+            geodata_engine=self.other_engine,
+            workspace=self.other_workspace,
+            name='other_style',
+        )
+
+        with self.assertRaises(ValidationError):
+            LayerStyle.objects.create(
+                layer=self.layer,
+                style=style,
+                role='default',
+                is_active=True,
+                created_by=self.user,
+            )
+
+    def test_layer_allows_only_one_active_default_style(self):
+        first_style = self._style(name='first_style')
+        second_style = self._style(name='second_style')
+        LayerStyle.objects.create(
+            layer=self.layer,
+            style=first_style,
+            role='default',
+            is_active=True,
+            created_by=self.user,
+        )
+
+        with self.assertRaises(IntegrityError):
+            LayerStyle.objects.create(
+                layer=self.layer,
+                style=second_style,
+                role='default',
+                is_active=True,
+                created_by=self.user,
+            )

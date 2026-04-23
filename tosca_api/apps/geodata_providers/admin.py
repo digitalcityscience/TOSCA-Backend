@@ -31,7 +31,7 @@ from .admin_views import (
 )
 from .engine_factory import EngineClientFactory
 from .exceptions import GeoServerConnectionError, GeodataEngineError
-from .models import GeodataEngine, Workspace, Store, Layer
+from .models import GeodataEngine, Workspace, Store, Layer, Style, LayerStyle
 from .services.commands.geodata_engine_service import GeodataEngineService
 from .services.commands.layer_service import LayerService
 from .services.commands.store_service import StoreService
@@ -44,6 +44,8 @@ _GEODATA_PROVIDER_ADMIN_ORDER = {
     'Workspace': 1,
     'Store': 2,
     'Layer': 3,
+    'Style': 4,
+    'LayerStyle': 5,
 }
 
 _GEODATA_PROVIDER_ADMIN_LABELS = {
@@ -51,6 +53,8 @@ _GEODATA_PROVIDER_ADMIN_LABELS = {
     'Workspace': 'Workspace',
     'Store': 'Store',
     'Layer': 'Layer',
+    'Style': 'Style',
+    'LayerStyle': 'Layer Style',
 }
 
 
@@ -694,6 +698,50 @@ class StoreAdminForm(forms.ModelForm):
             )
 
 
+class StyleAdminForm(forms.ModelForm):
+    class Meta:
+        model = Style
+        fields = '__all__'
+        widgets = {
+            'description': forms.Textarea(attrs={'rows': 3}),
+            'file_content': forms.Textarea(attrs={'rows': 18, 'style': 'font-family:monospace;'}),
+            'remote_error': forms.Textarea(attrs={'rows': 3}),
+        }
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if self.errors:
+            return cleaned_data
+
+        engine = cleaned_data.get('geodata_engine') or self.instance.geodata_engine
+        workspace = cleaned_data.get('workspace') or self.instance.workspace
+        if workspace and engine and workspace.geodata_engine_id != engine.id:
+            raise ValidationError('Style workspace must belong to the selected geodata engine.')
+        return cleaned_data
+
+
+class LayerStyleAdminForm(forms.ModelForm):
+    class Meta:
+        model = LayerStyle
+        fields = '__all__'
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if self.errors:
+            return cleaned_data
+
+        layer = cleaned_data.get('layer') or self.instance.layer
+        style = cleaned_data.get('style') or self.instance.style
+        if not layer or not style:
+            return cleaned_data
+        layer_engine_id = layer.workspace.geodata_engine_id if layer.workspace_id else None
+        if layer_engine_id != style.geodata_engine_id:
+            raise ValidationError('Style and layer must belong to the same geodata engine.')
+        if style.workspace_id and style.workspace_id != layer.workspace_id:
+            raise ValidationError('Workspace-scoped style must belong to the same workspace as the layer.')
+        return cleaned_data
+
+
 class StoreCloneForm(forms.Form):
     """Form used by the clone-store admin view."""
     name = forms.CharField(
@@ -958,6 +1006,15 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
 # PHASE 4 — Layer Admin
 # ======================================================================
 
+
+class LayerStyleInline(admin.TabularInline):
+    model = LayerStyle
+    fields = ('style', 'role', 'is_active', 'created_at')
+    readonly_fields = ('created_at',)
+    extra = 0
+    show_change_link = True
+
+
 @admin.register(Layer)
 class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     actions = [publish_layer, unpublish_layer]
@@ -973,6 +1030,7 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         'workspace', 'store', 'created_at', 'updated_at', 'publishing_state',
         'published_url', 'publishing_error',
     ]
+    inlines = [LayerStyleInline]
     list_per_page = 25
 
     fieldsets = (
@@ -1114,6 +1172,16 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
                 super().save_model(request, obj, form, change)
         _run_workspace_sync(self, request, obj.workspace)
 
+    def save_formset(self, request, form, formset, change):
+        instances = formset.save(commit=False)
+        for obj in instances:
+            if isinstance(obj, LayerStyle) and not obj.pk:
+                obj.created_by = request.user
+            obj.save()
+        for obj in formset.deleted_objects:
+            obj.delete()
+        formset.save_m2m()
+
     # ------------------------------------------------------------------
     # 4.5 — Delete safety: GeoServer-first for PUBLISHED layers
     # ------------------------------------------------------------------
@@ -1148,6 +1216,103 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
                     f"Layer '{obj.name}' was already absent in GeoServer. Django record was removed.",
                     messages.WARNING,
                 )
+
+
+@admin.register(Style)
+class StyleAdmin(admin.ModelAdmin):
+    form = StyleAdminForm
+    list_display = [
+        'name', 'title', 'format', 'provider_link', 'workspace_link',
+        'validation_state', 'remote_state', 'layer_link_count', 'updated_at',
+    ]
+    list_filter = ['format', 'validation_state', 'remote_state', 'geodata_engine', 'workspace']
+    search_fields = ['name', 'title', 'description', 'file_name']
+    readonly_fields = [
+        'id', 'content_hash', 'remote_uploaded_at', 'remote_verified_at',
+        'created_at', 'updated_at',
+    ]
+    list_per_page = 25
+
+    fieldsets = (
+        ('Identity', {
+            'fields': ('geodata_engine', 'workspace', 'name', 'title', 'description'),
+        }),
+        ('Content', {
+            'fields': ('format', 'file_name', 'file_content', 'content_hash'),
+        }),
+        ('Validation', {
+            'fields': ('validation_state', 'validation_errors'),
+        }),
+        ('Remote State', {
+            'fields': ('remote_state', 'remote_error', 'remote_uploaded_at', 'remote_verified_at'),
+        }),
+        ('Metadata', {
+            'fields': ('id', 'created_at', 'updated_at'),
+            'classes': ('collapse',),
+        }),
+    )
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related(
+            'geodata_engine', 'workspace',
+        ).annotate(_layer_link_count=Count('layer_links', distinct=True))
+
+    def get_exclude(self, request, obj=None):
+        return ['created_by']
+
+    def get_form(self, request, obj=None, **kwargs):
+        form = super().get_form(request, obj, **kwargs)
+        if 'workspace' in form.base_fields:
+            form.base_fields['workspace'].queryset = (
+                Workspace.objects.select_related('geodata_engine')
+                .all().order_by('geodata_engine__name', 'name')
+            )
+        return form
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+    def provider_link(self, obj):
+        return format_html('<a href="{}">{}</a>', _admin_change_url(obj.geodata_engine), obj.geodata_engine.name)
+    provider_link.short_description = 'Provider'
+    provider_link.admin_order_field = 'geodata_engine__name'
+
+    def workspace_link(self, obj):
+        if not obj.workspace:
+            return 'Global'
+        return format_html('<a href="{}">{}</a>', _admin_change_url(obj.workspace), obj.workspace.name)
+    workspace_link.short_description = 'Workspace'
+    workspace_link.admin_order_field = 'workspace__name'
+
+    def layer_link_count(self, obj):
+        return obj._layer_link_count
+    layer_link_count.short_description = 'Layer Links'
+    layer_link_count.admin_order_field = '_layer_link_count'
+
+
+@admin.register(LayerStyle)
+class LayerStyleAdmin(admin.ModelAdmin):
+    form = LayerStyleAdminForm
+    list_display = ['layer', 'style', 'role', 'is_active', 'created_at']
+    list_filter = ['role', 'is_active', 'layer__workspace', 'style__geodata_engine']
+    search_fields = ['layer__name', 'layer__title', 'style__name', 'style__title']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    list_per_page = 25
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related(
+            'layer__workspace__geodata_engine', 'style__workspace', 'style__geodata_engine',
+        )
+
+    def get_exclude(self, request, obj=None):
+        return ['created_by']
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
 
 
 _patch_geodata_providers_admin_app_list()
