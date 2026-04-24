@@ -8,13 +8,13 @@ from django.http import QueryDict
 from django.test import RequestFactory
 from django.test import TestCase
 
-from tosca_api.apps.geodata_providers.admin import DeleteAborted, LayerAdmin, StoreAdmin, StoreAdminForm, WorkspaceAdminForm
+from tosca_api.apps.geodata_providers.admin import DeleteAborted, LayerAdmin, StoreAdmin, StoreAdminForm, StyleAdmin, WorkspaceAdminForm
 from tosca_api.apps.geodata_providers.admin_actions.layer import publish_layer, unpublish_layer
 from tosca_api.apps.geodata_providers.admin_views.layer import publish_postgis_view
 from tosca_api.apps.geodata_providers.admin_views.store import store_clone_view
 from tosca_api.apps.geodata_providers.geoserver.client import GeoServerClient
 from tosca_api.apps.geodata_providers.admin_views.layer import tables_for_store_view
-from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Workspace
+from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Style, Workspace
 
 
 class AdminFormCreateFlowTests(TestCase):
@@ -177,6 +177,56 @@ class AdminFormCreateFlowTests(TestCase):
 
         with self.assertRaises(DeleteAborted):
             model_admin.delete_model(request, store)
+
+    @patch('tosca_api.apps.geodata_providers.admin.EngineClientFactory.create_client')
+    def test_style_admin_delete_model_deletes_remote_first(self, mock_create_client):
+        client = MagicMock()
+        client.delete_style.return_value = {'success': True}
+        mock_create_client.return_value = client
+
+        style = Style.objects.create(
+            geodata_engine=self.engine,
+            name='delete_style',
+            title='Delete Style',
+            format='mbstyle',
+            file_name='delete_style.mbstyle',
+            file_content='{"version":8,"layers":[]}',
+            validation_state='VALID',
+            created_by=self.user,
+        )
+        request = self.request_factory.post('/admin/geodata_providers/style/')
+        request.user = self.user
+        model_admin = StyleAdmin(Style, self.site)
+
+        model_admin.delete_model(request, style)
+
+        client.delete_style.assert_called_once_with(name='delete_style', workspace=None)
+        self.assertFalse(Style.objects.filter(pk=style.pk).exists())
+
+    @patch('tosca_api.apps.geodata_providers.admin.EngineClientFactory.create_client')
+    def test_style_admin_delete_model_blocks_when_remote_delete_fails(self, mock_create_client):
+        client = MagicMock()
+        client.delete_style.return_value = {'success': False, 'error': 'remote failed'}
+        mock_create_client.return_value = client
+
+        style = Style.objects.create(
+            geodata_engine=self.engine,
+            name='blocked_style',
+            title='Blocked Style',
+            format='mbstyle',
+            file_name='blocked_style.mbstyle',
+            file_content='{"version":8,"layers":[]}',
+            validation_state='VALID',
+            created_by=self.user,
+        )
+        request = self.request_factory.post('/admin/geodata_providers/style/')
+        request.user = self.user
+        model_admin = StyleAdmin(Style, self.site)
+
+        with self.assertRaises(DeleteAborted):
+            model_admin.delete_model(request, style)
+
+        self.assertTrue(Style.objects.filter(pk=style.pk).exists())
 
     @patch('tosca_api.apps.geodata_providers.admin.StoreService.delete_store_safe')
     def test_store_admin_delete_model_uses_service(self, mock_delete_store_safe):

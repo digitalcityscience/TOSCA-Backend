@@ -245,7 +245,7 @@ rmvolumes: which-env
 # -------------------------------------------------
 test:
 	@if [ -n "$(app)" ]; then \
-		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest --ds=tosca_api.settings.test tosca_api/apps/$(app)"; \
+		docker exec -it tosca-django bash -lc "APP_PATH=tosca_api/apps/$(app); if [ -d \"$$APP_PATH/tests\" ]; then TARGET=\"$$APP_PATH/tests\"; else TARGET=\"$$APP_PATH\"; fi; DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest --ds=tosca_api.settings.test \"$$TARGET\""; \
 	elif [ -n "$(path)" ]; then \
 		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest --ds=tosca_api.settings.test $(path)"; \
 	else \

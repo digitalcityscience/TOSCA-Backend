@@ -1,11 +1,8 @@
 from django.test import TestCase, Client
 from django.contrib.auth.models import User
-from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
-from django.conf import settings
 from unittest.mock import patch, MagicMock
-import json
 import os
 
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Workspace, Store, Layer
@@ -22,7 +19,8 @@ class GeodataEngineAPITestCase(TestCase):
         self.user = User.objects.create_user(
             username='testuser',
             email='test@example.com',
-            password='testpass123'
+            password='testpass123',
+            is_staff=True,
         )
         
         # Authenticate the client
@@ -75,8 +73,8 @@ class GeodataEngineAPITestCase(TestCase):
         )
     
     def test_engines_list_api(self):
-        """Test GET /api/geodata/engines/"""
-        url = '/api/geodata/engines/'
+        """Test GET /api/geoengine/engines/"""
+        url = '/api/geoengine/engines/'
         response = self.client.get(url)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -94,8 +92,8 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertTrue(engine_data['is_active'])
     
     def test_engines_detail_api(self):
-        """Test GET /api/geodata/engines/{id}/"""
-        url = f'/api/geodata/engines/{self.engine.id}/'
+        """Test GET /api/geoengine/engines/{id}/"""
+        url = f'/api/geoengine/engines/{self.engine.id}/'
         response = self.client.get(url)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -106,8 +104,8 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertTrue(data['is_active'])
     
     def test_workspaces_list_api(self):
-        """Test GET /api/geodata/workspaces/"""
-        url = '/api/geodata/workspaces/'
+        """Test GET /api/geoengine/workspaces/"""
+        url = '/api/geoengine/workspaces/'
         response = self.client.get(url)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -120,8 +118,8 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertEqual(workspace_data['name'], 'test_workspace')
     
     def test_stores_list_api(self):
-        """Test GET /api/geodata/stores/"""
-        url = '/api/geodata/stores/'
+        """Test GET /api/geoengine/stores/"""
+        url = '/api/geoengine/stores/'
         response = self.client.get(url)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -135,8 +133,8 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertEqual(store_data['host'], os.getenv('PG_HOST'))
     
     def test_layers_list_api(self):
-        """Test GET /api/geodata/layers/"""
-        url = '/api/geodata/layers/'
+        """Test GET /api/geoengine/layers/"""
+        url = '/api/geoengine/layers/'
         response = self.client.get(url)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -149,75 +147,60 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertEqual(layer_data['name'], 'test_layer')
         self.assertEqual(layer_data['geometry_type'], 'Point')
     
-    @patch('tosca_api.apps.geodata_providers.api.views.GeoServerSyncService')
-    def test_engine_sync_endpoint_success(self, mock_sync_service):
-        """Test POST /api/geodata/engines/{id}/sync/ - successful sync"""
-        # Mock successful sync response
-        mock_sync_instance = MagicMock()
-        mock_sync_instance.sync_all_resources.return_value = {
+    @patch('tosca_api.apps.geodata_providers.api.views.GeodataEngineService.sync_engine')
+    def test_engine_sync_endpoint_success(self, mock_sync_engine):
+        """Test POST /api/geoengine/engines/{id}/sync/ - successful sync"""
+        mock_sync_engine.return_value = {
             'success': True,
-            'workspaces_synced': 1,
-            'stores_synced': 1,
-            'layers_synced': 1
+            'workspaces': {'created': 1, 'deleted': 0, 'synced': 1},
+            'stores': {'created': 1, 'deleted': 0, 'synced': 1},
+            'layers': {'created': 1, 'deleted': 0, 'synced': 1},
         }
-        mock_sync_service.return_value = mock_sync_instance
-        
-        url = f'/api/geodata/engines/{self.engine.id}/sync/'
+
+        url = f'/api/geoengine/engines/{self.engine.id}/sync/'
         response = self.client.post(url)
-        
+
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.json()
-        
-        self.assertEqual(data['status'], 'success')
-        self.assertIn('message', data)
-        self.assertIn('results', data)
-        
-        # Verify sync service was called
-        mock_sync_service.assert_called_once_with(self.engine)
-        mock_sync_instance.sync_all_resources.assert_called_once_with(self.user)
-    
-    @patch('tosca_api.apps.geodata_providers.api.views.GeoServerSyncService')
-    def test_engine_sync_endpoint_failure(self, mock_sync_service):
-        """Test POST /api/geodata/engines/{id}/sync/ - failed sync"""
-        # Mock failed sync response
-        mock_sync_instance = MagicMock()
-        mock_sync_instance.sync_all_resources.return_value = {
+
+        self.assertTrue(data['success'])
+        self.assertIn('workspaces', data)
+        self.assertIn('stores', data)
+        self.assertIn('layers', data)
+        mock_sync_engine.assert_called_once_with(self.engine, user=self.user)
+
+    @patch('tosca_api.apps.geodata_providers.api.views.GeodataEngineService.sync_engine')
+    def test_engine_sync_endpoint_failure(self, mock_sync_engine):
+        """Test POST /api/geoengine/engines/{id}/sync/ - failed sync"""
+        mock_sync_engine.return_value = {
             'success': False,
             'error': 'Connection failed',
-            'details': 'Could not connect to GeoServer'
+            'details': 'Could not connect to provider',
         }
-        mock_sync_service.return_value = mock_sync_instance
-        
-        url = f'/api/geodata/engines/{self.engine.id}/sync/'
+
+        url = f'/api/geoengine/engines/{self.engine.id}/sync/'
         response = self.client.post(url)
-        
+
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         data = response.json()
-        
-        self.assertEqual(data['status'], 'error')
-        self.assertIn('message', data)
-        self.assertIn('results', data)
-    
-    @patch('tosca_api.apps.geodata_providers.api.views.GeoServerSyncService')
-    def test_engine_sync_endpoint_exception(self, mock_sync_service):
-        """Test POST /api/geodata/engines/{id}/sync/ - exception handling"""
-        # Mock service raising exception
-        mock_sync_service.side_effect = Exception('Connection error')
-        
-        url = f'/api/geodata/engines/{self.engine.id}/sync/'
-        response = self.client.post(url)
-        
-        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
-        data = response.json()
-        
-        self.assertEqual(data['status'], 'error')
-        self.assertIn('message', data)
-    
-    @patch('tosca_api.apps.geodata_providers.api.views.GeoServerSyncService')
-    def test_engines_sync_all_endpoint(self, mock_sync_service):
-        """Test POST /api/geodata/engines/sync_all/"""
+
+        self.assertFalse(data['success'])
+        self.assertEqual(data['error'], 'Connection failed')
+
+    @patch('tosca_api.apps.geodata_providers.api.views.GeodataEngineService.sync_engine')
+    def test_engine_sync_endpoint_exception(self, mock_sync_engine):
+        """Test POST /api/geoengine/engines/{id}/sync/ - exception propagation"""
+        mock_sync_engine.side_effect = Exception('Connection error')
+
+        url = f'/api/geoengine/engines/{self.engine.id}/sync/'
+        with self.assertRaises(Exception):
+            self.client.post(url)
+
+    @patch('tosca_api.apps.geodata_providers.api.views.GeodataEngineService.sync_engine')
+    def test_engines_sync_all_endpoint(self, mock_sync_engine):
+        """Test POST /api/geoengine/engines/sync_all/"""
         # Create additional test engine
-        engine2 = GeodataEngine.objects.create(
+        GeodataEngine.objects.create(
             name='Test Engine 2',
             description='Second test engine',
             base_url=f"http://{os.getenv('GEOSERVER_HOST')}:8081/geoserver",
@@ -226,29 +209,26 @@ class GeodataEngineAPITestCase(TestCase):
             is_active=True,
             created_by=self.user
         )
-        
-        # Mock sync service responses
-        mock_sync_instance = MagicMock()
-        mock_sync_instance.sync_all_resources.return_value = {
+
+        mock_sync_engine.return_value = {
             'success': True,
-            'workspaces_synced': 1,
-            'stores_synced': 1,
-            'layers_synced': 1
+            'workspaces': {'created': 1, 'deleted': 0, 'synced': 1},
+            'stores': {'created': 1, 'deleted': 0, 'synced': 1},
+            'layers': {'created': 1, 'deleted': 0, 'synced': 1},
         }
-        mock_sync_service.return_value = mock_sync_instance
-        
-        url = '/api/geodata/engines/sync_all/'
+
+        url = '/api/geoengine/engines/sync_all/'
         response = self.client.post(url)
-        
+
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.json()
-        
+
         self.assertIn('message', data)
         self.assertIn('results', data)
         self.assertEqual(len(data['results']), 2)  # Two engines synced
-        
-        # Verify sync service was called twice (once for each engine)
-        self.assertEqual(mock_sync_service.call_count, 2)
+
+        self.assertEqual(data['status'], 'completed')
+        self.assertEqual(mock_sync_engine.call_count, 2)
     
     def test_api_pagination(self):
         """Test API pagination with multiple engines"""
@@ -267,7 +247,7 @@ class GeodataEngineAPITestCase(TestCase):
                 created_by=self.user
             )
         
-        url = '/api/geodata/engines/?page_size=3'
+        url = '/api/geoengine/engines/?page_size=3'
         response = self.client.get(url)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -277,7 +257,7 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertEqual(data['count'], initial_count + 5)  # Total engines
         self.assertIsNotNone(data.get('next'))  # Should have next page
     
-    def test_api_filtering(self, mock_layer_create, mock_store_create, mock_workspace_create):
+    def test_api_filtering(self):
         """Test API filtering by active status"""
         # Count active engines before adding inactive one
         active_engines_before = GeodataEngine.objects.filter(is_active=True).count()
@@ -294,7 +274,7 @@ class GeodataEngineAPITestCase(TestCase):
         )
         
         # Test active engines only
-        url = '/api/geodata/engines/?is_active=true'
+        url = '/api/geoengine/engines/?is_active=true'
         response = self.client.get(url)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -303,7 +283,7 @@ class GeodataEngineAPITestCase(TestCase):
         self.assertEqual(data['count'], active_engines_before)  # Only active engines
         
         # Test all engines
-        url = '/api/geodata/engines/'
+        url = '/api/geoengine/engines/'
         response = self.client.get(url)
         data = response.json()
         
@@ -336,7 +316,7 @@ class ConsoleAPIIntegrationTestCase(TestCase):
         # Login the user for console view access
         self.client.login(username='consoleuser', password='testpass')
         
-        url = '/console/engines/'
+        url = '/console/'
         response = self.client.get(url)
         
         self.assertEqual(response.status_code, 200)
@@ -346,15 +326,13 @@ class ConsoleAPIIntegrationTestCase(TestCase):
         self.assertContains(response, f"http://{os.getenv('GEOSERVER_HOST')}:{os.getenv('GEOSERVER_PORT')}/geoserver")
     
     def test_console_sync_functionality(self):
-        """Test console sync button functionality"""
+        """Test console sync controls are rendered on the console home"""
         # Login the user for console view access
         self.client.login(username='consoleuser', password='testpass')
         
-        # This would test the sync POST endpoint if implemented
-        # For now, just test that the sync view exists
-        url = '/console/engines/'
+        url = '/console/'
         response = self.client.get(url)
         
-        # Check that sync button is present
-        self.assertContains(response, 'Sync All')
-        self.assertContains(response, 'sync-btn')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Sync Now')
+        self.assertContains(response, f'sync-btn-{self.engine.id}')

@@ -6,7 +6,7 @@ from django.test import TestCase
 from tosca_api.apps.geodata_providers.models import (
     GeodataEngine,
     Layer,
-    LayerStyle,
+    LayerStyleAssignment,
     Store,
     Style,
     Workspace,
@@ -89,12 +89,13 @@ class StyleModelTestCase(TestCase):
         return Style.objects.create(**defaults)
 
     def test_style_sets_hash_and_helper_properties(self):
-        style = self._style(remote_state='UPLOADED')
+        style = self._style(remote_state='SYNCED')
 
         self.assertEqual(len(style.content_hash), 64)
         self.assertFalse(style.is_global)
         self.assertTrue(style.is_valid)
-        self.assertTrue(style.is_uploaded)
+        self.assertTrue(style.is_synced)
+        self.assertTrue(style.is_remote_supported)
         self.assertEqual(style.qualified_name, 'style_ws:roads_style')
 
     def test_global_style_qualified_name_uses_plain_name(self):
@@ -107,15 +108,50 @@ class StyleModelTestCase(TestCase):
         with self.assertRaises(ValidationError):
             self._style(workspace=self.other_workspace)
 
-    def test_layer_style_rejects_style_from_different_engine(self):
+    def test_layer_style_allows_style_from_different_engine(self):
         style = self._style(
             geodata_engine=self.other_engine,
             workspace=self.other_workspace,
             name='other_style',
         )
 
+        assignment = LayerStyleAssignment.objects.create(
+            layer=self.layer,
+            style=style,
+            role='default',
+            is_active=True,
+            created_by=self.user,
+        )
+
+        self.assertEqual(assignment.style, style)
+
+    def test_layer_style_allows_workspace_scoped_style_from_different_workspace(self):
+        other_workspace_same_engine = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='other_ws_same_engine',
+            description='workspace',
+            created_by=self.user,
+        )
+        style = self._style(
+            workspace=other_workspace_same_engine,
+            name='other_workspace_style',
+        )
+
+        assignment = LayerStyleAssignment.objects.create(
+            layer=self.layer,
+            style=style,
+            role='default',
+            is_active=True,
+            created_by=self.user,
+        )
+
+        self.assertEqual(assignment.style, style)
+
+    def test_layer_style_rejects_invalid_style(self):
+        style = self._style(validation_state='INVALID', name='invalid_style')
+
         with self.assertRaises(ValidationError):
-            LayerStyle.objects.create(
+            LayerStyleAssignment.objects.create(
                 layer=self.layer,
                 style=style,
                 role='default',
@@ -126,7 +162,7 @@ class StyleModelTestCase(TestCase):
     def test_layer_allows_only_one_active_default_style(self):
         first_style = self._style(name='first_style')
         second_style = self._style(name='second_style')
-        LayerStyle.objects.create(
+        LayerStyleAssignment.objects.create(
             layer=self.layer,
             style=first_style,
             role='default',
@@ -135,7 +171,7 @@ class StyleModelTestCase(TestCase):
         )
 
         with self.assertRaises(IntegrityError):
-            LayerStyle.objects.create(
+            LayerStyleAssignment.objects.create(
                 layer=self.layer,
                 style=second_style,
                 role='default',

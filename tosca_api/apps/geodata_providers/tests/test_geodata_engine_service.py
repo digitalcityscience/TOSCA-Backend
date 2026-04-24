@@ -5,7 +5,7 @@ from django.test import Client, TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Workspace
+from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Style, Workspace
 from tosca_api.apps.geodata_providers.services.commands.geodata_engine_service import GeodataEngineService
 
 
@@ -74,9 +74,8 @@ class GeodataEngineServiceTestCase(TestCase):
         self.assertTrue(reactivate_result['success'])
         self.assertTrue(self.engine.is_active)
 
-    @patch('tosca_api.apps.geodata_providers.services.commands.store_service.EngineClientFactory.create_client')
-    @patch('tosca_api.apps.geodata_providers.services.commands.workspace_service.EngineClientFactory.create_client')
-    def test_delete_engine_cascade_removes_tree(self, mock_workspace_client, mock_store_client):
+    @patch('tosca_api.apps.geodata_providers.services.commands.geodata_engine_service.EngineClientFactory.create_client')
+    def test_delete_engine_cascade_removes_tree_remote_and_db(self, mock_create_client):
         workspace = Workspace.objects.create(
             geodata_engine=self.engine,
             name='cascade-workspace',
@@ -110,27 +109,84 @@ class GeodataEngineServiceTestCase(TestCase):
             publishing_state='DRAFT',
             created_by=self.user,
         )
+        Style.objects.create(
+            geodata_engine=self.engine,
+            workspace=workspace,
+            name='cascade_style',
+            title='Cascade Style',
+            format='mbstyle',
+            file_name='cascade_style.mbstyle',
+            file_content='{"version":8,"name":"cascade_style","layers":[]}',
+            validation_state='VALID',
+            remote_state='SYNCED',
+            created_by=self.user,
+        )
 
-        mock_store_client.return_value.delete_store.return_value = {
+        mock_create_client.return_value.delete_style.return_value = {
             'success': True,
-            'verified': True,
             'already_deleted': False,
         }
-        mock_workspace_client.return_value.delete_workspace.return_value = {
+        mock_create_client.return_value.delete_workspace.return_value = {
             'success': True,
-            'verified': True,
             'already_deleted': False,
         }
 
-        result = GeodataEngineService.delete_engine_cascade(self.engine)
+        result = GeodataEngineService.delete_engine_cascade(self.engine, delete_remote=True)
 
         self.assertTrue(result['success'])
         self.assertEqual(result['summary']['layers_deleted'], 1)
         self.assertEqual(result['summary']['stores_deleted'], 1)
         self.assertEqual(result['summary']['workspaces_deleted'], 1)
+        self.assertEqual(result['summary']['styles_deleted'], 1)
         self.assertFalse(GeodataEngine.objects.filter(pk=self.engine.pk).exists())
         self.assertFalse(Workspace.objects.filter(pk=workspace.pk).exists())
         self.assertFalse(Store.objects.filter(pk=store.pk).exists())
+        mock_create_client.return_value.delete_style.assert_called_once_with(
+            name='cascade_style',
+            workspace='cascade-workspace',
+            ignore_missing=True,
+        )
+        mock_create_client.return_value.delete_workspace.assert_called_once_with('cascade-workspace')
+
+    def test_delete_engine_cascade_db_only_bypasses_workspace_delete_policy(self):
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='vector',
+            description='reserved workspace',
+            created_by=self.user,
+        )
+        store = Store.objects.create(
+            workspace=workspace,
+            geodata_engine=self.engine,
+            name='vector_store',
+            description='store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            created_by=self.user,
+        )
+        Layer.objects.create(
+            workspace=workspace,
+            store=store,
+            name='vector_layer',
+            title='Vector Layer',
+            description='desc',
+            table_name='vector_layer',
+            geometry_column='geom',
+            geometry_type='Point',
+            srid=4326,
+            publishing_state='PUBLISHED',
+            created_by=self.user,
+        )
+
+        result = GeodataEngineService.delete_engine_cascade(self.engine, delete_remote=False)
+
+        self.assertTrue(result['success'])
+        self.assertFalse(GeodataEngine.objects.filter(pk=self.engine.pk).exists())
 
 
 class GeodataEngineApiServiceIntegrationTestCase(TestCase):
@@ -246,7 +302,10 @@ class GeodataEngineAdminIntegrationTestCase(TestCase):
             'summary': GeodataEngineService.get_dependency_counts(self.engine),
         }
 
-        response = self.client.post(reverse('admin:geodataengine_force_delete', args=[self.engine.pk]))
+        response = self.client.post(
+            reverse('admin:geodataengine_force_delete', args=[self.engine.pk]),
+            {'delete_remote': '0'},
+        )
 
         self.assertEqual(response.status_code, 302)
-        mock_delete_engine_cascade.assert_called_once()
+        mock_delete_engine_cascade.assert_called_once_with(self.engine, delete_remote=False)

@@ -90,10 +90,12 @@
           resultBox.style.border = '1px solid #3ecf8e';
           resultBox.style.color = '#1a6b41';
 
-          var st = data.stores, ly = data.layers;
+          var st = data.stores, ly = data.layers, sy = data.styles;
           var msg = '&#10003; Sync complete &mdash; '
               + 'Stores: +' + st.created + ' / &minus;' + st.deleted + ' / ~' + st.updated + ' &bull; '
-              + 'Layers: +' + ly.created + ' / &minus;' + ly.deleted + ' / ~' + ly.updated + '.';
+              + 'Styles: +' + sy.created + ' / &minus;' + sy.deleted + ' / ~' + sy.updated + ' &bull; '
+              + 'Layers: +' + ly.created + ' / &minus;' + ly.deleted + ' / ~' + ly.updated + '. '
+              + 'Provider state synced into the local catalog.';
 
           if (data.errors && data.errors.length > 0) {
             msg += '<br><span style="color:#a31515;">Errors: ' + data.errors.join(', ') + '</span>';

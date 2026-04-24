@@ -1,7 +1,11 @@
-from rest_framework.exceptions import NotFound
+from django.http import HttpResponse
+from rest_framework.exceptions import NotAcceptable, NotFound
 from rest_framework.permissions import AllowAny
+from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from tosca_api.apps.geodata_providers.services.queries import StyleQueryService
 
 from .services.v1.geoserver_v1_builder import GeoServerV1Builder
 from .services.v1.geoserver_remote_service import GeoServerRemoteService
@@ -93,9 +97,35 @@ class LayerDetailV1View(APIView):
 
 class StyleDetailV1View(APIView):
     permission_classes = [AllowAny]
+    renderer_classes = [JSONRenderer]
 
-    def get(self, request, style_name: str):
-        style_payload = GeoServerRemoteService.get_style_detail(style_name=style_name)
-        if style_payload is None:
-            raise NotFound("Style not found.")
-        return Response(style_payload)
+    def perform_content_negotiation(self, request, force=False):
+        """
+        Style responses are mixed-mode:
+        - MBStyle returns JSON via DRF Response
+        - SLD returns raw XML via Django HttpResponse
+
+        DRF's default content negotiation rejects `Accept: application/vnd.ogc.sld+xml`
+        before the view executes because no XML renderer is registered. For this
+        endpoint we handle SLD acceptability manually inside `get()`, so we keep
+        negotiation permissive here.
+        """
+        return (self.renderer_classes[0](), self.renderer_classes[0].media_type)
+
+    def get(self, request, style_ref: str):
+        try:
+            style = StyleQueryService.resolve_style_reference(style_ref=style_ref)
+        except Exception as exc:
+            raise NotFound("Style not found.") from exc
+
+        if style.format == "mbstyle":
+            return Response(StyleQueryService.get_style_content(style_id=style.id))
+
+        accepted = request.headers.get("Accept", "*/*")
+        if "application/json" in accepted and "xml" not in accepted and "*/*" not in accepted:
+            raise NotAcceptable("SLD styles are not available as JSON.")
+
+        return HttpResponse(
+            StyleQueryService.get_style_content(style_id=style.id),
+            content_type="application/vnd.ogc.sld+xml",
+        )

@@ -31,7 +31,7 @@ class Migration(migrations.Migration):
                 ('content_hash', models.CharField(editable=False, max_length=64)),
                 ('validation_state', models.CharField(choices=[('UNKNOWN', 'Unknown'), ('VALID', 'Valid'), ('INVALID', 'Invalid')], default='UNKNOWN', max_length=20)),
                 ('validation_errors', models.JSONField(blank=True, default=list)),
-                ('remote_state', models.CharField(choices=[('LOCAL_ONLY', 'Local only'), ('UPLOADED', 'Uploaded'), ('FAILED', 'Failed'), ('DELETED', 'Deleted')], default='LOCAL_ONLY', max_length=20)),
+                ('remote_state', models.CharField(choices=[('LOCAL_ONLY', 'Local only'), ('SYNCED', 'Synced'), ('FAILED', 'Failed'), ('UNSUPPORTED', 'Unsupported by provider'), ('DELETED', 'Deleted')], default='LOCAL_ONLY', max_length=20)),
                 ('remote_error', models.TextField(blank=True)),
                 ('remote_uploaded_at', models.DateTimeField(blank=True, null=True)),
                 ('remote_verified_at', models.DateTimeField(blank=True, null=True)),
@@ -48,7 +48,7 @@ class Migration(migrations.Migration):
             },
         ),
         migrations.CreateModel(
-            name='LayerStyle',
+            name='LayerStyleAssignment',
             fields=[
                 ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
                 ('role', models.CharField(choices=[('default', 'Default'), ('alternate', 'Alternate')], default='default', max_length=20)),
@@ -56,12 +56,13 @@ class Migration(migrations.Migration):
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
                 ('created_by', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to=settings.AUTH_USER_MODEL)),
-                ('layer', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='style_links', to='geodata_providers.layer')),
-                ('style', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='layer_links', to='geodata_providers.style')),
+                ('layer', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='style_assignments', to='geodata_providers.layer')),
+                ('style', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='layer_assignments', to='geodata_providers.style')),
             ],
             options={
-                'verbose_name': 'Layer Style',
-                'verbose_name_plural': 'Layer Styles',
+                'db_table': 'geodata_providers_layerstyle',
+                'verbose_name': 'Layer Style Assignment',
+                'verbose_name_plural': 'Layer Style Assignments',
                 'ordering': ['layer__workspace__name', 'layer__name', 'role', 'style__name'],
             },
         ),
@@ -74,11 +75,11 @@ class Migration(migrations.Migration):
             constraint=models.UniqueConstraint(condition=models.Q(('workspace__isnull', True)), fields=('geodata_engine', 'name'), name='unique_global_style_per_engine_name'),
         ),
         migrations.AddConstraint(
-            model_name='layerstyle',
+            model_name='layerstyleassignment',
             constraint=models.UniqueConstraint(condition=models.Q(('is_active', True), ('role', 'default')), fields=('layer',), name='unique_active_default_style_per_layer'),
         ),
         migrations.AddConstraint(
-            model_name='layerstyle',
+            model_name='layerstyleassignment',
             constraint=models.UniqueConstraint(fields=('layer', 'style', 'role'), name='unique_layer_style_role'),
         ),
     ]

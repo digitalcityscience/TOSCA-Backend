@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 
 from django.contrib import admin
 from django.contrib.admin import SimpleListFilter
@@ -6,9 +8,10 @@ from django import forms
 from django.http import HttpResponseRedirect
 from django.shortcuts import redirect
 from django.utils.html import format_html
+from django.utils import timezone
 from django.contrib import messages
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.urls import path, reverse
 from .admin_actions import (
@@ -31,10 +34,11 @@ from .admin_views import (
 )
 from .engine_factory import EngineClientFactory
 from .exceptions import GeoServerConnectionError, GeodataEngineError
-from .models import GeodataEngine, Workspace, Store, Layer, Style, LayerStyle
+from .models import GeodataEngine, Workspace, Store, Layer, Style, LayerStyleAssignment
 from .services.commands.geodata_engine_service import GeodataEngineService
 from .services.commands.layer_service import LayerService
 from .services.commands.store_service import StoreService
+from .services.commands.style_validation_service import StyleValidationService
 from .services.commands.workspace_service import WorkspaceService
 
 logger = logging.getLogger(__name__)
@@ -45,7 +49,6 @@ _GEODATA_PROVIDER_ADMIN_ORDER = {
     'Store': 2,
     'Layer': 3,
     'Style': 4,
-    'LayerStyle': 5,
 }
 
 _GEODATA_PROVIDER_ADMIN_LABELS = {
@@ -54,7 +57,6 @@ _GEODATA_PROVIDER_ADMIN_LABELS = {
     'Store': 'Store',
     'Layer': 'Layer',
     'Style': 'Style',
-    'LayerStyle': 'Layer Style',
 }
 
 
@@ -165,6 +167,7 @@ def _run_workspace_sync(modeladmin, request, workspace):
     try:
         service = EngineClientFactory.create_sync_service(engine)
         store_result = service.sync_stores_for_workspace(workspace, created_by=request.user)
+        style_result = service.sync_styles_for_scope(workspace, created_by=request.user)
         layer_result = service.sync_layers_for_workspace(workspace, created_by=request.user)
     except (GeoServerConnectionError, GeodataEngineError) as exc:
         modeladmin.message_user(
@@ -174,8 +177,12 @@ def _run_workspace_sync(modeladmin, request, workspace):
         )
         return
 
-    if store_result.get('errors') or layer_result.get('errors'):
-        errors = store_result.get('errors', []) + layer_result.get('errors', [])
+    if store_result.get('errors') or style_result.get('errors') or layer_result.get('errors'):
+        errors = (
+            store_result.get('errors', [])
+            + style_result.get('errors', [])
+            + layer_result.get('errors', [])
+        )
         modeladmin.message_user(
             request,
             f"Workspace '{workspace.name}' sync completed with issues: {' | '.join(errors[:2])}",
@@ -272,7 +279,8 @@ class GeodataEngineAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     list_display = [
         'name', 'engine_type', 'base_url',
         'is_active', 'is_default',
-        'connection_status_badge', 'workspace_count', 'layer_count',
+        'connection_status_badge', 'workspace_count', 'style_count',
+        'layer_count', 'active_layer_settings_count',
     ]
     list_filter = ['engine_type', 'is_active', 'is_default']
     search_fields = ['name', 'base_url']
@@ -336,7 +344,13 @@ class GeodataEngineAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         qs = super().get_queryset(request)
         return qs.annotate(
             _workspace_count=Count('workspaces', distinct=True),
+            _style_count=Count('styles', distinct=True),
             _layer_count=Count('workspaces__layers', distinct=True),
+            _active_layer_settings_count=Count(
+                'workspaces__layers__style_assignments',
+                filter=Q(workspaces__layers__style_assignments__is_active=True),
+                distinct=True,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -351,6 +365,16 @@ class GeodataEngineAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         return obj._layer_count
     layer_count.short_description = 'Layers'
     layer_count.admin_order_field = '_layer_count'
+
+    def style_count(self, obj):
+        return obj._style_count
+    style_count.short_description = 'Styles'
+    style_count.admin_order_field = '_style_count'
+
+    def active_layer_settings_count(self, obj):
+        return obj._active_layer_settings_count
+    active_layer_settings_count.short_description = 'Active Layer Settings'
+    active_layer_settings_count.admin_order_field = '_active_layer_settings_count'
 
     def connection_status_badge(self, obj):
         """
@@ -699,13 +723,21 @@ class StoreAdminForm(forms.ModelForm):
 
 
 class StyleAdminForm(forms.ModelForm):
+    upload_file = forms.FileField(
+        required=False,
+        label='Upload file',
+        help_text='Upload .sld, .json, or .mbstyle. Pasted content below is also supported.',
+    )
+
     class Meta:
         model = Style
-        fields = '__all__'
+        fields = (
+            'geodata_engine', 'workspace', 'name', 'title', 'description',
+            'format', 'upload_file', 'file_name', 'file_content',
+        )
         widgets = {
             'description': forms.Textarea(attrs={'rows': 3}),
             'file_content': forms.Textarea(attrs={'rows': 18, 'style': 'font-family:monospace;'}),
-            'remote_error': forms.Textarea(attrs={'rows': 3}),
         }
 
     def clean(self):
@@ -717,12 +749,56 @@ class StyleAdminForm(forms.ModelForm):
         workspace = cleaned_data.get('workspace') or self.instance.workspace
         if workspace and engine and workspace.geodata_engine_id != engine.id:
             raise ValidationError('Style workspace must belong to the selected geodata engine.')
+
+        upload_file = cleaned_data.get('upload_file')
+        if upload_file:
+            content_bytes = upload_file.read()
+            cleaned_data['file_content'] = content_bytes.decode('utf-8')
+            cleaned_data['file_name'] = upload_file.name
+
+        if self.instance.pk and not cleaned_data.get('file_content'):
+            cleaned_data['file_content'] = self.instance.file_content
+        if self.instance.pk and not cleaned_data.get('file_name'):
+            cleaned_data['file_name'] = self.instance.file_name
+        if self.instance.pk and not cleaned_data.get('format'):
+            cleaned_data['format'] = self.instance.format
+
+        file_name = cleaned_data.get('file_name') or ''
+        style_format = cleaned_data.get('format') or self._infer_format(file_name)
+        if style_format:
+            cleaned_data['format'] = style_format
+
+        content = cleaned_data.get('file_content') or ''
+        if self.instance._state.adding and not content:
+            raise ValidationError({
+                'file_content': 'Upload a style file or paste style content before saving.'
+            })
+        if content:
+            validation = StyleValidationService.validate(
+                content=content,
+                style_format=style_format,
+            )
+            self.instance.validation_state = 'VALID' if validation.get('valid') else 'INVALID'
+            self.instance.validation_errors = validation.get('errors', [])
+            if not validation.get('valid'):
+                raise ValidationError({
+                    'file_content': 'Style validation failed: ' + ' | '.join(validation.get('errors', []))
+                })
         return cleaned_data
 
+    @staticmethod
+    def _infer_format(file_name: str) -> str:
+        ext = os.path.splitext(file_name)[1].lower()
+        if ext == '.sld':
+            return 'sld'
+        if ext in {'.json', '.mbstyle'}:
+            return 'mbstyle'
+        return ''
 
-class LayerStyleAdminForm(forms.ModelForm):
+
+class LayerStyleAssignmentAdminForm(forms.ModelForm):
     class Meta:
-        model = LayerStyle
+        model = LayerStyleAssignment
         fields = '__all__'
 
     def clean(self):
@@ -734,11 +810,8 @@ class LayerStyleAdminForm(forms.ModelForm):
         style = cleaned_data.get('style') or self.instance.style
         if not layer or not style:
             return cleaned_data
-        layer_engine_id = layer.workspace.geodata_engine_id if layer.workspace_id else None
-        if layer_engine_id != style.geodata_engine_id:
-            raise ValidationError('Style and layer must belong to the same geodata engine.')
-        if style.workspace_id and style.workspace_id != layer.workspace_id:
-            raise ValidationError('Workspace-scoped style must belong to the same workspace as the layer.')
+        if style.validation_state == 'INVALID':
+            raise ValidationError('Invalid styles cannot be assigned to layers.')
         return cleaned_data
 
 
@@ -1008,7 +1081,8 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
 
 
 class LayerStyleInline(admin.TabularInline):
-    model = LayerStyle
+    model = LayerStyleAssignment
+    form = LayerStyleAssignmentAdminForm
     fields = ('style', 'role', 'is_active', 'created_at')
     readonly_fields = ('created_at',)
     extra = 0
@@ -1021,14 +1095,15 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     change_form_template = 'admin/geodata_providers/layer/change_form.html'
     list_display = [
         'name', 'title', 'workspace_link', 'store_name',
-        'geometry_type', 'srid', 'publishing_state_badge', 'is_public',
+        'geometry_type', 'srid', 'default_style_name', 'publishing_state_badge', 'is_public',
     ]
     list_filter = ['publishing_state', 'geometry_type', 'workspace__geodata_engine', 'workspace', 'store', 'is_public']
     search_fields = ['name', 'title', 'table_name', 'workspace__name']
     readonly_fields = [
         'id', 'name', 'provider_link', 'table_name', 'geometry_column', 'geometry_type',
         'workspace', 'store', 'created_at', 'updated_at', 'publishing_state',
-        'published_url', 'publishing_error',
+        'published_url', 'publishing_error', 'default_style_display',
+        'additional_styles_display', 'available_styles_display', 'selected_styles_display',
     ]
     inlines = [LayerStyleInline]
     list_per_page = 25
@@ -1045,6 +1120,13 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         }),
         ('Visibility', {
             'fields': ('publishing_state', 'is_public', 'published_url', 'publishing_error'),
+        }),
+        ('Layer Settings', {
+            'fields': (
+                'queryable', 'opaque', 'default_style_display',
+                'additional_styles_display', 'available_styles_display',
+                'selected_styles_display',
+            ),
         }),
         ('Metadata', {
             'fields': ('created_at', 'updated_at'),
@@ -1124,7 +1206,7 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     def get_queryset(self, request):
         return super().get_queryset(request).select_related(
             'workspace__geodata_engine', 'store',
-        )
+        ).prefetch_related('style_assignments__style', 'workspace__styles')
 
     def render_change_form(self, request, context, add=False, change=False, form_url='', obj=None):
         workspace = obj.workspace if obj else None
@@ -1142,6 +1224,52 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
                 f" | Store: {store.name if store else '—'}"
             )
         return super().render_change_form(request, context, add=add, change=change, form_url=form_url, obj=obj)
+
+    def _active_style_assignments(self, obj):
+        return [
+            assignment for assignment in obj.style_assignments.all()
+            if assignment.is_active
+        ]
+
+    def default_style_name(self, obj):
+        assignment = next(
+            (
+                item for item in self._active_style_assignments(obj)
+                if item.role == 'default'
+            ),
+            None,
+        )
+        return assignment.style.qualified_name if assignment else '—'
+    default_style_name.short_description = 'Default Style'
+
+    def default_style_display(self, obj):
+        return self.default_style_name(obj)
+    default_style_display.short_description = 'Default Style'
+
+    def additional_styles_display(self, obj):
+        names = [
+            assignment.style.qualified_name
+            for assignment in self._active_style_assignments(obj)
+            if assignment.role == 'alternate'
+        ]
+        return ', '.join(names) if names else '—'
+    additional_styles_display.short_description = 'Additional Styles'
+
+    def selected_styles_display(self, obj):
+        names = [
+            assignment.style.qualified_name
+            for assignment in self._active_style_assignments(obj)
+        ]
+        return ', '.join(names) if names else '—'
+    selected_styles_display.short_description = 'Selected Styles'
+
+    def available_styles_display(self, obj):
+        styles = Style.objects.filter(
+            geodata_engine=obj.workspace.geodata_engine,
+        ).select_related('workspace').order_by('workspace__name', 'name')
+        names = [style.qualified_name for style in styles]
+        return ', '.join(names) if names else '—'
+    available_styles_display.short_description = 'Available Styles'
 
     # ------------------------------------------------------------------
     # 4.2.4 — save_model: sync title/description to GeoServer for PUBLISHED
@@ -1175,7 +1303,7 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     def save_formset(self, request, form, formset, change):
         instances = formset.save(commit=False)
         for obj in instances:
-            if isinstance(obj, LayerStyle) and not obj.pk:
+            if isinstance(obj, LayerStyleAssignment) and not obj.pk:
                 obj.created_by = request.user
             obj.save()
         for obj in formset.deleted_objects:
@@ -1221,15 +1349,17 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
 @admin.register(Style)
 class StyleAdmin(admin.ModelAdmin):
     form = StyleAdminForm
+    change_form_template = 'admin/geodata_providers/style/change_form.html'
     list_display = [
         'name', 'title', 'format', 'provider_link', 'workspace_link',
-        'validation_state', 'remote_state', 'layer_link_count', 'updated_at',
+        'validation_state_badge', 'remote_state_badge', 'layer_link_count', 'updated_at',
     ]
     list_filter = ['format', 'validation_state', 'remote_state', 'geodata_engine', 'workspace']
     search_fields = ['name', 'title', 'description', 'file_name']
     readonly_fields = [
-        'id', 'content_hash', 'remote_uploaded_at', 'remote_verified_at',
-        'created_at', 'updated_at',
+        'id', 'content_hash', 'validation_state_badge', 'validation_errors_display',
+        'remote_state_badge', 'remote_error_display', 'remote_uploaded_at',
+        'remote_verified_at', 'created_at', 'updated_at',
     ]
     list_per_page = 25
 
@@ -1238,13 +1368,13 @@ class StyleAdmin(admin.ModelAdmin):
             'fields': ('geodata_engine', 'workspace', 'name', 'title', 'description'),
         }),
         ('Content', {
-            'fields': ('format', 'file_name', 'file_content', 'content_hash'),
+            'fields': ('format', 'upload_file', 'file_name', 'file_content', 'content_hash'),
         }),
-        ('Validation', {
-            'fields': ('validation_state', 'validation_errors'),
+        ('Validation Result', {
+            'fields': ('validation_state_badge', 'validation_errors_display'),
         }),
-        ('Remote State', {
-            'fields': ('remote_state', 'remote_error', 'remote_uploaded_at', 'remote_verified_at'),
+        ('Remote Result', {
+            'fields': ('remote_state_badge', 'remote_error_display', 'remote_uploaded_at', 'remote_verified_at'),
         }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),
@@ -1255,7 +1385,7 @@ class StyleAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         return super().get_queryset(request).select_related(
             'geodata_engine', 'workspace',
-        ).annotate(_layer_link_count=Count('layer_links', distinct=True))
+        ).annotate(_layer_link_count=Count('layer_assignments', distinct=True))
 
     def get_exclude(self, request, obj=None):
         return ['created_by']
@@ -1272,7 +1402,17 @@ class StyleAdmin(admin.ModelAdmin):
     def save_model(self, request, obj, form, change):
         if not change:
             obj.created_by = request.user
+        if form.instance.validation_state:
+            obj.validation_state = form.instance.validation_state
+            obj.validation_errors = form.instance.validation_errors
+        if obj.geodata_engine.engine_type == 'geoserver':
+            obj.remote_state = 'LOCAL_ONLY'
+            obj.remote_error = ''
+        else:
+            obj.remote_state = 'UNSUPPORTED'
+            obj.remote_error = 'Remote style sync is not supported by this provider type.'
         super().save_model(request, obj, form, change)
+        self._sync_remote_if_supported(request, obj)
 
     def provider_link(self, obj):
         return format_html('<a href="{}">{}</a>', _admin_change_url(obj.geodata_engine), obj.geodata_engine.name)
@@ -1291,28 +1431,161 @@ class StyleAdmin(admin.ModelAdmin):
     layer_link_count.short_description = 'Layer Links'
     layer_link_count.admin_order_field = '_layer_link_count'
 
+    def validation_state_badge(self, obj):
+        colour = {'VALID': '#198754', 'INVALID': '#dc3545', 'UNKNOWN': '#6c757d'}.get(
+            obj.validation_state, '#6c757d'
+        )
+        return format_html('<strong style="color:{};">{}</strong>', colour, obj.validation_state)
+    validation_state_badge.short_description = 'Validation state'
 
-@admin.register(LayerStyle)
-class LayerStyleAdmin(admin.ModelAdmin):
-    form = LayerStyleAdminForm
-    list_display = ['layer', 'style', 'role', 'is_active', 'created_at']
-    list_filter = ['role', 'is_active', 'layer__workspace', 'style__geodata_engine']
-    search_fields = ['layer__name', 'layer__title', 'style__name', 'style__title']
-    readonly_fields = ['id', 'created_at', 'updated_at']
-    list_per_page = 25
+    def validation_errors_display(self, obj):
+        if not obj.validation_errors:
+            return '—'
+        return format_html('<pre style="white-space:pre-wrap;margin:0;">{}</pre>', json.dumps(obj.validation_errors, indent=2))
+    validation_errors_display.short_description = 'Validation errors'
 
-    def get_queryset(self, request):
-        return super().get_queryset(request).select_related(
-            'layer__workspace__geodata_engine', 'style__workspace', 'style__geodata_engine',
+    def remote_state_badge(self, obj):
+        colour = {
+            'SYNCED': '#198754',
+            'FAILED': '#dc3545',
+            'UNSUPPORTED': '#6c757d',
+            'LOCAL_ONLY': '#0d6efd',
+            'DELETED': '#6c757d',
+        }.get(obj.remote_state, '#6c757d')
+        return format_html('<strong style="color:{};">{}</strong>', colour, obj.remote_state)
+    remote_state_badge.short_description = 'Remote state'
+
+    def remote_error_display(self, obj):
+        return obj.remote_error or '—'
+    remote_error_display.short_description = 'Remote error'
+
+    def _sync_remote_if_supported(self, request, obj):
+        if obj.geodata_engine.engine_type != 'geoserver':
+            obj.remote_state = 'UNSUPPORTED'
+            obj.remote_error = 'Remote style sync is not supported by this provider type.'
+            obj.save(update_fields=['remote_state', 'remote_error', 'updated_at'])
+            self.message_user(
+                request,
+                'Style validated and saved locally. Remote style sync is unsupported for this provider.',
+                messages.INFO,
+            )
+            return
+
+        client = EngineClientFactory.create_client(obj.geodata_engine)
+        result = client.upload_style(
+            name=obj.name,
+            content=obj.file_content,
+            style_format=obj.format,
+            workspace=obj.workspace.name if obj.workspace else None,
+            overwrite=True,
+        )
+        if result.get('success'):
+            obj.remote_state = 'SYNCED'
+            obj.remote_error = ''
+            obj.remote_uploaded_at = timezone.now()
+            obj.remote_verified_at = timezone.now()
+            obj.save(update_fields=[
+                'remote_state', 'remote_error', 'remote_uploaded_at',
+                'remote_verified_at', 'updated_at',
+            ])
+            self.message_user(request, 'Style uploaded to GeoServer and verified.', messages.SUCCESS)
+            return
+
+        obj.remote_state = 'FAILED'
+        obj.remote_error = result.get('error') or result.get('message', 'Remote sync failed.')
+        obj.save(update_fields=['remote_state', 'remote_error', 'updated_at'])
+        self.message_user(
+            request,
+            f"Style saved locally, but GeoServer sync failed: {obj.remote_error}",
+            messages.ERROR,
         )
 
-    def get_exclude(self, request, obj=None):
-        return ['created_by']
+    def _ensure_local_style_content(self, obj):
+        if obj.file_content or obj.geodata_engine.engine_type != 'geoserver':
+            return
+        client = EngineClientFactory.create_client(obj.geodata_engine)
+        payload = client.get_style_content(
+            name=obj.name,
+            workspace=obj.workspace.name if obj.workspace else None,
+        )
+        if not payload:
+            return
+        obj.file_content = payload.get('content', '')
+        obj.file_name = payload.get('file_name', obj.file_name)
+        obj.format = payload.get('format', obj.format)
+        if obj.file_content:
+            validation = StyleValidationService.validate(
+                content=obj.file_content,
+                style_format=obj.format,
+            )
+            obj.validation_state = 'VALID' if validation.get('valid') else 'INVALID'
+            obj.validation_errors = validation.get('errors', [])
+        obj.save(update_fields=[
+            'file_content',
+            'file_name',
+            'format',
+            'validation_state',
+            'validation_errors',
+            'content_hash',
+            'updated_at',
+        ])
 
-    def save_model(self, request, obj, form, change):
-        if not change:
-            obj.created_by = request.user
-        super().save_model(request, obj, form, change)
+    def delete_model(self, request, obj):
+        self._ensure_style_can_be_deleted(obj)
+        result = self._delete_style_remote_first(obj)
+        if not result.get('success'):
+            raise DeleteAborted(
+                f"Cannot delete style '{obj.name}': "
+                f"{result.get('error', result.get('message', 'GeoServer deletion failed.'))}"
+            )
+        super().delete_model(request, obj)
+        if result.get('already_deleted'):
+            self.message_user(
+                request,
+                f"Style '{obj.name}' was already absent in GeoServer. Django record was removed.",
+                messages.WARNING,
+            )
 
+    def delete_queryset(self, request, queryset):
+        for obj in queryset.select_related('geodata_engine', 'workspace'):
+            try:
+                self._ensure_style_can_be_deleted(obj)
+                result = self._delete_style_remote_first(obj)
+                if not result.get('success'):
+                    self.message_user(
+                        request,
+                        f"Style '{obj.name}' NOT deleted — "
+                        f"{result.get('error', result.get('message', 'unknown'))}",
+                        messages.ERROR,
+                    )
+                    continue
+                obj.delete()
+                if result.get('already_deleted'):
+                    self.message_user(
+                        request,
+                        f"Style '{obj.name}' was already absent in GeoServer. Django record was removed.",
+                        messages.WARNING,
+                    )
+            except DeleteAborted as exc:
+                self.message_user(request, str(exc), messages.ERROR)
+
+    def _ensure_style_can_be_deleted(self, obj):
+        assignment_count = obj.layer_assignments.filter(is_active=True).count()
+        if assignment_count:
+            raise DeleteAborted(
+                f"Cannot delete style '{obj.name}': active layer assignments exist ({assignment_count})."
+            )
+
+    def _delete_style_remote_first(self, obj):
+        if obj.geodata_engine.engine_type != 'geoserver':
+            return {
+                'success': True,
+                'message': 'Remote style sync unsupported; deleted from Django only.',
+            }
+        client = EngineClientFactory.create_client(obj.geodata_engine)
+        return client.delete_style(
+            name=obj.name,
+            workspace=obj.workspace.name if obj.workspace else None,
+        )
 
 _patch_geodata_providers_admin_app_list()

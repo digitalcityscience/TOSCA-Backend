@@ -4,88 +4,106 @@ Tarih: 2026-04-23
 
 ## Amaç
 
-Bu dokümanın amacı `Style` domain'ini önce `geodata_providers` içinde doğru
-şekilde modellemek, admin panelden yönetilebilir yapmak, GeoServer'a SLD ve
-MBStyle olarak upload edebilmek, validasyon/test yüzeyini kurmak ve daha sonra
-`catalog_api` v1 ile dışarı okunabilir hale getirmektir.
+Bu dokümanın amacı `Style` domain'ini `geodata_providers` içinde tek ve merkezi
+bir domain olarak modellemek, admin panelde yönetilebilir yapmak, destekleyen
+provider'larla sync edebilmek ve catalog API'de layer detaylarıyla birlikte
+okunabilir hale getirmektir.
 
-Bu iş iki ana fazda yapılmalıdır:
+Temel hikaye:
 
-1. Provider fazı: `geodata_providers` içinde style model, admin, servis,
-   validasyon ve GeoServer upload/sync davranışı.
-2. Catalog fazı: `catalog_api` içinde frontend'in beklediği style detail
-   response'unu provider style domain'i üstünden üretmek.
+- `Style`, `Workspace`, `Store`, `Layer` gibi provider domain'in bir parçasıdır.
+- Django style için tek yetkili kaynaktır.
+- Provider style destekliyorsa style o provider'a sync edilebilir.
+- Provider style desteklemiyorsa style Django'da kalır ve catalog response'unda
+  kullanılmaya devam eder.
+- Layer altında ayrı bir "Layer Style" domain'i yoktur. Layer detayında style
+  seçimi/atanması vardır.
+- Bir Martin layer'ı, Django'da kayıtlı ve örneğin GeoServer provider'ına sync
+  edilmiş bir style'ı kullanabilir. Catalog API Martin layer detayını dönerken
+  seçili style bilgisini de kullanıcıya dönebilmelidir.
 
-Öncelik provider fazıdır. Catalog tarafına geçmeden önce style domain'i admin ve
-servis katmanında güvenilir hale gelmelidir.
+## Revize Temel Kararlar
 
-## Mevcut Durum
+- `Style` tek ana domain modelidir.
+- Style admin panelde `geodata_providers` altında ayrı bir kaynak olarak görünür.
+- Style'ın bir owner/sync provider'ı olabilir:
+  - GeoServer provider: remote style sync desteklenir.
+  - Martin provider: native style sync yoksa style `LOCAL_ONLY` veya
+    `UNSUPPORTED` kalır.
+- Style workspace-scoped veya global olabilir.
+- Workspace scope, style'ın provider içindeki organizasyon/sync context'idir.
+  Layer'a atanabilmesi için layer ile aynı provider/workspace olmak zorunda
+  değildir.
+- Layer ile style ilişkisi ayrı bir business domain değildir; bu ilişki layer
+  detayında kullanılan assignment bilgisidir.
+- Assignment modelinin adı teknik olarak `LayerStyle` veya
+  `LayerStyleAssignment` olabilir, fakat admin menüsünde ayrı ana kaynak gibi
+  gösterilmemelidir.
+- Catalog API style bilgisini GeoServer'a dağınık çağrı yaparak değil, Django
+  style domain'i ve layer assignment üstünden üretmelidir.
+- Cross-provider assignment desteklenmelidir:
+  - Martin layer + GeoServer style geçerli bir senaryodur.
+  - Martin layer + local-only Django style da geçerli olabilir.
+- Remote sync ve catalog kullanım birbirinden ayrıdır:
+  - Remote sync, provider capability meselesidir.
+  - Catalog kullanım, Django'daki style content/metadata meselesidir.
 
-Şu anda style için gerçek domain yoktur.
+## Mevcut Implementasyon Değerlendirmesi
 
-Mevcut boşluklar:
+Son yapılan Faz 1 implementasyonu bazı parçaları doğru kurdu, ancak yeni hikaye
+ile tamamen uyumlu değildir. Bu yüzden önce düzeltme fazı gereklidir.
 
-- `geodata_providers` içinde `Style` modeli yok.
-- `Layer` ile style ilişkisi yok.
-- Admin panelde style upload/edit/delete yeri yok.
-- SLD / MBStyle dosyası validasyonu yok.
-- GeoServer'a style upload/delete/assign yapan command service yok.
-- `StyleQueryService` placeholder durumunda.
-- `catalog_api` v1 style endpoint'i gerçek domain'e değil, GeoServer remote
-  best-effort read davranışına dayanıyor.
+Uyumlu parçalar:
 
-Bu yüzden style işi önce provider domain'de çözülmelidir.
+- `Style` modelinin ana domain olarak eklenmesi doğru yöndedir.
+- Style content'in Django DB'de tutulması ilk faz için uygundur.
+- `content_hash`, validation state ve remote state alanları faydalıdır.
+- Style'ın admin panelde görünmesi gereklidir.
+- Layer ile style arasında assignment kaydı tutulması doğrudur.
 
-## Temel Kararlar
+Uyumsuz / revize edilecek parçalar:
 
-- Style ownership `geodata_providers` içinde olacaktır.
-- Style, bir `GeodataEngine` ve opsiyonel bir `Workspace` bağlamında tutulur.
-- Workspace `null` ise style global GeoServer style olarak kabul edilir.
-- Workspace dolu ise style workspace-scoped GeoServer style olarak kabul edilir.
-- Style adı GeoServer style identifier'dır ve GeoServer'a aynı isimle upload
-  edilir.
-- Desteklenen formatlar ilk fazda sadece:
-  - `sld`
-  - `mbstyle`
-- Style dosyası önce local olarak validate edilir.
-- Local validasyon geçmeden GeoServer'a upload yapılmaz.
-- GeoServer upload başarılı olmadan Django kaydı "published/synced" sayılmaz.
-- GeoServer REST Styles API içinde ayrı bir native `validate` endpoint yoktur.
-  Bu yüzden "valid mi?" kontrolü bizim local validation servisimiz ve upload
-  sonrası verify/smoke read davranışı ile sağlanacaktır.
-- Delete davranışı GeoServer-first olmalıdır.
-- Catalog API style okuması doğrudan GeoServer'a dağınık çağrı yapmamalı;
-  önce provider query/service katmanı kullanılmalıdır.
+- `LayerStyle` ayrı admin ana kaynağı gibi gösterilmemelidir.
+- `LayerStyle` ismi domain gibi algılanıyor. Gerekirse teknik model adı
+  `LayerStyleAssignment` olarak değiştirilmelidir.
+- Assignment için `style.geodata_engine == layer.workspace.geodata_engine`
+  zorunluluğu yanlıştır. Martin layer'ın GeoServer style kullanabilmesi gerekir.
+- Workspace-scoped style'ın sadece aynı workspace layer'a atanabilmesi kuralı
+  yeni hikaye ile uyumlu değildir.
+- Remote state değerleri provider capability'yi ifade etmiyor. Martin gibi style
+  sync desteklemeyen provider için `UNSUPPORTED` veya `NOT_SUPPORTED` state'i
+  gerekir.
+- Faz 1 tamamlandı kabul edilemez; model ve admin düzeltmesi yapılmalıdır.
 
-## Faz 1: Provider Style Domain
+## Faz 1: Style Domain Model Revizyonu
 
-### 1. Model Tasarımı
+### 1. Style Modeli
 
-Yeni model:
+Model:
 
 - `tosca_api/apps/geodata_providers/models.py`
 - model adı: `Style`
 
-Önerilen alanlar:
+Alanlar:
 
 | Field | Type | Not |
 |---|---|---|
 | `id` | UUIDField primary key | Diğer provider modelleriyle tutarlı |
-| `geodata_engine` | FK `GeodataEngine` | Zorunlu |
-| `workspace` | FK `Workspace`, null/blank | Null ise global style |
-| `name` | CharField max 100 | GeoServer style adı |
+| `geodata_engine` | FK `GeodataEngine` | Style'ın owner/sync provider'ı |
+| `workspace` | FK `Workspace`, null/blank | Provider içindeki style scope; null ise global |
+| `name` | CharField max 100 | Provider/Django style identifier |
 | `title` | CharField max 200 blank | Admin/UI için insan okunur ad |
 | `description` | TextField blank | Açıklama |
 | `format` | CharField choices | `sld`, `mbstyle` |
 | `file_name` | CharField max 255 | Upload edilen dosya adı |
 | `file_content` | TextField | Raw SLD XML veya MBStyle JSON |
-| `content_hash` | CharField max 64 | SHA-256, değişiklik takibi için |
+| `content_hash` | CharField max 64 | SHA-256 |
 | `validation_state` | CharField choices | `UNKNOWN`, `VALID`, `INVALID` |
 | `validation_errors` | JSONField default list | Validasyon hata detayları |
-| `remote_state` | CharField choices | `LOCAL_ONLY`, `UPLOADED`, `FAILED`, `DELETED` |
-| `remote_error` | TextField blank | Son GeoServer hata mesajı |
-| `remote_uploaded_at` | DateTimeField null | Son başarılı upload zamanı |
-| `remote_verified_at` | DateTimeField null | Son başarılı verify zamanı |
+| `remote_state` | CharField choices | `LOCAL_ONLY`, `SYNCED`, `FAILED`, `UNSUPPORTED`, `DELETED` |
+| `remote_error` | TextField blank | Son provider sync hata mesajı |
+| `remote_uploaded_at` | DateTimeField null | Son başarılı remote upload zamanı |
+| `remote_verified_at` | DateTimeField null | Son başarılı remote verify zamanı |
 | `created_at` | DateTimeField auto_now_add | |
 | `updated_at` | DateTimeField auto_now | |
 | `created_by` | FK User | |
@@ -106,103 +124,104 @@ VALIDATION_STATES = [
 
 REMOTE_STATES = [
     ("LOCAL_ONLY", "Local only"),
-    ("UPLOADED", "Uploaded"),
+    ("SYNCED", "Synced"),
     ("FAILED", "Failed"),
+    ("UNSUPPORTED", "Unsupported by provider"),
     ("DELETED", "Deleted"),
 ]
 ```
 
-Model constraint:
+Constraint:
 
-- `UniqueConstraint(fields=["geodata_engine", "workspace", "name"], ...)`
-- `workspace.geodata_engine_id == geodata_engine_id` olmalı.
+- Style name provider/scope içinde unique olmalıdır.
+- Global style için `geodata_engine + name` unique olmalıdır.
+- Workspace style için `geodata_engine + workspace + name` unique olmalıdır.
+- `workspace.geodata_engine_id == geodata_engine_id` sadece style'ın kendi
+  owner/sync scope'u için geçerlidir.
 
-Model helper property'leri:
+Helper property'leri:
 
 - `is_global`
 - `is_valid`
-- `is_uploaded`
+- `is_synced`
+- `is_remote_supported`
 - `qualified_name`
   - workspace varsa `{workspace.name}:{name}`
   - global ise `{name}`
 
-Not:
+### 2. Layer Style Assignment
 
-- İlk fazda dosyayı fiziksel storage'a koymak şart değil. Raw content DB'de
-  tutulabilir. Eğer ileride dosya boyutları büyürse `FileField` + object storage
-  planlanabilir.
+Layer altında style seçebilmek için teknik bir assignment modeli gerekir. Bu
+ayrı bir Style domain'i değildir.
 
-### 2. Layer-Style İlişkisi
+Önerilen model adı:
 
-Sadece `Style` modeli yetmez; layer hangi style'ı kullanıyor bilinmelidir.
+- `LayerStyleAssignment`
 
-Yeni model önerisi:
+Eğer mevcut implementasyonda `LayerStyle` kaldıysa:
 
-- model adı: `LayerStyle`
+- Admin menüsünde ayrı ana model olarak gösterilmemeli.
+- Kod içinde anlamı "assignment/link" olacak şekilde dokümante edilmeli.
+- Mümkünse migration revizyonunda `LayerStyleAssignment` adına taşınmalı.
 
 Alanlar:
 
 | Field | Type | Not |
 |---|---|---|
 | `id` | UUIDField primary key | |
-| `layer` | FK `Layer` related_name `style_links` | |
-| `style` | FK `Style` related_name `layer_links` | |
+| `layer` | FK `Layer` related_name `style_assignments` | |
+| `style` | FK `Style` related_name `layer_assignments` | |
 | `role` | CharField choices | `default`, `alternate` |
 | `is_active` | BooleanField | |
 | `created_at` | DateTimeField auto_now_add | |
 | `updated_at` | DateTimeField auto_now | |
 | `created_by` | FK User | |
 
-Constraint:
+Kurallar:
 
-- Bir layer için en fazla bir aktif default style olmalı.
-- Style ile layer aynı `geodata_engine` üzerinde olmalı.
-- Workspace-scoped style ise style workspace'i layer workspace'i ile aynı olmalı.
-- Global style her workspace layer'ına atanabilir.
+- Bir layer için en fazla bir aktif default style olmalıdır.
+- Aynı layer/style/role tekrarlanmamalıdır.
+- Style valid olmalıdır.
+- Style content catalog tarafından okunabilir olmalıdır.
+- Style ile layer aynı provider üzerinde olmak zorunda değildir.
+- Style workspace'i ile layer workspace'i aynı olmak zorunda değildir.
+- Eğer ileride tenant/project güvenlik sınırı eklenirse assignment o sınırla
+  kısıtlanmalıdır; provider/workspace eşitliğiyle değil.
 
 Neden `Layer.default_style` FK değil?
 
-- GeoServer hem default style hem alternate styles destekler.
-- İleride style listesi frontend'e açılabilir.
-- Admin action ile layer'a birden fazla style atanabilir.
+- Layer bir default ve birden fazla alternate style taşıyabilir.
+- UI ileride style listesi gösterebilir.
+- Assignment metadata'sı gerekir.
 
-### 3. Migration
+### 3. Migration Revizyonu
 
-Beklenen migration:
+Beklenen migration işi:
 
-- `Style` tablosu
-- `LayerStyle` tablosu
-- constraint/index tanımları
+- Mevcut `0002_style_layerstyle.py` yeni karara göre revize edilmeli.
+- Cross-provider assignment'ı engelleyen model validation kaldırılmalı.
+- `LayerStyle` ayrı admin kaynak gibi kalacaksa admin registration kaldırılmalı.
+- Remote state choices `UNSUPPORTED`/`SYNCED` kararına göre güncellenmeli.
 
-İsim önerisi:
-
-- `0002_style_layerstyle.py`
-
-Migration sonrası kontrol:
+Kontrol:
 
 ```bash
-docker exec -it tosca-django bash -lc "uv run python manage.py makemigrations geodata_providers"
-docker exec -it tosca-django bash -lc "uv run python manage.py migrate"
+docker exec tosca-django uv run python manage.py makemigrations geodata_providers --check --dry-run
+docker exec tosca-django uv run python manage.py migrate geodata_providers
 ```
 
 ## Faz 2: Style Validasyon Katmanı
 
-### 1. Dosya Yapısı
-
 Yeni dosyalar:
 
 - `tosca_api/apps/geodata_providers/services/commands/style_validation_service.py`
-- `tosca_api/apps/geodata_providers/services/commands/style_service.py`
 - `tosca_api/apps/geodata_providers/tests/test_style_validation_service.py`
-- `tosca_api/apps/geodata_providers/tests/test_style_service.py`
-
-### 2. StyleValidationService
 
 Sorumluluk:
 
 - SLD ve MBStyle içeriğini local olarak validate etmek.
 - Validasyon sonucu normalize dict döndürmek.
-- GeoServer upload yapmamak.
+- Provider upload yapmamak.
 - GeoServer'da native validate endpoint varmış gibi davranmamak.
 
 Public API:
@@ -242,12 +261,6 @@ SLD minimum validasyon:
 - En az bir `NamedLayer` veya `UserLayer` bulunmalı.
 - XML namespace farklı olsa bile local-name kontrolü çalışmalı.
 
-SLD ikinci seviye validasyon:
-
-- `NamedLayer/Name` varsa style metadata'ya alınabilir.
-- `UserStyle/Name` varsa style metadata'ya alınabilir.
-- GeoServer'ın kabul etmeyeceği bariz XML syntax hataları yakalanmalı.
-
 MBStyle minimum validasyon:
 
 - JSON parse edilebilmeli.
@@ -256,11 +269,8 @@ MBStyle minimum validasyon:
 - `version == 8` olmalı.
 - `layers` alanı list olmalı.
 - `sources` alanı dict olmalı.
-
-MBStyle ikinci seviye validasyon:
-
 - Her layer içinde `id` ve `type` kontrol edilmeli.
-- `type` değerleri Mapbox style spec tiplerinden biri olmalı:
+- Desteklenen type değerleri:
   - `fill`
   - `line`
   - `symbol`
@@ -270,17 +280,6 @@ MBStyle ikinci seviye validasyon:
   - `raster`
   - `hillshade`
   - `background`
-- `paint` ve `layout` object değilse warning/error üretilmeli.
-
-Not:
-
-- İlk fazda tam JSON schema validasyonu şart değildir.
-- Ancak servis sınırı buna uygun tasarlanmalı; ileride `jsonschema` dependency
-  eklenebilir.
-- GeoServer'ın kendi REST API'sinde style validate endpoint'i olmadığı için bu
-  servis provider tarafındaki ana validasyon kapısıdır.
-
-### 3. Testler
 
 Zorunlu testler:
 
@@ -294,9 +293,31 @@ Zorunlu testler:
 - `layers` list değilse fail olur
 - desteklenmeyen MBStyle layer type fail/warning üretir
 
-## Faz 3: GeoServer Client Style Methods
+## Faz 3: Provider Style Sync Capability
 
-### 1. Dosya
+Amaç:
+
+- Style sync davranışı provider capability'ye bağlı olmalıdır.
+- GeoServer style sync destekler.
+- Martin style sync desteklemiyorsa remote operation denenmemelidir.
+
+Önerilen servis sınırı:
+
+```python
+class StyleProviderCapability:
+    @classmethod
+    def supports_remote_styles(cls, *, engine: GeodataEngine) -> bool:
+        ...
+```
+
+Davranış:
+
+- `engine_type == "geoserver"` ise remote style sync desteklenir.
+- `engine_type == "martin"` ise şimdilik remote style sync desteklenmez.
+- Desteklenmeyen provider için upload/sync çağrısı style'ı `UNSUPPORTED`
+  yapmalı veya açık hata döndürmelidir; `FAILED` sayılmamalıdır.
+
+## Faz 4: GeoServer Client Style Methods
 
 Mevcut client:
 
@@ -306,7 +327,7 @@ Eklenecek methodlar:
 
 ```python
 class GeoServerClient:
-    def upload_style(self, *, name: str, content: str, style_format: str, workspace: str | None = None) -> dict:
+    def upload_style(self, *, name: str, content: str, style_format: str, workspace: str | None = None, overwrite: bool = False) -> dict:
         ...
 
     def delete_style(self, *, name: str, workspace: str | None = None) -> dict:
@@ -317,126 +338,40 @@ class GeoServerClient:
 
     def list_styles(self, *, workspace: str | None = None) -> list[dict]:
         ...
-
-    def assign_style_to_layer(self, *, workspace: str, layer_name: str, style_name: str) -> dict:
-        ...
 ```
 
-### 2. Upload Davranışı
+Not:
 
-GeoServer style upload iki adımlı yapılmalıdır:
+- GeoServer layer'a style assign endpoint'i client'ta bulunabilir, ancak bu
+  Martin layer + GeoServer style gibi cross-provider catalog senaryolarını
+  çözmez.
+- Bu yüzden provider remote assign ve Django assignment birbirinden ayrılmalıdır.
+
+GeoServer upload iki adımlı yapılmalıdır:
 
 1. Style metadata oluştur.
 2. Style content upload et.
-
-Global style metadata endpoint:
-
-- `POST /rest/styles`
-
-Workspace style metadata endpoint:
-
-- `POST /rest/workspaces/{workspace}/styles`
-
-Metadata body:
-
-```xml
-<style>
-  <name>{style_name}</name>
-  <filename>{style_name}.sld</filename>
-</style>
-```
-
-MBStyle için filename:
-
-```xml
-<style>
-  <name>{style_name}</name>
-  <filename>{style_name}.json</filename>
-</style>
-```
-
-Content upload endpoint:
-
-- global: `PUT /rest/styles/{style_name}`
-- workspace: `PUT /rest/workspaces/{workspace}/styles/{style_name}`
 
 Content-Type:
 
 - SLD: `application/vnd.ogc.sld+xml`
 - MBStyle: `application/vnd.geoserver.mbstyle+json`
 
-Not:
-
-- Eğer style zaten varsa metadata create `409` dönebilir. Bu durumda content
-  update denenebilir.
-- İlk implementasyonda açık `overwrite=True` parametresi olmadan mevcut style
-  üstüne yazılmamalı.
-- `StyleService` tarafında overwrite kararı açık verilmeli.
-
-### 3. Verify Davranışı
-
-GeoServer REST Styles API'de ayrı bir `validate` endpoint yoktur.
-
-Bu bölümdeki verify davranışı validasyon değildir. Amaç, local validasyondan
-geçen ve GeoServer'a upload edilen style'ın gerçekten GeoServer tarafından
-kaydedildiğini ve okunabildiğini doğrulamaktır.
-
-Upload sonrası verify:
+Verify:
 
 - `GET /rest/styles/{style_name}.json`
 - workspace için `GET /rest/workspaces/{workspace}/styles/{style_name}.json`
+- Minimum koşul: GeoServer `200` döner ve style name eşleşir.
 
-MBStyle content gerekiyorsa ayrıca:
+## Faz 5: StyleService Command Katmanı
 
-- `GET /rest/styles/{style_name}.mbstyle`
-- workspace için `GET /rest/workspaces/{workspace}/styles/{style_name}.mbstyle`
+Amaç:
 
-Verify başarılı sayılacak minimum koşul:
+- Admin ve ileride console/API aynı iş mantığını kullanmalıdır.
+- Style write flow'u admin içine gömülmemelidir.
+- Remote sync ve layer assignment birbirinden ayrılmalıdır.
 
-- GeoServer `200` döner.
-- Response içinde style name eşleşir.
-
-Verify başarısızlığı şu anlama gelir:
-
-- Local content syntactically valid olabilir.
-- Ancak GeoServer style'ı kabul etmemiş, kaydetmemiş veya beklenen endpoint'ten
-  okuyamamış olabilir.
-- Bu durumda `remote_state=FAILED` olmalı, `validation_state=VALID` kalabilir.
-
-### 4. Assign Davranışı
-
-Layer default style set endpoint:
-
-- `PUT /rest/layers/{workspace}:{layer_name}`
-
-Payload:
-
-```json
-{
-  "layer": {
-    "defaultStyle": {
-      "name": "{style_name}"
-    }
-  }
-}
-```
-
-Workspace-scoped style için gerekirse style name:
-
-- `{workspace}:{style_name}`
-
-Bu nokta implementasyon sırasında gerçek GeoServer davranışıyla smoke test
-edilmelidir.
-
-## Faz 4: StyleService Command Katmanı
-
-### 1. Amaç
-
-Admin ve ileride console/API aynı iş mantığını kullanmalıdır.
-
-Style write flow'u admin içine gömülmemeli; servis içinde yaşamalıdır.
-
-### 2. Public API
+Public API:
 
 ```python
 class StyleService:
@@ -449,207 +384,98 @@ class StyleService:
         ...
 
     @classmethod
-    def upload_style(cls, *, style: Style, overwrite: bool = False) -> dict:
+    def sync_style(cls, *, style: Style, overwrite: bool = False) -> dict:
         ...
 
     @classmethod
-    def delete_style(cls, *, style: Style) -> dict:
+    def delete_style(cls, *, style: Style, delete_remote: bool = True) -> dict:
         ...
 
     @classmethod
-    def assign_to_layer(cls, *, style: Style, layer: Layer, user) -> LayerStyle:
+    def assign_style_to_layer(cls, *, style: Style, layer: Layer, user, role: str = "default") -> LayerStyleAssignment:
         ...
 ```
 
-### 3. Create Flow
-
-Sıra:
+Create flow:
 
 1. Dosya içeriğini oku.
 2. Formatı extension veya form field üzerinden belirle.
 3. `StyleValidationService.validate(...)` çalıştır.
 4. Invalid ise Django kaydı oluşturma.
-5. Valid ise `Style` kaydını `LOCAL_ONLY + VALID` olarak oluştur.
-6. `upload_style(...)` çağrıldıysa GeoServer'a upload et.
-7. Verify başarılı ise `remote_state=UPLOADED` yap.
-8. Verify başarısız ise `remote_state=FAILED`, `remote_error` set et.
+5. Valid ise `Style` kaydını oluştur.
+6. Provider remote style destekliyorsa ve sync seçildiyse `sync_style(...)`
+   çağır.
+7. Provider remote style desteklemiyorsa `remote_state=UNSUPPORTED` veya
+   `LOCAL_ONLY` bırak.
 
-### 4. Delete Flow
-
-Sıra:
-
-1. Style layer'a atanmış mı kontrol et.
-2. Eğer atanmışsa default davranış delete engellemek olmalı.
-3. Force delete ayrı admin action olabilir.
-4. GeoServer delete çağrısı yap.
-5. GeoServer delete başarılıysa Django kaydını sil.
-6. GeoServer delete başarısızsa Django kaydı silinmemeli.
-
-### 5. Assign Flow
-
-Sıra:
+Assign flow:
 
 1. Style valid mi kontrol et.
-2. Style uploaded mı kontrol et.
-3. Style ile layer aynı provider mı kontrol et.
-4. Workspace uyumu kontrol et.
-5. GeoServer default style set çağrısı yap.
-6. Başarılıysa `LayerStyle` kaydı oluştur/güncelle.
-7. Aynı layer için eski default style varsa `role=alternate` veya
-   `is_active=False` yapılmalı. İlk implementasyonda eski default `is_active=False`
-   yapılması daha basit.
+2. Style content catalog için okunabilir mi kontrol et.
+3. Layer/provider eşitliği şartı arama.
+4. Workspace eşitliği şartı arama.
+5. Aynı layer için aktif default varsa pasifleştir veya explicit overwrite iste.
+6. Assignment kaydını oluştur/güncelle.
+7. Eğer layer provider'ı remote assignment destekliyorsa opsiyonel olarak remote
+   assign denenebilir; bu catalog assignment'ın ön koşulu değildir.
 
-## Faz 5: Admin Panel
+Delete flow:
 
-### 1. Admin Konumlandırma
+1. Style aktif layer assignment'larında kullanılıyor mu kontrol et.
+2. Kullanılıyorsa default davranış delete engellemek olmalı.
+3. Force delete ayrı admin action olabilir.
+4. Remote provider destekliyorsa delete remote denenir.
+5. Remote delete başarısızsa Django kaydı silinmemeli.
+6. Provider remote style desteklemiyorsa sadece Django dependency kuralları
+   uygulanır.
 
-`Style` modeli admin panelde `geodata_providers` app'i altında, `Layer` modelinin
-hemen altında görünmelidir.
+## Faz 6: Admin Panel
 
-Mevcut admin ordering:
-
-- `GeodataEngine`
-- `Workspace`
-- `Store`
-- `Layer`
-
-Güncellenmiş ordering:
+Admin kaynakları:
 
 - `GeodataEngine`
 - `Workspace`
 - `Store`
 - `Layer`
 - `Style`
-- `LayerStyle` gerekiyorsa gizli ya da alt model olarak
 
-`_GEODATA_PROVIDER_ADMIN_ORDER` içine:
+`LayerStyleAssignment` ayrı ana menü kaynağı olmamalıdır.
+
+StyleAdmin:
+
+- Style listesi gösterir.
+- Style create/upload/edit/delete akışını yönetir.
+- Validation state ve remote state badge gösterir.
+- Sync action sadece provider destekliyorsa çalışır.
+- Provider desteklemiyorsa kullanıcıya açık "remote style sync unsupported"
+  mesajı gösterir.
+
+LayerAdmin:
+
+- Layer detail içinde `Styles` bölümü olmalıdır.
+- Sistem kaydındaki style'lar buradan layer'a eklenebilmelidir.
+- Dropdown tüm uygun style'ları gösterebilir:
+  - valid style
+  - active/deleted olmayan style
+  - format catalog için anlamlı style
+- Aynı provider/workspace zorunlu filtre olmamalıdır.
+- UI style'ın owner provider'ını göstermelidir:
+  - örnek: `GeoServer Main / mobility / roads-default`
+  - örnek: `Local Martin Provider / global / simple-line`
+
+Admin ordering:
 
 ```python
-"Style": 4,
-"LayerStyle": 5,
+_GEODATA_PROVIDER_ADMIN_ORDER = {
+    "GeodataEngine": 0,
+    "Workspace": 1,
+    "Store": 2,
+    "Layer": 3,
+    "Style": 4,
+}
 ```
 
-`_GEODATA_PROVIDER_ADMIN_LABELS` içine:
-
-```python
-"Style": "Style",
-"LayerStyle": "Layer Style",
-```
-
-Kullanıcı beklentisi:
-
-- Admin panelde Layers bölümünün hemen altında `Style` görülecek.
-- Style yönetimi provider domain içinde kalacak.
-
-### 2. StyleAdmin
-
-Yeni admin:
-
-- `StyleAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin)`
-
-List display:
-
-- `name`
-- `format`
-- `workspace`
-- `geodata_engine`
-- `validation_badge`
-- `remote_state_badge`
-- `remote_uploaded_at`
-- `updated_at`
-
-List filters:
-
-- `format`
-- `validation_state`
-- `remote_state`
-- `geodata_engine`
-- `workspace`
-
-Search:
-
-- `name`
-- `title`
-- `description`
-- `workspace__name`
-- `geodata_engine__name`
-
-Readonly fields:
-
-- `content_hash`
-- `validation_state`
-- `validation_errors`
-- `remote_state`
-- `remote_error`
-- `remote_uploaded_at`
-- `remote_verified_at`
-- `created_at`
-- `updated_at`
-
-### 3. StyleUploadForm
-
-Form alanları:
-
-- `geodata_engine`
-- `workspace`
-- `name`
-- `title`
-- `description`
-- `format`
-- `file`
-- `upload_to_geoserver` checkbox default true
-- `overwrite_remote` checkbox default false
-
-Davranış:
-
-- Dosya extension `.sld` ise format default `sld`.
-- Dosya extension `.json` veya `.mbstyle` ise format default `mbstyle`.
-- `name` boşsa dosya adından slug/GeoServer-safe name üretilir.
-- Workspace seçildiyse geodata_engine otomatik workspace engine'i ile uyumlu
-  olmalıdır.
-
-Name sanitization:
-
-- lowercase önerilir ama zorunlu değildir.
-- boşluk yerine `_` veya `-`.
-- GeoServer için güvenli regex:
-  - `^[A-Za-z0-9_\\-\\.]+$`
-
-### 4. Admin Actions
-
-StyleAdmin actions:
-
-- `validate_selected_styles`
-- `upload_selected_styles`
-- `verify_selected_styles`
-- `delete_remote_styles`
-
-LayerAdmin action:
-
-- `assign_style_to_selected_layers`
-
-Layer detail admin içinde:
-
-- default style bilgisi readonly gösterilebilir.
-- style assignment inline olarak ikinci fazda eklenebilir.
-
-### 5. Intermediate Assign Form
-
-LayerAdmin action tek tıkla çalışmamalı; intermediate form göstermeli.
-
-Form:
-
-- target style dropdown
-- overwrite default style checkbox
-
-Dropdown sadece şu style'ları göstermeli:
-
-- aynı provider
-- global veya layer workspace'i ile aynı workspace
-- `validation_state=VALID`
-- `remote_state=UPLOADED`
-
-## Faz 6: Query Services
+## Faz 7: Query Services
 
 Mevcut placeholder:
 
@@ -660,7 +486,7 @@ Gerçek hale getirilecek methodlar:
 ```python
 class StyleQueryService:
     @classmethod
-    def list_styles(cls, *, provider_id=None, workspace_id=None, uploaded_only=False) -> list[dict]:
+    def list_styles(cls, *, provider_id=None, workspace_id=None, valid_only=False) -> list[dict]:
         ...
 
     @classmethod
@@ -668,11 +494,15 @@ class StyleQueryService:
         ...
 
     @classmethod
-    def get_style_by_name(cls, *, geodata_engine_id, workspace_name=None, style_name: str) -> dict:
+    def get_style_content(cls, *, style_id) -> str | dict:
         ...
 
     @classmethod
     def get_layer_default_style(cls, *, layer_id) -> dict | None:
+        ...
+
+    @classmethod
+    def list_styles_for_layer_assignment(cls, *, layer_id) -> list[dict]:
         ...
 ```
 
@@ -690,33 +520,21 @@ Normalized style dict:
   },
   "provider": {
     "id": "uuid",
-    "name": "Catalog Engine",
+    "name": "Catalog GeoServer",
     "engine_type": "geoserver"
   },
   "validation_state": "VALID",
-  "remote_state": "UPLOADED",
+  "remote_state": "SYNCED",
   "content_hash": "sha256",
   "updated_at": "2026-04-23T10:00:00Z"
 }
 ```
 
-Content ayrı methodla dönmeli:
-
-```python
-StyleQueryService.get_style_content(style_id=...)
-```
-
-Neden?
-
-- Liste endpointleri büyük raw style content taşımamalı.
-
-## Faz 7: Catalog API Entegrasyonu
+## Faz 8: Catalog API Entegrasyonu
 
 Provider fazı bitmeden catalog style endpoint'i tamamlanmış sayılmamalıdır.
 
-### 1. Layer Info
-
-`catalog_api` v1 layer info response içindeki:
+Layer info response içindeki:
 
 ```json
 "defaultStyle": {
@@ -727,279 +545,250 @@ Provider fazı bitmeden catalog style endpoint'i tamamlanmış sayılmamalıdır
 
 şu kaynaktan gelmelidir:
 
-1. Layer'a atanmış active default `LayerStyle`
-2. Yoksa provider/workspace default style fallback
+1. Layer'a atanmış aktif default style assignment
+2. Yoksa layer/provider default fallback
 3. Yoksa `"default"` fallback
 
-İlk implementasyon için fallback kabul edilebilir, ama atanmış style varsa mutlaka
-DB'den gelmelidir.
+Önemli:
 
-### 2. Style Detail Endpoint
+- Layer provider'ı Martin olsa bile default style GeoServer owner'lı olabilir.
+- Catalog response style'ın owner provider bilgisini taşımalıdır.
+- Catalog response remote provider'a gitmeden Django'daki style content'i
+  kullanabilmelidir.
 
-Mevcut endpoint:
+Önerilen catalog style endpoint:
 
-- `GET /api/catalog/v1/styles/{style_name}`
+- `GET /api/catalog/v1/styles/{style_id}`
 
-Provider sonrası hedef:
+Neden `style_id`?
 
-- önce DB'den style bul
-- format `mbstyle` ise raw MBStyle JSON dön
-- format `sld` ise frontend MBStyle beklediği için iki seçenekten biri:
-  - `406 Not Acceptable`
-  - veya SLD'yi raw XML olarak sadece uygun `Accept` header ile dön
+- Style name tek başına global sistemde belirsizdir.
+- Cross-provider assignment olduğunda `workspace_name/style_name` da yeterli
+  olmayabilir.
+- Layer info response zaten `href` üreteceği için frontend id bilmek zorunda
+  değildir.
 
-İlk catalog v1 kararı:
+Backward compatibility:
 
-- Frontend `getLayerStyling(...)` MBStyle JSON beklediği için v1 style endpoint
-  sadece `mbstyle` style'ları frontend-consumable kabul etsin.
-- SLD style varsa endpoint `404` veya `406` dönmeli. Daha doğru olan `406`.
+- `GET /api/catalog/v1/styles/{style_name}` geçici olarak kalabilir.
+- Ancak yeni `defaultStyle.href` style id bazlı endpoint üretmelidir.
 
-### 3. Style URL Ambiguity
+Style detail davranışı:
 
-Style name tek başına global sistemde belirsiz olabilir.
+- `format=mbstyle` ise raw MBStyle JSON döner.
+- `format=sld` ise frontend MBStyle beklediği endpointte `406 Not Acceptable`
+  dönmelidir.
+- İleride SLD için ayrı raw endpoint eklenebilir.
 
-Mevcut frontend `defaultStyle.href` backend'den geldiği için daha doğru href
-şu olabilir:
+Catalog testleri:
 
-- `/api/catalog/v1/workspaces/{workspace_name}/styles/{style_name}`
+- Martin layer + GeoServer style assignment layer info içinde döner.
+- Layer info style href'i id bazlı endpoint üretir.
+- MBStyle detail raw JSON döner.
+- SLD style frontend endpointinde `406` döner.
+- Missing style `404`.
+- Deleted/invalid style leak etmez.
 
-Ancak mevcut v1 endpoint:
+## Faz 9: API / Console Durumu
 
-- `/api/catalog/v1/styles/{style_name}`
-
-İlk implementasyonda `style_name` lookup şu sırayla yapılmalı:
-
-1. workspace-scoped style, layer context biliniyorsa
-2. default provider style
-3. global style
-
-Ama style detail endpoint tek başına layer context almadığı için daha sağlam
-tasarım:
-
-- Layer info response içindeki `defaultStyle.href` workspace-scoped endpoint
-  üretmeli.
-
-Önerilen yeni catalog v1 endpoint:
-
-- `GET /api/catalog/v1/workspaces/{workspace_name}/styles/{style_name}`
-
-Eski endpoint kalabilir:
-
-- `GET /api/catalog/v1/styles/{style_name}`
-
-Ama sadece global/default style için kullanılmalıdır.
-
-### 4. Catalog Tests
-
-Zorunlu testler:
-
-- layer info atanmış default style adını döner
-- layer info style href'i workspace-scoped endpoint üretir
-- MBStyle detail raw JSON döner
-- SLD style frontend endpointinde `406` döner
-- missing style `404`
-- private/draft layer style bilgisi leak etmez
-- inactive provider style bilgisi leak etmez
-
-## Faz 8: API / Console Durumu
-
-Bu fazda dışarı public `geodata_providers` API açılmayacak.
+Bu fazda dışarı public `geodata_providers` write API açılmayacak.
 
 Kurallar:
 
 - Style write işlemleri admin panel ve provider command service ile yapılacak.
-- Swagger UI sadece catalog endpointlerini göstermeye devam edecek.
+- Swagger UI sadece catalog read endpointlerini göstermeye devam edecek.
 - `/api/geoengine/` internal kalacak.
 - Catalog endpointleri sadece read surface olacak.
 
-## Faz 9: Test Planı
+## Faz 10: Test Planı
 
-### Unit Tests
+Unit tests:
 
+- `test_style_models.py`
 - `test_style_validation_service.py`
 - `test_style_service.py`
 - `test_style_query_service.py`
-- `test_style_model.py`
 
-### Admin Tests
+Admin tests:
 
 - `StyleUploadForm` valid SLD
 - `StyleUploadForm` invalid SLD
 - `StyleUploadForm` valid MBStyle
 - `StyleUploadForm` invalid MBStyle
 - `StyleAdmin.save_model` service çağırır
-- `StyleAdmin.delete_model` GeoServer-first davranır
-- `LayerAdmin.assign_style_to_selected_layers` intermediate form kullanır
+- `StyleAdmin.delete_model` dependency ve remote kurallarına uyar
+- `LayerAdmin` style assignment selector kullanır
+- Cross-provider style assignment admin formda kabul edilir
 
-### GeoServer Client Tests
-
-Mock `_request` ile:
+GeoServer client tests:
 
 - SLD upload doğru endpoint/content-type
 - MBStyle upload doğru endpoint/content-type
 - workspace style endpoint doğru kurulur
 - global style endpoint doğru kurulur
 - delete style doğru endpoint
-- assign style doğru payload
 
-### Catalog Tests
+Catalog tests:
 
 - `test_v1_api.py` içinde style domain bağlı testler
 - ayrı `test_v1_style_api.py` açmak daha temiz olur
+- Martin layer + GeoServer style scenario test edilmeli
 
-## Faz 10: Uygulama Sırası
+## Baştan Development Sırası
 
-### Step 1
+### Step 1: Mevcut Faz 1 Implementasyonunu Revize Et
 
-Model ekle:
+- Yeşil tikleri tamamlandı sayma.
+- `LayerStyle` ayrı admin kaynak olmaktan çıkar.
+- Cross-provider assignment'ı engelleyen validation kaldırılır.
+- Workspace/provider eşitliği sadece `Style` owner scope'u için kalır.
+- Remote state choices provider capability'ye göre güncellenir.
+- Testler cross-provider assignment senaryosunu kapsar.
 
-- `Style`
-- `LayerStyle`
-
-Test:
-
-- model constraint
-- workspace/provider uyumu
-
-### Step 2
-
-Validation service ekle:
+### Step 2: Style Validation Service
 
 - SLD validation
 - MBStyle validation
+- Valid/invalid fixture testleri
 
-Test:
+### Step 3: Provider Capability Katmanı
 
-- valid/invalid dosyalar
+- Provider style sync destekliyor mu?
+- GeoServer true
+- Martin false
+- Unsupported remote sync state testleri
 
-### Step 3
+### Step 4: GeoServer Style Client
 
-GeoServer client style methodlarını ekle.
+- Upload
+- Delete
+- Get/list
+- Verify
 
-Test:
+### Step 5: StyleService
 
-- mock request endpoint ve payload assertion
+- Create
+- Validate
+- Sync
+- Delete
+- Assign to layer
+- Cross-provider assignment
 
-### Step 4
+### Step 6: Admin
 
-StyleService command katmanını ekle.
+- Style ana kaynak
+- Layer detail style assignment bölümü
+- `LayerStyleAssignment` ayrı admin menüden kaldırılır
+- Provider desteklemeyen sync action mesajları
 
-Test:
+### Step 7: Query Services
 
-- create
-- validate
-- upload
-- delete
-- assign
+- Style list/detail/content
+- Layer default style
+- Layer assignment candidates
 
-### Step 5
+### Step 8: Catalog API
 
-Admin paneli ekle.
+- Layer info default style DB assignment üstünden gelir.
+- Martin layer + GeoServer style response desteklenir.
+- Style detail id bazlı endpoint kullanılır.
+- MBStyle JSON döner, SLD frontend endpointinde `406` döner.
 
-Test:
+### Step 9: Swagger ve Doküman
 
-- form
-- admin save/delete/action
-
-### Step 6
-
-StyleQueryService placeholder'ını gerçek implementation yap.
-
-Test:
-
-- list/detail/content/default style
-
-### Step 7
-
-Catalog API v1 style endpointini provider style domain'e bağla.
-
-Test:
-
-- layer info default style
-- style detail MBStyle
-- SLD için `406`
-
-### Step 8
-
-Swagger ve development dokümanlarını güncelle.
-
-Kontrol:
-
-- Swagger sadece catalog read endpointlerini göstermeli.
-- `geoengine` style write endpointleri public Swagger'a girmemeli.
+- Sadece catalog read endpointleri public dokümante edilir.
+- Internal provider write yüzeyi public Swagger'a girmez.
 
 ## Kabul Kriterleri
 
 Provider tarafı tamam sayılmak için:
 
-- Admin panelde `Layer` altında `Style` modeli görünür.
+- Admin panelde `Style` ana kaynak olarak görünür.
+- Admin panelde ayrı bir `Layer Style` ana kaynağı görünmez.
+- Layer detail içinde style selector/assignment bölümü vardır.
 - Admin'den `.sld`, `.json`, `.mbstyle` upload edilebilir.
 - Invalid SLD/MBStyle kaydedilmeden reddedilir.
-- Validasyon bizim `StyleValidationService` katmanımızda yapılır; GeoServer'da
-  native validate endpoint aranmaz.
 - Valid style Django DB'ye kaydedilir.
-- Upload seçiliyse style GeoServer'a aynı `name` ile yüklenir.
-- Upload sonrası GeoServer'dan verify edilir.
-- Style layer'a default style olarak atanabilir.
-- Delete GeoServer-first çalışır.
+- GeoServer provider için style sync ve verify çalışır.
+- Martin provider için remote sync unsupported olarak açık yönetilir.
+- Martin layer'a GeoServer owner'lı style atanabilir.
 - Unit/admin/client/service testleri geçer.
 
 Catalog tarafı tamam sayılmak için:
 
-- `LayerInfo` default style bilgisini DB'deki `LayerStyle` ilişkisinden üretir.
-- `defaultStyle.href` doğru catalog v1 style endpointine gider.
+- `LayerInfo` default style bilgisini DB assignment ilişkisinden üretir.
+- Martin layer + GeoServer style bilgisi catalog response içinde döner.
+- `defaultStyle.href` style id bazlı doğru endpoint'e gider.
 - MBStyle style detail frontend'in beklediği JSON'u döner.
 - SLD style frontend MBStyle endpointinde yanlışlıkla JSON gibi dönmez.
-- Missing/private/inactive provider style leak etmez.
+- Missing/invalid/deleted style leak etmez.
 
 ## Açık Kararlar
 
-1. SLD style'lar catalog v1 frontend endpointinde `404` mı `406` mı dönmeli?
+1. Teknik model adı `LayerStyle` olarak mı kalacak, yoksa
+   `LayerStyleAssignment` migration ile rename mi edilecek?
 
 Öneri:
 
-- `406 Not Acceptable`
+- Henüz branch/commit erken aşamadaysa `LayerStyleAssignment` daha açık isimdir.
 
-2. Style name global unique mi, provider/workspace scoped unique mi?
-
-Öneri:
-
-- provider + workspace + name unique
-
-3. Workspace null global style gerekli mi?
+2. Remote state `UPLOADED` mı `SYNCED` mı olmalı?
 
 Öneri:
 
-- Evet, GeoServer global style davranışı için gerekli.
+- Provider bağımsız dil için `SYNCED` daha doğru.
 
-4. Style content DB'de mi file storage'da mı tutulmalı?
+3. Sync desteklemeyen provider için state ne olmalı?
+
+Öneri:
+
+- `UNSUPPORTED`.
+
+4. Catalog style endpoint name mi id mi kullanmalı?
+
+Öneri:
+
+- Yeni href id bazlı olmalı: `/api/catalog/v1/styles/{style_id}`.
+
+5. SLD style'lar catalog v1 frontend endpointinde `404` mı `406` mı dönmeli?
+
+Öneri:
+
+- `406 Not Acceptable`.
+
+6. Style content DB'de mi file storage'da mı tutulmalı?
 
 Öneri:
 
 - İlk fazda DB TextField. Büyük style dosyaları problem olursa sonra storage.
 
-5. Layer'a birden fazla style atanacak mı?
-
-Öneri:
-
-- Evet, `LayerStyle` ile desteklenmeli. İlk UI default style assignment ile
-  başlayabilir.
-
-6. GeoServer style validate endpoint'i kullanılacak mı?
-
-Karar:
-
-- Hayır. GeoServer REST Styles API'de ayrı bir validate endpoint yoktur.
-- Validation local yapılacak.
-- GeoServer tarafı sadece upload sonrası `GET/list` ile verify edilecek.
-
 ## Önerilen Commit Sırası
 
-1. `feat(geodata): add style domain models`
+1. `refactor(geodata): revise style assignment domain`
 2. `feat(geodata): add style validation service`
-3. `feat(geodata): add geoserver style client methods`
-4. `feat(geodata): add style admin workflows`
-5. `feat(geodata): implement style query service`
-6. `feat(catalog): serve v1 style details from provider styles`
+3. `feat(geodata): add provider style capabilities`
+4. `feat(geodata): add geoserver style client methods`
+5. `feat(geodata): add style command service`
+6. `feat(geodata): add style admin workflows`
+7. `feat(geodata): implement style query service`
+8. `feat(catalog): serve v1 style details from provider styles`
 
-Bu sırayla gidilirse her commit test edilebilir ve revert edilmesi kolay olur.
+## Uygulama Notu: 2026-04-23 Faz 1 Revizyon Gerekli
+
+Önceki implementasyon şu dosyalara dokundu:
+
+- `tosca_api/apps/geodata_providers/models.py`
+- `tosca_api/apps/geodata_providers/admin.py`
+- `tosca_api/apps/geodata_providers/migrations/0002_style_layerstyle.py`
+- `tosca_api/apps/geodata_providers/tests/test_style_models.py`
+
+Bu implementasyon yeni hikayeye göre tamamlandı sayılmıyor.
+
+Revize edilecekler:
+
+- `LayerStyle` ayrı admin kaynak olarak görünmemeli.
+- Assignment provider/workspace eşitliği zorunlu tutmamalı.
+- Martin layer + GeoServer style test senaryosu eklenmeli.
+- Remote state provider capability'ye göre güncellenmeli.
+- Development sırası bu dokümandaki "Baştan Development Sırası"na göre devam
+  etmeli.

@@ -46,6 +46,13 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
     serializer_class = GeodataEngineSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_queryset(self):
+        qs = GeodataEngine.objects.all()
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None:
+            qs = qs.filter(is_active=str(is_active).strip().lower() == 'true')
+        return qs
+
     def perform_create(self, serializer):
         engine, sync_result = GeodataEngineService.create_engine(
             user=self.request.user,

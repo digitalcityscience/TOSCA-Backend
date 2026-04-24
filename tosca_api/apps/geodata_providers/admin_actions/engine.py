@@ -1,6 +1,6 @@
 """
 Admin actions for GeodataEngine.
-    sync_engines      — pull GeoServer → Django for selected engines
+    sync_engines      — pull provider state into the local catalog for selected engines
     test_connection   — validate connection, report latency + version
     set_as_default    — mark one engine as the default, unset others
     deactivate_engines / reactivate_engines — toggle engine activity state
@@ -16,9 +16,9 @@ from ..services.commands.geodata_engine_service import GeodataEngineService
 from ..sync_service import GeoServerSyncService
 
 
-@admin.action(description="Sync selected engines from GeoServer → Django")
+@admin.action(description="Sync selected providers into the local catalog")
 def sync_engines(modeladmin, request, queryset):
-    """Pull GeoServer state into Django for every selected engine."""
+    """Pull provider state into the local catalog for every selected engine."""
     for engine in queryset:
         try:
             service = GeoServerSyncService(engine)
@@ -48,7 +48,8 @@ def sync_engines(modeladmin, request, queryset):
                     f"[{engine.name}] Sync complete — "
                     f"workspaces: {ws.get('created', 0)} created / {ws.get('deleted', 0)} deleted, "
                     f"stores: {st.get('created', 0)} created / {st.get('deleted', 0)} deleted, "
-                    f"layers: {ly.get('created', 0)} created / {ly.get('deleted', 0)} deleted."
+                    f"layers: {ly.get('created', 0)} created / {ly.get('deleted', 0)} deleted. "
+                    "Provider state synced into the local catalog."
                 ),
                 messages.SUCCESS,
             )
@@ -72,7 +73,7 @@ def test_connection(modeladmin, request, queryset):
             version = result.get('version') or 'unknown'
             modeladmin.message_user(
                 request,
-                f"[{engine.name}] Connected — GeoServer {version}, latency {latency_ms} ms.",
+                f"[{engine.name}] Connected — provider version {version}, latency {latency_ms} ms.",
                 messages.SUCCESS,
             )
         except GeoServerConnectionError as e:

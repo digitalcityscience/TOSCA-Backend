@@ -24,6 +24,7 @@ class LayerQueryService:
                 "workspace__geodata_engine",
                 "store",
             )
+            .prefetch_related("style_assignments__style")
             .order_by("name")
         )
 
@@ -41,9 +42,56 @@ class LayerQueryService:
             "publishing_state": layer.publishing_state,
             "is_public": layer.is_public,
             "published_url": layer.published_url,
+            "layer_settings": cls._serialize_layer_settings(layer),
             "provider": cls._serialize_provider(layer),
             "workspace": cls._serialize_workspace(layer),
             "store": cls._serialize_store(layer),
+        }
+
+    @classmethod
+    def _serialize_layer_settings(cls, layer: Layer) -> dict:
+        active_assignments = [
+            assignment for assignment in layer.style_assignments.all()
+            if assignment.is_active
+        ]
+        default_assignment = next(
+            (
+                assignment for assignment in active_assignments
+                if assignment.role == "default"
+            ),
+            None,
+        )
+        additional_assignments = [
+            assignment for assignment in active_assignments
+            if assignment.role == "alternate"
+        ]
+        return {
+            "queryable": layer.queryable,
+            "opaque": layer.opaque,
+            "default_style": (
+                cls._serialize_style_assignment(default_assignment)
+                if default_assignment else None
+            ),
+            "additional_styles": [
+                cls._serialize_style_assignment(assignment)
+                for assignment in additional_assignments
+            ],
+            "selected_styles": [
+                cls._serialize_style_assignment(assignment)
+                for assignment in active_assignments
+            ],
+        }
+
+    @classmethod
+    def _serialize_style_assignment(cls, assignment) -> dict:
+        style = assignment.style
+        return {
+            "id": str(style.id),
+            "name": style.name,
+            "qualified_name": style.qualified_name,
+            "role": assignment.role,
+            "format": style.format,
+            "remote_state": style.remote_state,
         }
 
     @classmethod

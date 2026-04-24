@@ -5,7 +5,7 @@ Ensures Django DB stays in sync with GeoServer (Single Source of Truth = GeoServ
 import logging
 from typing import Dict, List
 from django.contrib.auth.models import User
-from .models import GeodataEngine, Workspace, Store, Layer
+from .models import GeodataEngine, Workspace, Store, Layer, Style, LayerStyleAssignment
 from .geoserver.client import GeoServerClient
 from .exceptions import GeoServerConnectionError
 
@@ -61,6 +61,7 @@ class GeoServerSyncService:
         results = {
             'workspaces': {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []},
             'stores': {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []},
+            'styles': {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []},
             'layers': {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []},
             'success': True
         }
@@ -74,7 +75,12 @@ class GeoServerSyncService:
             store_results = self.sync_all_stores(created_by)
             results['stores'] = store_results
             
-            # 3️⃣ Sync Layers (for each store)
+            # 3️⃣ Sync Styles before layer settings so default/additional style
+            # assignments can resolve against the provider catalog.
+            style_results = self.sync_all_styles(created_by)
+            results['styles'] = style_results
+
+            # 4️⃣ Sync Layers (for each store)
             layer_results = self.sync_all_layers(created_by)
             results['layers'] = layer_results
             
@@ -166,6 +172,104 @@ class GeoServerSyncService:
             results['errors'].extend(store_results['errors'])
         
         return results
+
+    def sync_all_styles(self, created_by: User) -> Dict:
+        """Sync global and workspace-scoped GeoServer styles to Django."""
+        results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
+
+        global_results = self.sync_styles_for_scope(None, created_by)
+        results['synced'] += global_results['synced']
+        results['created'] += global_results['created']
+        results['deleted'] += global_results['deleted']
+        results['errors'].extend(global_results['errors'])
+
+        for workspace in Workspace.objects.filter(geodata_engine=self.engine):
+            workspace_results = self.sync_styles_for_scope(workspace, created_by)
+            results['synced'] += workspace_results['synced']
+            results['created'] += workspace_results['created']
+            results['deleted'] += workspace_results['deleted']
+            results['errors'].extend(workspace_results['errors'])
+
+        return results
+
+    def sync_styles_for_scope(self, workspace: Workspace | None, created_by: User) -> Dict:
+        """Sync styles for a global provider scope or a single workspace scope."""
+        results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
+
+        try:
+            workspace_name = workspace.name if workspace else None
+            geoserver_styles = self._get_geoserver_styles(workspace_name)
+            geoserver_style_names = {style_data['name'] for style_data in geoserver_styles}
+            django_styles = Style.objects.filter(geodata_engine=self.engine, workspace=workspace)
+            django_style_names = {style.name for style in django_styles}
+
+            for style_data in geoserver_styles:
+                try:
+                    style_name = style_data['name']
+                    style_content = self.client.get_style_content(
+                        name=style_name,
+                        workspace=workspace_name,
+                    ) or {}
+                    file_content = style_content.get('content', '')
+                    style_format = style_content.get('format', 'sld')
+                    file_name = style_content.get('file_name', '')
+                    validation_state = 'UNKNOWN'
+                    validation_errors = []
+                    if file_content:
+                        from .services.commands.style_validation_service import StyleValidationService
+                        validation = StyleValidationService.validate(
+                            content=file_content,
+                            style_format=style_format,
+                        )
+                        validation_state = 'VALID' if validation.get('valid') else 'INVALID'
+                        validation_errors = validation.get('errors', [])
+                    style, created = Style.objects.update_or_create(
+                        geodata_engine=self.engine,
+                        workspace=workspace,
+                        name=style_name,
+                        defaults={
+                            'title': style_name,
+                            'description': f'Synced from GeoServer: {style_name}',
+                            'format': style_format,
+                            'file_name': file_name,
+                            'file_content': file_content,
+                            'validation_state': validation_state,
+                            'validation_errors': validation_errors,
+                            'remote_state': 'SYNCED',
+                            'remote_error': '',
+                            'created_by': created_by,
+                        },
+                    )
+                    if created:
+                        results['created'] += 1
+                        logger.info("✅ Created style: %s", style.qualified_name)
+                    else:
+                        results['synced'] += 1
+                        logger.info("✅ Synced style: %s", style.qualified_name)
+                except Exception as e:
+                    error_msg = f"Failed to sync style {style_data.get('name')}: {e}"
+                    results['errors'].append(error_msg)
+                    logger.error(error_msg)
+
+            styles_to_delete = django_style_names - geoserver_style_names
+            for style_name in styles_to_delete:
+                try:
+                    style = django_styles.get(name=style_name)
+                    style.delete()
+                    results['deleted'] += 1
+                    logger.info("🗑️ Deleted style: %s", style_name)
+                except Exception as e:
+                    error_msg = f"Failed to delete style {style_name}: {e}"
+                    results['errors'].append(error_msg)
+                    logger.error(error_msg)
+
+            return results
+        except GeoServerConnectionError:
+            raise
+        except Exception as e:
+            scope = workspace.name if workspace else 'global'
+            results['errors'].append(f"Failed to sync styles for {scope}: {e}")
+            return results
     
     def sync_stores_for_workspace(self, workspace: Workspace, created_by: User) -> Dict:
         """Sync stores for a specific workspace - includes DELETE operations"""
@@ -333,9 +437,17 @@ class GeoServerSyncService:
                             'geometry_type': layer_data.get('geometry_type', 'Point'),
                             'srid': layer_data.get('srid', 4326),
                             'is_public': layer_data.get('advertised', True),  # read from GeoServer
+                            'queryable': layer_data.get('queryable', True),
+                            'opaque': layer_data.get('opaque', False),
                             'publishing_state': 'PUBLISHED',
                             'created_by': created_by
                         }
+                    )
+                    self._sync_layer_style_assignments(
+                        layer=layer,
+                        default_style_name=layer_data.get('default_style_name', ''),
+                        additional_style_names=layer_data.get('additional_style_names', []),
+                        created_by=created_by,
                     )
                     
                     if created:
@@ -395,6 +507,117 @@ class GeoServerSyncService:
         Raises GeoServerConnectionError if GeoServer is unreachable.
         """
         return self.client.get_layers(workspace)
+
+    def _get_geoserver_styles(self, workspace: str | None = None) -> List[Dict]:
+        """
+        Get style catalog records from GeoServer.
+        Raises GeoServerConnectionError if GeoServer is unreachable.
+        """
+        return self.client.get_styles(workspace)
+
+    def _sync_layer_style_assignments(
+        self,
+        *,
+        layer: Layer,
+        default_style_name: str,
+        additional_style_names: List[str],
+        created_by: User,
+    ) -> None:
+        active_assignment_ids = []
+
+        if default_style_name:
+            assignment = self._upsert_layer_style_assignment(
+                layer=layer,
+                style_name=default_style_name,
+                role='default',
+                created_by=created_by,
+            )
+            if assignment:
+                active_assignment_ids.append(assignment.id)
+
+        for style_name in additional_style_names or []:
+            assignment = self._upsert_layer_style_assignment(
+                layer=layer,
+                style_name=style_name,
+                role='alternate',
+                created_by=created_by,
+            )
+            if assignment:
+                active_assignment_ids.append(assignment.id)
+
+        LayerStyleAssignment.objects.filter(layer=layer).exclude(
+            id__in=active_assignment_ids,
+        ).update(is_active=False)
+
+    def _upsert_layer_style_assignment(
+        self,
+        *,
+        layer: Layer,
+        style_name: str,
+        role: str,
+        created_by: User,
+    ) -> LayerStyleAssignment | None:
+        style = self._resolve_style_for_layer(layer=layer, style_name=style_name, created_by=created_by)
+        if not style:
+            return None
+        if role == 'default':
+            LayerStyleAssignment.objects.filter(
+                layer=layer,
+                role='default',
+                is_active=True,
+            ).exclude(style=style).update(is_active=False)
+        assignment, _created = LayerStyleAssignment.objects.update_or_create(
+            layer=layer,
+            style=style,
+            role=role,
+            defaults={
+                'is_active': True,
+                'created_by': created_by,
+            },
+        )
+        return assignment
+
+    def _resolve_style_for_layer(
+        self,
+        *,
+        layer: Layer,
+        style_name: str,
+        created_by: User,
+    ) -> Style | None:
+        if not style_name:
+            return None
+        style = (
+            Style.objects.filter(
+                geodata_engine=self.engine,
+                workspace=layer.workspace,
+                name=style_name,
+            ).first()
+            or Style.objects.filter(
+                geodata_engine=self.engine,
+                workspace__isnull=True,
+                name=style_name,
+            ).first()
+            or Style.objects.filter(
+                geodata_engine=self.engine,
+                name=style_name,
+            ).first()
+        )
+        if style:
+            return style
+        return Style.objects.create(
+            geodata_engine=self.engine,
+            workspace=None,
+            name=style_name,
+            title=style_name,
+            description=f'Referenced by GeoServer layer: {layer.qualified_name if hasattr(layer, "qualified_name") else layer}',
+            format='sld',
+            file_name='',
+            file_content='',
+            validation_state='UNKNOWN',
+            validation_errors=[],
+            remote_state='SYNCED',
+            created_by=created_by,
+        )
 
     # ------------------------------------------------------------------
     # Push sync — Django intent → GeoServer

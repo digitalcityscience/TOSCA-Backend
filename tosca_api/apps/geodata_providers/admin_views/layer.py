@@ -82,6 +82,7 @@ def publish_postgis_view(request):
                     )
                     try:
                         service = GeoServerSyncService(workspace.geodata_engine)
+                        service.sync_styles_for_scope(workspace, created_by=request.user)
                         sync_result = service.sync_layers_for_workspace(workspace, created_by=request.user)
                         if sync_result.get('errors'):
                             messages.warning(

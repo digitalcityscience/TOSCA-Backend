@@ -1,6 +1,6 @@
 """
 Admin actions for Workspace.
-    sync_workspaces — pull GeoServer → Django for selected workspaces' engines
+    sync_workspaces — pull provider state into the local catalog for selected workspaces' engines
 """
 from django.contrib import admin, messages
 
@@ -8,7 +8,7 @@ from ..exceptions import GeoServerConnectionError, GeodataEngineError
 from ..sync_service import GeoServerSyncService
 
 
-@admin.action(description="Sync selected workspaces from GeoServer → Django")
+@admin.action(description="Sync selected workspaces into the local catalog")
 def sync_workspaces(modeladmin, request, queryset):
     """
     For each unique engine represented by the selected workspace(s),
@@ -36,13 +36,16 @@ def sync_workspaces(modeladmin, request, queryset):
             store_result = service.sync_stores_for_workspace(
                 workspace, created_by=request.user
             )
+            style_result = service.sync_styles_for_scope(
+                workspace, created_by=request.user
+            )
             layer_result = service.sync_layers_for_workspace(
                 workspace, created_by=request.user
             )
         except GeoServerConnectionError as e:
             modeladmin.message_user(
                 request,
-                f"[{workspace.name}] Engine unreachable: {e}",
+                f"[{workspace.name}] Provider unreachable: {e}",
                 messages.ERROR,
             )
             continue
@@ -55,13 +58,16 @@ def sync_workspaces(modeladmin, request, queryset):
             continue
 
         st = store_result
+        sy = style_result
         ly = layer_result
         modeladmin.message_user(
             request,
             (
                 f"[{workspace.name}] Sync complete — "
                 f"stores: +{st.get('created', 0)} / −{st.get('deleted', 0)} / ~{st.get('synced', 0)}, "
-                f"layers: +{ly.get('created', 0)} / −{ly.get('deleted', 0)} / ~{ly.get('synced', 0)}."
+                f"styles: +{sy.get('created', 0)} / −{sy.get('deleted', 0)} / ~{sy.get('synced', 0)}, "
+                f"layers: +{ly.get('created', 0)} / −{ly.get('deleted', 0)} / ~{ly.get('synced', 0)}. "
+                "Provider state synced into the local catalog."
             ),
             messages.SUCCESS,
         )

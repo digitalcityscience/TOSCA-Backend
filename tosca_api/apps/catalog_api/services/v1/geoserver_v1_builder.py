@@ -51,7 +51,7 @@ class GeoServerV1Builder:
     @classmethod
     def build_layer_info(cls, *, request, layer, remote_layer_info: dict | None) -> dict:
         remote_layer = cls._extract_remote_layer(remote_layer_info)
-        style_name = cls._get_style_name(remote_layer)
+        default_style = cls._get_default_style(layer=layer, remote_layer=remote_layer)
         layer_type = cls._get_layer_type(layer)
         resource_class = "coverage" if layer_type == "RASTER" else "featureType"
 
@@ -60,9 +60,9 @@ class GeoServerV1Builder:
                 "name": layer.name,
                 "type": layer_type,
                 "defaultStyle": {
-                    "name": style_name,
+                    "name": default_style["name"],
                     "href": request.build_absolute_uri(
-                        reverse("catalog-v1-style-detail", kwargs={"style_name": style_name})
+                        reverse("catalog-v1-style-detail", kwargs={"style_ref": default_style["href_ref"]})
                     ),
                 },
                 "resource": {
@@ -96,9 +96,9 @@ class GeoServerV1Builder:
                 }
             )
             payload["layer"]["defaultStyle"] = {
-                "name": style_name,
+                "name": default_style["name"],
                 "href": request.build_absolute_uri(
-                    reverse("catalog-v1-style-detail", kwargs={"style_name": style_name})
+                    reverse("catalog-v1-style-detail", kwargs={"style_ref": default_style["href_ref"]})
                 ),
             }
             payload["layer"]["resource"] = {
@@ -293,6 +293,26 @@ class GeoServerV1Builder:
             if isinstance(default_style, dict) and default_style.get("name"):
                 return default_style["name"]
         return "default"
+
+    @classmethod
+    def _get_default_style(cls, *, layer, remote_layer: dict | None) -> dict:
+        active_default = next(
+            (
+                assignment for assignment in layer.style_assignments.all()
+                if assignment.is_active and assignment.role == "default"
+            ),
+            None,
+        )
+        if active_default is not None:
+            return {
+                "name": active_default.style.name,
+                "href_ref": str(active_default.style.id),
+            }
+        style_name = cls._get_style_name(remote_layer)
+        return {
+            "name": style_name,
+            "href_ref": style_name,
+        }
 
     @staticmethod
     def _as_iso8601(value) -> str:

@@ -22,7 +22,8 @@ class GeoServerIntegrationTestCase(TestCase):
         self.user = User.objects.create_user(
             username='testuser',
             email='test@example.com',
-            password='testpass123'
+            password='testpass123',
+            is_staff=True,
         )
         self.client.force_authenticate(user=self.user)
         
@@ -121,7 +122,7 @@ class GeoServerIntegrationTestCase(TestCase):
         """Test our API endpoints work with real GeoServer data"""
         
         # Test engines list
-        response = self.client.get('/api/geodata/engines/')
+        response = self.client.get('/api/geoengine/engines/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         
         data = response.json()
@@ -129,7 +130,7 @@ class GeoServerIntegrationTestCase(TestCase):
         self.assertGreaterEqual(data['count'], 1)  # At least our test engine
         
         # Test engine detail
-        response = self.client.get(f'/api/geodata/engines/{self.engine.id}/')
+        response = self.client.get(f'/api/geoengine/engines/{self.engine.id}/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         
         data = response.json()
@@ -158,14 +159,13 @@ class GeoServerIntegrationTestCase(TestCase):
         
         try:
             # Test sync endpoint
-            response = self.client.post(f'/api/geodata/engines/{self.engine.id}/sync/')
+            response = self.client.post(f'/api/geoengine/engines/{self.engine.id}/sync/')
             
             # Should return 200 for success or 400/500 for expected errors
             self.assertIn(response.status_code, [200, 400, 500])
             
             data = response.json()
-            self.assertIn('status', data)
-            self.assertIn('message', data)
+            self.assertIn('success', data)
             
         finally:
             # Clean up test workspace
@@ -196,7 +196,7 @@ class SimpleConsoleIntegrationTestCase(TestCase):
         """Test console engines view works"""
         self.client.login(username='consoleuser', password='testpass')
         
-        response = self.client.get('/console/engines/')
+        response = self.client.get('/console/')
         self.assertEqual(response.status_code, 200)
         
         # Check engine is displayed

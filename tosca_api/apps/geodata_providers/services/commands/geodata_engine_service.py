@@ -5,7 +5,7 @@ from django.db.models import Q
 
 from ...engine_factory import EngineClientFactory
 from ...exceptions import GeodataEngineError
-from ...models import GeodataEngine, Layer, Store, Workspace
+from ...models import GeodataEngine, Layer, Store, Style, Workspace
 
 
 class GeodataEngineService:
@@ -113,75 +113,26 @@ class GeodataEngineService:
         }
 
     @classmethod
-    def delete_engine_cascade(cls, engine: GeodataEngine) -> dict:
-        from .layer_service import LayerService
-        from .store_service import StoreService
-        from .workspace_service import WorkspaceService
-
+    def delete_engine_cascade(cls, engine: GeodataEngine, *, delete_remote: bool) -> dict:
         summary = cls.get_dependency_counts(engine)
+        if delete_remote:
+            remote_result = cls._delete_engine_resources_remote(engine=engine, summary=summary)
+            if not remote_result.get('success'):
+                return remote_result
 
-        layers = list(
-            Layer.objects.filter(workspace__geodata_engine=engine)
-            .select_related('workspace', 'store')
-            .order_by('workspace__name', 'name')
-        )
-        for layer in layers:
-            result = LayerService.delete_layer_safe(layer)
-            if not result.get('success'):
-                return cls._cascade_failure(
-                    engine=engine,
-                    resource_label=f"layer '{layer.name}'",
-                    result=result,
-                    summary=summary,
-                )
-            summary['layers_deleted'] += 1
-            if result.get('already_deleted'):
-                summary['layers_already_deleted'] += 1
-
-        stores = list(
-            Store.objects.filter(Q(workspace__geodata_engine=engine) | Q(geodata_engine=engine))
-            .select_related('workspace', 'geodata_engine')
-            .distinct()
-            .order_by('workspace__name', 'name')
-        )
-        for store in stores:
-            result = StoreService.delete_store_safe(store)
-            if not result.get('success'):
-                return cls._cascade_failure(
-                    engine=engine,
-                    resource_label=f"store '{store.name}'",
-                    result=result,
-                    summary=summary,
-                )
-            summary['stores_deleted'] += 1
-            if result.get('already_deleted'):
-                summary['stores_already_deleted'] += 1
-
-        workspaces = list(
-            Workspace.objects.filter(geodata_engine=engine)
-            .select_related('geodata_engine')
-            .order_by('name')
-        )
-        for workspace in workspaces:
-            result = WorkspaceService.delete_workspace_safe(workspace)
-            if not result.get('success'):
-                return cls._cascade_failure(
-                    engine=engine,
-                    resource_label=f"workspace '{workspace.name}'",
-                    result=result,
-                    summary=summary,
-                )
-            summary['workspaces_deleted'] += 1
-            if result.get('already_deleted'):
-                summary['workspaces_already_deleted'] += 1
+        summary['layers_deleted'] = summary['layers']
+        summary['stores_deleted'] = summary['stores']
+        summary['workspaces_deleted'] = summary['workspaces']
+        summary['styles_deleted'] = summary['styles']
 
         engine_name = engine.name
         engine.delete()
         return {
             'success': True,
             'blocked': False,
-            'message': f"Engine '{engine_name}' and its dependent resources deleted successfully.",
+            'message': cls._delete_message(engine_name=engine_name, delete_remote=delete_remote),
             'summary': summary,
+            'delete_remote': delete_remote,
         }
 
     @classmethod
@@ -190,6 +141,7 @@ class GeodataEngineService:
         result = service.sync_all_resources(created_by=user)
         result['db_workspace_count'] = Workspace.objects.filter(geodata_engine=engine).count()
         result['db_store_count'] = Store.objects.filter(workspace__geodata_engine=engine).count()
+        result['db_style_count'] = Style.objects.filter(geodata_engine=engine).count()
         result['db_layer_count'] = Layer.objects.filter(workspace__geodata_engine=engine).count()
         return result
 
@@ -247,6 +199,7 @@ class GeodataEngineService:
                 Q(workspace__geodata_engine=engine) | Q(geodata_engine=engine)
             ).distinct().count(),
             'layers': Layer.objects.filter(workspace__geodata_engine=engine).count(),
+            'styles': Style.objects.filter(geodata_engine=engine).count(),
         }
 
     @classmethod
@@ -262,9 +215,11 @@ class GeodataEngineService:
             'workspaces_deleted': 0,
             'stores_deleted': 0,
             'layers_deleted': 0,
+            'styles_deleted': 0,
             'workspaces_already_deleted': 0,
             'stores_already_deleted': 0,
             'layers_already_deleted': 0,
+            'styles_already_deleted': 0,
         }
 
     @staticmethod
@@ -280,6 +235,61 @@ class GeodataEngineService:
             'summary': summary,
             'step_result': result,
         }
+
+    @classmethod
+    def _delete_engine_resources_remote(cls, *, engine: GeodataEngine, summary: dict) -> dict:
+        client = EngineClientFactory.create_client(engine)
+
+        styles = list(
+            Style.objects.filter(geodata_engine=engine)
+            .select_related('workspace')
+            .order_by('workspace__name', 'name')
+        )
+        for style in styles:
+            result = client.delete_style(
+                name=style.name,
+                workspace=style.workspace.name if style.workspace else None,
+                ignore_missing=True,
+            )
+            if not result.get('success'):
+                return cls._cascade_failure(
+                    engine=engine,
+                    resource_label=f"style '{style.name}'",
+                    result=result,
+                    summary=summary,
+                )
+            if result.get('already_deleted'):
+                summary['styles_already_deleted'] += 1
+
+        workspaces = list(
+            Workspace.objects.filter(geodata_engine=engine)
+            .order_by('name')
+        )
+        for workspace in workspaces:
+            result = client.delete_workspace(workspace.name)
+            if not result.get('success'):
+                return cls._cascade_failure(
+                    engine=engine,
+                    resource_label=f"workspace '{workspace.name}'",
+                    result=result,
+                    summary=summary,
+                )
+            if result.get('already_deleted'):
+                summary['workspaces_already_deleted'] += 1
+
+        return {'success': True, 'summary': summary}
+
+    @staticmethod
+    def _delete_message(*, engine_name: str, delete_remote: bool) -> str:
+        if delete_remote:
+            return (
+                f"Engine '{engine_name}' and its dependent resources were deleted from "
+                "the provider and Django."
+            )
+        return (
+            f"Engine '{engine_name}' and its dependent resources were deleted from Django only. "
+            "Remote provider resources were left untouched."
+        )
 
     @staticmethod
     def _sync_skipped_result() -> dict:

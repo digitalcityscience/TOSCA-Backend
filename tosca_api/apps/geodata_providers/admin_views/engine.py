@@ -72,7 +72,7 @@ def engine_sync_view(request, engine_id):
         service = GeoServerSyncService(engine)
         result = service.sync_all_resources(created_by=request.user)
     except GeoServerConnectionError as e:
-        return JsonResponse({'success': False, 'error': f'Engine unreachable: {e}'}, status=502)
+        return JsonResponse({'success': False, 'error': f'Provider unreachable: {e}'}, status=502)
     except GeodataEngineError as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
@@ -123,7 +123,11 @@ def engine_force_delete_view(request, engine_id):
     summary = GeodataEngineService.get_dependency_counts(engine)
 
     if request.method == 'POST':
-        result = GeodataEngineService.delete_engine_cascade(engine)
+        delete_remote = request.POST.get('delete_remote') == '1'
+        result = GeodataEngineService.delete_engine_cascade(
+            engine,
+            delete_remote=delete_remote,
+        )
         if result.get('success'):
             messages.success(request, result['message'])
             return redirect(f'admin:{engine._meta.app_label}_{engine._meta.model_name}_changelist')
@@ -137,6 +141,7 @@ def engine_force_delete_view(request, engine_id):
         'opts': engine._meta,
         'original': engine,
         'summary': summary,
+        'default_delete_remote': True,
     }
     return TemplateResponse(
         request,

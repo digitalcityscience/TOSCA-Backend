@@ -36,7 +36,7 @@ urlpatterns = [
         name="catalog-v1-layer-detail",
     ),
     path(
-        "styles/<str:style_name>",
+        "styles/<str:style_ref>",
         StyleDetailV1View.as_view(),
         name="catalog-v1-style-detail",
     ),

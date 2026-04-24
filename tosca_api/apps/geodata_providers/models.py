@@ -20,8 +20,9 @@ VALIDATION_STATES = [
 
 REMOTE_STATES = [
     ("LOCAL_ONLY", "Local only"),
-    ("UPLOADED", "Uploaded"),
+    ("SYNCED", "Synced"),
     ("FAILED", "Failed"),
+    ("UNSUPPORTED", "Unsupported by provider"),
     ("DELETED", "Deleted"),
 ]
 
@@ -309,6 +310,14 @@ class Layer(models.Model):
         default=False,
         help_text="If true, layer can be listed and retrieved without authentication.",
     )
+    queryable = models.BooleanField(
+        default=True,
+        help_text="GeoServer WMS queryable layer setting.",
+    )
+    opaque = models.BooleanField(
+        default=False,
+        help_text="GeoServer WMS opaque layer setting.",
+    )
     published_url = models.URLField(blank=True, help_text="Published layer URL (WFS/WMS)")
     publishing_error = models.TextField(blank=True, help_text="Last publishing error message")
     published_at = models.DateTimeField(null=True, blank=True)
@@ -361,8 +370,15 @@ class Style(models.Model):
     title = models.CharField(max_length=200, blank=True, help_text="Human-readable title")
     description = models.TextField(blank=True)
     format = models.CharField(max_length=20, choices=STYLE_FORMATS)
-    file_name = models.CharField(max_length=255, help_text="Original uploaded file name")
-    file_content = models.TextField(help_text="Raw SLD XML or MBStyle JSON content")
+    file_name = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Original uploaded file name, when Django has local style content.",
+    )
+    file_content = models.TextField(
+        blank=True,
+        help_text="Raw SLD XML or MBStyle JSON content, when available.",
+    )
     content_hash = models.CharField(max_length=64, editable=False)
     validation_state = models.CharField(
         max_length=20,
@@ -426,8 +442,12 @@ class Style(models.Model):
         return self.validation_state == "VALID"
 
     @property
-    def is_uploaded(self):
-        return self.remote_state == "UPLOADED"
+    def is_synced(self):
+        return self.remote_state == "SYNCED"
+
+    @property
+    def is_remote_supported(self):
+        return self.remote_state != "UNSUPPORTED"
 
     @property
     def qualified_name(self):
@@ -436,21 +456,21 @@ class Style(models.Model):
         return self.name
 
 
-class LayerStyle(models.Model):
+class LayerStyleAssignment(models.Model):
     """
-    Assignment of a provider style to a layer as default or alternate.
+    Technical assignment of a style to a layer as default or alternate.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     layer = models.ForeignKey(
         Layer,
         on_delete=models.CASCADE,
-        related_name='style_links',
+        related_name='style_assignments',
     )
     style = models.ForeignKey(
         Style,
         on_delete=models.CASCADE,
-        related_name='layer_links',
+        related_name='layer_assignments',
     )
     role = models.CharField(max_length=20, choices=LAYER_STYLE_ROLES, default='default')
     is_active = models.BooleanField(default=True)
@@ -460,8 +480,9 @@ class LayerStyle(models.Model):
 
     class Meta:
         app_label = 'geodata_providers'
-        verbose_name = "Layer Style"
-        verbose_name_plural = "Layer Styles"
+        db_table = 'geodata_providers_layerstyle'
+        verbose_name = "Layer Style Assignment"
+        verbose_name_plural = "Layer Style Assignments"
         ordering = ['layer__workspace__name', 'layer__name', 'role', 'style__name']
         constraints = [
             models.UniqueConstraint(
@@ -483,14 +504,9 @@ class LayerStyle(models.Model):
         if not self.layer_id or not self.style_id:
             return
 
-        layer_engine_id = self.layer.workspace.geodata_engine_id
-        if layer_engine_id != self.style.geodata_engine_id:
+        if self.style.validation_state == "INVALID":
             raise ValidationError({
-                'style': 'Style and layer must belong to the same geodata engine.'
-            })
-        if self.style.workspace_id and self.style.workspace_id != self.layer.workspace_id:
-            raise ValidationError({
-                'style': 'Workspace-scoped style must belong to the same workspace as the layer.'
+                'style': 'Invalid styles cannot be assigned to layers.'
             })
 
     def save(self, *args, **kwargs):

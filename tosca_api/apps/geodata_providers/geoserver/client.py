@@ -1149,6 +1149,51 @@ class GeoServerClient:
             logger.warning(f"Layer {workspace}/{layer_name} not found or error: {e}")
             return None
 
+    def get_layer_settings(self, workspace: str, layer_name: str) -> Dict:
+        """
+        Return GeoServer layer settings used by the Publishing tab:
+        queryable, opaque, defaultStyle, and selected/additional styles.
+        """
+        try:
+            result = self._client.get_layer(layer_name, workspace)
+            layer = result.get('layer', {}) if isinstance(result, dict) else {}
+            default_style = layer.get('defaultStyle') or {}
+            styles_payload = layer.get('styles') or {}
+            style_items = styles_payload.get('style', []) if isinstance(styles_payload, dict) else []
+            if isinstance(style_items, dict):
+                style_items = [style_items]
+            if not isinstance(style_items, list):
+                style_items = []
+
+            default_style_name = default_style.get('name') if isinstance(default_style, dict) else ''
+            additional_style_names = [
+                item.get('name')
+                for item in style_items
+                if isinstance(item, dict) and item.get('name')
+            ]
+
+            return {
+                'queryable': self._as_bool(layer.get('queryable'), default=True),
+                'opaque': self._as_bool(layer.get('opaque'), default=False),
+                'default_style_name': default_style_name or '',
+                'additional_style_names': additional_style_names,
+                'selected_style_names': [
+                    name for name in [default_style_name, *additional_style_names] if name
+                ],
+            }
+        except Exception as exc:
+            logger.warning(
+                'get_layer_settings failed for %s/%s: %s',
+                workspace, layer_name, exc,
+            )
+            return {
+                'queryable': True,
+                'opaque': False,
+                'default_style_name': '',
+                'additional_style_names': [],
+                'selected_style_names': [],
+            }
+
     def update_featuretype(
         self,
         workspace: str,
@@ -1366,12 +1411,17 @@ class GeoServerClient:
                                 featuretype_detail = self.get_featuretype_detail(
                                     workspace, store_name, clean
                                 )
+                                layer_settings = self.get_layer_settings(workspace, clean)
                                 result.append({
                                     'name': clean,
                                     'store_name': store_name,
                                     'advertised': featuretype_detail.get('advertised', True),
                                     'title': featuretype_detail.get('title', clean),
                                     'table_name': featuretype_detail.get('native_name', clean),
+                                    'queryable': layer_settings.get('queryable', True),
+                                    'opaque': layer_settings.get('opaque', False),
+                                    'default_style_name': layer_settings.get('default_style_name', ''),
+                                    'additional_style_names': layer_settings.get('additional_style_names', []),
                                 })
                                 logger.debug(
                                     f"Layer discovered: {workspace}/{store_name}/{clean} "
@@ -1395,6 +1445,191 @@ class GeoServerClient:
             raise GeoServerConnectionError(
                 f"Failed to get layers for workspace '{workspace}' from GeoServer at {self.url}: {e}"
             )
+
+    def get_styles(self, workspace: Optional[str] = None) -> list:
+        """Return GeoServer styles normalized as {name, href, workspace} records."""
+        try:
+            response = self._client.get_styles(workspace)
+            styles_payload = response.get('styles', {}) if isinstance(response, dict) else {}
+            style_items = styles_payload.get('style', []) if isinstance(styles_payload, dict) else []
+            if isinstance(style_items, dict):
+                style_items = [style_items]
+            if not isinstance(style_items, list):
+                style_items = []
+            return [
+                {
+                    'name': item.get('name', ''),
+                    'href': item.get('href', ''),
+                    'workspace': workspace,
+                }
+                for item in style_items
+                if isinstance(item, dict) and item.get('name')
+            ]
+        except GeoServerConnectionError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get styles from GeoServer workspace={workspace!r}: {e}")
+            raise GeoServerConnectionError(
+                f"Failed to get styles for workspace '{workspace or 'global'}' from GeoServer at {self.url}: {e}"
+            )
+
+    def upload_style(
+        self,
+        *,
+        name: str,
+        content: str,
+        style_format: str,
+        workspace: Optional[str] = None,
+        overwrite: bool = False,
+    ) -> Dict:
+        """Upload style content to GeoServer and verify the style exists."""
+        try:
+            if style_format == "sld":
+                if overwrite:
+                    self.delete_style(name=name, workspace=workspace, ignore_missing=True)
+                status_code = self._client.upload_style(content, name=name, workspace=workspace)
+                if status_code != 200:
+                    raise GeoServerPublishError(f"SLD upload returned status {status_code}")
+            elif style_format == "mbstyle":
+                self._upload_mbstyle(
+                    name=name,
+                    content=content,
+                    workspace=workspace,
+                    overwrite=overwrite,
+                )
+            else:
+                raise GeoServerPublishError(f"Unsupported style format: {style_format}")
+
+            remote = self.get_style(name=name, workspace=workspace)
+            return {
+                "success": True,
+                "name": name,
+                "workspace": workspace,
+                "remote": remote,
+                "message": f"Style '{name}' uploaded and verified.",
+            }
+        except Exception as exc:
+            logger.error("upload_style failed for %s/%s: %s", workspace or "global", name, exc)
+            return {
+                "success": False,
+                "name": name,
+                "workspace": workspace,
+                "error": str(exc),
+                "message": f"Style '{name}' upload failed: {exc}",
+            }
+
+    def get_style(self, *, name: str, workspace: Optional[str] = None) -> Optional[Dict]:
+        try:
+            return self._client.get_style(name, workspace=workspace)
+        except Exception:
+            return None
+
+    def get_style_content(self, *, name: str, workspace: Optional[str] = None) -> Optional[Dict]:
+        """
+        Fetch raw style content from GeoServer and normalize it for local DB storage.
+        Preference order:
+        1. MBStyle raw endpoint
+        2. SLD raw endpoint
+        """
+        candidates = [
+            (
+                self._style_path(name=name, workspace=workspace, extension="mbstyle"),
+                {"Accept": "application/vnd.geoserver.mbstyle+json, application/json"},
+                "mbstyle",
+                f"{name}.mbstyle",
+            ),
+            (
+                self._style_path(name=name, workspace=workspace, extension="sld"),
+                {"Accept": "application/vnd.ogc.sld+xml, application/xml, text/xml"},
+                "sld",
+                f"{name}.sld",
+            ),
+        ]
+        for path, headers, style_format, file_name in candidates:
+            try:
+                response = self._request("get", path, headers=headers)
+            except Exception:
+                continue
+            if response.status_code != 200:
+                continue
+            content = response.text or ""
+            if not content.strip():
+                continue
+            return {
+                "content": content,
+                "format": style_format,
+                "file_name": file_name,
+            }
+        return None
+
+    def delete_style(
+        self,
+        *,
+        name: str,
+        workspace: Optional[str] = None,
+        ignore_missing: bool = False,
+    ) -> Dict:
+        try:
+            result = self._client.delete_style(style_name=name, workspace=workspace)
+            return {"success": True, "result": result}
+        except Exception as exc:
+            if ignore_missing or self._is_not_found_error(exc):
+                return {"success": True, "already_deleted": True}
+            return {"success": False, "error": str(exc)}
+
+    def _upload_mbstyle(
+        self,
+        *,
+        name: str,
+        content: str,
+        workspace: Optional[str],
+        overwrite: bool,
+    ) -> None:
+        if overwrite:
+            self.delete_style(name=name, workspace=workspace, ignore_missing=True)
+        base_url = self.url.rstrip('/')
+        if workspace:
+            url = f"{base_url}/rest/workspaces/{workspace}/styles"
+        else:
+            url = f"{base_url}/rest/styles"
+
+        metadata = f"<style><name>{name}</name><filename>{name}.mbstyle</filename></style>"
+        response = self._client._requests(
+            "post",
+            url,
+            data=metadata,
+            headers={"content-type": "text/xml"},
+        )
+        if response.status_code not in {200, 201, 409}:
+            raise GeoServerPublishError(
+                f"MBStyle metadata create returned HTTP {response.status_code}: {response.content}"
+            )
+        put_response = self._client._requests(
+            "put",
+            f"{url}/{name}",
+            data=content,
+            headers={"content-type": "application/vnd.geoserver.mbstyle+json"},
+        )
+        if put_response.status_code not in {200, 201}:
+            raise GeoServerPublishError(
+                f"MBStyle content upload returned HTTP {put_response.status_code}: {put_response.content}"
+            )
+
+    @staticmethod
+    def _style_path(*, name: str, workspace: Optional[str], extension: str) -> str:
+        if workspace:
+            return f"/rest/workspaces/{workspace}/styles/{name}.{extension}"
+        return f"/rest/styles/{name}.{extension}"
+
+    @staticmethod
+    def _as_bool(value, *, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {'true', '1', 'yes'}
+        return bool(value)
 
     def get_featuretype_detail(self, workspace: str, store_name: str, ft_name: str) -> Dict:
         """

@@ -105,6 +105,7 @@ class LayerQueryServiceTestCase(TestCase):
                 "publishing_state",
                 "is_public",
                 "published_url",
+                "layer_settings",
                 "provider",
                 "workspace",
                 "store",
@@ -117,6 +118,16 @@ class LayerQueryServiceTestCase(TestCase):
         self.assertEqual(result["srid"], 4326)
         self.assertEqual(result["publishing_state"], "PUBLISHED")
         self.assertTrue(result["is_public"])
+        self.assertEqual(
+            result["layer_settings"],
+            {
+                "queryable": True,
+                "opaque": False,
+                "default_style": None,
+                "additional_styles": [],
+                "selected_styles": [],
+            },
+        )
         self.assertEqual(
             result["provider"],
             {

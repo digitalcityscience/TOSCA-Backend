@@ -33,15 +33,17 @@ def workspace_sync_view(request, workspace_id):
     try:
         service = GeoServerSyncService(engine)
         store_result = service.sync_stores_for_workspace(workspace, created_by=request.user)
+        style_result = service.sync_styles_for_scope(workspace, created_by=request.user)
         layer_result = service.sync_layers_for_workspace(workspace, created_by=request.user)
     except GeoServerConnectionError as e:
-        return JsonResponse({'success': False, 'error': f'Engine unreachable: {e}'}, status=502)
+        return JsonResponse({'success': False, 'error': f'Provider unreachable: {e}'}, status=502)
     except GeodataEngineError as e:
         return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
     st_errors = store_result.get('errors', [])
+    sy_errors = style_result.get('errors', [])
     ly_errors = layer_result.get('errors', [])
-    success = len(st_errors) == 0 and len(ly_errors) == 0
+    success = len(st_errors) == 0 and len(sy_errors) == 0 and len(ly_errors) == 0
 
     return JsonResponse({
         'success': success,
@@ -55,5 +57,10 @@ def workspace_sync_view(request, workspace_id):
             'updated': layer_result.get('synced', 0),
             'deleted': layer_result.get('deleted', 0),
         },
-        'errors': st_errors + ly_errors,
+        'styles': {
+            'created': style_result.get('created', 0),
+            'updated': style_result.get('synced', 0),
+            'deleted': style_result.get('deleted', 0),
+        },
+        'errors': st_errors + sy_errors + ly_errors,
     })

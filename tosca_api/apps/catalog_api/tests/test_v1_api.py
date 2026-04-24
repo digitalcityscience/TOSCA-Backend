@@ -5,7 +5,14 @@ from django.contrib.auth.models import User
 from django.test import Client, TestCase
 from django.urls import reverse
 
-from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Workspace
+from tosca_api.apps.geodata_providers.models import (
+    GeodataEngine,
+    Layer,
+    LayerStyleAssignment,
+    Store,
+    Style,
+    Workspace,
+)
 
 
 class CatalogV1ApiTestCase(TestCase):
@@ -117,6 +124,30 @@ class CatalogV1ApiTestCase(TestCase):
             published_url="http://example.com/wms",
             created_by=self.user,
         )
+        self.mbstyle = Style.objects.create(
+            geodata_engine=self.provider,
+            workspace=self.workspace,
+            name="mobility-style",
+            title="Mobility Style",
+            format="mbstyle",
+            file_name="mobility-style.mbstyle",
+            file_content='{"version":8,"name":"mobility-style","layers":[]}',
+            validation_state="VALID",
+            remote_state="SYNCED",
+            created_by=self.user,
+        )
+        self.sld_style = Style.objects.create(
+            geodata_engine=self.provider,
+            workspace=self.workspace,
+            name="mobility-sld",
+            title="Mobility SLD",
+            format="sld",
+            file_name="mobility-sld.sld",
+            file_content='<StyledLayerDescriptor><NamedLayer /></StyledLayerDescriptor>',
+            validation_state="VALID",
+            remote_state="SYNCED",
+            created_by=self.user,
+        )
         self.raster_layer = Layer.objects.create(
             workspace=self.workspace,
             store=self.raster_store,
@@ -197,6 +228,70 @@ class CatalogV1ApiTestCase(TestCase):
             },
         )
 
+    def test_workspace_list_dedupes_same_workspace_name_across_duplicate_integrations(self):
+        duplicate_provider = GeodataEngine.objects.create(
+            name="Catalog Engine Duplicate",
+            description="duplicate provider",
+            engine_type="geoserver",
+            base_url="http://catalog-duplicate.example/geoserver",
+            admin_username="admin",
+            admin_password="secret",
+            is_active=True,
+            is_default=False,
+            created_by=self.user,
+        )
+        duplicate_workspace = Workspace.objects.create(
+            geodata_engine=duplicate_provider,
+            name="mobility",
+            description="Duplicate mobility workspace",
+            created_by=self.user,
+        )
+        duplicate_store = Store.objects.create(
+            workspace=duplicate_workspace,
+            geodata_engine=duplicate_provider,
+            name="mobility_store_duplicate",
+            description="Duplicate mobility store",
+            store_type="postgis",
+            host="db",
+            port=5432,
+            database="gis",
+            username="postgres",
+            password="secret",
+            schema="public",
+            created_by=self.user,
+        )
+        Layer.objects.create(
+            workspace=duplicate_workspace,
+            store=duplicate_store,
+            name="tram_lines",
+            title="Duplicate Tram Lines",
+            description="Duplicate transit layer",
+            table_name="tram_lines_duplicate",
+            geometry_column="geom",
+            geometry_type="LineString",
+            srid=4326,
+            publishing_state="PUBLISHED",
+            is_public=True,
+            created_by=self.user,
+        )
+
+        response = self.client.get(reverse("catalog-v1-workspace-list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["workspaces"]["workspace"],
+            [
+                {
+                    "name": "mobility",
+                    "href": "http://testserver"
+                    + reverse(
+                        "catalog-v1-workspace-layer-list",
+                        kwargs={"workspace_name": "mobility"},
+                    ),
+                }
+            ],
+        )
+
     def test_layer_lists_return_only_visible_layers(self):
         response = self.client.get(reverse("catalog-v1-layer-list"))
 
@@ -242,6 +337,89 @@ class CatalogV1ApiTestCase(TestCase):
         self.assertEqual(workspace_response.status_code, 200)
         self.assertEqual(workspace_response.json(), response.json())
 
+    def test_layer_list_dedupes_same_workspace_and_layer_name_across_duplicate_integrations(self):
+        duplicate_provider = GeodataEngine.objects.create(
+            name="Catalog Engine Duplicate",
+            description="duplicate provider",
+            engine_type="geoserver",
+            base_url="http://catalog-duplicate.example/geoserver",
+            admin_username="admin",
+            admin_password="secret",
+            is_active=True,
+            is_default=False,
+            created_by=self.user,
+        )
+        duplicate_workspace = Workspace.objects.create(
+            geodata_engine=duplicate_provider,
+            name="mobility",
+            description="Duplicate mobility workspace",
+            created_by=self.user,
+        )
+        duplicate_store = Store.objects.create(
+            workspace=duplicate_workspace,
+            geodata_engine=duplicate_provider,
+            name="mobility_store_duplicate",
+            description="Duplicate mobility store",
+            store_type="postgis",
+            host="db",
+            port=5432,
+            database="gis",
+            username="postgres",
+            password="secret",
+            schema="public",
+            created_by=self.user,
+        )
+        Layer.objects.create(
+            workspace=duplicate_workspace,
+            store=duplicate_store,
+            name="tram_lines",
+            title="Duplicate Tram Lines",
+            description="Duplicate transit layer",
+            table_name="tram_lines_duplicate",
+            geometry_column="geom",
+            geometry_type="LineString",
+            srid=4326,
+            publishing_state="PUBLISHED",
+            is_public=True,
+            created_by=self.user,
+        )
+
+        response = self.client.get(
+            reverse(
+                "catalog-v1-workspace-layer-list",
+                kwargs={"workspace_name": "mobility"},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["layers"]["layer"],
+            [
+                {
+                    "name": "tram_heatmap",
+                    "href": "http://testserver"
+                    + reverse(
+                        "catalog-v1-layer-info",
+                        kwargs={
+                            "workspace_name": "mobility",
+                            "layer_name": "tram_heatmap",
+                        },
+                    ),
+                },
+                {
+                    "name": "tram_lines",
+                    "href": "http://testserver"
+                    + reverse(
+                        "catalog-v1-layer-info",
+                        kwargs={
+                            "workspace_name": "mobility",
+                            "layer_name": "tram_lines",
+                        },
+                    ),
+                },
+            ],
+        )
+
     def test_workspace_layer_list_returns_404_for_hidden_workspace(self):
         response = self.client.get(
             reverse(
@@ -262,16 +440,14 @@ class CatalogV1ApiTestCase(TestCase):
 
         self.assertEqual(response.status_code, 404)
 
-    @patch("tosca_api.apps.catalog_api.views.GeoServerRemoteService.get_layer_info")
-    def test_layer_info_returns_frontend_v1_shape(self, get_layer_info_mock):
-        get_layer_info_mock.return_value = {
-            "layer": {
-                "defaultStyle": {
-                    "name": "mobility-style",
-                    "href": "http://ignored.example/style",
-                }
-            }
-        }
+    def test_layer_info_returns_frontend_v1_shape(self):
+        LayerStyleAssignment.objects.create(
+            layer=self.layer,
+            style=self.mbstyle,
+            role="default",
+            is_active=True,
+            created_by=self.user,
+        )
 
         response = self.client.get(
             reverse(
@@ -291,7 +467,7 @@ class CatalogV1ApiTestCase(TestCase):
         self.assertEqual(
             payload["defaultStyle"]["href"],
             "http://testserver"
-            + reverse("catalog-v1-style-detail", kwargs={"style_name": "mobility-style"}),
+            + reverse("catalog-v1-style-detail", kwargs={"style_ref": str(self.mbstyle.id)}),
         )
         self.assertEqual(payload["resource"]["@class"], "featureType")
         self.assertEqual(
@@ -330,31 +506,38 @@ class CatalogV1ApiTestCase(TestCase):
         self.assertEqual(payload["store"]["name"], "mobility_store")
         self.assertEqual(payload["attributes"], {"attribute": []})
 
-    @patch("tosca_api.apps.catalog_api.views.GeoServerRemoteService.get_style_detail")
-    def test_style_detail_returns_remote_payload(self, get_style_detail_mock):
-        get_style_detail_mock.return_value = {
-            "version": 8,
-            "name": "mobility-style",
-            "sources": {},
-            "layers": [],
-        }
-
+    def test_style_detail_returns_raw_mbstyle_payload_from_db(self):
         response = self.client.get(
-            reverse("catalog-v1-style-detail", kwargs={"style_name": "mobility-style"})
+            reverse("catalog-v1-style-detail", kwargs={"style_ref": str(self.mbstyle.id)})
         )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["name"], "mobility-style")
+        self.assertEqual(response.json()["version"], 8)
 
-    @patch("tosca_api.apps.catalog_api.views.GeoServerRemoteService.get_style_detail")
-    def test_style_detail_returns_404_when_missing(self, get_style_detail_mock):
-        get_style_detail_mock.return_value = None
-
+    def test_style_detail_returns_404_when_missing(self):
         response = self.client.get(
-            reverse("catalog-v1-style-detail", kwargs={"style_name": "missing-style"})
+            reverse("catalog-v1-style-detail", kwargs={"style_ref": "missing-style"})
         )
 
         self.assertEqual(response.status_code, 404)
+
+    def test_style_detail_returns_raw_sld_when_xml_is_accepted(self):
+        response = self.client.get(
+            reverse("catalog-v1-style-detail", kwargs={"style_ref": str(self.sld_style.id)}),
+            HTTP_ACCEPT="application/vnd.ogc.sld+xml",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("StyledLayerDescriptor", response.content.decode("utf-8"))
+
+    def test_style_detail_returns_406_for_sld_when_json_is_requested(self):
+        response = self.client.get(
+            reverse("catalog-v1-style-detail", kwargs={"style_ref": str(self.sld_style.id)}),
+            HTTP_ACCEPT="application/json",
+        )
+
+        self.assertEqual(response.status_code, 406)
 
     @patch("tosca_api.apps.catalog_api.views.GeoServerRemoteService.get_layer_resource_detail")
     def test_layer_detail_merges_remote_feature_type_payload(self, get_layer_resource_detail_mock):

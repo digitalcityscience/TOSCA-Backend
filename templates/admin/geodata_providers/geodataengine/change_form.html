@@ -68,7 +68,7 @@
     </div>
 
     <div style="font-size:12px; color:#555; margin-bottom: 8px;">
-      Deactivate is the safe default for duplicate or temporary providers. Force Delete removes layers, stores, workspaces, and finally the provider.
+      Deactivate is the safe default for duplicate or temporary providers. Force Delete removes styles, layers, stores, workspaces, and finally the provider record.
     </div>
 
     <div id="engine-action-result" style="
@@ -126,14 +126,15 @@
 
           var msg = '';
           if (action === 'test-connection') {
-            msg = '&#10003; Connected &mdash; GeoServer ' + data.version
+            msg = '&#10003; Connected &mdash; provider version ' + data.version
                 + ', latency <strong>' + data.latency_ms + ' ms</strong>.';
           } else {
             var ws = data.workspaces, st = data.stores, ly = data.layers;
             msg = '&#10003; Sync complete &mdash; '
                 + 'Workspaces: +' + ws.created + ' / &minus;' + ws.deleted + ' / ~' + ws.synced + ' &bull; '
                 + 'Stores: +'     + st.created + ' / &minus;' + st.deleted + ' / ~' + st.synced + ' &bull; '
-                + 'Layers: +'     + ly.created + ' / &minus;' + ly.deleted + ' / ~' + ly.synced + '.';
+                + 'Layers: +'     + ly.created + ' / &minus;' + ly.deleted + ' / ~' + ly.synced + '. '
+                + 'Provider state synced into the local catalog.';
           }
           resultBox.innerHTML = msg;
         } else {
