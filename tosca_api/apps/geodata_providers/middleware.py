@@ -1,7 +1,7 @@
 """
 Active GeodataEngine Session Management
 ----------------------------------------
-HISTORY: This was written for the Django admin panel before the geo_console app
+HISTORY: This was written for the Django admin panel before a separate console app
 existed. It tracked which engine was "active" in session so admin list views
 could filter Workspace/Store/Layer records by that engine.
 
@@ -10,12 +10,9 @@ STATUS (14 March 2026): INACTIVE
 - admin.py no longer calls get_active_engine()
 - engine selector template, if reused, lives under templates/admin/geodata_providers/
 
-FUTURE (geo_console Phase 2+):
-An equivalent concept will be implemented inside geo_console — but using
-URL-based engine selection, not session state:
-  /console/workspaces/?engine=<uuid>
-  /console/stores/?engine=<uuid>
-The get_active_engine() helper below can be adapted there if needed.
+FUTURE:
+If a separate UI is reintroduced later, equivalent engine selection should use
+URL-based filtering rather than session state.
 """
 from django.utils.deprecation import MiddlewareMixin
 from .models import GeodataEngine

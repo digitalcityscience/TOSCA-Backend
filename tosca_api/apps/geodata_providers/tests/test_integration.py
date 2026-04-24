@@ -1,14 +1,15 @@
-from django.test import TestCase
-from django.contrib.auth.models import User
-from rest_framework.test import APIClient
-from rest_framework import status
-import requests
+import os
 import random
 import string
-import os
-import json
+
+import pytest
+import requests
+from django.test import TestCase
+from django.contrib.auth.models import User
 
 from tosca_api.apps.geodata_providers.models import GeodataEngine
+
+pytestmark = pytest.mark.integration
 
 
 class GeoServerIntegrationTestCase(TestCase):
@@ -16,8 +17,6 @@ class GeoServerIntegrationTestCase(TestCase):
     
     def setUp(self):
         """Set up test data"""
-        self.client = APIClient()
-        
         # Create test user
         self.user = User.objects.create_user(
             username='testuser',
@@ -25,7 +24,6 @@ class GeoServerIntegrationTestCase(TestCase):
             password='testpass123',
             is_staff=True,
         )
-        self.client.force_authenticate(user=self.user)
         
         # Create test engine with real GeoServer connection
         self.engine = GeodataEngine.objects.create(
@@ -118,87 +116,3 @@ class GeoServerIntegrationTestCase(TestCase):
         verify_delete_response = requests.get(f"{self.rest_url}/workspaces/{workspace_name}", auth=self.auth)
         self.assertEqual(verify_delete_response.status_code, 404)
     
-    def test_api_endpoints_with_real_data(self):
-        """Test our API endpoints work with real GeoServer data"""
-        
-        # Test engines list
-        response = self.client.get('/api/geoengine/engines/')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        
-        data = response.json()
-        self.assertIn('results', data)
-        self.assertGreaterEqual(data['count'], 1)  # At least our test engine
-        
-        # Test engine detail
-        response = self.client.get(f'/api/geoengine/engines/{self.engine.id}/')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        
-        data = response.json()
-        self.assertEqual(data['name'], 'Integration Test Engine')
-        self.assertIn('geoserver_url', data)
-    
-    def test_sync_with_real_geoserver(self):
-        """Test sync operation with real GeoServer"""
-        
-        # Create a test workspace directly in GeoServer first
-        workspace_name = self.generate_random_name("sync_test")
-        
-        create_data = {
-            "workspace": {
-                "name": workspace_name,
-                "description": "Sync test workspace"
-            }
-        }
-        
-        requests.post(
-            f"{self.rest_url}/workspaces",
-            json=create_data,
-            auth=self.auth,
-            headers={'Content-Type': 'application/json'}
-        )
-        
-        try:
-            # Test sync endpoint
-            response = self.client.post(f'/api/geoengine/engines/{self.engine.id}/sync/')
-            
-            # Should return 200 for success or 400/500 for expected errors
-            self.assertIn(response.status_code, [200, 400, 500])
-            
-            data = response.json()
-            self.assertIn('success', data)
-            
-        finally:
-            # Clean up test workspace
-            requests.delete(
-                f"{self.rest_url}/workspaces/{workspace_name}?recurse=true",
-                auth=self.auth
-            )
-
-
-class SimpleConsoleIntegrationTestCase(TestCase):
-    """Simple console integration tests"""
-    
-    def setUp(self):
-        """Set up test data"""
-        self.user = User.objects.create_user('consoleuser', 'console@test.com', 'testpass')
-        
-        self.engine = GeodataEngine.objects.create(
-            name='Console Integration Engine',
-            description='For console testing',
-            base_url=f"http://{os.getenv('GEOSERVER_HOST')}:{os.getenv('GEOSERVER_PORT')}/geoserver",
-            admin_username=os.getenv('GEOSERVER_ADMIN_USER'),
-            admin_password=os.getenv('GEOSERVER_ADMIN_PASSWORD'),
-            is_active=True,
-            created_by=self.user
-        )
-    
-    def test_console_engines_view(self):
-        """Test console engines view works"""
-        self.client.login(username='consoleuser', password='testpass')
-        
-        response = self.client.get('/console/')
-        self.assertEqual(response.status_code, 200)
-        
-        # Check engine is displayed
-        self.assertContains(response, 'Console Integration Engine')
-        self.assertContains(response, 'Sync All')

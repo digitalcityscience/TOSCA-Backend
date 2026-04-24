@@ -314,7 +314,7 @@ class GeoServerSyncService:
                     # will always return '' for password.  Including it in defaults
                     # would wipe any password the user entered via Store Detail on
                     # every sync cycle (F-009 / task 4.4.6).
-                    # Password is managed exclusively via PATCH /api/geoengine/stores/{id}/.
+                    # Password is managed exclusively via PATCH /api/v1/providers/provider/stores/{id}/.
                     store, created = Store.objects.update_or_create(
                         workspace=workspace,
                         name=store_name,

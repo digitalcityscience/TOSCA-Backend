@@ -145,7 +145,7 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='test_connection', permission_classes=[permissions.IsAuthenticated])
     def test_connection(self, request):
         """
-        POST /api/geoengine/engines/test_connection/
+        POST /api/v1/providers/provider/engines/test_connection/
         Stateless connection test — no saved engine required.
         Body: { base_url, admin_username, admin_password, engine_type }
         Used by the create engine form before the engine is saved.
@@ -184,7 +184,7 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
     def push(self, request, pk=None):
         """
-        POST /api/geoengine/engines/{id}/push/
+        POST /api/v1/providers/provider/engines/{id}/push/
         Push Django metadata intent → GeoServer (workspaces for now).
         Sync rule: check exists → create if missing → verify → report.
         Does NOT modify Django state.
@@ -302,7 +302,7 @@ class StoreViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):
         """
-        POST /api/geoengine/stores/{id}/test_connection/
+        POST /api/v1/providers/provider/stores/{id}/test_connection/
         Verifies the store is reachable in GeoServer by fetching its detail.
         Returns success + store detail on success, error on failure.
         """
@@ -324,7 +324,7 @@ class StoreViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def postgis_tables(self, request, pk=None):
         """
-        GET /api/geoengine/stores/{id}/postgis_tables/
+        GET /api/v1/providers/provider/stores/{id}/postgis_tables/
 
         Returns all PostGIS tables with geometry metadata from the store's
         target database schema.  Uses SQLAlchemy (psycopg v3) — connects
@@ -439,7 +439,7 @@ class LayerViewSet(viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         """
-        PATCH/PUT /api/geoengine/layers/<id>/
+        PATCH/PUT /api/v1/providers/provider/layers/<id>/
 
         Allowed editable fields:
             title, description  — synced to GeoServer (if PUBLISHED) then Django
@@ -521,7 +521,7 @@ class LayerViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def publish_postgis(self, request):
         """
-        POST /api/geoengine/layers/publish_postgis/
+        POST /api/v1/providers/provider/layers/publish_postgis/
 
         Publishes an existing PostGIS table as a GeoServer FeatureType and
         registers a Layer object in Django.  All operations follow the

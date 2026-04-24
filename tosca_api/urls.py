@@ -13,30 +13,22 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from tosca_api.apps.authentication.views import KeycloakLogoutView
 from tosca_api.views import base
 
-catalog_v1_urlpatterns = [
-    path('api/catalog/v1/', include('tosca_api.apps.catalog_api.urls'), name='catalog_api'),
-]
-
 urlpatterns = [
     path('admin/logout/', KeycloakLogoutView.as_view(), name='admin_logout'),  # Override Django admin logout
     # API Documentation
-    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
-    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
-    path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
+    path('api/v1/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path('api/v1/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    path('api/v1/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
     # App URLs
     path('', include('tosca_api.apps.authentication.urls')),  # ← Include authentication app URLs
     path('api/v1/', include('tosca_api.apps.campaigns.urls')),
     path('api/v1/', include('tosca_api.apps.geostories.urls')),
     path('api/v1/', include('tosca_api.apps.events.urls')),
     path("api/v1/", include("tosca_api.apps.feedback.urls")),
+    path('api/v1/catalog/', include('tosca_api.apps.catalog_api.urls'), name='catalog_api'),
     path('admin/logout/', KeycloakLogoutView.as_view(), name='admin_logout'),
     path('', base, name='base'),
     path('accounts/', include('tosca_api.apps.authentication.urls')),  # Include allauth URLs for authentication
-    path("api/schema/", SpectacularAPIView.as_view(patterns=catalog_v1_urlpatterns), name="api-schema"),
-    path("api/docs/", SpectacularSwaggerView.as_view(url_name="api-schema"), name="api-swagger-ui"),
-    *catalog_v1_urlpatterns,
-    path('api/geoengine/', include('tosca_api.apps.geodata_providers.api.urls'), name='geodata_engine_api'),
-    path("console/", include("tosca_api.apps.geo_console.urls"), name="geo_console"),
     # Backward-compatible alias (can be removed after clients migrate).
     path('admin/', admin.site.urls),
 ]

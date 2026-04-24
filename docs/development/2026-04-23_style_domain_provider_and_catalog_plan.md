@@ -597,7 +597,7 @@ Kurallar:
 
 - Style write işlemleri admin panel ve provider command service ile yapılacak.
 - Swagger UI sadece catalog read endpointlerini göstermeye devam edecek.
-- `/api/geoengine/` internal kalacak.
+- Provider API prefixi `/api/v1/providers/provider/` olacak.
 - Catalog endpointleri sadece read surface olacak.
 
 ## Faz 10: Test Planı

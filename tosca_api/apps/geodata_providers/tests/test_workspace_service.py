@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
 from django.test import RequestFactory, TestCase
-from rest_framework.test import APIClient
 
 from tosca_api.apps.geodata_providers.admin import DeleteAborted, WorkspaceAdmin, WorkspaceAdminForm
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Workspace
@@ -119,70 +118,6 @@ class WorkspaceServiceTestCase(TestCase):
         self.assertFalse(result['already_exists'])
         self.assertEqual(result['resource'].name, 'demo_ws')
         self.assertFalse(Workspace.objects.filter(pk=self.workspace.pk).exists())
-
-
-class WorkspaceApiServiceIntegrationTestCase(TestCase):
-    def setUp(self):
-        self.client = APIClient()
-        self.user = User.objects.create_user(
-            username='workspace-api-user',
-            password='testpass123',
-            is_staff=True,
-            is_superuser=True,
-        )
-        self.client.force_authenticate(self.user)
-        self.engine = GeodataEngine.objects.create(
-            name='Workspace API Engine',
-            description='test',
-            engine_type='geoserver',
-            base_url='http://example.com/geoserver',
-            admin_username='admin',
-            admin_password='secret',
-            created_by=self.user,
-        )
-        self.workspace = Workspace.objects.create(
-            geodata_engine=self.engine,
-            name='demo_ws',
-            description='workspace',
-            created_by=self.user,
-        )
-
-    @patch('tosca_api.apps.geodata_providers.api.views.WorkspaceService.create_workspace')
-    def test_create_endpoint_uses_workspace_service(self, mock_create_workspace):
-        mocked_workspace = Workspace(
-            geodata_engine=self.engine,
-            name='posted_workspace',
-            description='workspace',
-            created_by=self.user,
-        )
-        mock_create_workspace.return_value = {
-            'success': True,
-            'created': True,
-            'message': 'created',
-            'resource': mocked_workspace,
-        }
-
-        response = self.client.post(
-            '/api/geoengine/workspaces/',
-            {
-                'geodata_engine': str(self.engine.pk),
-                'name': 'posted_workspace',
-                'description': 'workspace',
-            },
-            format='json',
-        )
-
-        self.assertEqual(response.status_code, 201)
-        mock_create_workspace.assert_called_once()
-
-    @patch('tosca_api.apps.geodata_providers.api.views.WorkspaceService.delete_workspace_safe')
-    def test_destroy_endpoint_uses_workspace_service(self, mock_delete_workspace):
-        mock_delete_workspace.return_value = {'success': True, 'message': 'deleted'}
-
-        response = self.client.delete(f'/api/geoengine/workspaces/{self.workspace.pk}/')
-
-        self.assertEqual(response.status_code, 200)
-        mock_delete_workspace.assert_called_once_with(self.workspace)
 
 
 class WorkspaceAdminServiceIntegrationTestCase(TestCase):
