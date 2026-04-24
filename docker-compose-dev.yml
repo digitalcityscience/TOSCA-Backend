@@ -41,8 +41,9 @@ services:
       - "${GEOSERVER_PORT}:8080"
     volumes:
       - geoserver_data:/geoserver_data/data
-      # add to local data into container
-      # /home/user/geoserver_data:/mnt/geoserver_data
+      # Optional: set GEOSERVER_LOCAL_DATA_PATH in your .env.dev to mount local geodata.
+      # Falls back to an empty directory when the variable is not set.
+      - ${GEOSERVER_LOCAL_DATA_PATH:-./docker/geoserver-empty}:/mnt/home
     depends_on:
       db:
         condition: service_healthy

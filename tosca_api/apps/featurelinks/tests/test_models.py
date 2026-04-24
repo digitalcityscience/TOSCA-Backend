@@ -1,0 +1,452 @@
+import pytest
+from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
+from django.contrib.gis.geos import Point
+from django.core.exceptions import ValidationError
+from django.utils import timezone
+from datetime import timedelta
+
+from tosca_api.apps.campaigns.models import Campaign
+from tosca_api.apps.featurelinks.models import FeatureLink
+from tosca_api.apps.geocontext.models import GeoContext
+from tosca_api.apps.geostories.models import GeoStory
+from tosca_api.apps.events.models import Event
+from tosca_api.apps.feedback.models import GeoFeedback
+
+User = get_user_model()
+
+
+@pytest.fixture
+def user():
+    return User.objects.create_user(username="linkuser", password="password")
+
+
+@pytest.fixture
+def campaign(user):
+    return Campaign.objects.create(title="Campaign A", created_by=user)
+
+
+@pytest.fixture
+def campaign_b(user):
+    return Campaign.objects.create(title="Campaign B", created_by=user)
+
+
+@pytest.fixture
+def story1(user, campaign):
+    return GeoStory.objects.create(title="Story 1", campaign=campaign, author=user)
+
+
+@pytest.fixture
+def story2(user, campaign):
+    return GeoStory.objects.create(title="Story 2", campaign=campaign, author=user)
+
+
+@pytest.fixture
+def story_b(user, campaign_b):
+    return GeoStory.objects.create(title="Story B", campaign=campaign_b, author=user)
+
+
+@pytest.fixture
+def geocontext(user):
+    return GeoContext.objects.create(
+        content={"blocks": [{"type": "paragraph", "data": {"text": "Test content"}}]},
+        created_by=user,
+    )
+
+
+@pytest.fixture
+def event1(user, campaign):
+    """Create an event in Campaign A."""
+    now = timezone.now()
+    return Event.objects.create(
+        title="Event 1",
+        campaign=campaign,
+        start_datetime=now + timedelta(days=1),
+        end_datetime=now + timedelta(days=1, hours=2),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+
+
+@pytest.fixture
+def event2(user, campaign):
+    """Create another event in Campaign A."""
+    now = timezone.now()
+    return Event.objects.create(
+        title="Event 2",
+        campaign=campaign,
+        start_datetime=now + timedelta(days=2),
+        end_datetime=now + timedelta(days=2, hours=2),
+        location=Point(10.1, 53.6, srid=4326),
+        organizer=user,
+    )
+
+
+@pytest.fixture
+def event_b(user, campaign_b):
+    """Create an event in Campaign B."""
+    now = timezone.now()
+    return Event.objects.create(
+        title="Event B",
+        campaign=campaign_b,
+        start_datetime=now + timedelta(days=3),
+        end_datetime=now + timedelta(days=3, hours=2),
+        location=Point(10.2, 53.7, srid=4326),
+        organizer=user,
+    )
+
+
+@pytest.fixture
+def geofeedback1(user, campaign):
+    """Create a GeoFeedback for Campaign A."""
+    return GeoFeedback.objects.create(
+        title="Feedback 1",
+        campaign=campaign,
+        created_by=user,
+        rating_enabled=True,
+    )
+
+
+@pytest.fixture
+def geofeedback_b(user, campaign_b):
+    """Create a GeoFeedback for Campaign B."""
+    return GeoFeedback.objects.create(
+        title="Feedback B",
+        campaign=campaign_b,
+        created_by=user,
+        rating_enabled=True,
+    )
+
+
+@pytest.mark.django_db
+def test_featurelink_create_success(user, story1, story2, campaign):
+    """Test linking two stories in the same campaign."""
+    link = FeatureLink.objects.create(
+        campaign=campaign,
+        source_object=story1,
+        target_object=story2,
+        link_type=FeatureLink.LinkType.DIRECT,
+        created_by=user,
+    )
+    assert link.id is not None
+    assert link.source_object == story1
+    assert link.target_object == story2
+    assert link.created_by == user
+
+
+@pytest.mark.django_db
+def test_featurelink_rejects_cross_campaign(user, story1, story_b, campaign):
+    """Test that linking objects from different campaigns raises error."""
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_object=story1,
+            target_object=story_b,
+            created_by=user,
+        )
+    assert "target_object_id" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_featurelink_rejects_mismatch_link_campaign(user, story1, story2, campaign_b):
+    """Test that link campaign must match object campaigns."""
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign_b,
+            source_object=story1,
+            target_object=story2,
+            created_by=user,
+        )
+    assert "source_object_id" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_featurelink_rejects_self_link(user, story1, campaign):
+    """Test that linking an object to itself raises error."""
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_object=story1,
+            target_object=story1,
+            created_by=user,
+        )
+    assert "target_object_id" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_featurelink_rejects_geocontext_as_source(user, geocontext, story1, campaign):
+    """Test that GeoContext cannot be used as link source."""
+    geocontext_ct = ContentType.objects.get_for_model(GeoContext)
+    geostory_ct = ContentType.objects.get_for_model(GeoStory)
+    
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_content_type=geocontext_ct,
+            source_object_id=geocontext.id,
+            target_content_type=geostory_ct,
+            target_object_id=story1.id,
+            created_by=user,
+        )
+    assert "source_content_type" in exc.value.message_dict
+    assert "not allowed" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_featurelink_rejects_geocontext_as_target(user, geocontext, story1, campaign):
+    """Test that GeoContext cannot be used as link target."""
+    geocontext_ct = ContentType.objects.get_for_model(GeoContext)
+    geostory_ct = ContentType.objects.get_for_model(GeoStory)
+    
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_content_type=geostory_ct,
+            source_object_id=story1.id,
+            target_content_type=geocontext_ct,
+            target_object_id=geocontext.id,
+            created_by=user,
+        )
+    assert "target_content_type" in exc.value.message_dict
+    assert "not allowed" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_featurelink_prevents_duplicates(user, story1, story2, campaign):
+    """Test that duplicate links are prevented."""
+    FeatureLink.objects.create(
+        campaign=campaign,
+        source_object=story1,
+        target_object=story2,
+        created_by=user,
+    )
+    
+    # Attempt to create duplicate - caught at validation level
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_object=story1,
+            target_object=story2,
+            created_by=user,
+        )
+    assert "already exists" in str(exc.value)
+
+
+# =============================================================================
+# Event Linking Tests (Task 2.3)
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_featurelink_story_to_event(user, story1, event1, campaign):
+    """Test linking a GeoStory to an Event."""
+    link = FeatureLink.objects.create(
+        campaign=campaign,
+        source_object=story1,
+        target_object=event1,
+        link_type=FeatureLink.LinkType.READ_MORE,
+        created_by=user,
+    )
+    assert link.id is not None
+    assert link.source_object == story1
+    assert link.target_object == event1
+
+
+@pytest.mark.django_db
+def test_featurelink_event_to_story(user, event1, story1, campaign):
+    """Test linking an Event to a GeoStory."""
+    link = FeatureLink.objects.create(
+        campaign=campaign,
+        source_object=event1,
+        target_object=story1,
+        link_type=FeatureLink.LinkType.DIRECT,
+        created_by=user,
+    )
+    assert link.id is not None
+    assert link.source_object == event1
+    assert link.target_object == story1
+
+
+@pytest.mark.django_db
+def test_featurelink_event_to_event(user, event1, event2, campaign):
+    """Test linking an Event to another Event."""
+    link = FeatureLink.objects.create(
+        campaign=campaign,
+        source_object=event1,
+        target_object=event2,
+        link_type=FeatureLink.LinkType.DIRECT,
+        created_by=user,
+    )
+    assert link.id is not None
+    assert link.source_object == event1
+    assert link.target_object == event2
+
+
+@pytest.mark.django_db
+def test_featurelink_event_rejects_self_link(user, event1, campaign):
+    """Test that Event cannot link to itself."""
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_object=event1,
+            target_object=event1,
+            created_by=user,
+        )
+    assert "target_object_id" in exc.value.message_dict
+    assert "Cannot link" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_featurelink_event_rejects_cross_campaign(user, event1, event_b, campaign):
+    """Test that events from different campaigns cannot be linked."""
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_object=event1,
+            target_object=event_b,
+            created_by=user,
+        )
+    assert "target_object_id" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_featurelink_story_event_cross_campaign_rejected(user, story1, event_b, campaign):
+    """Test that Story and Event from different campaigns cannot be linked."""
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_object=story1,
+            target_object=event_b,
+            created_by=user,
+        )
+    assert "target_object_id" in exc.value.message_dict
+
+
+# =============================================================================
+# Object Existence Validation Tests
+# =============================================================================
+
+@pytest.mark.django_db
+def test_featurelink_rejects_nonexistent_source(user, story1, campaign):
+    """Test that a non-existent source object ID is rejected."""
+    import uuid
+    fake_uuid = uuid.uuid4()
+    geostory_ct = ContentType.objects.get_for_model(GeoStory)
+    
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_content_type=geostory_ct,
+            source_object_id=fake_uuid,  # Non-existent
+            target_object=story1,
+            created_by=user,
+        )
+    assert "source_object_id" in exc.value.message_dict
+    assert "found with id" in str(exc.value).lower()
+
+
+@pytest.mark.django_db
+def test_featurelink_rejects_nonexistent_target(user, story1, campaign):
+    """Test that a non-existent target object ID is rejected."""
+    import uuid
+    fake_uuid = uuid.uuid4()
+    event_ct = ContentType.objects.get_for_model(Event)
+    
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_object=story1,
+            target_content_type=event_ct,
+            target_object_id=fake_uuid,  # Non-existent
+            created_by=user,
+        )
+    assert "target_object_id" in exc.value.message_dict
+    assert "found with id" in str(exc.value).lower()
+
+
+@pytest.mark.django_db
+def test_featurelink_rejects_wrong_type_uuid(user, campaign, geocontext):
+    """Test that using a GeoContext UUID for GeoStory content type is rejected."""
+    geostory_ct = ContentType.objects.get_for_model(GeoStory)
+    event_ct = ContentType.objects.get_for_model(Event)
+    
+    # Use a GeoContext ID but claim it's a GeoStory
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_content_type=geostory_ct,
+            source_object_id=geocontext.id,  # GeoContext ID, not GeoStory
+            target_content_type=event_ct,
+            target_object_id=geocontext.id,  # Also wrong
+            created_by=user,
+        )
+    assert "source_object_id" in exc.value.message_dict or "target_object_id" in exc.value.message_dict
+
+
+# =============================================================================
+# GeoFeedback Linking Tests (Task 3.4)
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_featurelink_story_to_feedback(user, story1, geofeedback1, campaign):
+    """Test linking a GeoStory to a GeoFeedback."""
+    link = FeatureLink.objects.create(
+        campaign=campaign,
+        source_object=story1,
+        target_object=geofeedback1,
+        link_type=FeatureLink.LinkType.ACTION,
+        created_by=user,
+    )
+    assert link.id is not None
+    assert link.source_object == story1
+    assert link.target_object == geofeedback1
+
+
+@pytest.mark.django_db
+def test_featurelink_feedback_to_event(user, geofeedback1, event1, campaign):
+    """Test linking a GeoFeedback to an Event."""
+    link = FeatureLink.objects.create(
+        campaign=campaign,
+        source_object=geofeedback1,
+        target_object=event1,
+        link_type=FeatureLink.LinkType.DIRECT,
+        created_by=user,
+    )
+    assert link.id is not None
+    assert link.source_object == geofeedback1
+    assert link.target_object == event1
+
+
+@pytest.mark.django_db
+def test_featurelink_rejects_legacy_event_content_type(user, story1, event1, campaign):
+    """Test that stale legacy event content types are rejected."""
+    legacy_ct, _ = ContentType.objects.get_or_create(
+        app_label="events",
+        model="calendarevent",
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_content_type=legacy_ct,
+            source_object_id=event1.id,
+            target_object=story1,
+            created_by=user,
+        )
+
+    assert "source_content_type" in exc.value.message_dict
+    assert "events.calendarevent" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_featurelink_feedback_rejects_cross_campaign(user, geofeedback1, event_b, campaign):
+    """Test that GeoFeedback and Event from different campaigns cannot be linked."""
+    with pytest.raises(ValidationError) as exc:
+        FeatureLink.objects.create(
+            campaign=campaign,
+            source_object=geofeedback1,
+            target_object=event_b,
+            created_by=user,
+        )
+    assert "target_object_id" in exc.value.message_dict

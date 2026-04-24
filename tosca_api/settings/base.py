@@ -55,21 +55,33 @@ INSTALLED_APPS = [
     "tosca_api.apps.authentication",  # Override allauth templates
     # Third-party
     "rest_framework",
-    "rest_framework.authtoken",
+    "rest_framework_gis",
     "drf_spectacular",
+    "rest_framework.authtoken",
     "allauth",
     "allauth.account",
     "allauth.socialaccount",
     "allauth.socialaccount.providers.openid_connect",
     "dj_rest_auth",
     "dj_rest_auth.registration",
+    "formbuilder",
     # Local apps
     "tosca_api.apps.core",
     "tosca_api.apps.tosca_web",
     "tosca_api.apps.catalog_api.apps.CatalogApiConfig",
     "tosca_api.apps.geodata_providers.apps.GeodataProvidersConfig",
     "tosca_api.apps.geo_console",
+    "tosca_api.apps.campaigns",
+    "tosca_api.apps.geocontext",
+    "tosca_api.apps.layerrefs",
+    "tosca_api.apps.geostories",
+    "tosca_api.apps.featurelinks",
+    "tosca_api.apps.events",
+    "tosca_api.apps.feedback",
 ]
+
+# django-basic-form-builder: enable read-only API endpoint
+FORMBUILDER_API_ENABLED = True
 
 SITE_ID = 1
 
@@ -170,6 +182,28 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "tosca_api.apps.core.pagination.StandardResultsSetPagination",
     "PAGE_SIZE": 20,
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "TOSCA API",
+    "DESCRIPTION": "Backend API for TOSCA Geospatial Platform",
+    "VERSION": "0.1.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    # Add common error responses to all endpoints
+    "APPEND_COMPONENTS": {
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+            }
+        }
+    },
+    "SECURITY": [{"bearerAuth": []}],
+    # Postprocessing hooks to add common responses
+    "POSTPROCESSING_HOOKS": [
+        "tosca_api.apps.core.schema.add_common_responses",
+    ],
 }
 
 SPECTACULAR_SETTINGS = {
