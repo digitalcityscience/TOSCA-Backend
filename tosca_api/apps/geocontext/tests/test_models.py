@@ -64,13 +64,49 @@ def test_geocontext_has_no_content_type_field():
 
 
 @pytest.mark.django_db
-def test_geocontext_str_representation(test_user):
-    """String representation reflects block count, not raw text."""
+def test_geocontext_str_prefers_explicit_title(test_user):
+    """An explicit title wins over derived excerpt in __str__."""
+    ctx = GeoContext.objects.create(
+        title="Smart City Logistics",
+        content={"blocks": [{"type": "paragraph", "data": {"text": "body"}}]},
+        created_by=test_user,
+    )
+    label = str(ctx)
+    assert label.startswith("Smart City Logistics")
+    assert "1 block" in label
+
+
+@pytest.mark.django_db
+def test_geocontext_str_falls_back_to_first_block_excerpt(test_user):
+    """Without a title, __str__ derives a short excerpt from the first block."""
+    ctx = GeoContext.objects.create(
+        content={
+            "blocks": [
+                {"type": "header", "data": {"text": "Quantum AI Overview", "level": 2}},
+                {"type": "paragraph", "data": {"text": "body"}},
+            ]
+        },
+        created_by=test_user,
+    )
+    label = str(ctx)
+    assert "Quantum AI Overview" in label
+    assert "2 block" in label
+
+
+@pytest.mark.django_db
+def test_geocontext_str_empty_document_is_labeled(test_user):
+    """Empty docs still produce a dropdown-friendly label."""
     empty = GeoContext.objects.create(created_by=test_user)
     assert "(empty)" in str(empty)
 
-    populated = GeoContext.objects.create(
-        content={"blocks": [{"type": "paragraph", "data": {"text": "Hi"}}]},
+
+@pytest.mark.django_db
+def test_geocontext_str_no_title_no_text_falls_back_to_short_id(test_user):
+    """A rich document with no text-bearing block still gets a stable label."""
+    ctx = GeoContext.objects.create(
+        content={"blocks": [{"type": "delimiter", "data": {}}]},
         created_by=test_user,
     )
-    assert "1 block" in str(populated)
+    label = str(ctx)
+    assert "GeoContext " in label
+    assert "1 block" in label

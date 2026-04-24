@@ -37,17 +37,22 @@ class GeoContextAdmin(admin.ModelAdmin):
 
     form = GeoContextAdminForm
 
-    list_display = ("id", "content_preview", "created_by", "created_at")
+    list_display = ("title_or_excerpt", "content_preview", "created_by", "created_at")
     list_filter = ("created_at",)
-    search_fields = ("id",)
+    search_fields = ("id", "title")
     readonly_fields = ("id", "created_at", "updated_at")
     ordering = ("-created_at",)
 
     fieldsets = (
-        (None, {"fields": ("id", "content")}),
+        (None, {"fields": ("id", "title", "content")}),
         ("Ownership", {"fields": ("created_by",)}),
         ("Timestamps", {"fields": ("created_at", "updated_at")}),
     )
+
+    @admin.display(description="Title", ordering="title")
+    def title_or_excerpt(self, obj: GeoContext) -> str:
+        """Show the explicit title, or the derived excerpt fallback."""
+        return str(obj)
 
     @admin.display(description="Content Preview")
     def content_preview(self, obj: GeoContext) -> str:

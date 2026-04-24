@@ -5,7 +5,6 @@ Tests for sanitization utilities.
 from tosca_api.apps.core.sanitization import (
     sanitize_simple,
     sanitize_rich,
-    sanitize_content
 )
 
 
@@ -53,7 +52,3 @@ def test_sanitize_rich_preserves_allowlist():
     assert sanitize_rich(safe) == safe
 
 
-def test_sanitize_content_router():
-    """Test the router function."""
-    assert sanitize_content("<b>Hi</b>", "simple") == "Hi"
-    assert sanitize_content("<b>Hi</b>", "rich") == "<b>Hi</b>"

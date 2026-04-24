@@ -65,18 +65,3 @@ def sanitize_rich(content: str) -> str:
     )
 
 
-def sanitize_content(content: str, content_type: str) -> str:
-    """
-    Sanitize content based on its type.
-    
-    Args:
-        content: The text content.
-        content_type: 'simple' or 'rich'.
-        
-    Returns:
-        The sanitized content.
-    """
-    if content_type == "rich":
-        return sanitize_rich(content)
-    # Default to strict sanitization for 'simple' or unknown types
-    return sanitize_simple(content)
