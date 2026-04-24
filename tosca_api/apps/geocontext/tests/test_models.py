@@ -64,6 +64,71 @@ def test_geocontext_has_no_content_type_field():
 
 
 @pytest.mark.django_db
+def test_geocontext_final_schema_snapshot():
+    """
+    Task 7.6 — Release 3 final schema lock.
+
+    Pins the exact set of concrete fields on the canonical GeoContext
+    model after the Phase 7 migration. Any future addition or removal
+    of a concrete field must update this snapshot explicitly so the
+    "final" contract doesn't drift unnoticed.
+
+    Reverse relations (e.g. ``geostory``, ``event``, ``feedback``,
+    ``series_default_events``) are skipped because they are derived
+    from other apps and not part of the GeoContext storage contract.
+    """
+    concrete_fields = {
+        f.name for f in GeoContext._meta.get_fields() if not f.is_relation or f.many_to_one
+    }
+    # "concrete" here means: real DB columns, including FKs — no reverse relations.
+    assert concrete_fields == {
+        "id",
+        "title",
+        "content",
+        "created_by",
+        "created_at",
+        "updated_at",
+    }, concrete_fields
+
+    # Retired / never-landed field names must not creep back in.
+    for retired in ("content_type", "content_json"):
+        assert retired not in concrete_fields
+
+
+@pytest.mark.django_db
+def test_geocontext_crud_round_trip(test_user):
+    """
+    Task 7.6 — Regression: create/read/update/delete still works against
+    the canonical JSON contract after the destructive reset.
+    """
+    ctx = GeoContext.objects.create(
+        title="Round Trip",
+        content={"blocks": [{"type": "paragraph", "data": {"text": "v1"}}]},
+        created_by=test_user,
+    )
+
+    # Read
+    fetched = GeoContext.objects.get(pk=ctx.pk)
+    assert fetched.title == "Round Trip"
+    assert fetched.content["blocks"][0]["data"]["text"] == "v1"
+
+    # Update — both title and content mutate cleanly.
+    fetched.title = "Round Trip Updated"
+    fetched.content = {
+        "blocks": [{"type": "paragraph", "data": {"text": "v2"}}]
+    }
+    fetched.save()
+    reloaded = GeoContext.objects.get(pk=ctx.pk)
+    assert reloaded.title == "Round Trip Updated"
+    assert reloaded.content["blocks"][0]["data"]["text"] == "v2"
+
+    # Delete
+    pk = reloaded.pk
+    reloaded.delete()
+    assert not GeoContext.objects.filter(pk=pk).exists()
+
+
+@pytest.mark.django_db
 def test_geocontext_str_prefers_explicit_title(test_user):
     """An explicit title wins over derived excerpt in __str__."""
     ctx = GeoContext.objects.create(
