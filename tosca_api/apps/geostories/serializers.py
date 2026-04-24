@@ -18,7 +18,7 @@ class GeoContextSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = GeoContext
-        fields = ["id", "content"]
+        fields = ["id", "title", "content"]
         read_only_fields = fields
 
 

@@ -39,6 +39,17 @@ class GeoContext(TimeStampedModel):
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text=(
+            "Human-readable label used in admin dropdowns where GeoContext "
+            "rows are referenced (GeoStory / Event / GeoFeedback). Falls "
+            "back to a derived excerpt when left blank, but setting it "
+            "explicitly keeps related-object pickers usable."
+        ),
+    )
     content = models.JSONField(default=empty_editorjs_document, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -52,10 +63,40 @@ class GeoContext(TimeStampedModel):
         verbose_name_plural = "GeoContexts"
 
     def __str__(self) -> str:
+        """
+        Dropdown-friendly label.
+
+        Picks, in order: an explicit ``title``, a truncated excerpt from the
+        first header / paragraph block, or a short identifier fallback. The
+        block-count suffix is retained so editors can still tell rich rows
+        apart from empty ones at a glance.
+        """
+        title = (self.title or "").strip()
         blocks = (self.content or {}).get("blocks") or []
-        if not blocks:
-            return "GeoContext: (empty)"
-        return f"GeoContext: {len(blocks)} block(s)"
+        suffix = f" ({len(blocks)} block(s))" if blocks else " (empty)"
+
+        if title:
+            return f"{title}{suffix}"
+
+        excerpt = self._derive_excerpt(blocks)
+        if excerpt:
+            return f"{excerpt}{suffix}"
+
+        short_id = str(self.id)[:8] if self.id else "new"
+        return f"GeoContext {short_id}{suffix}"
+
+    @staticmethod
+    def _derive_excerpt(blocks: list, max_len: int = 60) -> str:
+        """Pull a short plain-text excerpt from the first text-bearing block."""
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            data = block.get("data") or {}
+            if block.get("type") in ("header", "paragraph", "quote"):
+                text = str(data.get("text") or "").strip()
+                if text:
+                    return text[:max_len] + ("…" if len(text) > max_len else "")
+        return ""
 
     def save(self, *args, **kwargs) -> None:
         """Validate and normalize Editor.js content before persistence."""
