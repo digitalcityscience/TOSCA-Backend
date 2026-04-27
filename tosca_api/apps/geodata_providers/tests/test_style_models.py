@@ -176,30 +176,36 @@ class StyleModelTestCase(TestCase):
                 created_by=self.user,
             )
 
-    def test_layer_rejects_non_postgis_store(self):
-        file_store = Store.objects.create(
+    def test_layer_accepts_raster_store(self):
+        """
+        Raster (geotiff) stores are first-class layer backings — the catalog
+        builder branches on store_type to render raster vs vector layer
+        detail shapes. Layer.clean() must not reject them.
+        """
+        raster_store = Store.objects.create(
             workspace=self.workspace,
-            name='file_store',
+            name='raster_store',
             description='store',
-            store_type='file',
-            file_path='/tmp/data/example.geojson',
+            store_type='geotiff',
+            file_path='/tmp/data/heatmap.tif',
             charset='UTF-8',
             created_by=self.user,
         )
 
-        with self.assertRaises(ValidationError):
-            Layer.objects.create(
-                workspace=self.workspace,
-                store=file_store,
-                name='file_backed_layer',
-                title='File Layer',
-                description='desc',
-                table_name='file_backed_layer',
-                geometry_column='geom',
-                geometry_type='Point',
-                srid=4326,
-                created_by=self.user,
-            )
+        layer = Layer.objects.create(
+            workspace=self.workspace,
+            store=raster_store,
+            name='raster_layer',
+            title='Raster Layer',
+            description='desc',
+            table_name='heatmap',
+            geometry_column='rast',
+            geometry_type='Polygon',
+            srid=3857,
+            created_by=self.user,
+        )
+
+        self.assertEqual(layer.store.store_type, 'geotiff')
 
     def test_layer_style_allows_style_from_different_engine(self):
         style = self._style(
