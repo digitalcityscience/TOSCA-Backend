@@ -1,6 +1,5 @@
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError
 from django.test import TestCase
 
 from tosca_api.apps.geodata_providers.models import (
@@ -108,6 +107,100 @@ class StyleModelTestCase(TestCase):
         with self.assertRaises(ValidationError):
             self._style(workspace=self.other_workspace)
 
+    def test_store_inherits_workspace_engine_when_missing(self):
+        store = Store.objects.create(
+            workspace=self.workspace,
+            name='workspace_bound_store',
+            description='store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            created_by=self.user,
+        )
+
+        self.assertEqual(store.geodata_engine, self.engine)
+
+    def test_store_rejects_mismatched_workspace_engine(self):
+        with self.assertRaises(ValidationError):
+            Store.objects.create(
+                geodata_engine=self.other_engine,
+                workspace=self.workspace,
+                name='mismatched_store',
+                description='store',
+                store_type='postgis',
+                host='db',
+                port=5432,
+                database='gis',
+                username='postgres',
+                password='secret',
+                schema='public',
+                created_by=self.user,
+            )
+
+    def test_layer_rejects_store_from_different_workspace(self):
+        other_workspace_same_engine = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='layer_other_ws',
+            description='workspace',
+            created_by=self.user,
+        )
+        other_store = Store.objects.create(
+            workspace=other_workspace_same_engine,
+            name='other_store',
+            description='store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            created_by=self.user,
+        )
+
+        with self.assertRaises(ValidationError):
+            Layer.objects.create(
+                workspace=self.workspace,
+                store=other_store,
+                name='mismatched_layer',
+                title='Mismatched Layer',
+                description='desc',
+                table_name='mismatched_layer',
+                geometry_column='geom',
+                geometry_type='Point',
+                srid=4326,
+                created_by=self.user,
+            )
+
+    def test_layer_rejects_non_postgis_store(self):
+        file_store = Store.objects.create(
+            workspace=self.workspace,
+            name='file_store',
+            description='store',
+            store_type='file',
+            file_path='/tmp/data/example.geojson',
+            charset='UTF-8',
+            created_by=self.user,
+        )
+
+        with self.assertRaises(ValidationError):
+            Layer.objects.create(
+                workspace=self.workspace,
+                store=file_store,
+                name='file_backed_layer',
+                title='File Layer',
+                description='desc',
+                table_name='file_backed_layer',
+                geometry_column='geom',
+                geometry_type='Point',
+                srid=4326,
+                created_by=self.user,
+            )
+
     def test_layer_style_allows_style_from_different_engine(self):
         style = self._style(
             geodata_engine=self.other_engine,
@@ -170,7 +263,7 @@ class StyleModelTestCase(TestCase):
             created_by=self.user,
         )
 
-        with self.assertRaises(IntegrityError):
+        with self.assertRaises(ValidationError):
             LayerStyleAssignment.objects.create(
                 layer=self.layer,
                 style=second_style,

@@ -106,6 +106,39 @@ class AdminFormCreateFlowTests(TestCase):
             },
         )
 
+    def test_store_add_form_requires_file_path_for_file_stores(self):
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='file_store_ws',
+            description='desc',
+            created_by=self.user,
+        )
+
+        form = StoreAdminForm(
+            data={
+                'workspace': str(workspace.pk),
+                'geodata_engine': '',
+                'name': 'file_store',
+                'store_type': 'file',
+                'description': 'desc',
+                'host': '',
+                'port': 5432,
+                'database': '',
+                'username': '',
+                'password': '',
+                'schema': 'public',
+                'file_path': '',
+                'charset': 'UTF-8',
+                'created_by': str(self.user.pk),
+            }
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertEqual(
+            form.errors['file_path'],
+            ['This field is required for file stores.'],
+        )
+
     @patch('tosca_api.apps.geodata_providers.admin._run_workspace_sync')
     def test_store_admin_save_model_sets_engine_from_workspace(self, mock_run_workspace_sync):
         workspace = Workspace.objects.create(

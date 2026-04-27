@@ -106,9 +106,10 @@ class GeodataEngine(models.Model, EncryptedCharField):
         return f"{self.name}{default_marker}"
 
     def save(self, *args, **kwargs):
+        self.full_clean()
         # Keep a single default engine.
         if self.is_default:
-            GeodataEngine.objects.filter(is_default=True).update(is_default=False)
+            GeodataEngine.objects.exclude(pk=self.pk).filter(is_default=True).update(is_default=False)
         super().save(*args, **kwargs)
 
     @property
@@ -164,6 +165,10 @@ class Workspace(models.Model):
         if self.geodata_engine:
             return f"{self.geodata_engine.name} -> {self.name}"
         return self.name
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class Store(models.Model, EncryptedCharField):
@@ -237,19 +242,34 @@ class Store(models.Model, EncryptedCharField):
             return f"{self.geodata_engine.name} -> {self.name}"
         return self.name
 
-    def save(self, *args, **kwargs):
+    def clean(self):
+        super().clean()
+        if self.workspace:
+            if not self.geodata_engine:
+                self.geodata_engine = self.workspace.geodata_engine
+            elif self.workspace.geodata_engine_id != self.geodata_engine_id:
+                raise ValidationError({
+                    'geodata_engine': 'Store geodata engine must match the selected workspace.'
+                })
         self._validate_store_config()
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
         super().save(*args, **kwargs)
 
     def _validate_store_config(self):
         """Validate required fields based on store type."""
+        errors = {}
         if self.store_type == 'postgis':
             required_fields = ['host', 'database', 'username']
             for field in required_fields:
                 if not getattr(self, field):
-                    raise ValidationError(f"{field} is required for PostGIS stores")
+                    errors[field] = "This field is required for PostGIS stores."
         elif self.store_type in ['file', 'geotiff'] and not self.file_path:
-            raise ValidationError(f"file_path is required for {self.store_type} stores")
+            errors['file_path'] = f"This field is required for {self.store_type} stores."
+
+        if errors:
+            raise ValidationError(errors)
 
     @property
     def decrypted_password(self):
@@ -335,6 +355,22 @@ class Layer(models.Model):
 
     def __str__(self):
         return f"{self.workspace.name}/{self.name}"
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.store_id and self.workspace_id:
+            if self.store.workspace_id != self.workspace_id:
+                errors['store'] = 'Store must belong to the selected workspace.'
+            elif self.store.store_type != 'postgis':
+                errors['store'] = 'Layers can only reference PostGIS stores.'
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
     @property
     def full_table_name(self):
@@ -430,7 +466,7 @@ class Style(models.Model):
 
     def save(self, *args, **kwargs):
         self.content_hash = hashlib.sha256((self.file_content or '').encode('utf-8')).hexdigest()
-        self.clean()
+        self.full_clean()
         super().save(*args, **kwargs)
 
     @property
@@ -504,11 +540,23 @@ class LayerStyleAssignment(models.Model):
         if not self.layer_id or not self.style_id:
             return
 
+        errors = {}
         if self.style.validation_state == "INVALID":
-            raise ValidationError({
-                'style': 'Invalid styles cannot be assigned to layers.'
-            })
+            errors['style'] = 'Invalid styles cannot be assigned to layers.'
+        if self.role == 'default' and self.is_active:
+            existing_default = LayerStyleAssignment.objects.filter(
+                layer=self.layer,
+                role='default',
+                is_active=True,
+            )
+            if self.pk:
+                existing_default = existing_default.exclude(pk=self.pk)
+            if existing_default.exists():
+                errors['role'] = 'Only one active default style is allowed per layer.'
+
+        if errors:
+            raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
-        self.clean()
+        self.full_clean()
         super().save(*args, **kwargs)
