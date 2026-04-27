@@ -1,48 +1,45 @@
+"""
+Geodata provider domain models.
+
+This app coordinates remote geodata engines (GeoServer today, Martin and
+pg_tileserv next) and the publishing pipeline that turns PostGIS tables
+into served layers with associated styles. Models here are deliberately
+opinionated about validation: each ``save`` runs ``full_clean`` so that
+programmatic creates surface the same errors the admin would, and
+cross-FK invariants are enforced in ``clean`` rather than left to forms.
+
+Secrets (engine admin password, store password) are encrypted at write
+time via :class:`EncryptedCharField` from ``encryption.py`` — that mixin
+is unique to this app and is intentional, see ``encryption.py``.
+"""
+
+from __future__ import annotations
+
 import hashlib
 import uuid
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.contrib.auth.models import User
+
+from tosca_api.apps.core.models import TimeStampedModel
+
 from .encryption import EncryptedCharField
 
 
-STYLE_FORMATS = [
-    ("sld", "SLD"),
-    ("mbstyle", "MBStyle"),
-]
-
-VALIDATION_STATES = [
-    ("UNKNOWN", "Unknown"),
-    ("VALID", "Valid"),
-    ("INVALID", "Invalid"),
-]
-
-REMOTE_STATES = [
-    ("LOCAL_ONLY", "Local only"),
-    ("SYNCED", "Synced"),
-    ("FAILED", "Failed"),
-    ("UNSUPPORTED", "Unsupported by provider"),
-    ("DELETED", "Deleted"),
-]
-
-LAYER_STYLE_ROLES = [
-    ("default", "Default"),
-    ("alternate", "Alternate"),
-]
-
-
-class GeodataEngine(models.Model, EncryptedCharField):
+class GeodataEngine(TimeStampedModel, EncryptedCharField):
     """
     Multi-engine geodata engine definition.
-    Supports GeoServer, Martin, pg_tileserv, and future engines.
+
+    Supports GeoServer, Martin, and pg_tileserv. ``base_url`` and the admin
+    credentials describe how this app talks to the remote service; the
+    credentials are encrypted on write via :class:`EncryptedCharField`.
     """
 
-    ENGINE_TYPES = [
-        ('geoserver', 'GeoServer'),
-        ('martin', 'Martin Tiles'),
-        ('pg_tileserv', 'PostGIS TileServer')
-    ]
+    class EngineType(models.TextChoices):
+        GEOSERVER = "geoserver", "GeoServer"
+        MARTIN = "martin", "Martin Tiles"
+        PG_TILESERV = "pg_tileserv", "PostGIS TileServer"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(
@@ -58,8 +55,8 @@ class GeodataEngine(models.Model, EncryptedCharField):
     # Engine type and connection details
     engine_type = models.CharField(
         max_length=50,
-        choices=ENGINE_TYPES,
-        default='geoserver',
+        choices=EngineType.choices,
+        default=EngineType.GEOSERVER,
         help_text="Type of geodata engine",
     )
     base_url = models.CharField(
@@ -68,13 +65,13 @@ class GeodataEngine(models.Model, EncryptedCharField):
     )
     admin_username = models.CharField(
         max_length=100,
-        default='admin2',
+        default="admin2",
         blank=True,
         help_text="Admin username (if applicable)",
     )
     admin_password = models.CharField(
         max_length=100,
-        default='geoserver2',
+        default="geoserver2",
         blank=True,
         help_text="Admin password (if applicable)",
     )
@@ -87,42 +84,48 @@ class GeodataEngine(models.Model, EncryptedCharField):
     )
 
     # Status
-    is_active = models.BooleanField(default=True, help_text="Is this engine instance active?")
-    is_default = models.BooleanField(default=False, help_text="Is this the default engine instance?")
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Is this engine instance active?",
+    )
+    is_default = models.BooleanField(
+        default=False,
+        help_text="Is this the default engine instance?",
+    )
 
-    # Metadata
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
     class Meta:
-        app_label = 'geodata_providers'
         verbose_name = "Geodata Provider"
         verbose_name_plural = "Geodata Providers"
-        ordering = ['-is_default', 'name']
+        ordering = ["-is_default", "name"]
 
-    def __str__(self):
+    def __str__(self) -> str:
         default_marker = " (Default)" if self.is_default else ""
         return f"{self.name}{default_marker}"
 
-    def save(self, *args, **kwargs):
-        # Keep a single default engine.
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        # Keep a single default engine — exclude self so re-saving the existing
+        # default doesn't accidentally clear its own flag.
         if self.is_default:
-            GeodataEngine.objects.filter(is_default=True).update(is_default=False)
+            GeodataEngine.objects.exclude(pk=self.pk).filter(is_default=True).update(
+                is_default=False
+            )
         super().save(*args, **kwargs)
 
     @property
-    def decrypted_admin_password(self):
-        """Get decrypted admin password."""
-        return self.decrypt_field('admin_password', self.admin_password)
+    def decrypted_admin_password(self) -> str:
+        """Return the decrypted admin password."""
+        return self.decrypt_field("admin_password", self.admin_password)
 
     @property
-    def engine_url(self):
+    def engine_url(self) -> str:
         """Generic alias for the engine URL."""
         return self.base_url
 
     @property
-    def geoserver_url(self):
+    def geoserver_url(self) -> str:
         """Backward-compatible alias for existing GeoServer-centric code."""
         return self.base_url
 
@@ -133,63 +136,71 @@ class GeodataEngine(models.Model, EncryptedCharField):
         return EngineClientFactory.create_client(self)
 
 
-class Workspace(models.Model):
+class Workspace(TimeStampedModel):
     """
-    Logical grouping of data (e.g. 'mobility', 'environment')
-    Belongs to a specific GeodataEngine
+    Logical grouping of data (e.g. 'mobility', 'environment').
+
+    A workspace belongs to a specific :class:`GeodataEngine` and namespaces
+    every store and layer published under it.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     geodata_engine = models.ForeignKey(
         GeodataEngine,
         on_delete=models.CASCADE,
-        related_name='workspaces',
+        related_name="workspaces",
         null=True,
         blank=True,
     )
-    name = models.CharField(max_length=100, help_text="Workspace name (e.g., 'mobility', 'environment')")
+    name = models.CharField(
+        max_length=100,
+        help_text="Workspace name (e.g., 'mobility', 'environment')",
+    )
     description = models.TextField(blank=True, help_text="Description of this workspace")
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
     class Meta:
-        app_label = 'geodata_providers'
         verbose_name = "Workspace"
         verbose_name_plural = "Workspaces"
-        ordering = ['name']
-        unique_together = [['geodata_engine', 'name']]
+        ordering = ["name"]
+        unique_together = [["geodata_engine", "name"]]
 
-    def __str__(self):
+    def __str__(self) -> str:
         if self.geodata_engine:
             return f"{self.geodata_engine.name} -> {self.name}"
         return self.name
 
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        super().save(*args, **kwargs)
 
-class Store(models.Model, EncryptedCharField):
+
+class Store(TimeStampedModel, EncryptedCharField):
     """
-    Represents a generic data store abstraction.
-    Belongs to a specific GeodataEngine.
+    Generic data store abstraction.
+
+    A store is owned by a :class:`Workspace` (and therefore by an engine).
+    PostGIS stores are the only kind that can back a published Layer; file
+    and GeoTIFF stores exist for raster / file-based data sources.
     """
 
-    STORE_TYPES = [
-        ('postgis', 'PostGIS Database'),
-        ('file', 'File-based Store (Shapefile, GeoPackage, GeoJSON, Directory)'),
-        ('geotiff', 'GeoTIFF'),
-    ]
+    class StoreType(models.TextChoices):
+        POSTGIS = "postgis", "PostGIS Database"
+        FILE = "file", "File-based Store (Shapefile, GeoPackage, GeoJSON, Directory)"
+        GEOTIFF = "geotiff", "GeoTIFF"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     geodata_engine = models.ForeignKey(
         GeodataEngine,
         on_delete=models.CASCADE,
-        related_name='stores',
+        related_name="stores",
         null=True,
         blank=True,
     )
     workspace = models.ForeignKey(
-        'Workspace',
+        "Workspace",
         on_delete=models.CASCADE,
-        related_name='stores',
+        related_name="stores",
         null=True,
         blank=True,
         help_text="Workspace this store belongs to",
@@ -198,8 +209,8 @@ class Store(models.Model, EncryptedCharField):
 
     store_type = models.CharField(
         max_length=20,
-        choices=STORE_TYPES,
-        default='postgis',
+        choices=StoreType.choices,
+        default=StoreType.POSTGIS,
         help_text="Type of data store",
     )
 
@@ -218,92 +229,106 @@ class Store(models.Model, EncryptedCharField):
 
     # File-based store fields
     file_path = models.CharField(max_length=500, blank=True, help_text="File or directory path")
-    charset = models.CharField(max_length=50, default='UTF-8', blank=True, help_text="Character encoding")
+    charset = models.CharField(max_length=50, default="UTF-8", blank=True, help_text="Character encoding")
 
     description = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
     class Meta:
-        app_label = 'geodata_providers'
         verbose_name = "Data Store"
         verbose_name_plural = "Data Stores"
-        ordering = ['store_type', 'name']
-        unique_together = [['workspace', 'name']]
+        ordering = ["store_type", "name"]
+        unique_together = [["workspace", "name"]]
 
-    def __str__(self):
+    def __str__(self) -> str:
         if self.geodata_engine:
             return f"{self.geodata_engine.name} -> {self.name}"
         return self.name
 
-    def save(self, *args, **kwargs):
+    def clean(self) -> None:
+        super().clean()
+        # Inherit engine from workspace when only the workspace is set; reject
+        # explicit mismatches so the admin surfaces a clean field-level error.
+        if self.workspace:
+            if not self.geodata_engine:
+                self.geodata_engine = self.workspace.geodata_engine
+            elif self.workspace.geodata_engine_id != self.geodata_engine_id:
+                raise ValidationError(
+                    {"geodata_engine": "Store geodata engine must match the selected workspace."}
+                )
         self._validate_store_config()
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
         super().save(*args, **kwargs)
 
-    def _validate_store_config(self):
+    def _validate_store_config(self) -> None:
         """Validate required fields based on store type."""
-        if self.store_type == 'postgis':
-            required_fields = ['host', 'database', 'username']
-            for field in required_fields:
+        errors: dict[str, str] = {}
+        if self.store_type == self.StoreType.POSTGIS:
+            for field in ("host", "database", "username"):
                 if not getattr(self, field):
-                    raise ValidationError(f"{field} is required for PostGIS stores")
-        elif self.store_type in ['file', 'geotiff'] and not self.file_path:
-            raise ValidationError(f"file_path is required for {self.store_type} stores")
+                    errors[field] = "This field is required for PostGIS stores."
+        elif self.store_type in {self.StoreType.FILE, self.StoreType.GEOTIFF} and not self.file_path:
+            errors["file_path"] = f"This field is required for {self.store_type} stores."
+
+        if errors:
+            raise ValidationError(errors)
 
     @property
-    def decrypted_password(self):
-        """Get decrypted password."""
-        return self.decrypt_field('password', self.password)
+    def decrypted_password(self) -> str:
+        """Return the decrypted PostGIS password."""
+        return self.decrypt_field("password", self.password)
 
-    def has_usable_password(self):
-        """Check if the store has a usable (decryptable) password."""
+    def has_usable_password(self) -> bool:
+        """Return True if the store has a usable (decryptable) password."""
         try:
             return bool(self.decrypted_password)
         except (ValueError, Exception):
             return False
 
 
-class Layer(models.Model):
+class Layer(TimeStampedModel):
     """
     Logical dataset backed by a PostGIS table or view.
-    Publishing is explicit and delegated to services.
+
+    Publishing is explicit and delegated to services; the model only carries
+    the minimum metadata needed to describe the layer and track its
+    publishing state.
     """
 
-    GEOMETRY_TYPES = [
-        ('Point', 'Point'),
-        ('LineString', 'LineString'),
-        ('Polygon', 'Polygon'),
-        ('MultiPoint', 'MultiPoint'),
-        ('MultiLineString', 'MultiLineString'),
-        ('MultiPolygon', 'MultiPolygon'),
-        ('GeometryCollection', 'GeometryCollection'),
-    ]
+    class GeometryType(models.TextChoices):
+        POINT = "Point", "Point"
+        LINE_STRING = "LineString", "LineString"
+        POLYGON = "Polygon", "Polygon"
+        MULTI_POINT = "MultiPoint", "MultiPoint"
+        MULTI_LINE_STRING = "MultiLineString", "MultiLineString"
+        MULTI_POLYGON = "MultiPolygon", "MultiPolygon"
+        GEOMETRY_COLLECTION = "GeometryCollection", "GeometryCollection"
 
-    PUBLISHING_STATES = [
-        ('DRAFT', 'Draft'),
-        ('PUBLISHED', 'Published'),
-        ('FAILED', 'Failed'),
-        ('UNPUBLISHED', 'Unpublished'),
-    ]
+    class PublishingState(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        PUBLISHED = "PUBLISHED", "Published"
+        FAILED = "FAILED", "Failed"
+        UNPUBLISHED = "UNPUBLISHED", "Unpublished"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100, help_text="Layer name")
     title = models.CharField(max_length=200, blank=True, help_text="Human-readable title")
     description = models.TextField(blank=True)
 
-    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='layers')
-    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='layers')
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="layers")
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name="layers")
 
     table_name = models.CharField(max_length=100, help_text="PostGIS table name")
-    geometry_column = models.CharField(max_length=100, default='geom', help_text="Geometry column name")
-    geometry_type = models.CharField(max_length=50, choices=GEOMETRY_TYPES, help_text="Geometry type")
+    geometry_column = models.CharField(max_length=100, default="geom", help_text="Geometry column name")
+    geometry_type = models.CharField(max_length=50, choices=GeometryType.choices, help_text="Geometry type")
     srid = models.IntegerField(default=4326, help_text="Spatial Reference System Identifier")
 
     publishing_state = models.CharField(
         max_length=20,
-        choices=PUBLISHING_STATES,
-        default='DRAFT',
+        choices=PublishingState.choices,
+        default=PublishingState.DRAFT,
         help_text="Current publishing state",
     )
     is_public = models.BooleanField(
@@ -322,46 +347,81 @@ class Layer(models.Model):
     publishing_error = models.TextField(blank=True, help_text="Last publishing error message")
     published_at = models.DateTimeField(null=True, blank=True)
 
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
     class Meta:
-        app_label = 'geodata_providers'
         verbose_name = "Layer"
         verbose_name_plural = "Layers"
-        ordering = ['workspace__name', 'name']
-        unique_together = ['workspace', 'name']
+        ordering = ["workspace__name", "name"]
+        unique_together = ["workspace", "name"]
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"{self.workspace.name}/{self.name}"
 
+    def clean(self) -> None:
+        super().clean()
+        errors: dict[str, str] = {}
+        # Raster (geotiff) and PostGIS stores are both first-class layer
+        # backings — see catalog_api.services.v1.geoserver_v1_builder, which
+        # branches on store_type to build the right detail shape.
+        if self.store_id and self.workspace_id:
+            if self.store.workspace_id != self.workspace_id:
+                errors["store"] = "Store must belong to the selected workspace."
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        super().save(*args, **kwargs)
+
     @property
-    def full_table_name(self):
-        """Returns fully qualified table name: schema.table."""
+    def full_table_name(self) -> str:
+        """Return the fully qualified table name as ``schema.table``."""
         return f"{self.store.schema}.{self.table_name}"
 
     @property
-    def is_published(self):
-        """Check if layer is currently published."""
-        return self.publishing_state == 'PUBLISHED'
+    def is_published(self) -> bool:
+        """Return True if the layer is currently published."""
+        return self.publishing_state == self.PublishingState.PUBLISHED
 
 
-class Style(models.Model):
+class Style(TimeStampedModel):
     """
     Provider-owned style definition backed by GeoServer SLD or MBStyle content.
+
+    Styles are global (engine-scoped) by default and may optionally be
+    workspace-scoped. The active validation and remote upload state is
+    tracked on the row so the admin and sync services can reason about
+    whether the style is safe to assign to a layer.
     """
+
+    class StyleFormat(models.TextChoices):
+        SLD = "sld", "SLD"
+        MBSTYLE = "mbstyle", "MBStyle"
+
+    class ValidationState(models.TextChoices):
+        UNKNOWN = "UNKNOWN", "Unknown"
+        VALID = "VALID", "Valid"
+        INVALID = "INVALID", "Invalid"
+
+    class RemoteState(models.TextChoices):
+        LOCAL_ONLY = "LOCAL_ONLY", "Local only"
+        SYNCED = "SYNCED", "Synced"
+        FAILED = "FAILED", "Failed"
+        UNSUPPORTED = "UNSUPPORTED", "Unsupported by provider"
+        DELETED = "DELETED", "Deleted"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     geodata_engine = models.ForeignKey(
         GeodataEngine,
         on_delete=models.CASCADE,
-        related_name='styles',
+        related_name="styles",
     )
     workspace = models.ForeignKey(
         Workspace,
         on_delete=models.CASCADE,
-        related_name='styles',
+        related_name="styles",
         null=True,
         blank=True,
         help_text="Workspace-scoped style. Leave blank for a global engine style.",
@@ -369,7 +429,7 @@ class Style(models.Model):
     name = models.CharField(max_length=100, help_text="GeoServer style identifier")
     title = models.CharField(max_length=200, blank=True, help_text="Human-readable title")
     description = models.TextField(blank=True)
-    format = models.CharField(max_length=20, choices=STYLE_FORMATS)
+    format = models.CharField(max_length=20, choices=StyleFormat.choices)
     file_name = models.CharField(
         max_length=255,
         blank=True,
@@ -382,133 +442,150 @@ class Style(models.Model):
     content_hash = models.CharField(max_length=64, editable=False)
     validation_state = models.CharField(
         max_length=20,
-        choices=VALIDATION_STATES,
-        default="UNKNOWN",
+        choices=ValidationState.choices,
+        default=ValidationState.UNKNOWN,
     )
     validation_errors = models.JSONField(default=list, blank=True)
     remote_state = models.CharField(
         max_length=20,
-        choices=REMOTE_STATES,
-        default="LOCAL_ONLY",
+        choices=RemoteState.choices,
+        default=RemoteState.LOCAL_ONLY,
     )
     remote_error = models.TextField(blank=True)
     remote_uploaded_at = models.DateTimeField(null=True, blank=True)
     remote_verified_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
     class Meta:
-        app_label = 'geodata_providers'
         verbose_name = "Style"
         verbose_name_plural = "Styles"
-        ordering = ['geodata_engine__name', 'workspace__name', 'name']
+        ordering = ["geodata_engine__name", "workspace__name", "name"]
         constraints = [
             models.UniqueConstraint(
-                fields=['geodata_engine', 'workspace', 'name'],
+                fields=["geodata_engine", "workspace", "name"],
                 condition=models.Q(workspace__isnull=False),
-                name='unique_style_per_engine_workspace_name',
+                name="unique_style_per_engine_workspace_name",
             ),
             models.UniqueConstraint(
-                fields=['geodata_engine', 'name'],
+                fields=["geodata_engine", "name"],
                 condition=models.Q(workspace__isnull=True),
-                name='unique_global_style_per_engine_name',
+                name="unique_global_style_per_engine_name",
             ),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.qualified_name
 
-    def clean(self):
+    def clean(self) -> None:
         super().clean()
         if self.workspace and self.workspace.geodata_engine_id != self.geodata_engine_id:
-            raise ValidationError({
-                'workspace': 'Style workspace must belong to the selected geodata engine.'
-            })
+            raise ValidationError(
+                {"workspace": "Style workspace must belong to the selected geodata engine."}
+            )
         if self.validation_errors is None:
             self.validation_errors = []
 
-    def save(self, *args, **kwargs):
-        self.content_hash = hashlib.sha256((self.file_content or '').encode('utf-8')).hexdigest()
-        self.clean()
+    def save(self, *args, **kwargs) -> None:
+        self.content_hash = hashlib.sha256((self.file_content or "").encode("utf-8")).hexdigest()
+        self.full_clean()
         super().save(*args, **kwargs)
 
     @property
-    def is_global(self):
+    def is_global(self) -> bool:
         return self.workspace_id is None
 
     @property
-    def is_valid(self):
-        return self.validation_state == "VALID"
+    def is_valid(self) -> bool:
+        return self.validation_state == self.ValidationState.VALID
 
     @property
-    def is_synced(self):
-        return self.remote_state == "SYNCED"
+    def is_synced(self) -> bool:
+        return self.remote_state == self.RemoteState.SYNCED
 
     @property
-    def is_remote_supported(self):
-        return self.remote_state != "UNSUPPORTED"
+    def is_remote_supported(self) -> bool:
+        return self.remote_state != self.RemoteState.UNSUPPORTED
 
     @property
-    def qualified_name(self):
+    def qualified_name(self) -> str:
         if self.workspace:
             return f"{self.workspace.name}:{self.name}"
         return self.name
 
 
-class LayerStyleAssignment(models.Model):
+class LayerStyleAssignment(TimeStampedModel):
     """
-    Technical assignment of a style to a layer as default or alternate.
+    Technical assignment of a :class:`Style` to a :class:`Layer`.
+
+    A layer may carry one active default style and any number of alternate
+    styles. The "single active default" invariant is enforced both at the
+    DB level (partial unique constraint) and in :meth:`clean` so the admin
+    surfaces a form-friendly error before the DB constraint fires.
     """
+
+    class Role(models.TextChoices):
+        DEFAULT = "default", "Default"
+        ALTERNATE = "alternate", "Alternate"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     layer = models.ForeignKey(
         Layer,
         on_delete=models.CASCADE,
-        related_name='style_assignments',
+        related_name="style_assignments",
     )
     style = models.ForeignKey(
         Style,
         on_delete=models.CASCADE,
-        related_name='layer_assignments',
+        related_name="layer_assignments",
     )
-    role = models.CharField(max_length=20, choices=LAYER_STYLE_ROLES, default='default')
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.DEFAULT)
     is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
     class Meta:
-        app_label = 'geodata_providers'
-        db_table = 'geodata_providers_layerstyle'
+        db_table = "geodata_providers_layerstyle"
         verbose_name = "Layer Style Assignment"
         verbose_name_plural = "Layer Style Assignments"
-        ordering = ['layer__workspace__name', 'layer__name', 'role', 'style__name']
+        ordering = ["layer__workspace__name", "layer__name", "role", "style__name"]
         constraints = [
             models.UniqueConstraint(
-                fields=['layer'],
-                condition=models.Q(role='default', is_active=True),
-                name='unique_active_default_style_per_layer',
+                fields=["layer"],
+                condition=models.Q(role="default", is_active=True),
+                name="unique_active_default_style_per_layer",
             ),
             models.UniqueConstraint(
-                fields=['layer', 'style', 'role'],
-                name='unique_layer_style_role',
+                fields=["layer", "style", "role"],
+                name="unique_layer_style_role",
             ),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"{self.layer} -> {self.style} ({self.role})"
 
-    def clean(self):
+    def clean(self) -> None:
         super().clean()
         if not self.layer_id or not self.style_id:
             return
 
-        if self.style.validation_state == "INVALID":
-            raise ValidationError({
-                'style': 'Invalid styles cannot be assigned to layers.'
-            })
+        errors: dict[str, str] = {}
+        if self.style.validation_state == Style.ValidationState.INVALID:
+            errors["style"] = "Invalid styles cannot be assigned to layers."
+        # Application-level mirror of unique_active_default_style_per_layer:
+        # surfaces a clean ValidationError before the DB IntegrityError fires.
+        if self.role == self.Role.DEFAULT and self.is_active:
+            existing_default = LayerStyleAssignment.objects.filter(
+                layer=self.layer,
+                role=self.Role.DEFAULT,
+                is_active=True,
+            )
+            if self.pk:
+                existing_default = existing_default.exclude(pk=self.pk)
+            if existing_default.exists():
+                errors["role"] = "Only one active default style is allowed per layer."
 
-    def save(self, *args, **kwargs):
-        self.clean()
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
         super().save(*args, **kwargs)
