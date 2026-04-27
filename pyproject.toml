@@ -23,6 +23,12 @@ dependencies = [
     "drf-spectacular>=0.29.0",
     "djangorestframework-gis>=1.2.0",
     "django-basic-form-builder>=0.1.4",
+    "xmltodict>=1.0.2",
+    "django-cryptography>=1.1",
+    "cryptography>=46.0.3",
+    "requests>=2.32.0",
+    "sqlalchemy>=2.0",
+    "geoserver-rest",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +58,9 @@ exclude = ["docker*"]
 
 [tool.uv]
 python-preference = "managed"
+
+[tool.uv.sources]
+geoserver-rest = { path = "tosca_api/apps/geodata_providers/geoserver/geoserver-rest", editable = true }
 
 [dependency-groups]
 dev = [

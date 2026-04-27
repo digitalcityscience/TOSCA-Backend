@@ -4,8 +4,8 @@ from .base import *  # noqa: F401,F403
 
 DEBUG = True
 
-# Allow Postman reverse DNS lookup
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '1.0.0.127.in-addr.arpa']
+# Allow Postman reverse DNS lookup + testserver for tests
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '1.0.0.127.in-addr.arpa', 'testserver']
 
 # Django auth redirects
 LOGIN_REDIRECT_URL = '/welcome/'
@@ -29,4 +29,11 @@ for logger_config in LOGGING['loggers'].values():  # noqa: F405
         logger_config['handlers'] = [h for h in logger_config['handlers'] if 'file' not in h]
     if 'security_file' in logger_config.get('handlers', []):
         logger_config['handlers'] = [h for h in logger_config['handlers'] if 'security_file' not in h]
+
+
+# -------------------------------------------------
+# Docker Development Overrides
+# -------------------------------------------------
+# Override GeoServer host for Docker Compose
+GEOSERVER_HOST = env("GEOSERVER_HOST", default="geoserver")  # Use container name instead of localhost
 

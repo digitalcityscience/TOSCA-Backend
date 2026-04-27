@@ -1,0 +1,121 @@
+from rest_framework import serializers
+
+from ..models import GeodataEngine, Layer, Store, Workspace
+
+
+class GeodataEngineSerializer(serializers.ModelSerializer):
+    """Serializer for GeodataEngine model."""
+
+    engine_url = serializers.ReadOnlyField()
+    geoserver_url = serializers.ReadOnlyField()
+    admin_password = serializers.CharField(write_only=True, required=False)
+
+    class Meta:
+        model = GeodataEngine
+        fields = [
+            'id',
+            'name',
+            'description',
+            'engine_type',
+            'base_url',
+            'engine_url',
+            'geoserver_url',
+            'admin_username',
+            'admin_password',
+            'is_active',
+            'is_default',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'engine_url', 'geoserver_url']
+    
+    def update(self, instance, validated_data):
+        password = validated_data.pop('admin_password', None)
+        # Only update the password if it's provided
+        if password: 
+            instance.admin_password = password
+        return super().update(instance, validated_data)
+
+class WorkspaceSerializer(serializers.ModelSerializer):
+    """Serializer for Workspace model."""
+
+    engine_name = serializers.CharField(source='geodata_engine.name', read_only=True)
+
+    class Meta:
+        model = Workspace
+        fields = ['id', 'geodata_engine', 'engine_name', 'name', 'description', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'engine_name', 'created_at', 'updated_at']
+
+
+class StoreSerializer(serializers.ModelSerializer):
+    """Serializer for Store model."""
+
+    workspace_name = serializers.CharField(source='workspace.name', read_only=True)
+    has_password = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = Store
+        fields = [
+            'id',
+            'geodata_engine',
+            'workspace',
+            'workspace_name',
+            'name',
+            'store_type',
+            'description',
+            'host',
+            'port',
+            'database',
+            'username',
+            'password',
+            'has_password',
+            'schema',
+            'file_path',
+            'charset',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'workspace_name', 'has_password', 'created_at', 'updated_at']
+        extra_kwargs = {'password': {'write_only': True}}
+
+    def get_has_password(self, obj) -> bool:
+        """True if a non-empty password is stored (decrypted check)."""
+        return bool(obj.decrypted_password)
+
+
+class LayerSerializer(serializers.ModelSerializer):
+    """Serializer for Layer model."""
+
+    workspace_name = serializers.SerializerMethodField()
+    store_name = serializers.SerializerMethodField()
+
+    def get_workspace_name(self, obj):
+        return obj.workspace.name if obj.workspace_id else None
+
+    def get_store_name(self, obj):
+        return obj.store.name if obj.store_id else None
+
+    class Meta:
+        model = Layer
+        fields = [
+            'id',
+            'workspace',
+            'workspace_name',
+            'store',
+            'store_name',
+            'name',
+            'title',
+            'description',
+            'table_name',
+            'geometry_column',
+            'geometry_type',
+            'srid',
+            'is_public',
+            'publishing_state',
+            'publishing_error',
+            'published_url',
+            'published_at',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'workspace_name', 'store_name', 'publishing_error', 'published_url', 'published_at', 'created_at', 'updated_at']

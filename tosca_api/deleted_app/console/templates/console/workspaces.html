@@ -1,0 +1,300 @@
+{% extends 'console/base.html' %}
+
+{% block title %}Workspaces{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Workspaces</h1>
+    {% if show_all_engines %}
+        <p class="subtitle">Manage GeoServer workspaces from all engines</p>
+    {% else %}
+        <p class="subtitle">Manage GeoServer workspaces for {{ default_engine.name|default:"Default Engine" }}</p>
+    {% endif %}
+</div>
+
+{% if workspaces %}
+<!-- Workspace Cards Grid -->
+<div class="cards-grid">
+    {% for workspace in workspaces %}
+    <div class="workspace-card">
+        <div class="card-header">
+            <div class="workspace-info">
+                <h3 class="workspace-name">{{ workspace.name }}</h3>
+                {% if workspace.description %}
+                    <p class="workspace-description">{{ workspace.description }}</p>
+                {% endif %}
+            </div>
+            {% if show_all_engines %}
+                <div class="engine-badge">
+                    <span class="badge engine">{{ workspace.engine.name|default:"Unknown Engine" }}</span>
+                </div>
+            {% endif %}
+        </div>
+        
+        <div class="workspace-stats">
+            <div class="stat-group">
+                <div class="stat-item">
+                    <span class="stat-number">{{ workspace.stores_count|default:0 }}</span>
+                    <span class="stat-label">Stores</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-number">{{ workspace.layers_count|default:0 }}</span>
+                    <span class="stat-label">Layers</span>
+                </div>
+                <div class="stat-item">
+                    {% if workspace.created_at %}
+                        <span class="stat-number">{{ workspace.created_at|date:"M d" }}</span>
+                    {% else %}
+                        <span class="stat-number">--</span>
+                    {% endif %}
+                    <span class="stat-label">Created</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="workspace-actions">
+            <a href="{% url 'console:workspace_edit' workspace.id %}" class="btn btn-outline">
+                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                </svg>
+                Edit
+            </a>
+            <a href="{% url 'console:workspace_delete' workspace.id %}" class="btn btn-danger">
+                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                </svg>
+                Delete
+            </a>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Action Bar -->
+<div class="action-bar">
+    <div class="action-group">
+        <a href="{% url 'console:workspace_create' %}" class="btn btn-primary">
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+            </svg>
+            Add Workspace
+        </a>
+    </div>
+</div>
+
+{% else %}
+<!-- Empty State -->
+<div class="empty-state-card">
+    <div class="empty-icon">
+        <svg width="64" height="64" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+        </svg>
+    </div>
+    <h3 class="empty-title">No workspaces found</h3>
+    {% if show_all_engines %}
+        <p class="empty-description">No workspaces found in any engine. Create your first workspace to get started.</p>
+    {% else %}
+        <p class="empty-description">No workspaces found for {{ default_engine.name|default:"current engine" }}. Create your first workspace to get started.</p>
+    {% endif %}
+    <div class="empty-actions">
+        <a href="{% url 'console:workspace_create' %}" class="btn btn-primary">
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+            </svg>
+            Create First Workspace
+        </a>
+    </div>
+</div>
+{% endif %}
+
+<style>
+/* Modern Workspace Cards */
+.cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 24px;
+    margin-bottom: 32px;
+}
+
+.workspace-card {
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 24px;
+    transition: all 0.2s ease;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+}
+
+.workspace-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.15);
+    border-color: #d1d5db;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 20px;
+}
+
+.workspace-info {
+    flex: 1;
+}
+
+.workspace-name {
+    font-size: 18px;
+    font-weight: 600;
+    color: #111827;
+    margin: 0 0 8px 0;
+}
+
+.workspace-description {
+    font-size: 14px;
+    color: #6b7280;
+    margin: 0;
+    line-height: 1.4;
+}
+
+.engine-badge .badge.engine {
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #d1d5db;
+    padding: 4px 12px;
+    border-radius: 16px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.workspace-stats {
+    margin-bottom: 24px;
+    padding: 16px;
+    background: #f9fafb;
+    border-radius: 8px;
+}
+
+.stat-group {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+}
+
+.stat-item {
+    text-align: center;
+}
+
+.stat-number {
+    display: block;
+    font-size: 20px;
+    font-weight: 700;
+    color: #111827;
+    margin-bottom: 4px;
+}
+
+.stat-label {
+    font-size: 12px;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 500;
+}
+
+.workspace-actions {
+    display: flex;
+    gap: 12px;
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    transition: all 0.2s ease;
+    border: 1px solid transparent;
+}
+
+.btn-outline {
+    background: white;
+    color: #374151;
+    border-color: #d1d5db;
+}
+
+.btn-outline:hover {
+    background: #f9fafb;
+    border-color: #9ca3af;
+}
+
+.btn-danger {
+    background: #fee2e2;
+    color: #dc2626;
+    border-color: #fecaca;
+}
+
+.btn-danger:hover {
+    background: #fecaca;
+    border-color: #f87171;
+}
+
+.btn-primary {
+    background: #2563eb;
+    color: white;
+    border-color: #2563eb;
+}
+
+.btn-primary:hover {
+    background: #1d4ed8;
+    border-color: #1d4ed8;
+}
+
+/* Action Bar */
+.action-bar {
+    display: flex;
+    justify-content: center;
+    padding: 24px 0;
+}
+
+.action-group .btn {
+    padding: 12px 24px;
+    font-size: 16px;
+}
+
+/* Empty State */
+.empty-state-card {
+    text-align: center;
+    padding: 64px 24px;
+    background: white;
+    border: 2px dashed #e5e7eb;
+    border-radius: 16px;
+    max-width: 480px;
+    margin: 0 auto;
+}
+
+.empty-icon {
+    color: #9ca3af;
+    margin-bottom: 24px;
+}
+
+.empty-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: #111827;
+    margin: 0 0 12px 0;
+}
+
+.empty-description {
+    font-size: 16px;
+    color: #6b7280;
+    margin: 0 0 32px 0;
+    line-height: 1.5;
+}
+
+.empty-actions .btn {
+    padding: 12px 24px;
+    font-size: 16px;
+}
+</style>
+{% endblock content %}

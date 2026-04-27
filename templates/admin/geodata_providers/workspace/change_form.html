@@ -1,0 +1,125 @@
+{% extends "admin/change_form.html" %}
+{% load i18n %}
+
+{% block submit_buttons_bottom %}
+  {{ block.super }}
+
+  {% if object.pk %}
+  <div id="workspace-action-panel" style="
+    margin: 18px 0 8px 0;
+    padding: 14px 18px;
+    background: #f8f8f8;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+  ">
+    <strong style="display:block; margin-bottom:12px; font-size:13px;">Workspace Actions</strong>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <button
+        type="button"
+        id="btn-workspace-sync"
+        style="
+          padding: 7px 16px;
+          background: #5a9e6f;
+          color: #fff;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 13px;
+        "
+        onclick="workspaceAction('sync', this)"
+      >
+        Sync Workspace
+      </button>
+
+      <span id="workspace-action-spinner" style="display:none; font-size:13px; color:#666;">
+        &#9203; Running&hellip;
+      </span>
+    </div>
+
+    <div id="workspace-action-result" style="
+      display: none;
+      margin-top: 12px;
+      padding: 10px 14px;
+      border-radius: 4px;
+      font-size: 13px;
+      line-height: 1.6;
+    "></div>
+  </div>
+
+  <script>
+  (function () {
+    function getCsrf() {
+      var name = 'csrftoken';
+      var cookies = document.cookie.split(';');
+      for (var i = 0; i < cookies.length; i++) {
+        var c = cookies[i].trim();
+        if (c.startsWith(name + '=')) return decodeURIComponent(c.slice(name.length + 1));
+      }
+      return '';
+    }
+
+    window.workspaceAction = function (action) {
+      var url = window.location.pathname.replace(/\/$/, '')
+                  .replace(/\/change$/, '') + '/' + action + '/';
+
+      var spinner = document.getElementById('workspace-action-spinner');
+      var resultBox = document.getElementById('workspace-action-result');
+      var allBtns = document.querySelectorAll('#workspace-action-panel button');
+
+      allBtns.forEach(function (b) { b.disabled = true; });
+      spinner.style.display = 'inline';
+      resultBox.style.display = 'none';
+
+      fetch(url, {
+        method: 'POST',
+        headers: {
+          'X-CSRFToken': getCsrf(),
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({}),
+      })
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        spinner.style.display = 'none';
+        allBtns.forEach(function (b) { b.disabled = false; });
+
+        if (data.success) {
+          resultBox.style.background = '#eaf7ee';
+          resultBox.style.border = '1px solid #3ecf8e';
+          resultBox.style.color = '#1a6b41';
+
+          var st = data.stores, ly = data.layers, sy = data.styles;
+          var msg = '&#10003; Sync complete &mdash; '
+              + 'Stores: +' + st.created + ' / &minus;' + st.deleted + ' / ~' + st.updated + ' &bull; '
+              + 'Styles: +' + sy.created + ' / &minus;' + sy.deleted + ' / ~' + sy.updated + ' &bull; '
+              + 'Layers: +' + ly.created + ' / &minus;' + ly.deleted + ' / ~' + ly.updated + '. '
+              + 'Provider state synced into the local catalog.';
+
+          if (data.errors && data.errors.length > 0) {
+            msg += '<br><span style="color:#a31515;">Errors: ' + data.errors.join(', ') + '</span>';
+          }
+          resultBox.innerHTML = msg;
+        } else {
+          resultBox.style.background = '#fdf0f0';
+          resultBox.style.border = '1px solid #e54d4d';
+          resultBox.style.color = '#a31515';
+          resultBox.innerHTML = '&#10007; ' + (data.error || 'An error occurred.');
+        }
+        resultBox.style.display = 'block';
+      })
+      .catch(function (err) {
+        spinner.style.display = 'none';
+        allBtns.forEach(function (b) { b.disabled = false; });
+        resultBox.style.background = '#fdf0f0';
+        resultBox.style.border = '1px solid #e54d4d';
+        resultBox.style.color = '#a31515';
+        resultBox.innerHTML = '&#10007; Network error: ' + err;
+        resultBox.style.display = 'block';
+      });
+    };
+  })();
+  </script>
+  {% endif %}
+{% endblock %}

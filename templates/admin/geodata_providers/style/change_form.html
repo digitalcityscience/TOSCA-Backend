@@ -1,0 +1,51 @@
+{% extends "admin/change_form.html" %}
+
+{% block extrahead %}
+  {{ block.super }}
+  <script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var upload = document.getElementById('id_upload_file');
+    var content = document.getElementById('id_file_content');
+    var fileName = document.getElementById('id_file_name');
+    var format = document.getElementById('id_format');
+
+    if (!upload || !content) {
+      return;
+    }
+
+    function inferFormat(name) {
+      var lower = (name || '').toLowerCase();
+      if (lower.endsWith('.sld')) {
+        return 'sld';
+      }
+      if (lower.endsWith('.json') || lower.endsWith('.mbstyle')) {
+        return 'mbstyle';
+      }
+      return '';
+    }
+
+    upload.addEventListener('change', function () {
+      var file = upload.files && upload.files[0];
+      if (!file) {
+        return;
+      }
+
+      var reader = new FileReader();
+      reader.onload = function () {
+        content.value = reader.result || '';
+        if (fileName) {
+          fileName.value = file.name;
+        }
+        if (format) {
+          var detected = inferFormat(file.name);
+          if (detected) {
+            format.value = detected;
+          }
+        }
+        upload.value = '';
+      };
+      reader.readAsText(file);
+    });
+  });
+  </script>
+{% endblock %}

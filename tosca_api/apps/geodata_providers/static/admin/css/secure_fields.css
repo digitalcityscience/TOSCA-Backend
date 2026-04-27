@@ -1,0 +1,109 @@
+/* Secure Fields Styling */
+
+.secure-fieldset {
+    border: 2px solid #e74c3c !important;
+    border-radius: 5px;
+    background-color: #fdf2f2;
+    margin: 10px 0;
+    position: relative;
+}
+
+.secure-fieldset h2 {
+    background-color: #e74c3c;
+    color: white;
+    padding: 8px 12px;
+    margin: 0;
+    position: relative;
+    border-radius: 3px 3px 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.secure-fieldset .description {
+    color: #c0392b;
+    font-style: italic;
+    font-size: 11px;
+    margin: 10px 0;
+    padding: 5px 10px;
+    background-color: #fadbd8;
+    border-radius: 3px;
+}
+
+.secure-toggle-container {
+    margin-left: auto;
+    padding-left: 10px;
+}
+
+.btn-toggle-secure {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 3px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    color: #495057;
+    font-weight: 500;
+}
+
+.btn-toggle-secure:hover {
+    background-color: #e9ecef;
+    border-color: #adb5bd;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.secure-field {
+    background-color: #fff5f5 !important;
+    border: 1px solid #f5c6cb !important;
+    transition: all 0.3s ease;
+}
+
+.secure-field.masked-field {
+    background-color: #f8f9fa !important;
+    color: #6c757d !important;
+    font-family: 'Courier New', monospace !important;
+    letter-spacing: 2px !important;
+    font-weight: bold !important;
+    cursor: not-allowed;
+    border-color: #dee2e6 !important;
+}
+
+.secure-field[readonly] {
+    background-color: #f8f9fa !important;
+    color: #6c757d !important;
+    cursor: not-allowed;
+}
+
+.secure-field[type="password"] {
+    background-color: #fff3cd !important;
+    border-color: #ffeaa7 !important;
+}
+
+.secure-field:not([readonly]):not(.masked-field) {
+    background-color: #fff !important;
+    border-color: #28a745 !important;
+    box-shadow: 0 0 0 0.2rem rgba(40, 167, 69, 0.25);
+}
+
+/* Warning icon for secure fields */
+.secure-fieldset .form-row label:after {
+    content: ' 🔒';
+    color: #e74c3c;
+    font-size: 12px;
+}
+
+/* Security notice */
+.secure-fieldset:before {
+    content: '⚠️ Security Notice: Connection details are masked for protection';
+    display: block;
+    background-color: #fff3cd;
+    border: 1px solid #ffeaa7;
+    color: #856404;
+    padding: 8px 12px;
+    margin: 10px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 500;
+}

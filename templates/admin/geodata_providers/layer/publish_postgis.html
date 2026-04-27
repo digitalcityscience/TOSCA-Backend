@@ -1,0 +1,248 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; <a href="{% url 'admin:geodata_providers_layer_changelist' %}">{{ opts.verbose_name_plural|title }}</a>
+    &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <div class="module">
+        <h1>{{ title }}</h1>
+
+        {% if form.non_field_errors %}
+            <ul class="errorlist">
+                {% for error in form.non_field_errors %}
+                    <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        <form method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+
+            {% for field in form %}
+                <div class="fieldBox">
+                    {% if field.errors %}
+                        <ul class="errorlist">
+                            {% for error in field.errors %}
+                                <li>{{ error }}</li>
+                            {% endfor %}
+                        </ul>
+                    {% endif %}
+
+                    {{ field.label_tag }}
+                    {{ field }}
+
+                    {% if field.help_text %}
+                        <p class="help">{{ field.help_text }}</p>
+                    {% endif %}
+
+                    {% if field.name == 'table_name' and field.errors %}
+                        <p class="help">
+                            <a href="{% url 'admin:geodata_providers_layer_changelist' %}?q={{ field.value }}">
+                                Find and delete the conflicting layer
+                            </a>
+                        </p>
+                    {% endif %}
+                </div>
+            {% endfor %}
+
+            <div class="submit-row">
+                <input type="submit" value="Publish Layer" class="default" />
+                <a href="{% url 'admin:geodata_providers_layer_changelist' %}" class="cancel-link">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const workspaceSelect = document.querySelector('#id_workspace');
+    const storeSelect = document.querySelector('#id_store');
+    const tableSelect = document.querySelector('#id_table_name');
+    const layerNameInput = document.querySelector('#id_layer_name');
+    const titleInput = document.querySelector('#id_title');
+    const geometryColumnInput = document.querySelector('#id_geometry_column');
+    const geometryTypeSelect = document.querySelector('#id_geometry_type');
+    const sridInput = document.querySelector('#id_srid');
+    const selectedStoreId = '{{ form.store.value|default:"" }}';
+    const selectedTableName = '{{ form.table_name.value|default:"" }}';
+
+    function resetTables(placeholderText) {
+        tableSelect.innerHTML = '';
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = placeholderText || '---------';
+        tableSelect.appendChild(option);
+    }
+
+    function appendOption(parent, value, text, meta) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        if (meta) {
+            Object.entries(meta).forEach(([key, val]) => {
+                if (val !== undefined && val !== null && val !== '') {
+                    option.dataset[key] = String(val);
+                }
+            });
+        }
+        if (value === selectedTableName) {
+            option.selected = true;
+        }
+        parent.appendChild(option);
+    }
+
+    function updateFieldsFromSelectedTable() {
+        const selectedOption = tableSelect.options[tableSelect.selectedIndex];
+        if (!selectedOption || !selectedOption.value) {
+            return;
+        }
+
+        if (!layerNameInput.value) {
+            layerNameInput.value = selectedOption.value;
+        }
+        if (!titleInput.value) {
+            titleInput.value = selectedOption.value;
+        }
+        if (selectedOption.dataset.geometryColumn) {
+            geometryColumnInput.value = selectedOption.dataset.geometryColumn;
+        }
+        if (selectedOption.dataset.geometryType) {
+            geometryTypeSelect.value = selectedOption.dataset.geometryType;
+        }
+        if (selectedOption.dataset.srid) {
+            sridInput.value = selectedOption.dataset.srid;
+        }
+    }
+
+    function updateTables() {
+        const storeId = storeSelect.value;
+        const workspaceId = workspaceSelect.value;
+        if (!storeId) {
+            resetTables('---------');
+            return;
+        }
+
+        resetTables('Loading tables...');
+
+        fetch(`/admin/geodata_providers/layer/tables-for-store/?store_id=${storeId}&workspace_id=${workspaceId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    resetTables(`Error: ${data.error}`);
+                    return;
+                }
+
+                tableSelect.innerHTML = '';
+                const placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = '---------';
+                tableSelect.appendChild(placeholder);
+
+                if (Array.isArray(data.geoserver_available) && data.geoserver_available.length) {
+                    const geoserverGroup = document.createElement('optgroup');
+                    geoserverGroup.label = 'GeoServer available';
+                    data.geoserver_available.forEach(table => {
+                        appendOption(
+                            geoserverGroup,
+                            table.table_name,
+                            `${table.table_name} (GeoServer available)`,
+                            {source: 'geoserver'}
+                        );
+                    });
+                    tableSelect.appendChild(geoserverGroup);
+                }
+
+                if (Array.isArray(data.tables) && data.tables.length) {
+                    const postgisGroup = document.createElement('optgroup');
+                    postgisGroup.label = 'PostGIS geometry tables';
+                    data.tables.forEach(table => {
+                        appendOption(
+                            postgisGroup,
+                            table.table_name,
+                            `${table.table_name} (${table.geometry_type}, SRID: ${table.srid})`,
+                            {
+                                source: 'postgis',
+                                geometryColumn: table.geometry_column,
+                                geometryType: table.geometry_type,
+                                srid: table.srid,
+                            }
+                        );
+                    });
+                    tableSelect.appendChild(postgisGroup);
+                }
+
+                if (tableSelect.options.length === 1) {
+                    resetTables(data.warning || 'No publishable tables found.');
+                    return;
+                }
+
+                updateFieldsFromSelectedTable();
+            })
+            .catch(error => {
+                console.error('Error fetching tables:', error);
+                resetTables('Failed to load tables');
+            });
+    }
+
+    function updateStores() {
+        const workspaceId = workspaceSelect.value;
+        if (!workspaceId) {
+            storeSelect.innerHTML = '<option value="">---------</option>';
+            resetTables('---------');
+            return;
+        }
+
+        fetch(`/admin/geodata_providers/layer/stores-for-workspace/?workspace_id=${workspaceId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    console.error('Error loading stores:', data.error);
+                    return;
+                }
+
+                storeSelect.innerHTML = '<option value="">---------</option>';
+                data.stores.forEach(store => {
+                    const option = document.createElement('option');
+                    option.value = store.id;
+                    option.textContent = `${store.name} (${store.store_type})`;
+                    if (store.id == selectedStoreId) {
+                        option.selected = true;
+                    }
+                    storeSelect.appendChild(option);
+                });
+
+                if (storeSelect.value) {
+                    updateTables();
+                } else {
+                    resetTables('---------');
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching stores:', error);
+            });
+    }
+
+    workspaceSelect.addEventListener('change', updateStores);
+    storeSelect.addEventListener('change', updateTables);
+    tableSelect.addEventListener('change', updateFieldsFromSelectedTable);
+
+    if (selectedStoreId) {
+        updateStores();
+    } else if (storeSelect.value) {
+        updateTables();
+    } else {
+        resetTables('---------');
+    }
+});
+</script>
+{% endblock %}

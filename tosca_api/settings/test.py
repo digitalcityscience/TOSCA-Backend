@@ -18,6 +18,13 @@ DATABASES = {
     }
 }
 
+# Fast hashing for tests
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+
+# Test email backend
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+
+# Test-specific settings
 CELERY_TASK_ALWAYS_EAGER = True
+DEBUG = False
+ALLOWED_HOSTS = ['testserver']  # Allow Django test client

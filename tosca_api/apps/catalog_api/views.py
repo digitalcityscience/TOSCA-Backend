@@ -1,0 +1,131 @@
+from django.http import HttpResponse
+from rest_framework.exceptions import NotAcceptable, NotFound
+from rest_framework.permissions import AllowAny
+from rest_framework.renderers import JSONRenderer
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from tosca_api.apps.geodata_providers.services.queries import StyleQueryService
+
+from .services.v1.geoserver_v1_builder import GeoServerV1Builder
+from .services.v1.geoserver_remote_service import GeoServerRemoteService
+from .services.v1.visibility_service import CatalogVisibilityService
+
+
+class WorkspaceListV1View(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        workspaces = CatalogVisibilityService.list_visible_workspaces()
+        payload = GeoServerV1Builder.build_workspace_list(
+            request=request,
+            workspaces=workspaces,
+        )
+        return Response(payload)
+
+
+class GlobalLayerListV1View(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        layers = CatalogVisibilityService.list_visible_layers()
+        payload = GeoServerV1Builder.build_layer_list(
+            request=request,
+            layers=layers,
+        )
+        return Response(payload)
+
+
+class WorkspaceLayerListV1View(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, workspace_name: str):
+        try:
+            CatalogVisibilityService.get_visible_workspace(workspace_name=workspace_name)
+        except Exception as exc:
+            raise NotFound("Workspace not found.") from exc
+
+        layers = CatalogVisibilityService.list_visible_layers(workspace_name=workspace_name)
+        payload = GeoServerV1Builder.build_layer_list(
+            request=request,
+            layers=layers,
+        )
+        return Response(payload)
+
+
+class LayerInfoV1View(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, workspace_name: str, layer_name: str):
+        try:
+            layer = CatalogVisibilityService.get_visible_layer(
+                workspace_name=workspace_name,
+                layer_name=layer_name,
+            )
+        except Exception as exc:
+            raise NotFound("Layer not found.") from exc
+
+        remote_layer_info = GeoServerRemoteService.get_layer_info(layer=layer)
+        payload = GeoServerV1Builder.build_layer_info(
+            request=request,
+            layer=layer,
+            remote_layer_info=remote_layer_info,
+        )
+        return Response(payload)
+
+
+class LayerDetailV1View(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, workspace_name: str, layer_name: str):
+        try:
+            layer = CatalogVisibilityService.get_visible_layer(
+                workspace_name=workspace_name,
+                layer_name=layer_name,
+            )
+        except Exception as exc:
+            raise NotFound("Layer resource not found.") from exc
+
+        remote_layer_detail = GeoServerRemoteService.get_layer_resource_detail(layer=layer)
+        payload = GeoServerV1Builder.build_layer_detail(
+            request=request,
+            layer=layer,
+            remote_layer_detail=remote_layer_detail,
+        )
+        return Response(payload)
+
+
+class StyleDetailV1View(APIView):
+    permission_classes = [AllowAny]
+    renderer_classes = [JSONRenderer]
+
+    def perform_content_negotiation(self, request, force=False):
+        """
+        Style responses are mixed-mode:
+        - MBStyle returns JSON via DRF Response
+        - SLD returns raw XML via Django HttpResponse
+
+        DRF's default content negotiation rejects `Accept: application/vnd.ogc.sld+xml`
+        before the view executes because no XML renderer is registered. For this
+        endpoint we handle SLD acceptability manually inside `get()`, so we keep
+        negotiation permissive here.
+        """
+        return (self.renderer_classes[0](), self.renderer_classes[0].media_type)
+
+    def get(self, request, style_ref: str):
+        try:
+            style = StyleQueryService.resolve_style_reference(style_ref=style_ref)
+        except Exception as exc:
+            raise NotFound("Style not found.") from exc
+
+        if style.format == "mbstyle":
+            return Response(StyleQueryService.get_style_content(style_id=style.id))
+
+        accepted = request.headers.get("Accept", "*/*")
+        if "application/json" in accepted and "xml" not in accepted and "*/*" not in accepted:
+            raise NotAcceptable("SLD styles are not available as JSON.")
+
+        return HttpResponse(
+            StyleQueryService.get_style_content(style_id=style.id),
+            content_type="application/vnd.ogc.sld+xml",
+        )

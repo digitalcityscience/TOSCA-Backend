@@ -1,0 +1,20 @@
+/*
+ * stores.css — Styles for the Stores section of Geo Console
+ *
+ * Scope: store_list.html  store_create.html  store_detail.html
+ * Loaded via {% block page_extra_css %} in those templates.
+ * Do NOT put shared chrome here — that lives in console.css.
+ *
+ * Note: .store-meta-grid / .store-meta-item / .store-meta-label /
+ *       .store-meta-value are shared with layer_detail.html
+ *       so they live in console.css (shared foundation).
+ */
+
+/* ── Connection settings note ────────────────────────────────────────── */
+/* Shown above the PostGIS credentials edit form in store_detail.html */
+.form-section-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 1rem;
+  line-height: 1.6;
+}

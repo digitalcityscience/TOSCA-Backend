@@ -1,0 +1,85 @@
+{% extends 'geo_console/base.html' %}
+{% load static %}
+
+{% block title %}Engines - Geo Console - TOSCA{% endblock %}
+
+
+{% block content %}
+
+<div class="content-header">
+  <div>
+    <div class="page-title">Engines</div>
+    <div class="page-sub">Connected geospatial data engines</div>
+  </div>
+  <div class="header-actions">
+    <a href="{% url 'engine_create' %}" class="btn-add">+ Add Engine</a>
+  </div>
+</div>
+
+{% if engines %}
+<div class="cards-grid">
+  {% for engine in engines %}
+  <div class="card" id="engine-card-{{ engine.id }}">
+    <div class="card-top">
+      <div>
+        <div class="card-name">{{ engine.name }}</div>
+        <div class="card-subtitle mono">{{ engine.base_url }}</div>
+      </div>
+      <div class="card-badge-stack">
+        {% if engine.is_active %}
+          <span class="badge badge-green">Active</span>
+        {% else %}
+          <span class="badge badge-neutral">Inactive</span>
+        {% endif %}
+        <span class="badge badge-neutral sync-state-badge" id="status-badge-{{ engine.id }}" style="display:none"></span>
+      </div>
+    </div>
+
+    <div class="card-stats">
+      <div>
+        <div class="stat-label">Type</div>
+        <div class="stat-value">{{ engine.get_engine_type_display }}</div>
+      </div>
+      <div>
+        <div class="stat-label">Workspaces</div>
+        <div class="stat-value" id="ws-count-{{ engine.id }}">{{ engine.workspace_count }}</div>
+      </div>
+      <div>
+        <div class="stat-label">Layers</div>
+        <div class="stat-value" id="ly-count-{{ engine.id }}">{{ engine.layer_count }}</div>
+      </div>
+      <div>
+        <div class="stat-label">Default</div>
+        <div class="stat-value">{% if engine.is_default %}Yes{% else %}No{% endif %}</div>
+      </div>
+    </div>
+
+    <div class="card-actions">
+      <button class="card-btn primary"
+              onclick="quickSync('{{ engine.id }}')"
+              id="sync-btn-{{ engine.id }}">
+        Sync Now
+      </button>
+      <a href="{% url 'engine_detail' engine.id %}" class="card-btn">Details</a>
+    </div>
+    <div class="sync-result" id="sync-result-{{ engine.id }}" style="display:none"></div>
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+<div class="empty-state">
+  <div class="empty-state-title">No engines configured</div>
+  <div class="empty-state-sub">
+    <a href="{% url 'engine_create' %}" class="btn-add mt-md">+ Add Engine</a>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block page_extra_js %}
+<script src="{% static 'geo_console/js/engines.js' %}?v=5"></script>
+{% endblock %}
+
+

@@ -68,6 +68,9 @@ INSTALLED_APPS = [
     # Local apps
     "tosca_api.apps.core",
     "tosca_api.apps.tosca_web",
+    "tosca_api.apps.catalog_api.apps.CatalogApiConfig",
+    "tosca_api.apps.geodata_providers.apps.GeodataProvidersConfig",
+    "tosca_api.apps.geo_console",
     "tosca_api.apps.campaigns",
     "tosca_api.apps.geocontext",
     "tosca_api.apps.layerrefs",
@@ -148,6 +151,7 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
+STATICFILES_DIRS = [ROOT_DIR / "static"]
 STATIC_URL = "static/"
 STATIC_ROOT = ROOT_DIR / "staticfiles"
 MEDIA_URL = "media/"
@@ -155,15 +159,29 @@ MEDIA_ROOT = ROOT_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# -------------------------------------------------
+# geo_console internal API
+# -------------------------------------------------
+INTERNAL_API_BASE_URL = env("INTERNAL_API_BASE_URL", default="http://localhost:8000/api/geoengine")
+
+# Default PostGIS schema for GeoServer stores (task 3.5)
+GIS_SCHEMA = env("PG_SCHEMA_GIS", default="public")
+
+# Fernet key for encrypting GeoServer credentials in the DB.
+# Generate once:  uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# NEVER leave this unset in production — changing it invalidates all stored credentials.
+FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY")
+
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "tosca_api.apps.authentication.backends.KeycloakTokenAuthentication",  # JWT token auth
+        "rest_framework.authentication.TokenAuthentication",  # DRF token — used by geo_console internal calls
         "rest_framework.authentication.SessionAuthentication",  # Browser session
     ],
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "tosca_api.apps.core.pagination.StandardResultsSetPagination",
     "PAGE_SIZE": 20,
-    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
 SPECTACULAR_SETTINGS = {
@@ -186,6 +204,13 @@ SPECTACULAR_SETTINGS = {
     "POSTPROCESSING_HOOKS": [
         "tosca_api.apps.core.schema.add_common_responses",
     ],
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "TOSCA API",
+    "DESCRIPTION": "Swagger/OpenAPI documentation for TOSCA Django REST endpoints.",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
 }
 
 AUTHENTICATION_BACKENDS = [
@@ -327,3 +352,12 @@ LOGGING = {
         },
     },
 }
+
+
+# -------------------------------------------------
+# GeoServer Configuration for Geodata Engine
+# -------------------------------------------------
+GEOSERVER_HOST = env("GEOSERVER_HOST", default="localhost")
+GEOSERVER_PORT = env("GEOSERVER_PORT", default="8080")
+GEOSERVER_ADMIN_USER = env("GEOSERVER_ADMIN_USER", default="admin2")
+GEOSERVER_ADMIN_PASSWORD = env("GEOSERVER_ADMIN_PASSWORD", default="geoserver2")

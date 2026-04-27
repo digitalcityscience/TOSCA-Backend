@@ -1,0 +1,450 @@
+"""
+GeoConsoleAPIClient — thin wrapper over the internal DRF API.
+
+Rules:
+- Never imports from geodata_engine.models
+- All network errors are converted to typed exceptions before leaving this module
+- Sync operations use a longer timeout (30s) than read operations (10s)
+
+Usage in views:
+    from rest_framework.authtoken.models import Token
+    from tosca_api.apps.geo_console.services.api_client import GeoConsoleAPIClient
+    from tosca_api.apps.geo_console.exceptions import APIError, APITimeoutError
+
+    token, _ = Token.objects.get_or_create(user=request.user)
+    client = GeoConsoleAPIClient(token=token.key)
+    engines = client.list_engines()
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import requests
+from django.conf import settings
+
+from tosca_api.apps.geo_console.exceptions import APIError, APINotFoundError, APITimeoutError
+
+logger = logging.getLogger(__name__)
+
+# Default timeouts: (connect_seconds, read_seconds)
+_DEFAULT_TIMEOUT = (5, 10)
+_SYNC_TIMEOUT = (5, 30)
+
+
+class GeoConsoleAPIClient:
+    """
+    Calls the internal DRF API on behalf of a console user.
+    Never touches Django models or the ORM directly.
+    """
+
+    def __init__(self, token: str):
+        """
+        Args:
+            token: DRF token string for the logged-in user.
+                   Obtain via: Token.objects.get_or_create(user=request.user)[0].key
+        """
+        base = getattr(settings, "INTERNAL_API_BASE_URL", "http://localhost:8000/api/geoengine")
+        # Normalise: strip trailing slash so all path joins are consistent
+        self._base = base.rstrip("/")
+
+        self._session = requests.Session()
+        self._session.headers.update(
+            {
+                "Authorization": f"Token {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # Low-level helpers
+    # ------------------------------------------------------------------
+
+    def _url(self, path: str) -> str:
+        """Build a full URL from a path relative to the API base."""
+        return f"{self._base}/{path.lstrip('/')}"
+
+    def _handle_response(self, response: requests.Response) -> Any:
+        """
+        Convert a requests.Response into a Python dict/list.
+        Raises a typed exception on any non-2xx status.
+        """
+        if response.status_code == 404:
+            raise APINotFoundError()
+
+        if not response.ok:
+            # Try to extract DRF's own error message before falling back
+            try:
+                body = response.json()
+                detail = body.get("detail") or body.get("error") or str(body)
+            except Exception:
+                detail = response.text or f"HTTP {response.status_code}"
+            logger.error(
+                "Internal API error: %s %s → %s",
+                response.request.method,
+                response.url,
+                detail,
+            )
+            raise APIError(detail=detail, status_code=response.status_code)
+
+        if response.status_code == 204 or not response.content:
+            return {}
+
+        return response.json()
+
+    def _get(self, path: str, timeout: tuple = _DEFAULT_TIMEOUT) -> Any:
+        url = self._url(path)
+        try:
+            response = self._session.get(url, timeout=timeout)
+        except requests.Timeout:
+            logger.warning("GET %s timed out", url)
+            raise APITimeoutError()
+        except requests.RequestException as exc:
+            raise APIError(detail=str(exc))
+        return self._handle_response(response)
+
+    def _post(
+        self,
+        path: str,
+        data: dict | None = None,
+        timeout: tuple = _DEFAULT_TIMEOUT,
+    ) -> Any:
+        url = self._url(path)
+        try:
+            response = self._session.post(url, json=data or {}, timeout=timeout)
+        except requests.Timeout:
+            logger.warning("POST %s timed out", url)
+            raise APITimeoutError()
+        except requests.RequestException as exc:
+            raise APIError(detail=str(exc))
+        return self._handle_response(response)
+
+    # ------------------------------------------------------------------
+    # Engine methods
+    # ------------------------------------------------------------------
+
+    def list_engines(self) -> list[dict]:
+        """
+        GET /api/geoengine/engines/
+        Returns a list of all GeodataEngine objects (active + inactive).
+        """
+        result = self._get("engines/")
+        # DRF list responses may be plain lists or paginated {"results": [...]}
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return result
+
+    def get_engine(self, engine_id: str) -> dict:
+        """
+        GET /api/geoengine/engines/{engine_id}/
+        Returns a single GeodataEngine dict.
+        Raises APINotFoundError if the engine does not exist.
+        """
+        return self._get(f"engines/{engine_id}/")
+
+    def sync_engine(self, engine_id: str) -> dict:
+        """
+        POST /api/geoengine/engines/{engine_id}/sync/
+        Triggers a full pull-sync: GeoServer → Django.
+        Uses a longer 30-second read timeout.
+
+        Returns the sync result dict, e.g.:
+            {
+              "success": True,
+              "workspaces": {"synced": 3, "created": 1, "deleted": 0, "errors": []},
+              "stores": {...},
+              "layers": {...},
+            }
+        """
+        return self._post(f"engines/{engine_id}/sync/", timeout=_SYNC_TIMEOUT)
+
+    def validate_engine(self, engine_id: str) -> dict:
+        """
+        POST /api/geoengine/engines/{engine_id}/validate/
+        Checks connectivity to the engine (GeoServer ping).
+
+        Returns:
+            {"success": True, "message": "Connection validated"}
+            or raises APIError on failure.
+        """
+        return self._post(f"engines/{engine_id}/validate/")
+
+    def push_engine(self, engine_id: str) -> dict:
+        """
+        POST /api/geoengine/engines/{engine_id}/push/
+        Pushes Django metadata intent → GeoServer (workspaces for now).
+        Uses a longer 30-second read timeout.
+
+        Returns the push result dict, e.g.:
+            {
+              "success": True,
+              "pushed": 2,
+              "already_exists": 1,
+              "errors": [],
+            }
+        """
+        return self._post(f"engines/{engine_id}/push/", timeout=_SYNC_TIMEOUT)
+
+    def create_engine(self, data: dict) -> dict:
+        """
+        POST /api/geoengine/engines/
+        Creates a new GeodataEngine. Returns the created engine dict including its new UUID.
+        """
+        return self._post("engines/", data=data)
+
+    def update_engine(self, engine_id: str, data: dict) -> dict:
+        """
+        PATCH /api/geoengine/engines/{engine_id}/
+        Partial update — only sends fields present in `data`.
+        Password is omitted from `data` if it was left blank by the user.
+        """
+        return self._patch(f"engines/{engine_id}/", data=data)
+
+    def delete_engine(self, engine_id: str) -> dict:
+        """
+        DELETE /api/geoengine/engines/{engine_id}/
+        Deletes the engine. Returns {} on success (204 No Content).
+        """
+        return self._delete(f"engines/{engine_id}/")
+
+    # ------------------------------------------------------------------
+    # Workspace methods  (Phase 2)
+    # ------------------------------------------------------------------
+
+    def list_workspaces(self, engine_id: str | None = None) -> list[dict]:
+        """
+        GET /api/geoengine/workspaces/
+        Returns all workspaces, optionally filtered by engine UUID.
+        """
+        path = "workspaces/"
+        if engine_id:
+            path = f"workspaces/?geodata_engine={engine_id}"
+        result = self._get(path)
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return result
+
+    def get_workspace(self, workspace_id: str) -> dict:
+        """
+        GET /api/geoengine/workspaces/{workspace_id}/
+        Returns a single Workspace dict.
+        Raises APINotFoundError if workspace does not exist.
+        """
+        return self._get(f"workspaces/{workspace_id}/")
+
+    def create_workspace(self, data: dict) -> dict:
+        """
+        POST /api/geoengine/workspaces/
+        Creates a workspace in Django + GeoServer.
+
+        Expected keys: geodata_engine (UUID str), name, description (optional).
+        Returns: {"workspace": {...}, "result": {"success": True, ...}}
+        """
+        return self._post("workspaces/", data=data)
+
+    def delete_workspace(self, workspace_id: str) -> dict:
+        """
+        DELETE /api/geoengine/workspaces/{workspace_id}/
+        Deletes workspace from GeoServer first (verify), then from Django.
+        Returns {"success": True, ...} or raises APIError on failure.
+        """
+        return self._delete(f"workspaces/{workspace_id}/")
+
+    def sync_workspace(self, workspace_id: str) -> dict:
+        """
+        Fetches the workspace to discover its engine, then triggers a full
+        engine pull-sync (GeoServer → Django).  There is no per-workspace
+        sync endpoint — syncing at engine level is the correct granularity.
+
+        Returns the same sync result dict as sync_engine().
+        Raises APINotFoundError if workspace doesn't exist.
+        Raises APIError / APITimeoutError on network/engine failures.
+        """
+        workspace = self.get_workspace(workspace_id)
+        engine_id = workspace.get("geodata_engine")
+        if not engine_id:
+            raise APIError(detail="Workspace has no associated engine — cannot sync.")
+        return self._post(f"engines/{engine_id}/sync/", timeout=_SYNC_TIMEOUT)
+
+    # ------------------------------------------------------------------
+    # Store methods  (Phase 3)
+    # ------------------------------------------------------------------
+
+    def list_stores(self, workspace_id: str | None = None, engine_id: str | None = None) -> list[dict]:
+        """
+        GET /api/geoengine/stores/
+        Returns all stores, optionally filtered by workspace or engine UUID.
+        """
+        path = "stores/"
+        params = []
+        if workspace_id:
+            params.append(f"workspace={workspace_id}")
+        if engine_id:
+            params.append(f"geodata_engine={engine_id}")
+        if params:
+            path = f"stores/?{'&'.join(params)}"
+        result = self._get(path)
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return result
+
+    def get_store(self, store_id: str) -> dict:
+        """
+        GET /api/geoengine/stores/{store_id}/
+        Returns a single Store dict.
+        Raises APINotFoundError if store does not exist.
+        """
+        return self._get(f"stores/{store_id}/")
+
+    def create_store(self, data: dict) -> dict:
+        """
+        POST /api/geoengine/stores/
+        Creates a store in Django + GeoServer.
+
+        Required keys: workspace (UUID str), name.
+        For PostGIS stores: host, port, database, username, password, schema.
+        Returns: {"store": {...}, "result": {"success": True, ...}}
+        """
+        return self._post("stores/", data=data)
+
+    def update_store(self, store_id: str, data: dict) -> dict:
+        """
+        PATCH /api/geoengine/stores/{store_id}/
+        Partial update — only the fields in `data` are changed.
+        Typically used to save connection credentials (host, username, password, etc.)
+        that Django never received when the store was synced from GeoServer.
+        Returns the updated store dict.
+        """
+        return self._patch(f"stores/{store_id}/", data=data)
+
+    def delete_store(self, store_id: str) -> dict:
+        """
+        DELETE /api/geoengine/stores/{store_id}/
+        Deletes store from GeoServer first (verify), then from Django.
+        Returns {"success": True, ...} or raises APIError on failure.
+        """
+        return self._delete(f"stores/{store_id}/")
+
+    def test_store(self, store_id: str) -> dict:
+        """
+        POST /api/geoengine/stores/{store_id}/test_connection/
+        Verifies the store is reachable in GeoServer.
+        Returns {"success": True, "message": ..., "detail": {...}}
+        """
+        return self._post(f"stores/{store_id}/test_connection/")
+
+    def get_postgis_tables(self, store_id: str) -> list[dict]:
+        """
+        GET /api/geoengine/stores/{store_id}/postgis_tables/
+        Returns list of PostGIS tables with geometry metadata for the store.
+        Each entry: {table_name, geometry_column, geometry_type, srid}
+        """
+        result = self._get(f"stores/{store_id}/postgis_tables/")
+        return result.get("tables", [])
+
+    # ------------------------------------------------------------------
+    # Layer methods  (Phase 4)
+    # ------------------------------------------------------------------
+
+    def list_layers(
+        self,
+        engine_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[dict]:
+        """
+        GET /api/geoengine/layers/
+        Returns all layers, optionally filtered by engine or workspace UUID.
+        """
+        params = []
+        if engine_id:
+            params.append(f"geodata_engine={engine_id}")
+        if workspace_id:
+            params.append(f"workspace={workspace_id}")
+        path = "layers/?" + "&".join(params) if params else "layers/"
+        result = self._get(path)
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return result if isinstance(result, list) else []
+
+    def get_layer(self, layer_id: str) -> dict:
+        """GET /api/geoengine/layers/{layer_id}/"""
+        return self._get(f"layers/{layer_id}/")
+
+    def publish_layer_postgis(self, data: dict) -> dict:
+        """
+        POST /api/geoengine/layers/publish_postgis/
+        Publishes a PostGIS table as a GeoServer layer and registers it in Django.
+
+        Required keys: store_id, workspace_id, table_name, layer_name,
+                       geometry_column, geometry_type, srid.
+        Optional: title, description.
+
+        Returns: {"layer": {...}, "result": {"success": True, ...}}
+        """
+        return self._post("layers/publish_postgis/", data=data, timeout=_SYNC_TIMEOUT)
+
+    def delete_layer(self, layer_id: str) -> dict:
+        """
+        DELETE /api/geoengine/layers/{layer_id}/
+        Unpublishes from GeoServer first, then deletes Django object.
+        Returns {"success": True, ...} or raises APIError.
+        """
+        return self._delete(f"layers/{layer_id}/")
+
+    def update_layer(self, layer_id: str, data: dict) -> dict:
+        """
+        PATCH /api/geoengine/layers/{layer_id}/
+        Updates editable layer fields: title, description, srid, is_public.
+        For PUBLISHED layers, title and description are also synced to GeoServer.
+        """
+        return self._patch(f"layers/{layer_id}/", data=data)
+
+    def publish_layer(self, layer_id: str) -> dict:
+        """
+        POST /api/geoengine/layers/{layer_id}/publish/
+        Publishes an already-registered DRAFT layer to GeoServer.
+        """
+        return self._post(f"layers/{layer_id}/publish/", timeout=_SYNC_TIMEOUT)
+
+    def unpublish_layer(self, layer_id: str) -> dict:
+        """
+        POST /api/geoengine/layers/{layer_id}/unpublish/
+        Unpublishes a layer from GeoServer (sets state to UNPUBLISHED).
+        """
+        return self._post(f"layers/{layer_id}/unpublish/")
+
+    # ------------------------------------------------------------------
+    # Low-level write helpers
+    # ------------------------------------------------------------------
+
+    def _patch(
+        self,
+        path: str,
+        data: dict | None = None,
+        timeout: tuple = _DEFAULT_TIMEOUT,
+    ) -> dict:
+        url = self._url(path)
+        try:
+            response = self._session.patch(url, json=data or {}, timeout=timeout)
+        except requests.Timeout:
+            logger.warning("PATCH %s timed out", url)
+            raise APITimeoutError()
+        except requests.RequestException as exc:
+            raise APIError(detail=str(exc))
+        return self._handle_response(response)
+
+    def _delete(
+        self,
+        path: str,
+        timeout: tuple = _DEFAULT_TIMEOUT,
+    ) -> dict:
+        url = self._url(path)
+        try:
+            response = self._session.delete(url, timeout=timeout)
+        except requests.Timeout:
+            logger.warning("DELETE %s timed out", url)
+            raise APITimeoutError()
+        except requests.RequestException as exc:
+            raise APIError(detail=str(exc))
+        return self._handle_response(response)

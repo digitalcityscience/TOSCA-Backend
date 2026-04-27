@@ -1,0 +1,53 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+<div id="content-main">
+  <h1>Force Delete Provider Tree</h1>
+
+  <p>
+    This will permanently delete <strong>{{ engine.name }}</strong>, then remove all dependent resources in this order:
+    layers, stores, workspaces, and finally the provider itself.
+  </p>
+
+  <div style="margin: 18px 0; padding: 14px 18px; background: #fff4e5; border: 1px solid #e0b66d; border-radius: 4px;">
+    <strong>Current dependency summary</strong>
+    <ul style="margin: 10px 0 0 18px;">
+      <li>Workspaces: {{ summary.workspaces }}</li>
+      <li>Stores: {{ summary.stores }}</li>
+      <li>Layers: {{ summary.layers }}</li>
+      <li>Styles: {{ summary.styles }}</li>
+    </ul>
+  </div>
+
+  <form method="post" style="display:inline-block; margin-right: 12px;">
+    {% csrf_token %}
+    <div style="margin: 0 0 16px 0; padding: 14px 18px; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 4px; max-width: 760px;">
+      <strong>Delete mode</strong>
+      <div style="margin-top: 10px;">
+        <label style="display: block; margin-bottom: 10px;">
+          <input type="radio" name="delete_remote" value="1" {% if default_delete_remote %}checked{% endif %}>
+          Delete provider resources too
+        </label>
+        <div style="margin: -6px 0 12px 24px; color: #57606a;">
+          Removes workspaces, stores, layers, and styles from the provider first, then deletes Django records.
+        </div>
+        <label style="display: block; margin-bottom: 10px;">
+          <input type="radio" name="delete_remote" value="0" {% if not default_delete_remote %}checked{% endif %}>
+          Delete from Django only
+        </label>
+        <div style="margin: -6px 0 0 24px; color: #57606a;">
+          Keeps remote workspaces, stores, layers, and styles untouched. Only this catalog integration and its Django records are removed.
+        </div>
+      </div>
+    </div>
+    <button type="submit" class="button deletelink" style="padding: 8px 16px; border: none; cursor: pointer;">
+      Confirm Force Delete
+    </button>
+  </form>
+
+  <a href="{% url 'admin:geodata_providers_geodataengine_change' engine.pk %}" class="button cancel-link">
+    Cancel
+  </a>
+</div>
+{% endblock %}

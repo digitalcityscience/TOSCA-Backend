@@ -47,10 +47,10 @@ class KeycloakRedirectView(View):
     """Show nice loading page and redirect to Keycloak."""
     
     def get(self, request):
-        return render(request, 'account/login.html')
+        return render(request, 'authentication/account/login.html')
     
     def post(self, request):
-        return render(request, 'account/login.html')
+        return render(request, 'authentication/account/login.html')
 
 def welcome_view(request):
     """
@@ -58,9 +58,9 @@ def welcome_view(request):
     If not authenticated, redirect to login.
     """
     if not request.user.is_authenticated:
-        return redirect('/accounts/login/')
+        return redirect('account_login')
     
-    return render(request, 'account/welcome.html')
+    return render(request, 'authentication/account/welcome.html')
 
 
 class AutoSignupView(View):
@@ -85,7 +85,7 @@ class AutoSignupView(View):
                 'action': 'manual_signup_blocked',
                 'session_id': request.session.session_key
             })
-            return redirect('/accounts/login/')
+            return redirect('account_login')
         
         try:
             sociallogin = SocialLogin.deserialize(data)
@@ -94,7 +94,7 @@ class AutoSignupView(View):
                 'error': str(e),
                 'session_id': request.session.session_key
             })
-            return redirect('/accounts/login/')
+            return redirect('account_login')
         
         # Get user data from sociallogin
         extra_data = sociallogin.account.extra_data
@@ -114,7 +114,7 @@ class AutoSignupView(View):
                 'sub': sub,
                 'action': 'user_creation_failed'
             })
-            return redirect('/accounts/login/')
+            return redirect('account_login')
         
         # Get or create user
         user, created = User.objects.get_or_create(
@@ -170,7 +170,7 @@ class AutoSignupView(View):
         # Redirect based on role
         if user.is_staff:
             return redirect('/admin/')
-        return redirect('/welcome/')
+        return redirect('welcome')
     
     def _extract_roles(self, extra_data):
         """Extract roles from Keycloak token."""

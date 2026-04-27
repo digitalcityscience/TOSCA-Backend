@@ -250,3 +250,7 @@ Final One-Sentence Summary
 In the POC, read access is policy-based at workspace level, admin access is explicit and rare, roles are created only when needed, and GeoServer enforces everything directly using JWT roles from Keycloak.
 
 This is a clean, defensible, and realistic architecture.
+
+---
+
+For future : lua-resty-openidc (OpenResty

@@ -1,0 +1,19 @@
+{% if all_engines %}
+<div style="display:inline-flex; align-items:center; gap:8px;">
+  <label for="admin-engine-selector" style="font-size:12px; opacity:0.9;">Engine</label>
+  <select
+    id="admin-engine-selector"
+    onchange="if (this.value) { window.location = this.value; }"
+    style="min-width:180px;"
+  >
+    {% for engine in all_engines %}
+      <option
+        value="{% engine_switch_url engine.id %}"
+        {% if active_engine and engine.id == active_engine.id %}selected{% endif %}
+      >
+        {{ engine.name }}
+      </option>
+    {% endfor %}
+  </select>
+</div>
+{% endif %}

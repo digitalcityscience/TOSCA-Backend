@@ -1,0 +1,100 @@
+{% extends 'console/base.html' %}
+
+{% block content %}
+<div class="content-header">
+    <div class="content-title">
+        <h1>Engines</h1>
+        <p>Manage GeoServer engine instances</p>
+    </div>
+    <a href="{% url 'console:engine_create' %}" class="btn-add">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+        </svg>
+        Add Engine
+    </a>
+</div>
+
+<div class="card-grid">
+    {% for engine in engines %}
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">{{ engine.name }}</div>
+                    <div class="card-subtitle">{{ engine.engine_type|title }} • {{ engine.base_url }}</div>
+                </div>
+                <div class="card-status {% if engine.is_active %}synced{% else %}error{% endif %}">
+                    <span class="status-dot {% if engine.is_active %}synced{% else %}error{% endif %}"></span>
+                    {% if engine.is_active %}Active{% else %}Inactive{% endif %}
+                    {% if engine.is_default %} • Default{% endif %}
+                </div>
+            </div>
+            
+            <div class="card-actions">
+                <form method="post" action="{% url 'console:sync_engines' %}" style="display:inline;">
+                    {% csrf_token %}
+                    <button type="submit" class="card-btn primary">Sync</button>
+                </form>
+                <a href="{% url 'console:engine_edit' pk=engine.id %}" class="card-btn secondary">Edit</a>
+            </div>
+        </div>
+    {% empty %}
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">No Engines Found</div>
+                    <div class="card-subtitle">Add a GeoServer engine to get started</div>
+                </div>
+            </div>
+            <div class="card-actions">
+                <a href="{% url 'console:engine_create' %}" class="card-btn primary">Add Engine</a>
+            </div>
+        </div>
+    {% endfor %}
+</div>
+
+{% if engines %}
+<div class="card">
+    <div class="card-header">
+        <div>
+            <div class="card-title">Engine Status Overview</div>
+            <div class="card-subtitle">Quick summary of all engines</div>
+        </div>
+    </div>
+    
+    <div style="padding: 16px 0;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+            <div style="text-align: center;">
+                <div style="font-size: 24px; font-weight: 700; color: #48bb78;">{{ engines|length }}</div>
+                <div style="color: #718096; font-size: 14px;">Total Engines</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 24px; font-weight: 700; color: #48bb78;">
+                    {% with active_engines=engines|dictsort:"is_active"|last %}
+                        {{ engines|length }}
+                    {% endwith %}
+                </div>
+                <div style="color: #718096; font-size: 14px;">Active</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 24px; font-weight: 700; color: #2b6cb0;">
+                    {% with default_engines=engines|dictsort:"is_default"|last %}
+                        {% if default_engines %}1{% else %}0{% endif %}
+                    {% endwith %}
+                </div>
+                <div style="color: #718096; font-size: 14px;">Default</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="card-actions">
+        <form method="post" action="{% url 'console:sync_engines' %}" style="display:inline;">
+            {% csrf_token %}
+            <button type="submit" class="card-btn primary">Sync All Engines</button>
+        </form>
+        {% if user.is_superuser %}
+        <a href="/admin/geodata_engine/geodataengine/" class="card-btn secondary">Manage in Admin</a>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endblock content %}

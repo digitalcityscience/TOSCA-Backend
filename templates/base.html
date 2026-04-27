@@ -1,0 +1,63 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}TOSCA{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'css/base.css' %}">
+  {% block page_css %}{% endblock %}
+</head>
+<body>
+<div class="shell">
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-mark">T</div>
+      TOSCA
+    </div>
+
+    <nav class="sidebar-nav">
+      <a href="{% url 'base' %}" class="nav-item">Home</a>
+
+      {% if user.is_authenticated %}
+      <div class="nav-sep"></div>
+      <a href="{% url 'geo_console' %}" class="nav-item">Geo Console</a>
+      {% endif %}
+
+      {% block sidebar_subnav %}{% endblock %}
+    </nav>
+
+  </aside>
+
+  <!-- ── Topbar ── -->
+  <header class="topbar">
+    <div class="topbar-left">
+      {% block topbar_left %}{% endblock %}
+    </div>
+
+    <div class="topbar-right">
+      {% block topbar_right %}
+        {% if user.is_authenticated %}
+          <div class="user-pill">
+            <div class="user-avatar">{{ user.username|slice:":2"|upper }}</div>
+            <span class="user-name-text">{{ user.username }}</span>
+          </div>
+          <a href="{% url 'account_logout' %}" class="logout-link">Logout</a>
+        {% else %}
+          <a href="{% url 'account_login' %}" class="btn-login">Login</a>
+        {% endif %}
+      {% endblock %}
+    </div>
+  </header>
+
+  <!-- ── Main ── -->
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
+{% block page_js %}{% endblock %}
+</body>
+</html>

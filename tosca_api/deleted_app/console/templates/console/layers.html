@@ -1,0 +1,251 @@
+{% extends 'console/base.html' %}
+
+{% block title %}Layers{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Layers</h1>
+    {% if show_all_engines %}
+        <p class="subtitle">Manage GeoServer layers from all engines</p>
+    {% else %}
+        <p class="subtitle">Manage GeoServer layers for {{ default_engine.name|default:"Default Engine" }}</p>
+    {% endif %}
+</div>
+
+{% if layers %}
+<!-- Layer Cards Grid -->
+<div class="cards-grid">
+    {% for layer in layers %}
+    <div class="layer-card">
+        <div class="card-header">
+            <div class="layer-info">
+                <h3 class="layer-name">{{ layer.name }}</h3>
+                <p class="layer-title">{{ layer.title|default:layer.name }}</p>
+                {% if layer.description %}
+                    <p class="layer-description">{{ layer.description|truncatewords:20 }}</p>
+                {% endif %}
+            </div>
+            <div class="layer-type-badge">
+                <span class="badge type-{{ layer.geometry_type|default:'unknown'|lower }}">
+                    {{ layer.geometry_type|default:'Layer' }}
+                </span>
+            </div>
+        </div>
+        
+        <div class="layer-details">
+            <div class="detail-row">
+                <span class="detail-label">Store:</span>
+                <span class="detail-value">{{ layer.store.name }}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Workspace:</span>
+                <span class="detail-value">{{ layer.store.workspace.name }}</span>
+            </div>
+            {% if show_all_engines %}
+            <div class="detail-row">
+                <span class="detail-label">Engine:</span>
+                <span class="detail-value">{{ layer.store.workspace.engine.name }}</span>
+            </div>
+            {% endif %}
+            {% if layer.srs %}
+            <div class="detail-row">
+                <span class="detail-label">SRS:</span>
+                <span class="detail-value">{{ layer.srs }}</span>
+            </div>
+            {% endif %}
+            <div class="detail-row">
+                <span class="detail-label">Status:</span>
+                {% if layer.is_active %}
+                    <span class="status-badge active">Active</span>
+                {% else %}
+                    <span class="status-badge inactive">Inactive</span>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="layer-actions">
+            <a href="{% url 'console:layer_edit' layer.id %}" class="btn btn-outline">
+                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                </svg>
+                Edit
+            </a>
+            <a href="{% url 'console:layer_preview' layer.id %}" class="btn btn-secondary">
+                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                </svg>
+                Preview
+            </a>
+            <a href="{% url 'console:layer_delete' layer.id %}" class="btn btn-danger">
+                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                </svg>
+                Delete
+            </a>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Action Bar -->
+<div class="action-bar">
+    <div class="action-group">
+        <a href="{% url 'console:layer_create' %}" class="btn btn-primary">
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+            </svg>
+            Add Layer
+        </a>
+    </div>
+</div>
+
+{% else %}
+<!-- Empty State -->
+<div class="empty-state-card">
+    <div class="empty-icon">
+        <svg width="64" height="64" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17v4a2 2 0 002 2h4"></path>
+        </svg>
+    </div>
+    <h3 class="empty-title">No layers found</h3>
+    {% if show_all_engines %}
+        <p class="empty-description">No layers found in any engine. Create your first layer to get started.</p>
+    {% else %}
+        <p class="empty-description">No layers found for {{ default_engine.name|default:"current engine" }}. Create your first layer to get started.</p>
+    {% endif %}
+    <div class="empty-actions">
+        <a href="{% url 'console:layer_create' %}" class="btn btn-primary">
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+            </svg>
+            Create First Layer
+        </a>
+    </div>
+</div>
+{% endif %}
+
+<style>
+/* Modern Layer Cards - inherits base card styles and adds layer-specific styling */
+.layer-card {
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 24px;
+    transition: all 0.2s ease;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+}
+
+.layer-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.15);
+    border-color: #d1d5db;
+}
+
+.layer-info .layer-name {
+    font-size: 18px;
+    font-weight: 600;
+    color: #111827;
+    margin: 0 0 4px 0;
+}
+
+.layer-info .layer-title {
+    font-size: 14px;
+    color: #6b7280;
+    margin: 0 0 8px 0;
+    font-style: italic;
+}
+
+.layer-info .layer-description {
+    font-size: 13px;
+    color: #9ca3af;
+    margin: 0;
+    line-height: 1.4;
+}
+
+.layer-details {
+    margin-bottom: 24px;
+    padding: 16px;
+    background: #f9fafb;
+    border-radius: 8px;
+}
+
+.detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.detail-row:last-child {
+    margin-bottom: 0;
+}
+
+.detail-label {
+    font-size: 14px;
+    color: #6b7280;
+    font-weight: 500;
+}
+
+.detail-value {
+    font-size: 14px;
+    color: #111827;
+    font-weight: 500;
+}
+
+/* Geometry type badges */
+.badge.type-point { background: #e0e7ff; color: #3730a3; }
+.badge.type-linestring { background: #fef3c7; color: #d97706; }
+.badge.type-polygon { background: #d1fae5; color: #065f46; }
+.badge.type-multipoint { background: #ede9fe; color: #6b21a8; }
+.badge.type-multilinestring { background: #fed7d7; color: #c53030; }
+.badge.type-multipolygon { background: #bee3f8; color: #2b6cb0; }
+.badge.type-geometrycollection { background: #f7fafc; color: #2d3748; }
+.badge.type-unknown { background: #f3f4f6; color: #374151; }
+.badge.type-layer { background: #e5e7eb; color: #374151; }
+
+.status-badge {
+    padding: 4px 12px;
+    border-radius: 16px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.status-badge.active {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.status-badge.inactive {
+    background: #fee2e2;
+    color: #dc2626;
+}
+
+/* Layer actions */
+.layer-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.layer-actions .btn {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.btn.btn-secondary {
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #d1d5db;
+}
+
+.btn.btn-secondary:hover {
+    background: #e5e7eb;
+    border-color: #9ca3af;
+}
+</style>
+{% endblock %}

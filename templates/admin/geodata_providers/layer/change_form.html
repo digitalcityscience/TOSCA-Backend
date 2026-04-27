@@ -1,0 +1,46 @@
+{% extends "admin/change_form.html" %}
+
+{% block content_title %}
+{{ block.super }}
+{% if provider_context.provider or provider_context.workspace or provider_context.store %}
+<div style="margin-top: 6px; font-size: 13px; color: #4b6475;">
+    {% if provider_context.provider %}<strong>Provider:</strong> {{ provider_context.provider.name }}{% endif %}
+    {% if provider_context.workspace %}&nbsp;|&nbsp;<strong>Workspace:</strong> {{ provider_context.workspace.name }}{% endif %}
+    {% if provider_context.store %}&nbsp;|&nbsp;<strong>Store:</strong> {{ provider_context.store.name }}{% endif %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block form_top %}
+{% if provider_context.provider or provider_context.workspace or provider_context.store %}
+    <div style="background-color: #eef6fb; border: 1px solid #c9dceb; color: #21445b; padding: 12px; margin-bottom: 20px; border-radius: 4px;">
+        <strong>Provider:</strong>
+        {% if provider_context.provider %}
+            <a href="{% url 'admin:geodata_providers_geodataengine_change' provider_context.provider.pk %}">
+                {{ provider_context.provider.name }}
+            </a>
+        {% else %}
+            —
+        {% endif %}
+        &nbsp;|&nbsp;
+        <strong>Workspace:</strong>
+        {% if provider_context.workspace %}
+            <a href="{% url 'admin:geodata_providers_workspace_change' provider_context.workspace.pk %}">
+                {{ provider_context.workspace.name }}
+            </a>
+        {% else %}
+            —
+        {% endif %}
+        &nbsp;|&nbsp;
+        <strong>Store:</strong>
+        {% if provider_context.store %}
+            <a href="{% url 'admin:geodata_providers_store_change' provider_context.store.pk %}">
+                {{ provider_context.store.name }}
+            </a>
+        {% else %}
+            —
+        {% endif %}
+    </div>
+{% endif %}
+{{ block.super }}
+{% endblock %}

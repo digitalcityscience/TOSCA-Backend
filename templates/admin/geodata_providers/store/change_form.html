@@ -1,0 +1,187 @@
+{% extends "admin/change_form.html" %}
+{% load static %}
+
+{% block content_title %}
+{{ block.super }}
+{% if provider_context.provider or provider_context.workspace %}
+<div style="margin-top: 6px; font-size: 13px; color: #4b6475;">
+    {% if provider_context.provider %}<strong>Provider:</strong> {{ provider_context.provider.name }}{% endif %}
+    {% if provider_context.workspace %}&nbsp;|&nbsp;<strong>Workspace:</strong> {{ provider_context.workspace.name }}{% endif %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block form_top %}
+{% if provider_context.provider or provider_context.workspace %}
+    <div style="background-color: #eef6fb; border: 1px solid #c9dceb; color: #21445b; padding: 12px; margin-bottom: 20px; border-radius: 4px;">
+        <strong>Provider:</strong>
+        {% if provider_context.provider %}
+            <a href="{% url 'admin:geodata_providers_geodataengine_change' provider_context.provider.pk %}">
+                {{ provider_context.provider.name }}
+            </a>
+        {% else %}
+            —
+        {% endif %}
+        &nbsp;|&nbsp;
+        <strong>Workspace:</strong>
+        {% if provider_context.workspace %}
+            <a href="{% url 'admin:geodata_providers_workspace_change' provider_context.workspace.pk %}">
+                {{ provider_context.workspace.name }}
+            </a>
+        {% else %}
+            —
+        {% endif %}
+    </div>
+{% endif %}
+{% if original and original.store_type == 'postgis' and not original.has_usable_password %}
+    <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 12px; margin-bottom: 20px; border-radius: 4px;">
+        <strong>Warning:</strong> DB password is not stored locally in Django. GeoServer-managed operations may still work, but direct DB inspection from Django can fail.
+    </div>
+{% endif %}
+{{ block.super }}
+{% endblock %}
+
+{% block submit_buttons_bottom %}
+  {{ block.super }}
+
+  {% if object.pk %}
+  <div id="store-action-panel" style="
+    margin: 18px 0 8px 0;
+    padding: 14px 18px;
+    background: #f8f8f8;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+  ">
+    <strong style="display:block; margin-bottom:12px; font-size:13px;">PostGIS Actions</strong>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <button
+        type="button"
+        id="btn-postgis-tables"
+        style="
+          padding: 7px 16px;
+          background: #417690;
+          color: #fff;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 13px;
+        "
+        onclick="storeAction('postgis-tables', this)"
+      >
+        Preview PostGIS Tables
+      </button>
+
+      <a
+        href="clone/"
+        style="
+          display: inline-block;
+          padding: 7px 16px;
+          background: #6c757d;
+          color: #fff;
+          border-radius: 4px;
+          text-decoration: none;
+          font-size: 13px;
+        "
+      >
+        Clone Store
+      </a>
+
+      <span id="store-action-spinner" style="display:none; font-size:13px; color:#666;">
+        Querying...
+      </span>
+    </div>
+
+    <div id="store-action-result" style="
+      display: none;
+      margin-top: 12px;
+      padding: 10px 14px;
+      border-radius: 4px;
+      font-size: 13px;
+      line-height: 1.8;
+    "></div>
+  </div>
+
+  <script>
+  (function () {
+    window.storeAction = function (action, btn) {
+      var url = window.location.pathname.replace(/\/$/, '')
+                  .replace(/\/change$/, '') + '/' + action + '/';
+
+      var spinner = document.getElementById('store-action-spinner');
+      var resultBox = document.getElementById('store-action-result');
+      var allBtns = document.querySelectorAll('#store-action-panel button');
+
+      allBtns.forEach(function (b) { b.disabled = true; });
+      spinner.style.display = 'inline';
+      resultBox.style.display = 'none';
+
+      fetch(url, {
+        method: 'GET',
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      })
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        spinner.style.display = 'none';
+        allBtns.forEach(function (b) { b.disabled = false; });
+
+        if (data.error === 'no_password') {
+          resultBox.style.background = '#fff8e1';
+          resultBox.style.border = '1px solid #f5a623';
+          resultBox.style.color = '#7a5400';
+          resultBox.innerHTML = 'Set connection credentials first.';
+          resultBox.style.display = 'block';
+          return;
+        }
+
+        if (data.tables) {
+          resultBox.style.background = '#eaf7ee';
+          resultBox.style.border = '1px solid #3ecf8e';
+          resultBox.style.color = '#1a1a1a';
+
+          if (data.tables.length === 0) {
+            resultBox.innerHTML = 'Connected - no geometry tables found in schema.';
+          } else {
+            var header = '<strong>' + data.tables.length + ' geometry table(s) found:</strong><br>';
+            var tableHtml = '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;">'
+              + '<thead><tr style="background:#d4edda;">'
+              + '<th style="text-align:left;padding:4px 8px;border:1px solid #c3e6cb;">Table</th>'
+              + '<th style="text-align:left;padding:4px 8px;border:1px solid #c3e6cb;">Geometry Column</th>'
+              + '<th style="text-align:left;padding:4px 8px;border:1px solid #c3e6cb;">Type</th>'
+              + '<th style="text-align:left;padding:4px 8px;border:1px solid #c3e6cb;">SRID</th>'
+              + '</tr></thead><tbody>';
+            data.tables.forEach(function (t) {
+              tableHtml += '<tr>'
+                + '<td style="padding:4px 8px;border:1px solid #c3e6cb;">' + t.table_name + '</td>'
+                + '<td style="padding:4px 8px;border:1px solid #c3e6cb;">' + t.geometry_column + '</td>'
+                + '<td style="padding:4px 8px;border:1px solid #c3e6cb;">' + t.geometry_type + '</td>'
+                + '<td style="padding:4px 8px;border:1px solid #c3e6cb;">' + t.srid + '</td>'
+                + '</tr>';
+            });
+            tableHtml += '</tbody></table>';
+            resultBox.innerHTML = header + tableHtml;
+          }
+        } else {
+          resultBox.style.background = '#fdf0f0';
+          resultBox.style.border = '1px solid #e54d4d';
+          resultBox.style.color = '#a31515';
+          resultBox.innerHTML = data.error || 'An error occurred.';
+        }
+        resultBox.style.display = 'block';
+      })
+      .catch(function (err) {
+        spinner.style.display = 'none';
+        allBtns.forEach(function (b) { b.disabled = false; });
+        resultBox.style.background = '#fdf0f0';
+        resultBox.style.border = '1px solid #e54d4d';
+        resultBox.style.color = '#a31515';
+        resultBox.innerHTML = 'Network error: ' + err;
+        resultBox.style.display = 'block';
+      });
+    };
+  })();
+  </script>
+  {% endif %}
+{% endblock %}

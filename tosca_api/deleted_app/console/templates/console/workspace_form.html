@@ -1,0 +1,93 @@
+{% extends 'console/base.html' %}
+
+{% block title %}{{ action }} Workspace{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ action }} Workspace</h1>
+    <p class="subtitle">{{ action }} a GeoServer workspace</p>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <div class="card-title">{{ action }} Workspace</div>
+    </div>
+    
+    <form method="post" class="form">
+        {% csrf_token %}
+        
+        {% if form.non_field_errors %}
+            <div class="alert error">
+                {% for error in form.non_field_errors %}
+                    <p>{{ error }}</p>
+                {% endfor %}
+            </div>
+        {% endif %}
+        
+        <div class="form-group">
+            <label for="{{ form.name.id_for_label }}">{{ form.name.label }}</label>
+            {{ form.name }}
+            {% if form.name.help_text %}
+                <div class="form-help">{{ form.name.help_text }}</div>
+            {% endif %}
+            {% if form.name.errors %}
+                <div class="form-error">
+                    {% for error in form.name.errors %}
+                        <p>{{ error }}</p>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+        
+        <div class="form-group">
+            <label for="{{ form.description.id_for_label }}">{{ form.description.label }}</label>
+            {{ form.description }}
+            {% if form.description.errors %}
+                <div class="form-error">
+                    {% for error in form.description.errors %}
+                        <p>{{ error }}</p>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+        
+        <div class="form-group">
+            <label for="{{ form.engine.id_for_label }}">{{ form.engine.label }}</label>
+            {{ form.engine }}
+            {% if form.engine.help_text %}
+                <div class="form-help">{{ form.engine.help_text }}</div>
+            {% endif %}
+            {% if form.engine.errors %}
+                <div class="form-error">
+                    {% for error in form.engine.errors %}
+                        <p>{{ error }}</p>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+        
+        <div class="form-group checkbox">
+            <label class="checkbox-label">
+                {{ form.is_default }}
+                {{ form.is_default.label }}
+            </label>
+            <div class="form-help">Make this the default workspace for the selected engine</div>
+            {% if form.is_default.errors %}
+                <div class="form-error">
+                    {% for error in form.is_default.errors %}
+                        <p>{{ error }}</p>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+        
+        <div class="form-actions">
+            <button type="submit" class="btn primary">{{ action }} Workspace</button>
+            <a href="{% url 'console:workspaces' %}" class="btn secondary">Cancel</a>
+            {% if action == 'Edit' %}
+                <a href="{% url 'console:workspace_delete' object.id %}" class="btn danger" style="margin-left: auto;">Delete</a>
+            {% endif %}
+        </div>
+    </form>
+</div>
+{% endblock content %}
