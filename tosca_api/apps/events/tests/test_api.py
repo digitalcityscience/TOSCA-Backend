@@ -1335,6 +1335,12 @@ def test_event_series_patch_skips_future_exception_occurrences_by_default(
     api_client, user, campaign, event_type
 ):
     """Future bulk updates should leave exception occurrences untouched by default."""
+    today = timezone.localdate()
+    days_until_monday = (0 - today.weekday()) % 7
+    if days_until_monday == 0:
+        days_until_monday = 7
+    start_date = today + timedelta(days=days_until_monday)
+
     api_client.force_authenticate(user=user)
     create_response = api_client.post(
         "/api/v1/event-series/",
@@ -1344,7 +1350,7 @@ def test_event_series_patch_skips_future_exception_occurrences_by_default(
             "name": "Bulk Update Series",
             "series_mode": "recurring",
             "recurrence_type": "weekly",
-            "start_date": "2026-04-06",
+            "start_date": start_date.isoformat(),
             "occurrence_count": 3,
             "interval": 1,
             "start_time": "18:00:00",
