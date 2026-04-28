@@ -491,6 +491,24 @@ class LayerViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         layer = self.get_object()
 
+        # Pre-delete usage warning: if any GeoStory / Event / GeoFeedback
+        # references this layer, require an explicit ?confirm=true so the
+        # caller can show the user what will be cascade-removed.
+        usage = layer.usage_summary()
+        if any(usage.values()) and request.query_params.get("confirm") != "true":
+            return Response(
+                {
+                    "success": False,
+                    "error": "layer_in_use",
+                    "detail": (
+                        "Layer is referenced by other features. Re-send with "
+                        "?confirm=true to cascade-delete those references."
+                    ),
+                    "usage": usage,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         result = LayerService.delete_layer_safe(layer)
         if not result.get('success', False):
             return Response(
@@ -501,7 +519,14 @@ class LayerViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        return Response({'success': True, 'message': 'Layer unpublished and deleted.'}, status=status.HTTP_200_OK)
+        return Response(
+            {
+                'success': True,
+                'message': 'Layer unpublished and deleted.',
+                'usage': usage,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=['post'])
     def publish(self, request, pk=None):
