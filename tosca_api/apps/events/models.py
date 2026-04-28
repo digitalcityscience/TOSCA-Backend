@@ -652,7 +652,9 @@ class Event(TimeStampedModel):
 class EventLayer(models.Model):
     """
     Through model for Event <-> geodata_providers.Layer.
-    Allows ordering of layers within an event.
+
+    Allows ordering of layers within an event. Layers must be public and
+    published — see ``clean()``.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -679,8 +681,18 @@ class EventLayer(models.Model):
     def __str__(self) -> str:
         return f"{self.event} - {self.layer} ({self.display_order})"
 
+    def clean(self) -> None:
+        """Reject non-public or non-published layer assignments."""
+        from tosca_api.apps.geodata_providers.validators import (
+            validate_layer_is_public_and_published,
+        )
+
+        super().clean()
+        if self.layer_id is not None:
+            validate_layer_is_public_and_published(self.layer)
+
     def save(self, *args, **kwargs) -> None:
-        """Auto-increment display_order if not specified."""
+        """Auto-increment display_order and enforce layer validation."""
         if self._state.adding and self.display_order == 0:
             max_order = (
                 EventLayer.objects.filter(event=self.event).aggregate(
@@ -689,6 +701,7 @@ class EventLayer(models.Model):
             )
             if max_order is not None:
                 self.display_order = max_order + 1
+        self.full_clean()
         super().save(*args, **kwargs)
 
 

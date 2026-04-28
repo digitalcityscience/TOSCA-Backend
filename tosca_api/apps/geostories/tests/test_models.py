@@ -116,3 +116,38 @@ def test_geostory_layer_auto_increment(user, campaign):
     assert gsl1.display_order == 0
     assert gsl2.display_order == 1
     assert gsl3.display_order == 2
+
+
+@pytest.mark.django_db
+def test_geostory_layer_rejects_non_public_layer(user, campaign):
+    """Through-model clean() must reject is_public=False layers."""
+    from django.core.exceptions import ValidationError
+
+    story = GeoStory.objects.create(title="S", campaign=campaign, author=user)
+    layer = make_layer("workspace:private_layer", user=user, is_public=False)
+
+    with pytest.raises(ValidationError):
+        GeoStoryLayer.objects.create(geostory=story, layer=layer)
+
+
+@pytest.mark.django_db
+def test_geostory_layer_rejects_unpublished_layer(user, campaign):
+    """Through-model clean() must reject non-PUBLISHED layers."""
+    from django.core.exceptions import ValidationError
+
+    story = GeoStory.objects.create(title="S", campaign=campaign, author=user)
+    layer = make_layer(
+        "workspace:draft_layer", user=user, publishing_state="DRAFT"
+    )
+
+    with pytest.raises(ValidationError):
+        GeoStoryLayer.objects.create(geostory=story, layer=layer)
+
+
+@pytest.mark.django_db
+def test_geostory_layer_accepts_public_published(user, campaign):
+    """Through-model clean() accepts public + published layers."""
+    story = GeoStory.objects.create(title="S", campaign=campaign, author=user)
+    layer = make_layer("workspace:ok_layer", user=user)
+    gsl = GeoStoryLayer.objects.create(geostory=story, layer=layer)
+    assert gsl.id is not None

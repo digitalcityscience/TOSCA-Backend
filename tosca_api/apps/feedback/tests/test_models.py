@@ -599,7 +599,9 @@ class TestFeedbackLayer:
             feedback=feedback_rating_only,
             layer=layer_ref,
         )
-        with pytest.raises(IntegrityError):
+        # full_clean() catches this before the DB-level constraint fires,
+        # so it surfaces as ValidationError.
+        with pytest.raises(ValidationError):
             FeedbackLayer.objects.create(
                 feedback=feedback_rating_only,
                 layer=layer_ref,
@@ -748,3 +750,33 @@ class TestGeoFeedbackRelationships:
             created_by=user,
         )
         assert custom_form.feedbacks.count() == 2
+
+
+@pytest.mark.django_db
+class TestFeedbackLayerValidation:
+    """Through-model clean() rejects non-public / non-published layers."""
+
+    def test_rejects_non_public_layer(self, feedback_rating_only, user):
+        layer = make_layer(
+            "workspace:fb_private", user=user, is_public=False
+        )
+        with pytest.raises(ValidationError):
+            FeedbackLayer.objects.create(
+                feedback=feedback_rating_only, layer=layer
+            )
+
+    def test_rejects_unpublished_layer(self, feedback_rating_only, user):
+        layer = make_layer(
+            "workspace:fb_draft", user=user, publishing_state="DRAFT"
+        )
+        with pytest.raises(ValidationError):
+            FeedbackLayer.objects.create(
+                feedback=feedback_rating_only, layer=layer
+            )
+
+    def test_accepts_public_published(self, feedback_rating_only, user):
+        layer = make_layer("workspace:fb_ok", user=user)
+        fl = FeedbackLayer.objects.create(
+            feedback=feedback_rating_only, layer=layer
+        )
+        assert fl.id is not None

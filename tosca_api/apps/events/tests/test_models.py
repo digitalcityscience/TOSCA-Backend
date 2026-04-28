@@ -254,8 +254,9 @@ def test_event_layer_unique_together(user, campaign, layer_ref):
 
     EventLayer.objects.create(event=event, layer=layer_ref)
 
-    # Attempt to create duplicate
-    with pytest.raises(IntegrityError):
+    # Attempt to create duplicate — full_clean() now catches this before
+    # the DB-level constraint fires, so it surfaces as ValidationError.
+    with pytest.raises(ValidationError):
         EventLayer.objects.create(event=event, layer=layer_ref)
 
 
@@ -1345,3 +1346,63 @@ def test_multiple_select_dimension_allows_multiple_terms_for_same_event(user, ca
     EventTerm.objects.create(event=event, term=second_term)
 
     assert EventTerm.objects.filter(event=event).count() == 2
+
+
+# =============================================================================
+# EventLayer validation
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_event_layer_rejects_non_public_layer(user, campaign):
+    """Through-model clean() must reject is_public=False layers."""
+    now = timezone.now()
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Event",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+    layer = make_layer("workspace:evt_private", user=user, is_public=False)
+
+    with pytest.raises(ValidationError):
+        EventLayer.objects.create(event=event, layer=layer)
+
+
+@pytest.mark.django_db
+def test_event_layer_rejects_unpublished_layer(user, campaign):
+    """Through-model clean() must reject non-PUBLISHED layers."""
+    now = timezone.now()
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Event",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+    layer = make_layer(
+        "workspace:evt_draft", user=user, publishing_state="DRAFT"
+    )
+
+    with pytest.raises(ValidationError):
+        EventLayer.objects.create(event=event, layer=layer)
+
+
+@pytest.mark.django_db
+def test_event_layer_accepts_public_published(user, campaign):
+    """Through-model clean() accepts public + published layers."""
+    now = timezone.now()
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Event",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+    layer = make_layer("workspace:evt_ok", user=user)
+    el = EventLayer.objects.create(event=event, layer=layer)
+    assert el.id is not None

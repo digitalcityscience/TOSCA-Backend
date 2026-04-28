@@ -183,7 +183,9 @@ class GeoFeedback(TimeStampedModel):
 class FeedbackLayer(models.Model):
     """
     Through model for GeoFeedback <-> geodata_providers.Layer.
-    Allows ordering of layers within a feedback.
+
+    Allows ordering of layers within a feedback. Layers must be public and
+    published — see ``clean()``.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -205,8 +207,18 @@ class FeedbackLayer(models.Model):
     def __str__(self) -> str:
         return f"{self.feedback} - {self.layer} ({self.display_order})"
 
+    def clean(self) -> None:
+        """Reject non-public or non-published layer assignments."""
+        from tosca_api.apps.geodata_providers.validators import (
+            validate_layer_is_public_and_published,
+        )
+
+        super().clean()
+        if self.layer_id is not None:
+            validate_layer_is_public_and_published(self.layer)
+
     def save(self, *args, **kwargs) -> None:
-        """Auto-increment display_order if not specified."""
+        """Auto-increment display_order and enforce layer validation."""
         if self._state.adding and self.display_order == 0:
             max_order = (
                 FeedbackLayer.objects.filter(feedback=self.feedback).aggregate(
@@ -215,6 +227,7 @@ class FeedbackLayer(models.Model):
             )
             if max_order is not None:
                 self.display_order = max_order + 1
+        self.full_clean()
         super().save(*args, **kwargs)
 
 
