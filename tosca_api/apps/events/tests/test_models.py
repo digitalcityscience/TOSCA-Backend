@@ -23,7 +23,7 @@ from tosca_api.apps.events.models import (
     TaxonomyTerm,
 )
 from tosca_api.apps.geocontext.models import GeoContext
-from tosca_api.apps.layerrefs.models import LayerRef
+from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
 User = get_user_model()
 
@@ -59,8 +59,8 @@ def campaign(user):
 
 
 @pytest.fixture
-def layer_ref():
-    return LayerRef.objects.create(layer_name="workspace:events_layer")
+def layer_ref(user):
+    return make_layer("workspace:events_layer", user=user)
 
 
 @pytest.fixture
@@ -229,11 +229,11 @@ def test_event_layer_auto_increment_order(user, campaign, layer_ref):
     )
 
     # Create first layer with order 0 (default)
-    layer1 = LayerRef.objects.create(layer_name="workspace:layer1")
+    layer1 = make_layer("workspace:event_layer1", user=user)
     EventLayer.objects.create(event=event, layer=layer1)
 
     # Create second layer - should auto-increment
-    layer2 = LayerRef.objects.create(layer_name="workspace:layer2")
+    layer2 = make_layer("workspace:event_layer2", user=user)
     el2 = EventLayer.objects.create(event=event, layer=layer2)
 
     assert el2.display_order == 1

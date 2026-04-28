@@ -8,7 +8,7 @@ from tosca_api.apps.campaigns.models import Campaign
 from django.forms.models import inlineformset_factory
 from tosca_api.apps.geostories.admin import GeoStoryLayerFormSet
 from tosca_api.apps.geostories.models import GeoStory, GeoStoryLayer
-from tosca_api.apps.layerrefs.models import LayerRef
+from tosca_api.apps.geodata_providers.test_helpers import make_layer
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -21,8 +21,8 @@ class GeoStoryFormTest(TestCase):
         self.story = GeoStory.objects.create(
             title="Story", campaign=self.campaign, author=self.user
         )
-        self.layer1 = LayerRef.objects.create(layer_name="layer1")
-        self.layer2 = LayerRef.objects.create(layer_name="layer2")
+        self.layer1 = make_layer("workspace:layer1", user=self.user)
+        self.layer2 = make_layer("workspace:layer2", user=self.user)
 
     def test_duplicate_order_validation(self):
         """Test that formset rejects duplicate display_order."""

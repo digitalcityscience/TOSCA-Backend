@@ -3,7 +3,6 @@ from rest_framework import serializers
 
 from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geocontext.models import GeoContext
-from tosca_api.apps.layerrefs.models import LayerRef
 
 from .models import GeoStory, GeoStoryLayer
 
@@ -22,28 +21,26 @@ class GeoContextSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class LayerRefSerializer(serializers.ModelSerializer):
-    """Serializer for LayerRef - exposes layer name."""
-
-    class Meta:
-        model = LayerRef
-        fields = ["id", "layer_name"]
-        read_only_fields = fields
-
-
 class GeoStoryLayerSerializer(serializers.ModelSerializer):
     """
     Serializer for GeoStoryLayer through model.
-    Includes layer details and display order.
+    Includes layer id, name, and display order.
+
+    Note: this is an interim slim shape; Task 8.4 replaces it with a
+    LayerSummarySerializer exposing geometry_type, srid, published_url, etc.
     """
 
     id = serializers.UUIDField(source="layer.id", read_only=True)
-    layer_name = serializers.CharField(source="layer.layer_name", read_only=True)
+    layer_name = serializers.SerializerMethodField()
 
     class Meta:
         model = GeoStoryLayer
         fields = ["id", "layer_name", "display_order"]
         read_only_fields = fields
+
+    def get_layer_name(self, obj) -> str:
+        """Return the canonical workspace-qualified layer name."""
+        return f"{obj.layer.workspace.name}:{obj.layer.name}"
 
 
 class FeatureLinkSerializer(serializers.ModelSerializer):
@@ -118,7 +115,9 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
         Return layers ordered by display_order.
         Uses the through model to get ordering.
         """
-        through_qs = GeoStoryLayer.objects.filter(geostory=obj).select_related("layer")
+        through_qs = GeoStoryLayer.objects.filter(geostory=obj).select_related(
+            "layer__workspace"
+        )
         return GeoStoryLayerSerializer(through_qs, many=True).data
 
     def get_feature_links(self, obj) -> list:

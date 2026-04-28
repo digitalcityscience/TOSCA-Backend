@@ -502,7 +502,7 @@ class Event(TimeStampedModel):
     )
 
     layers = models.ManyToManyField(
-        "layerrefs.LayerRef",
+        "geodata_providers.Layer",
         through="EventLayer",
         related_name="events",
         blank=True,
@@ -651,13 +651,17 @@ class Event(TimeStampedModel):
 
 class EventLayer(models.Model):
     """
-    Through model for Event <-> LayerRef.
+    Through model for Event <-> geodata_providers.Layer.
     Allows ordering of layers within an event.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     event = models.ForeignKey(Event, on_delete=models.CASCADE)
-    layer = models.ForeignKey("layerrefs.LayerRef", on_delete=models.CASCADE)
+    layer = models.ForeignKey(
+        "geodata_providers.Layer",
+        on_delete=models.CASCADE,
+        related_name="event_uses",
+    )
     display_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
