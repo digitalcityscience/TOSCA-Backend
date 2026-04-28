@@ -9,6 +9,7 @@ from rest_framework import serializers
 from rest_framework_gis.serializers import GeoFeatureModelSerializer
 
 from tosca_api.apps.geocontext.models import GeoContext
+from tosca_api.apps.geodata_providers.api.serializers import LayerSummarySerializer
 
 from .models import (
     Event,
@@ -86,19 +87,18 @@ class EventGeoContextSerializer(serializers.ModelSerializer):
 
 
 class EventLayerSerializer(serializers.ModelSerializer):
-    """Serializer for EventLayer through model."""
+    """
+    Serializer for EventLayer through model.
 
-    id = serializers.UUIDField(source="layer.id", read_only=True)
-    layer_name = serializers.SerializerMethodField()
+    Embeds the canonical Layer summary plus per-event display_order.
+    """
+
+    layer = LayerSummarySerializer(read_only=True)
 
     class Meta:
         model = EventLayer
-        fields = ["id", "layer_name", "display_order"]
+        fields = ["layer", "display_order"]
         read_only_fields = fields
-
-    def get_layer_name(self, obj) -> str:
-        """Return the canonical workspace-qualified layer name."""
-        return f"{obj.layer.workspace.name}:{obj.layer.name}"
 
 
 # =============================================================================
@@ -174,8 +174,10 @@ class EventDetailSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_layers(self, obj) -> list:
-        """Return layers ordered by display_order."""
-        through_qs = EventLayer.objects.filter(event=obj).select_related("layer")
+        """Return layers ordered by display_order with full Layer summary."""
+        through_qs = EventLayer.objects.filter(event=obj).select_related(
+            "layer__workspace"
+        )
         return EventLayerSerializer(through_qs, many=True).data
 
     def get_context(self, obj):

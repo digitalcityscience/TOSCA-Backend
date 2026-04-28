@@ -73,7 +73,9 @@ class GeoFeedbackViewSet(viewsets.ModelViewSet):
 
         if self.action == "retrieve":
             qs = qs.select_related("context", "campaign", "created_by", "custom_form")
-            qs = qs.prefetch_related("feedbacklayer_set__layer")
+            qs = qs.prefetch_related(
+                "feedbacklayer_set__layer__workspace"
+            )
 
         user = self.request.user
         if not (user and user.is_staff):

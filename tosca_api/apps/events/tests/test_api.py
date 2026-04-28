@@ -1826,3 +1826,28 @@ def test_events_delete(api_client, user, future_event):
     response = api_client.delete(f"/api/v1/events/{future_event.id}/")
     assert response.status_code == 204
     assert not Event.objects.filter(id=future_event.id).exists()
+
+
+@pytest.mark.django_db
+def test_event_detail_returns_layer_summary(api_client, user, future_event):
+    """Event detail must return canonical Layer metadata for linked layers."""
+    from tosca_api.apps.events.models import EventLayer
+    from tosca_api.apps.geodata_providers.test_helpers import make_layer
+
+    layer = make_layer("workspace:event_detail_layer", user=user)
+    EventLayer.objects.create(event=future_event, layer=layer, display_order=1)
+
+    api_client.force_authenticate(user=user)
+    response = api_client.get(f"/api/v1/events/{future_event.id}/")
+    assert response.status_code == 200
+
+    layers = response.data["layers"]
+    assert len(layers) == 1
+    layer_payload = layers[0]["layer"]
+    assert layer_payload["name"] == "event_detail_layer"
+    assert layer_payload["workspace"]["name"] == "workspace"
+    assert layer_payload["geometry_type"] == "Point"
+    assert layer_payload["srid"] == 4326
+    assert layer_payload["is_public"] is True
+    assert layer_payload["publishing_state"] == "PUBLISHED"
+    assert layers[0]["display_order"] == 1

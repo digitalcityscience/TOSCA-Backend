@@ -68,7 +68,9 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
         # Optimize queries for detail view
         if self.action == "retrieve":
             queryset = queryset.select_related("context", "campaign", "author")
-            queryset = queryset.prefetch_related("geostorylayer_set__layer")
+            queryset = queryset.prefetch_related(
+                "geostorylayer_set__layer__workspace"
+            )
 
         # Optimize queries for list view
         if self.action == "list":

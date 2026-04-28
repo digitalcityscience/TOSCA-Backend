@@ -3,6 +3,7 @@ from rest_framework import serializers
 
 from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geocontext.models import GeoContext
+from tosca_api.apps.geodata_providers.api.serializers import LayerSummarySerializer
 
 from .models import GeoStory, GeoStoryLayer
 
@@ -24,23 +25,18 @@ class GeoContextSerializer(serializers.ModelSerializer):
 class GeoStoryLayerSerializer(serializers.ModelSerializer):
     """
     Serializer for GeoStoryLayer through model.
-    Includes layer id, name, and display order.
 
-    Note: this is an interim slim shape; Task 8.4 replaces it with a
-    LayerSummarySerializer exposing geometry_type, srid, published_url, etc.
+    Embeds the canonical Layer summary (id, name, workspace, geometry_type,
+    srid, published_url, is_public, publishing_state) plus the per-story
+    display_order.
     """
 
-    id = serializers.UUIDField(source="layer.id", read_only=True)
-    layer_name = serializers.SerializerMethodField()
+    layer = LayerSummarySerializer(read_only=True)
 
     class Meta:
         model = GeoStoryLayer
-        fields = ["id", "layer_name", "display_order"]
+        fields = ["layer", "display_order"]
         read_only_fields = fields
-
-    def get_layer_name(self, obj) -> str:
-        """Return the canonical workspace-qualified layer name."""
-        return f"{obj.layer.workspace.name}:{obj.layer.name}"
 
 
 class FeatureLinkSerializer(serializers.ModelSerializer):

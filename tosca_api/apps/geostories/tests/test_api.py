@@ -202,8 +202,54 @@ def test_geostory_detail_has_layers(api_client, user, geostory, layer_ref):
     
     layers = response.data["layers"]
     assert len(layers) == 1
-    assert layers[0]["layer_name"] == "workspace:test_layer"
+    layer_payload = layers[0]["layer"]
+    assert layer_payload["name"] == "test_layer"
+    assert layer_payload["workspace"]["name"] == "workspace"
+    assert layer_payload["geometry_type"] == "Point"
+    assert layer_payload["srid"] == 4326
+    assert layer_payload["is_public"] is True
+    assert layer_payload["publishing_state"] == "PUBLISHED"
     assert layers[0]["display_order"] == 1
+
+
+@pytest.mark.django_db
+def test_geostory_detail_layers_no_n_plus_one(api_client, user, geostory):
+    """Detail endpoint query count must not scale with linked layer count."""
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    from tosca_api.apps.geodata_providers.test_helpers import make_layer
+
+    api_client.force_authenticate(user=user)
+    url = f"/api/v1/stories/{geostory.id}/"
+
+    # Warm caches (auth, content types) so they don't pollute the count.
+    api_client.get(url)
+
+    for i in range(2):
+        layer = make_layer(f"workspace:n1_a_{i}", user=user)
+        GeoStoryLayer.objects.create(
+            geostory=geostory, layer=layer, display_order=i
+        )
+
+    with CaptureQueriesContext(connection) as ctx_2:
+        response = api_client.get(url)
+    assert response.status_code == 200
+    assert len(response.data["layers"]) == 2
+
+    for i in range(2, 8):
+        layer = make_layer(f"workspace:n1_a_{i}", user=user)
+        GeoStoryLayer.objects.create(
+            geostory=geostory, layer=layer, display_order=i
+        )
+
+    with CaptureQueriesContext(connection) as ctx_8:
+        response = api_client.get(url)
+    assert response.status_code == 200
+    assert len(response.data["layers"]) == 8
+
+    # Query count must be the same regardless of how many layers are linked.
+    assert len(ctx_8) == len(ctx_2)
 
 
 @pytest.mark.django_db
