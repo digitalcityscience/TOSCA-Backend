@@ -13,7 +13,7 @@ class Migration(migrations.Migration):
     dependencies = [
         ('campaigns', '0001_initial'),
         ('geocontext', '0001_initial'),
-        ('layerrefs', '0001_initial'),
+        ('geodata_providers', '0001_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -44,7 +44,7 @@ class Migration(migrations.Migration):
                 ('display_order', models.PositiveIntegerField(default=0)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('geostory', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='geostories.geostory')),
-                ('layer', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='layerrefs.layerref')),
+                ('layer', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='geodata_providers.layer')),
             ],
             options={
                 'verbose_name': 'GeoStory Layer',
@@ -56,6 +56,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='geostory',
             name='layers',
-            field=models.ManyToManyField(blank=True, related_name='geostories', through='geostories.GeoStoryLayer', to='layerrefs.layerref'),
+            field=models.ManyToManyField(blank=True, related_name='geostories', through='geostories.GeoStoryLayer', to='geodata_providers.layer'),
         ),
     ]

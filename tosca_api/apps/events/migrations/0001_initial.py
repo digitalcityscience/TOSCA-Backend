@@ -14,7 +14,7 @@ class Migration(migrations.Migration):
     dependencies = [
         ('campaigns', '0001_initial'),
         ('geocontext', '0001_initial'),
-        ('layerrefs', '0001_initial'),
+        ('geodata_providers', '0001_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -49,7 +49,7 @@ class Migration(migrations.Migration):
                 ('display_order', models.PositiveIntegerField(default=0)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('event', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='events.event')),
-                ('layer', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='layerrefs.layerref')),
+                ('layer', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='geodata_providers.layer')),
             ],
             options={
                 'verbose_name': 'Event Layer',
@@ -61,7 +61,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='event',
             name='layers',
-            field=models.ManyToManyField(blank=True, related_name='events', through='events.EventLayer', to='layerrefs.layerref'),
+            field=models.ManyToManyField(blank=True, related_name='events', through='events.EventLayer', to='geodata_providers.layer'),
         ),
         migrations.AddIndex(
             model_name='event',

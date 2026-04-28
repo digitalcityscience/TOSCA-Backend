@@ -72,7 +72,6 @@ INSTALLED_APPS = [
     "tosca_api.apps.geodata_providers.apps.GeodataProvidersConfig",
     "tosca_api.apps.campaigns",
     "tosca_api.apps.geocontext",
-    "tosca_api.apps.layerrefs",
     "tosca_api.apps.geostories",
     "tosca_api.apps.featurelinks",
     "tosca_api.apps.events",
