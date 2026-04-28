@@ -9,7 +9,10 @@ from rest_framework import serializers
 from rest_framework_gis.serializers import GeoFeatureModelSerializer
 
 from tosca_api.apps.geocontext.models import GeoContext
-from tosca_api.apps.geodata_providers.api.serializers import LayerSummarySerializer
+from tosca_api.apps.geodata_providers.api.serializers import (
+    LayerSummarySerializer,
+    LayerUUIDListField,
+)
 
 from .models import (
     Event,
@@ -293,6 +296,7 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
         required=False,
         write_only=True,
     )
+    layers = LayerUUIDListField(required=False, write_only=True)
 
     class Meta:
         model = Event
@@ -321,6 +325,7 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
             "organizer",
             "context",
             "taxonomy_assignments",
+            "layers",
         ]
         read_only_fields = ["id", "organizer"]
 
@@ -335,13 +340,13 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
         instance = Event()
         if self.instance is not None:
             for field in self.Meta.fields:
-                if field in {"id", "taxonomy_assignments"}:
+                if field in {"id", "taxonomy_assignments", "layers"}:
                     continue
                 setattr(instance, field, getattr(self.instance, field))
             instance.pk = self.instance.pk
 
         for attr, value in attrs.items():
-            if attr.startswith("_"):
+            if attr.startswith("_") or attr == "layers":
                 continue
             setattr(instance, attr, value)
 
@@ -349,15 +354,21 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
         instance.clean()
         return attrs
 
+    @transaction.atomic
     def create(self, validated_data):
         taxonomy_terms = validated_data.pop("_taxonomy_terms", serializers.empty)
+        layers = validated_data.pop("layers", None)
         event = super().create(validated_data)
         if taxonomy_terms is not serializers.empty:
             self._replace_event_terms(event, taxonomy_terms)
+        if layers is not None:
+            self._sync_layers(event, layers)
         return event
 
+    @transaction.atomic
     def update(self, instance, validated_data):
         taxonomy_terms = validated_data.pop("_taxonomy_terms", serializers.empty)
+        layers = validated_data.pop("layers", None)
         should_mark_exception = self._should_mark_exception(
             instance=instance,
             validated_data=validated_data,
@@ -374,7 +385,18 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
         event = super().update(instance, validated_data)
         if taxonomy_terms is not serializers.empty:
             self._replace_event_terms(event, taxonomy_terms)
+        if layers is not None:
+            self._sync_layers(event, layers)
         return event
+
+    @staticmethod
+    def _sync_layers(event: Event, layers: list) -> None:
+        """Replace the event's EventLayer rows with the supplied list."""
+        EventLayer.objects.filter(event=event).delete()
+        for index, layer in enumerate(layers):
+            EventLayer.objects.create(
+                event=event, layer=layer, display_order=index
+            )
 
     def _should_mark_exception(self, instance, validated_data, taxonomy_terms) -> bool:
         if not instance.series_id:

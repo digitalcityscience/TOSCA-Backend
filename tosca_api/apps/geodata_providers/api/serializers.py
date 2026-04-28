@@ -38,6 +38,50 @@ class LayerSummarySerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class LayerUUIDListField(serializers.ListField):
+    """
+    Write-side field that accepts a list of Layer UUIDs and resolves them
+    to ``geodata_providers.Layer`` instances.
+
+    Used by consumer apps (geostories, events, feedback) for nested layer
+    writes. Reports clear 400 errors for unknown UUIDs and pushes
+    public + published validation through the same shared helper used by
+    the through-model ``clean()`` methods.
+    """
+
+    child = serializers.UUIDField()
+
+    def to_internal_value(self, data):
+        from tosca_api.apps.geodata_providers.validators import (
+            validate_layer_is_public_and_published,
+        )
+
+        ids = super().to_internal_value(data)
+        if not ids:
+            return []
+
+        layers_by_id = Layer.objects.in_bulk(ids)
+        missing = [str(i) for i in ids if i not in layers_by_id]
+        if missing:
+            raise serializers.ValidationError(
+                f"Unknown layer id(s): {', '.join(missing)}"
+            )
+
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        resolved: list[Layer] = []
+        for layer_id in ids:
+            layer = layers_by_id[layer_id]
+            try:
+                validate_layer_is_public_and_published(layer)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError(
+                    exc.message_dict.get("layer", str(exc))
+                )
+            resolved.append(layer)
+        return resolved
+
+
 class GeodataEngineSerializer(serializers.ModelSerializer):
     """Serializer for GeodataEngine model."""
 

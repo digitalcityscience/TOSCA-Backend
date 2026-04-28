@@ -1,7 +1,11 @@
+from django.db import transaction
 from rest_framework import serializers
 from rest_framework_gis.fields import GeometryField
 from tosca_api.apps.geocontext.models import GeoContext
-from tosca_api.apps.geodata_providers.api.serializers import LayerSummarySerializer
+from tosca_api.apps.geodata_providers.api.serializers import (
+    LayerSummarySerializer,
+    LayerUUIDListField,
+)
 
 from .models import FeedbackLayer, FeedbackSubmission, GeoFeedback
 
@@ -93,7 +97,15 @@ class GeoFeedbackDetailSerializer(serializers.ModelSerializer):
 
 
 class GeoFeedbackWriteSerializer(serializers.ModelSerializer):
-    """Write serializer for creating or updating GeoFeedback."""
+    """
+    Write serializer for creating or updating GeoFeedback.
+
+    Accepts an optional ``layers`` list of ``geodata_providers.Layer`` UUIDs.
+    Order of UUIDs in the list becomes the per-feedback display_order.
+    Layers must be public + published — see ``LayerUUIDListField``.
+    """
+
+    layers = LayerUUIDListField(required=False, write_only=True)
 
     class Meta:
         model = GeoFeedback
@@ -109,18 +121,45 @@ class GeoFeedbackWriteSerializer(serializers.ModelSerializer):
             "allow_drawings",
             "status",
             "visibility",
+            "layers",
         ]
         read_only_fields = ["id", "created_by"]
 
     def validate(self, attrs):
         """Invoke model clean() for DB-level validation."""
-        instance = GeoFeedback(**attrs)
+        layer_attrs = {k: v for k, v in attrs.items() if k != "layers"}
+        instance = GeoFeedback(**layer_attrs)
         if self.instance:
-            for attr, value in attrs.items():
+            for attr, value in layer_attrs.items():
                 setattr(instance, attr, value)
-        
+
         instance.clean()
         return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        layers = validated_data.pop("layers", None)
+        feedback = super().create(validated_data)
+        if layers is not None:
+            self._sync_layers(feedback, layers)
+        return feedback
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        layers = validated_data.pop("layers", None)
+        feedback = super().update(instance, validated_data)
+        if layers is not None:
+            self._sync_layers(feedback, layers)
+        return feedback
+
+    @staticmethod
+    def _sync_layers(feedback: GeoFeedback, layers: list) -> None:
+        """Replace the feedback's FeedbackLayer rows with the supplied list."""
+        FeedbackLayer.objects.filter(feedback=feedback).delete()
+        for index, layer in enumerate(layers):
+            FeedbackLayer.objects.create(
+                feedback=feedback, layer=layer, display_order=index
+            )
 
 
 

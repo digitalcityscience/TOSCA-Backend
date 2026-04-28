@@ -266,3 +266,49 @@ class TestFeedbackDetailLayers:
         assert layer_payload["is_public"] is True
         assert layer_payload["publishing_state"] == "PUBLISHED"
         assert layers[0]["display_order"] == 1
+
+
+@pytest.mark.django_db
+class TestFeedbackLayerWrites:
+    """Nested layer writes via UUID list."""
+
+    def test_create_with_layer_uuids(self, admin_client, admin_user, campaign):
+        from tosca_api.apps.feedback.models import FeedbackLayer, GeoFeedback
+        from tosca_api.apps.geodata_providers.test_helpers import make_layer
+
+        l1 = make_layer("workspace:fb_w_1", user=admin_user)
+        l2 = make_layer("workspace:fb_w_2", user=admin_user)
+
+        payload = {
+            "title": "FB w/ layers",
+            "campaign": str(campaign.id),
+            "rating_enabled": True,
+            "form_enabled": False,
+            "layers": [str(l1.id), str(l2.id)],
+        }
+        resp = admin_client.post("/api/v1/feedback/", payload, format="json")
+        assert resp.status_code == 201, resp.data
+
+        fb = GeoFeedback.objects.get(id=resp.data["id"])
+        rows = list(
+            FeedbackLayer.objects.filter(feedback=fb).order_by("display_order")
+        )
+        assert [r.layer_id for r in rows] == [l1.id, l2.id]
+        assert [r.display_order for r in rows] == [0, 1]
+
+    def test_create_rejects_non_public_layer(self, admin_client, admin_user, campaign):
+        from tosca_api.apps.geodata_providers.test_helpers import make_layer
+
+        private = make_layer(
+            "workspace:fb_w_private", user=admin_user, is_public=False
+        )
+        payload = {
+            "title": "FB",
+            "campaign": str(campaign.id),
+            "rating_enabled": True,
+            "form_enabled": False,
+            "layers": [str(private.id)],
+        }
+        resp = admin_client.post("/api/v1/feedback/", payload, format="json")
+        assert resp.status_code == 400
+        assert "layers" in resp.data

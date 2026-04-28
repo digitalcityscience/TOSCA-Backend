@@ -43,7 +43,7 @@ services:
       - geoserver_data:/geoserver_data/data
       # Optional: set GEOSERVER_LOCAL_DATA_PATH in your .env.dev to mount local geodata.
       # Falls back to an empty directory when the variable is not set.
-      - ${GEOSERVER_LOCAL_DATA_PATH:-./docker/geoserver-empty}:/mnt/home
+      - /Users/gokturkburakkose/Documents/dev/TOSCA-Geodata:/mnt/home
     depends_on:
       db:
         condition: service_healthy
