@@ -116,7 +116,7 @@ class GeoFeedback(TimeStampedModel):
     )
 
     layers = models.ManyToManyField(
-        "layerrefs.LayerRef",
+        "geodata_providers.Layer",
         through="FeedbackLayer",
         related_name="feedbacks",
         blank=True,
@@ -182,13 +182,17 @@ class GeoFeedback(TimeStampedModel):
 
 class FeedbackLayer(models.Model):
     """
-    Through model for GeoFeedback <-> LayerRef.
+    Through model for GeoFeedback <-> geodata_providers.Layer.
     Allows ordering of layers within a feedback.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     feedback = models.ForeignKey(GeoFeedback, on_delete=models.CASCADE)
-    layer = models.ForeignKey("layerrefs.LayerRef", on_delete=models.CASCADE)
+    layer = models.ForeignKey(
+        "geodata_providers.Layer",
+        on_delete=models.CASCADE,
+        related_name="feedback_uses",
+    )
     display_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 

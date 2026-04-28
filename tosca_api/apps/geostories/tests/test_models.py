@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geostories.models import GeoStory, GeoStoryLayer
-from tosca_api.apps.layerrefs.models import LayerRef
+from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
 User = get_user_model()
 
@@ -75,8 +75,8 @@ def test_geostory_layers(user, campaign):
         campaign=campaign,
         author=user,
     )
-    layer1 = LayerRef.objects.create(layer_name="workspace:roads")
-    layer2 = LayerRef.objects.create(layer_name="workspace:buildings")
+    layer1 = make_layer("workspace:roads", user=user)
+    layer2 = make_layer("workspace:buildings", user=user)
 
     # Add via through model
     GeoStoryLayer.objects.create(geostory=story, layer=layer1, display_order=2)
@@ -85,7 +85,7 @@ def test_geostory_layers(user, campaign):
     assert story.layers.count() == 2
     
     # Check ordering
-    refs = story.layers.all().order_by("geostorylayer__display_order")
+    refs = story.layers.all().order_by("geostory_uses__display_order")
     assert refs[0] == layer2  # order 1
     assert refs[1] == layer1  # order 2
 
@@ -98,9 +98,9 @@ def test_geostory_layer_auto_increment(user, campaign):
         campaign=campaign,
         author=user,
     )
-    layer1 = LayerRef.objects.create(layer_name="workspace:layer1")
-    layer2 = LayerRef.objects.create(layer_name="workspace:layer2")
-    layer3 = LayerRef.objects.create(layer_name="workspace:layer3")
+    layer1 = make_layer("workspace:layer1", user=user)
+    layer2 = make_layer("workspace:layer2", user=user)
+    layer3 = make_layer("workspace:layer3", user=user)
 
     # Creation without specifying display_order (defaults to 0)
     gsl1 = GeoStoryLayer.objects.create(geostory=story, layer=layer1)

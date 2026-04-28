@@ -18,7 +18,7 @@ from django.db import IntegrityError
 from formbuilder.models import CustomForm
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.feedback.models import FeedbackLayer, GeoFeedback
-from tosca_api.apps.layerrefs.models import LayerRef
+from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
 User = get_user_model()
 
@@ -57,8 +57,8 @@ def draft_form():
 
 
 @pytest.fixture
-def layer_ref():
-    return LayerRef.objects.create(layer_name="workspace:feedback_layer")
+def layer_ref(user):
+    return make_layer("workspace:feedback_layer", user=user)
 
 
 @pytest.fixture
@@ -553,13 +553,13 @@ class TestFeedbackLayer:
         )
         result = str(fl)
         assert "Rating Feedback" in result
-        assert "workspace:feedback_layer" in result
+        assert "workspace/feedback_layer" in result
         assert "1" in result
 
-    def test_feedback_layer_auto_increment_order(self, feedback_rating_only):
+    def test_feedback_layer_auto_increment_order(self, feedback_rating_only, user):
         """Display_order should auto-increment when left at default 0."""
-        layer1 = LayerRef.objects.create(layer_name="workspace:layer_a")
-        layer2 = LayerRef.objects.create(layer_name="workspace:layer_b")
+        layer1 = make_layer("workspace:layer_a", user=user)
+        layer2 = make_layer("workspace:layer_b", user=user)
 
         fl1 = FeedbackLayer.objects.create(
             feedback=feedback_rating_only, layer=layer1
@@ -571,11 +571,11 @@ class TestFeedbackLayer:
         )
         assert fl2.display_order == 1  # Second auto-increments to 1
 
-    def test_feedback_layer_auto_increment_third(self, feedback_rating_only):
+    def test_feedback_layer_auto_increment_third(self, feedback_rating_only, user):
         """Third layer should auto-increment to 2."""
-        layer1 = LayerRef.objects.create(layer_name="workspace:l1")
-        layer2 = LayerRef.objects.create(layer_name="workspace:l2")
-        layer3 = LayerRef.objects.create(layer_name="workspace:l3")
+        layer1 = make_layer("workspace:l1", user=user)
+        layer2 = make_layer("workspace:l2", user=user)
+        layer3 = make_layer("workspace:l3", user=user)
 
         FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer1)
         FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer2)
@@ -623,11 +623,11 @@ class TestFeedbackLayer:
         assert fb1.layers.count() == 1
         assert fb2.layers.count() == 1
 
-    def test_feedback_layer_ordering(self, feedback_rating_only):
+    def test_feedback_layer_ordering(self, feedback_rating_only, user):
         """Layers should be ordered by display_order, then created_at."""
-        layer_a = LayerRef.objects.create(layer_name="workspace:ordered_a")
-        layer_b = LayerRef.objects.create(layer_name="workspace:ordered_b")
-        layer_c = LayerRef.objects.create(layer_name="workspace:ordered_c")
+        layer_a = make_layer("workspace:ordered_a", user=user)
+        layer_b = make_layer("workspace:ordered_b", user=user)
+        layer_c = make_layer("workspace:ordered_c", user=user)
 
         FeedbackLayer.objects.create(
             feedback=feedback_rating_only, layer=layer_c, display_order=3
@@ -642,12 +642,12 @@ class TestFeedbackLayer:
         ordered = list(
             FeedbackLayer.objects.filter(
                 feedback=feedback_rating_only
-            ).values_list("layer__layer_name", flat=True)
+            ).values_list("layer__name", flat=True)
         )
         assert ordered == [
-            "workspace:ordered_a",
-            "workspace:ordered_b",
-            "workspace:ordered_c",
+            "ordered_a",
+            "ordered_b",
+            "ordered_c",
         ]
 
     def test_feedback_layer_cascade_delete(self, feedback_rating_only, layer_ref):

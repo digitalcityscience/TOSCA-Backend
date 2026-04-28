@@ -89,12 +89,16 @@ class EventLayerSerializer(serializers.ModelSerializer):
     """Serializer for EventLayer through model."""
 
     id = serializers.UUIDField(source="layer.id", read_only=True)
-    layer_name = serializers.CharField(source="layer.layer_name", read_only=True)
+    layer_name = serializers.SerializerMethodField()
 
     class Meta:
         model = EventLayer
         fields = ["id", "layer_name", "display_order"]
         read_only_fields = fields
+
+    def get_layer_name(self, obj) -> str:
+        """Return the canonical workspace-qualified layer name."""
+        return f"{obj.layer.workspace.name}:{obj.layer.name}"
 
 
 # =============================================================================

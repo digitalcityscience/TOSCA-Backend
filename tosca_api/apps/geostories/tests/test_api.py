@@ -7,7 +7,7 @@ from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geostories.models import GeoStory, GeoStoryLayer
-from tosca_api.apps.layerrefs.models import LayerRef
+from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
 User = get_user_model()
 
@@ -45,8 +45,8 @@ def geocontext(user):
 
 
 @pytest.fixture
-def layer_ref():
-    return LayerRef.objects.create(layer_name="workspace:test_layer")
+def layer_ref(user):
+    return make_layer("workspace:test_layer", user=user)
 
 
 @pytest.fixture

@@ -1,8 +1,8 @@
 """
 GeoStory model - The core narrative unit.
 
-A GeoStory combines a rich text narrative (GeoContext) with map layers (LayerRef)
-and is organized within a Campaign.
+A GeoStory combines a rich text narrative (GeoContext) with map layers
+(geodata_providers.Layer) and is organized within a Campaign.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ class GeoStory(TimeStampedModel):
         related_name="geostory",
     )
     layers = models.ManyToManyField(
-        "layerrefs.LayerRef",
+        "geodata_providers.Layer",
         through="GeoStoryLayer",
         related_name="geostories",
         blank=True,
@@ -102,13 +102,17 @@ class GeoStory(TimeStampedModel):
 
 class GeoStoryLayer(models.Model):
     """
-    Through model for GeoStory <-> LayerRef.
+    Through model for GeoStory <-> geodata_providers.Layer.
     Allows ordering of layers within a story.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     geostory = models.ForeignKey(GeoStory, on_delete=models.CASCADE)
-    layer = models.ForeignKey("layerrefs.LayerRef", on_delete=models.CASCADE)
+    layer = models.ForeignKey(
+        "geodata_providers.Layer",
+        on_delete=models.CASCADE,
+        related_name="geostory_uses",
+    )
     display_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
