@@ -7,7 +7,6 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('events', '0009_eventseries_by_weekday_eventseries_created_by_and_more'),
-        ('layerrefs', '0001_initial'),
     ]
 
     operations = [

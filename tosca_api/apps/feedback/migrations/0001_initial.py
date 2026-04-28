@@ -14,7 +14,7 @@ class Migration(migrations.Migration):
         ('campaigns', '0001_initial'),
         ('formbuilder', '0003_formfield_question_alter_formfield_label'),
         ('geocontext', '0001_initial'),
-        ('layerrefs', '0001_initial'),
+        ('geodata_providers', '0001_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -25,7 +25,7 @@ class Migration(migrations.Migration):
                 ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
                 ('display_order', models.PositiveIntegerField(default=0)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('layer', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='layerrefs.layerref')),
+                ('layer', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='geodata_providers.layer')),
             ],
             options={
                 'verbose_name': 'Feedback Layer',
@@ -50,7 +50,7 @@ class Migration(migrations.Migration):
                 ('context', models.OneToOneField(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='feedback', to='geocontext.geocontext')),
                 ('created_by', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='created_feedbacks', to=settings.AUTH_USER_MODEL)),
                 ('custom_form', models.ForeignKey(blank=True, help_text='Link to a form created with django-basic-form-builder.', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='feedbacks', to='formbuilder.customform')),
-                ('layers', models.ManyToManyField(blank=True, related_name='feedbacks', through='feedback.FeedbackLayer', to='layerrefs.layerref')),
+                ('layers', models.ManyToManyField(blank=True, related_name='feedbacks', through='feedback.FeedbackLayer', to='geodata_providers.layer')),
             ],
             options={
                 'verbose_name': 'GeoFeedback',

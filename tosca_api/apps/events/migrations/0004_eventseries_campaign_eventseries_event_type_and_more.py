@@ -11,7 +11,6 @@ class Migration(migrations.Migration):
         ('campaigns', '0001_initial'),
         ('events', '0003_eventseries_default_context_alter_event_context'),
         ('geocontext', '0001_initial'),
-        ('layerrefs', '0001_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
