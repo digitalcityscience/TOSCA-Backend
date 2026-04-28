@@ -3,6 +3,41 @@ from rest_framework import serializers
 from ..models import GeodataEngine, Layer, Store, Workspace
 
 
+class LayerSummaryWorkspaceSerializer(serializers.ModelSerializer):
+    """Slim workspace shape embedded inside LayerSummarySerializer."""
+
+    class Meta:
+        model = Workspace
+        fields = ["id", "name"]
+        read_only_fields = fields
+
+
+class LayerSummarySerializer(serializers.ModelSerializer):
+    """
+    Slim, public-safe Layer projection used by consumer apps (geostories,
+    events, feedback) to expose canonical layer metadata in detail responses.
+
+    Stays narrower than the full LayerSerializer on purpose: it does not
+    include connection/store details, publishing errors, or style assignments.
+    """
+
+    workspace = LayerSummaryWorkspaceSerializer(read_only=True)
+
+    class Meta:
+        model = Layer
+        fields = [
+            "id",
+            "name",
+            "workspace",
+            "geometry_type",
+            "srid",
+            "published_url",
+            "is_public",
+            "publishing_state",
+        ]
+        read_only_fields = fields
+
+
 class GeodataEngineSerializer(serializers.ModelSerializer):
     """Serializer for GeodataEngine model."""
 

@@ -238,3 +238,31 @@ class TestFeedbackSubmissionAPI:
         )
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
         assert "geometry" in resp.data
+
+
+@pytest.mark.django_db
+class TestFeedbackDetailLayers:
+    """GeoFeedback detail must return canonical Layer metadata."""
+
+    def test_detail_returns_layer_summary(self, api_client, feedback, admin_user):
+        from tosca_api.apps.feedback.models import FeedbackLayer
+        from tosca_api.apps.geodata_providers.test_helpers import make_layer
+
+        layer = make_layer("workspace:fb_detail_layer", user=admin_user)
+        FeedbackLayer.objects.create(
+            feedback=feedback, layer=layer, display_order=1
+        )
+
+        resp = api_client.get(f"/api/v1/feedback/{feedback.id}/")
+        assert resp.status_code == 200
+
+        layers = resp.data["layers"]
+        assert len(layers) == 1
+        layer_payload = layers[0]["layer"]
+        assert layer_payload["name"] == "fb_detail_layer"
+        assert layer_payload["workspace"]["name"] == "workspace"
+        assert layer_payload["geometry_type"] == "Point"
+        assert layer_payload["srid"] == 4326
+        assert layer_payload["is_public"] is True
+        assert layer_payload["publishing_state"] == "PUBLISHED"
+        assert layers[0]["display_order"] == 1

@@ -120,7 +120,9 @@ class EventViewSet(viewsets.ModelViewSet):
                 "series",
                 "organizer",
             )
-            queryset = queryset.prefetch_related("eventlayer_set__layer")
+            queryset = queryset.prefetch_related(
+                "eventlayer_set__layer__workspace"
+            )
         else:
             queryset = queryset.select_related("campaign", "event_type", "series")
 
