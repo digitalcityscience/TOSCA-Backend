@@ -253,6 +253,82 @@ def test_geostory_detail_layers_no_n_plus_one(api_client, user, geostory):
 
 
 @pytest.mark.django_db
+def test_geostory_create_with_layer_uuids(api_client, user, campaign):
+    """POST with layers=[uuid1, uuid2] must persist GeoStoryLayer rows."""
+    from tosca_api.apps.geodata_providers.test_helpers import make_layer
+
+    layer1 = make_layer("workspace:write_a", user=user)
+    layer2 = make_layer("workspace:write_b", user=user)
+
+    api_client.force_authenticate(user=user)
+    payload = {
+        "title": "Story With Layers",
+        "campaign": str(campaign.id),
+        "layers": [str(layer1.id), str(layer2.id)],
+    }
+    response = api_client.post("/api/v1/stories/", payload, format="json")
+    assert response.status_code == 201
+
+    story = GeoStory.objects.get(id=response.data["id"])
+    rows = list(GeoStoryLayer.objects.filter(geostory=story).order_by("display_order"))
+    assert [r.layer_id for r in rows] == [layer1.id, layer2.id]
+    assert [r.display_order for r in rows] == [0, 1]
+
+
+@pytest.mark.django_db
+def test_geostory_create_rejects_unknown_layer_uuid(api_client, user, campaign):
+    import uuid as uuid_module
+
+    api_client.force_authenticate(user=user)
+    payload = {
+        "title": "Story",
+        "campaign": str(campaign.id),
+        "layers": [str(uuid_module.uuid4())],
+    }
+    response = api_client.post("/api/v1/stories/", payload, format="json")
+    assert response.status_code == 400
+    assert "layers" in response.data
+
+
+@pytest.mark.django_db
+def test_geostory_create_rejects_non_public_layer(api_client, user, campaign):
+    from tosca_api.apps.geodata_providers.test_helpers import make_layer
+
+    private = make_layer("workspace:write_private", user=user, is_public=False)
+
+    api_client.force_authenticate(user=user)
+    payload = {
+        "title": "Story",
+        "campaign": str(campaign.id),
+        "layers": [str(private.id)],
+    }
+    response = api_client.post("/api/v1/stories/", payload, format="json")
+    assert response.status_code == 400
+    assert "layers" in response.data
+
+
+@pytest.mark.django_db
+def test_geostory_update_replaces_layers(api_client, user, geostory):
+    from tosca_api.apps.geodata_providers.test_helpers import make_layer
+
+    initial = make_layer("workspace:upd_initial", user=user)
+    GeoStoryLayer.objects.create(geostory=geostory, layer=initial, display_order=0)
+
+    replacement = make_layer("workspace:upd_replacement", user=user)
+    api_client.force_authenticate(user=user)
+    response = api_client.patch(
+        f"/api/v1/stories/{geostory.id}/",
+        {"layers": [str(replacement.id)]},
+        format="json",
+    )
+    assert response.status_code == 200
+
+    rows = list(GeoStoryLayer.objects.filter(geostory=geostory))
+    assert len(rows) == 1
+    assert rows[0].layer_id == replacement.id
+
+
+@pytest.mark.django_db
 def test_geostory_detail_has_feature_links(api_client, user, geostory, campaign):
     """Test that detail view returns outgoing feature links."""
     # Create another story to link to

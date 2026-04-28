@@ -1,9 +1,14 @@
 from django.contrib.contenttypes.models import ContentType
 from rest_framework import serializers
 
+from django.db import transaction
+
 from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geocontext.models import GeoContext
-from tosca_api.apps.geodata_providers.api.serializers import LayerSummarySerializer
+from tosca_api.apps.geodata_providers.api.serializers import (
+    LayerSummarySerializer,
+    LayerUUIDListField,
+)
 
 from .models import GeoStory, GeoStoryLayer
 
@@ -132,7 +137,13 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
     """
     Write serializer for GeoStory model.
     Used for create/update operations (Admin/Editor use).
+
+    Accepts an optional ``layers`` list of ``geodata_providers.Layer`` UUIDs.
+    Order of UUIDs in the list becomes the per-story display_order. Layers
+    must be public + published — see ``LayerUUIDListField``.
     """
+
+    layers = LayerUUIDListField(required=False, write_only=True)
 
     class Meta:
         model = GeoStory
@@ -144,6 +155,7 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
             "campaign",
             "author",
             "context",
+            "layers",
             "created_at",
             "updated_at",
         ]
@@ -151,10 +163,36 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         """Invoke model clean() for DB-level validation."""
-        instance = GeoStory(**attrs)
+        layer_attrs = {k: v for k, v in attrs.items() if k != "layers"}
+        instance = GeoStory(**layer_attrs)
         if self.instance:
-            for attr, value in attrs.items():
+            for attr, value in layer_attrs.items():
                 setattr(instance, attr, value)
-        
+
         instance.clean()
         return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        layers = validated_data.pop("layers", None)
+        story = super().create(validated_data)
+        if layers is not None:
+            self._sync_layers(story, layers)
+        return story
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        layers = validated_data.pop("layers", None)
+        story = super().update(instance, validated_data)
+        if layers is not None:
+            self._sync_layers(story, layers)
+        return story
+
+    @staticmethod
+    def _sync_layers(story: GeoStory, layers: list) -> None:
+        """Replace the story's GeoStoryLayer rows with the supplied list."""
+        GeoStoryLayer.objects.filter(geostory=story).delete()
+        for index, layer in enumerate(layers):
+            GeoStoryLayer.objects.create(
+                geostory=story, layer=layer, display_order=index
+            )

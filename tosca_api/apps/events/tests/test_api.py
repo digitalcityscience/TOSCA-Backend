@@ -1851,3 +1851,54 @@ def test_event_detail_returns_layer_summary(api_client, user, future_event):
     assert layer_payload["is_public"] is True
     assert layer_payload["publishing_state"] == "PUBLISHED"
     assert layers[0]["display_order"] == 1
+
+
+@pytest.mark.django_db
+def test_event_create_with_layer_uuids(api_client, user, campaign):
+    """POST with layers=[uuid] must persist EventLayer rows in order."""
+    from tosca_api.apps.events.models import EventLayer
+    from tosca_api.apps.geodata_providers.test_helpers import make_layer
+
+    l1 = make_layer("workspace:evt_w_1", user=user)
+    l2 = make_layer("workspace:evt_w_2", user=user)
+
+    now = timezone.now()
+    api_client.force_authenticate(user=user)
+    payload = {
+        "title": "Event w/ layers",
+        "campaign": str(campaign.id),
+        "start_datetime": now.isoformat(),
+        "end_datetime": (now + timedelta(hours=1)).isoformat(),
+        "location": {"type": "Point", "coordinates": [10.0, 53.5]},
+        "location_mode": "physical",
+        "layers": [str(l1.id), str(l2.id)],
+    }
+    response = api_client.post("/api/v1/events/", payload, format="json")
+    assert response.status_code == 201, response.data
+
+    event = Event.objects.get(id=response.data["id"])
+    rows = list(EventLayer.objects.filter(event=event).order_by("display_order"))
+    assert [r.layer_id for r in rows] == [l1.id, l2.id]
+
+
+@pytest.mark.django_db
+def test_event_create_rejects_unpublished_layer(api_client, user, campaign):
+    from tosca_api.apps.geodata_providers.test_helpers import make_layer
+
+    draft_layer = make_layer(
+        "workspace:evt_w_draft", user=user, publishing_state="DRAFT"
+    )
+    now = timezone.now()
+    api_client.force_authenticate(user=user)
+    payload = {
+        "title": "Bad layers",
+        "campaign": str(campaign.id),
+        "start_datetime": now.isoformat(),
+        "end_datetime": (now + timedelta(hours=1)).isoformat(),
+        "location": {"type": "Point", "coordinates": [10.0, 53.5]},
+        "location_mode": "physical",
+        "layers": [str(draft_layer.id)],
+    }
+    response = api_client.post("/api/v1/events/", payload, format="json")
+    assert response.status_code == 400
+    assert "layers" in response.data
