@@ -385,6 +385,21 @@ class Layer(TimeStampedModel):
         """Return True if the layer is currently published."""
         return self.publishing_state == self.PublishingState.PUBLISHED
 
+    def usage_summary(self) -> dict[str, int]:
+        """
+        Return how many GeoStory / Event / GeoFeedback rows reference this
+        layer through their respective through-tables.
+
+        Used by the admin delete-confirmation page and the API destroy
+        action to warn an operator before a CASCADE removes the layer
+        from every parent that depends on it.
+        """
+        return {
+            "geostories": self.geostory_uses.count(),
+            "events": self.event_uses.count(),
+            "feedbacks": self.feedback_uses.count(),
+        }
+
 
 class Style(TimeStampedModel):
     """

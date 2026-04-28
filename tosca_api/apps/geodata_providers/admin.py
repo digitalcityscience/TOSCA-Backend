@@ -1313,6 +1313,31 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     # ------------------------------------------------------------------
     # 4.5 — Delete safety: GeoServer-first for PUBLISHED layers
     # ------------------------------------------------------------------
+    def delete_view(self, request, object_id, extra_context=None):
+        """Inject GeoStory/Event/GeoFeedback usage counts into the page."""
+        try:
+            layer = self.get_object(request, object_id)
+        except Exception:
+            layer = None
+
+        if layer is not None:
+            usage = layer.usage_summary()
+            if any(usage.values()):
+                self.message_user(
+                    request,
+                    (
+                        f"Layer '{layer.name}' is referenced by "
+                        f"{usage['geostories']} geostories, "
+                        f"{usage['events']} events, and "
+                        f"{usage['feedbacks']} feedbacks. "
+                        "Confirming will cascade-remove those references."
+                    ),
+                    messages.WARNING,
+                )
+            extra_context = {**(extra_context or {}), "layer_usage_summary": usage}
+
+        return super().delete_view(request, object_id, extra_context=extra_context)
+
     def delete_model(self, request, obj):
         result = LayerService.delete_layer_safe(obj)
         if not result.get('success'):
