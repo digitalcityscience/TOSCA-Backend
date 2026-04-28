@@ -22,8 +22,6 @@
       <a href="{% url 'base' %}" class="nav-item">Home</a>
 
       {% if user.is_authenticated %}
-      <div class="nav-sep"></div>
-      <a href="{% url 'geo_console' %}" class="nav-item">Geo Console</a>
       {% endif %}
 
       {% block sidebar_subnav %}{% endblock %}

@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth.models import User
 from django.test import Client, TestCase
 from django.urls import reverse
-from rest_framework.test import APIClient
 
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Style, Workspace
 from tosca_api.apps.geodata_providers.services.commands.geodata_engine_service import GeodataEngineService
@@ -187,84 +186,6 @@ class GeodataEngineServiceTestCase(TestCase):
 
         self.assertTrue(result['success'])
         self.assertFalse(GeodataEngine.objects.filter(pk=self.engine.pk).exists())
-
-
-class GeodataEngineApiServiceIntegrationTestCase(TestCase):
-    def setUp(self):
-        self.client = APIClient()
-        self.user = User.objects.create_user(username='api-user', password='testpass123')
-        self.client.force_authenticate(self.user)
-        self.engine = GeodataEngine.objects.create(
-            name='API Engine',
-            description='test',
-            engine_type='geoserver',
-            base_url='http://example.com/geoserver',
-            admin_username='admin',
-            admin_password='secret',
-            created_by=self.user,
-        )
-
-    @patch('tosca_api.apps.geodata_providers.services.commands.geodata_engine_service.EngineClientFactory.create_sync_service')
-    @patch('tosca_api.apps.geodata_providers.services.commands.geodata_engine_service.EngineClientFactory.create_client')
-    def test_create_endpoint_uses_service_flow(self, mock_create_client, mock_create_sync_service):
-        mock_create_client.return_value.validate_connection.return_value = {'success': True, 'version': '2.25'}
-        mock_create_sync_service.return_value.sync_all_resources.return_value = {'success': True}
-
-        response = self.client.post(
-            '/api/geoengine/engines/',
-            {
-                'name': 'Posted Engine',
-                'description': 'created via api',
-                'engine_type': 'geoserver',
-                'base_url': 'http://posted.example/geoserver',
-                'admin_username': 'admin',
-                'admin_password': 'secret',
-                'is_active': True,
-                'is_default': False,
-            },
-            format='json',
-        )
-
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.data['engine']['name'], 'Posted Engine')
-        self.assertTrue(response.data['initial_sync']['success'])
-        self.assertTrue(GeodataEngine.objects.filter(name='Posted Engine').exists())
-
-    @patch('tosca_api.apps.geodata_providers.services.commands.geodata_engine_service.EngineClientFactory.create_sync_service')
-    @patch('tosca_api.apps.geodata_providers.services.commands.geodata_engine_service.EngineClientFactory.create_client')
-    def test_partial_update_keeps_existing_password_when_not_sent(self, mock_create_client, mock_create_sync_service):
-        mock_create_client.return_value.validate_connection.return_value = {'success': True, 'version': '2.25'}
-        mock_create_sync_service.return_value.sync_all_resources.return_value = {'success': True}
-
-        response = self.client.patch(
-            f'/api/geoengine/engines/{self.engine.pk}/',
-            {'base_url': 'http://updated.example/geoserver'},
-            format='json',
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.engine.refresh_from_db()
-        self.assertEqual(self.engine.base_url, 'http://updated.example/geoserver')
-        self.assertEqual(self.engine.admin_password, 'secret')
-
-    @patch('tosca_api.apps.geodata_providers.api.views.GeodataEngineService.validate_engine_connection')
-    def test_test_connection_endpoint_uses_service(self, mock_validate):
-        mock_validate.return_value = {'success': True, 'message': 'Connection validated', 'version': '2.25'}
-
-        response = self.client.post(
-            '/api/geoengine/engines/test_connection/',
-            {
-                'base_url': 'http://validate.example/geoserver',
-                'admin_username': 'admin',
-                'admin_password': 'secret',
-                'engine_type': 'geoserver',
-            },
-            format='json',
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['version'], '2.25')
-        mock_validate.assert_called_once()
 
 
 class GeodataEngineAdminIntegrationTestCase(TestCase):

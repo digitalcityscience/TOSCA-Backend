@@ -70,7 +70,6 @@ INSTALLED_APPS = [
     "tosca_api.apps.tosca_web",
     "tosca_api.apps.catalog_api.apps.CatalogApiConfig",
     "tosca_api.apps.geodata_providers.apps.GeodataProvidersConfig",
-    "tosca_api.apps.geo_console",
     "tosca_api.apps.campaigns",
     "tosca_api.apps.geocontext",
     "tosca_api.apps.layerrefs",
@@ -159,10 +158,10 @@ MEDIA_ROOT = ROOT_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# -------------------------------------------------
-# geo_console internal API
-# -------------------------------------------------
-INTERNAL_API_BASE_URL = env("INTERNAL_API_BASE_URL", default="http://localhost:8000/api/geoengine")
+INTERNAL_API_BASE_URL = env(
+    "INTERNAL_API_BASE_URL",
+    default="http://localhost:8000/api/v1/providers/provider",
+)
 
 # Default PostGIS schema for GeoServer stores (task 3.5)
 GIS_SCHEMA = env("PG_SCHEMA_GIS", default="public")
@@ -176,7 +175,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "tosca_api.apps.authentication.backends.KeycloakTokenAuthentication",  # JWT token auth
-        "rest_framework.authentication.TokenAuthentication",  # DRF token — used by geo_console internal calls
+        "rest_framework.authentication.TokenAuthentication",  # DRF token for internal API calls
         "rest_framework.authentication.SessionAuthentication",  # Browser session
     ],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",

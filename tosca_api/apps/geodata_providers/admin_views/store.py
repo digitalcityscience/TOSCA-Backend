@@ -40,7 +40,7 @@ def store_postgis_tables_view(request, store_id):
 
     # Use decrypted_password — NOT store.password — to catch the case where an
     # encrypted token exists but decrypt fails (corrupt key / wrong key rotation).
-    # Matches the check in StoreViewSet.postgis_tables (geo_console path, §3.10.2).
+    # Matches the validation logic used by the provider API path (§3.10.2).
     try:
         usable_password = store.decrypted_password
     except (ValueError, Exception):

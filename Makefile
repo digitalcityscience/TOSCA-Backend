@@ -1,6 +1,6 @@
 .PHONY: help which-env build up down restart logs rebuild rmvolumes \
 	django-restart django-logs django-cmd django-shell django-migrate django-makemigrations \
-	django-test django-test-unit django-test-integration test-geoserver test-console test-console-crud \
+	django-test django-test-unit django-test-integration test-geoserver \
 	django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean \
 	sync-django-geoengine smoke-test
 
@@ -78,8 +78,6 @@ help:
 	@echo "  make django-test-unit      - Run unit tests with mocks"
 	@echo "  make django-test-integration - Run integration tests with real GeoServer"
 	@echo "  make test-geoserver        - Quick alias for integration tests"
-	@echo "  make test-console          - Test console views only"
-	@echo "  make test-console-crud     - CRUD integration test: engine + workspace lifecycle"
 	@echo "  make django-createsuperuser - Create Django superuser"
 	@echo ""
 	@echo "$(COLOR_YELLOW)UV/Python Package Management:$(COLOR_RESET)"
@@ -97,7 +95,8 @@ help:
 	@echo "  make jdbc-settings-activation - Run GeoServer JDBC settings activation script"
 	@echo "$(COLOR_GREEN)Environment:$(COLOR_RESET) ENV=$(ENV)"
 	@echo ""
-	@echo "  make test                     # Run full pytest suite"
+	@echo "  make test                     # Run pytest suite excluding integration tests"
+	@echo "  make test-integration         # Run integration tests only"
 	@echo "  make test APP=authentication  # Run tests for a single app"
 	@echo "  make test PATH=path/to/tests  # Run tests for a specific path"
 	@echo ""
@@ -245,12 +244,15 @@ rmvolumes: which-env
 # -------------------------------------------------
 test:
 	@if [ -n "$(app)" ]; then \
-		docker exec -it tosca-django bash -lc "APP_PATH=tosca_api/apps/$(app); if [ -d \"$$APP_PATH/tests\" ]; then TARGET=\"$$APP_PATH/tests\"; else TARGET=\"$$APP_PATH\"; fi; DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest --ds=tosca_api.settings.test \"$$TARGET\""; \
+		docker exec -it tosca-django bash -lc 'APP_PATH=tosca_api/apps/$(app); APP_PKG=tosca_api.apps.$(app); if [ -d "$$APP_PATH/tests" ]; then TARGET="$$APP_PKG.tests"; else TARGET="$$APP_PKG"; fi; DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest --pyargs -m "not integration" --ds=tosca_api.settings.test "$$TARGET"'; \
 	elif [ -n "$(path)" ]; then \
-		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest --ds=tosca_api.settings.test $(path)"; \
+		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test $(path)"; \
 	else \
-		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest --ds=tosca_api.settings.test"; \
+		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test"; \
 	fi
+
+test-integration:
+	docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m integration --ds=tosca_api.settings.test"
 
 # -------------------------------------------------
 # Django test commands
@@ -261,37 +263,29 @@ test:
 #   make django-test-integration     - Run integration tests only
 # -------------------------------------------------
 django-test: which-env
-	@echo "$(COLOR_BLUE)🧪 Running all Django tests...$(COLOR_RESET)"
+	@echo "$(COLOR_BLUE)🧪 Running Django pytest suite without integration tests...$(COLOR_RESET)"
 	@if [ -n "$(app)" ]; then \
-		docker exec -it tosca-django bash -lc "uv run python manage.py test tosca_api.apps.$(app) -v 2 --settings=tosca_api.settings.development --keepdb"; \
+		APP_PATH=tosca_api/apps/$(app); \
+		docker exec -it tosca-django bash -lc 'APP_PATH=tosca_api/apps/$(app); APP_PKG=tosca_api.apps.$(app); TARGET=$$([ -d "$$APP_PATH/tests" ] && echo "$$APP_PKG.tests" || echo "$$APP_PKG"); DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest --pyargs -m "not integration" --ds=tosca_api.settings.test "$$TARGET"'; \
 	elif [ -n "$(test)" ]; then \
-		docker exec -it tosca-django bash -lc "uv run python manage.py test $(test) -v 2 --settings=tosca_api.settings.development --keepdb"; \
+		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test $(test)"; \
 	else \
-		docker exec -it tosca-django bash -lc "uv run python manage.py test -v 2 --settings=tosca_api.settings.development --keepdb"; \
+		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test"; \
 	fi
 
 # Run unit tests with mocks (fast, no external dependencies)
 django-test-unit: which-env
-	@echo "$(COLOR_BLUE)⚡ Running unit tests (no test DB, uses dev DB directly)...$(COLOR_RESET)"
-	docker exec -it tosca-django bash -lc "uv run python -m pytest tosca_api/apps/geodata_engine/tests/test_api.py -v --tb=short"
+	@echo "$(COLOR_BLUE)⚡ Running unit tests without integration markers...$(COLOR_RESET)"
+	docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test -v --tb=short"
 
 # Run integration tests with real GeoServer (slower, needs services)
 django-test-integration: which-env
 	@echo "$(COLOR_BLUE)🌐 Running integration tests (real services)...$(COLOR_RESET)"
-	docker exec -it tosca-django bash -lc "uv run python integration_test.py"
+	docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m integration --ds=tosca_api.settings.test -v"
 
 # Quick alias for integration test
 test-geoserver: django-test-integration
 
-# Quick alias for console test
-test-console: which-env
-	@echo "$(COLOR_BLUE)🖥️  Testing console views...$(COLOR_RESET)"
-	docker exec -it tosca-django bash -lc "uv run python manage.py test tosca_api.apps.geodata_engine.tests.test_integration.SimpleConsoleIntegrationTestCase -v 2 --settings=tosca_api.settings.development --keepdb"
-
-# Engine + Workspace CRUD integration test (requires live GeoServer)
-test-console-crud: which-env
-	@echo "$(COLOR_BLUE)🧪 Running console CRUD test (Engine + Workspace lifecycle)...$(COLOR_RESET)"
-	docker exec -it tosca-django bash -lc "uv run python tosca_api/apps/geodata_engine/tests/test_console_crud.py"
 # -------------------------------------------------
 # Django-specific Commands
 # -------------------------------------------------

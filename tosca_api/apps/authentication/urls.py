@@ -3,7 +3,6 @@ from tosca_api.apps.authentication.views import (
     AutoSignupView,
     KeycloakLogoutView,
     KeycloakRedirectView,
-    test_token_auth,
     welcome_view,
 )
 
@@ -16,5 +15,4 @@ urlpatterns = [
     # Override allauth's socialaccount signup with our auto-signup
     path('3rdparty/signup/', AutoSignupView.as_view(), name='socialaccount_signup'),
     path('', include('allauth.urls')),  # Keycloak OIDC (callback + login)
-    path('api/v1/auth/test-token/', test_token_auth),
 ]

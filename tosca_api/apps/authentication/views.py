@@ -4,9 +4,6 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views import View
 from django.contrib.auth import get_user_model
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 import logging
 
 logger = logging.getLogger(__name__)
@@ -206,17 +203,3 @@ class AutoSignupView(View):
                 'is_superuser': user.is_superuser,
                 'changed': True
             })
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def test_token_auth(request):
-    """Test endpoint to validate token authentication."""
-    return Response({
-        'message': 'Token authentication successful!',
-        'user': request.user.username,
-        'email': request.user.email,
-        'is_staff': request.user.is_staff,
-        'is_superuser': request.user.is_superuser,
-        'auth_method': str(request.auth.__class__.__name__) if request.auth else 'session'
-    })
