@@ -4,10 +4,15 @@ Tests for GeoStory models.
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.geocontext.models import GeoContext
-from tosca_api.apps.geostories.models import GeoStory, GeoStoryLayer
+from tosca_api.apps.geostories.models import (
+    GeoStory,
+    GeoStoryLayer,
+    geostory_hero_image_upload_to,
+)
 from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
 User = get_user_model()
@@ -38,6 +43,48 @@ def test_geostory_creation(user, campaign):
 
 
 @pytest.mark.django_db
+def test_geostory_saves_without_hero_image(user, campaign):
+    """Hero image fields are optional at the database/model contract level."""
+    story = GeoStory.objects.create(
+        title="No Hero Story",
+        campaign=campaign,
+        author=user,
+    )
+
+    story.full_clean()
+    assert not story.hero_image
+    assert story.hero_image_alt == ""
+
+
+@pytest.mark.django_db
+def test_geostory_hero_image_requires_alt_text(user, campaign):
+    """Model validation returns a field-keyed error when image alt is missing."""
+    story = GeoStory(
+        title="Hero Story",
+        campaign=campaign,
+        author=user,
+        hero_image="geostories/test/hero/example.jpg",
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        story.full_clean()
+
+    assert "hero_image_alt" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_geostory_hero_image_upload_path_is_story_scoped(user, campaign):
+    """Hero image paths use the GeoStory UUID, not mutable story text."""
+    story = GeoStory(title="Hero Story", campaign=campaign, author=user)
+
+    path = geostory_hero_image_upload_to(story, "My Cover.JPG")
+
+    assert path.startswith(f"geostories/{story.pk}/hero/")
+    assert path.endswith(".jpg")
+    assert "My Cover" not in path
+
+
+@pytest.mark.django_db
 def test_geostory_sanitization(user, campaign):
     """Test standard GeoStory sanitization."""
     story = GeoStory.objects.create(
@@ -48,6 +95,19 @@ def test_geostory_sanitization(user, campaign):
     )
     assert story.title == "My Story"  # Stripped
     assert story.summary == "Summary"  # Stripped
+
+
+@pytest.mark.django_db
+def test_geostory_hero_image_alt_sanitization(user, campaign):
+    """Hero image alt text follows the same plain-text sanitization policy."""
+    story = GeoStory.objects.create(
+        title="Hero Story",
+        campaign=campaign,
+        author=user,
+        hero_image_alt="<strong>Descriptive alt</strong>",
+    )
+
+    assert story.hero_image_alt == "Descriptive alt"
 
 
 @pytest.mark.django_db

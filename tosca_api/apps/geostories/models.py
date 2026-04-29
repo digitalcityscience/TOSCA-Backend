@@ -11,10 +11,18 @@ import uuid
 
 from django.conf import settings
 from django.contrib.contenttypes.fields import GenericRelation
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from tosca_api.apps.core.models import TimeStampedModel
 from tosca_api.apps.core.sanitization import sanitize_simple
+
+
+def geostory_hero_image_upload_to(instance: "GeoStory", filename: str) -> str:
+    """Store hero images under a stable GeoStory UUID scope."""
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+    unique_filename = f"{uuid.uuid4().hex}.{extension}"
+    return f"geostories/{instance.pk}/hero/{unique_filename}"
 
 
 class GeoStory(TimeStampedModel):
@@ -40,6 +48,12 @@ class GeoStory(TimeStampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255)
     summary = models.TextField(blank=True, default="")
+    hero_image = models.ImageField(
+        upload_to=geostory_hero_image_upload_to,
+        null=True,
+        blank=True,
+    )
+    hero_image_alt = models.CharField(max_length=255, blank=True, default="")
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
@@ -93,10 +107,23 @@ class GeoStory(TimeStampedModel):
     def __str__(self) -> str:
         return self.title
 
+    def clean(self) -> None:
+        """Require descriptive alt text whenever a hero image is present."""
+        super().clean()
+        if self.hero_image and not (self.hero_image_alt or "").strip():
+            raise ValidationError(
+                {
+                    "hero_image_alt": (
+                        "Hero image alt text is required when a hero image is set."
+                    )
+                }
+            )
+
     def save(self, *args, **kwargs) -> None:
         """Override save to enforce Zero Trust sanitization."""
         self.title = sanitize_simple(self.title)
         self.summary = sanitize_simple(self.summary)
+        self.hero_image_alt = sanitize_simple(self.hero_image_alt)
         super().save(*args, **kwargs)
 
 

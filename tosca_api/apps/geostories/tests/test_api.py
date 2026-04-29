@@ -1,6 +1,5 @@
 import pytest
 from django.contrib.auth import get_user_model
-from django.contrib.contenttypes.models import ContentType
 from rest_framework.test import APIClient
 
 from tosca_api.apps.campaigns.models import Campaign
@@ -424,6 +423,24 @@ def test_geostory_update(api_client, user, geostory):
     )
     assert response.status_code == 200
     assert response.data["title"] == "Updated Title"
+
+
+@pytest.mark.django_db
+def test_geostory_write_serializer_surfaces_hero_alt_error(api_client, user, geostory):
+    """Model clean() errors should be exposed as field-keyed API errors."""
+    geostory.hero_image = "geostories/existing/hero/example.jpg"
+    geostory.hero_image_alt = "Existing alt"
+    geostory.save()
+
+    api_client.force_authenticate(user=user)
+    response = api_client.patch(
+        f"/api/v1/stories/{geostory.id}/",
+        {"hero_image_alt": ""},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert "hero_image_alt" in response.data
 
 
 @pytest.mark.django_db
