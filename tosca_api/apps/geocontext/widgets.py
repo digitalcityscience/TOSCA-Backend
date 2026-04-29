@@ -27,6 +27,7 @@ class EditorJsWidget(forms.Textarea):
             "geocontext/editorjs/vendor/quote.umd.js",
             "geocontext/editorjs/vendor/delimiter.umd.js",
             "geocontext/editorjs/vendor/code.umd.js",
+            "geocontext/editorjs/vendor/image.umd.js",
             "geocontext/editorjs/init.js",
         )
 

@@ -2,10 +2,46 @@
 Tests for the Editor.js validation and normalization layer.
 """
 
-import pytest
-from django.core.exceptions import ValidationError
+import io
 
-from tosca_api.apps.core.editorjs import empty_document, validate_and_normalize
+import pytest
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+from PIL import Image
+
+from tosca_api.apps.core.editorjs import (
+    empty_document,
+    validate_and_normalize,
+    validate_image_block_quota,
+)
+
+
+def _png_bytes(width: int = 300, height: int = 300) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (10, 20, 30)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.fixture
+def stored_image() -> str:
+    """Save a real PNG via default_storage and yield the public media URL."""
+    saved_paths: list[str] = []
+
+    def _save(name: str = "editorjs-test.png", *, width: int = 300, height: int = 300) -> str:
+        path = default_storage.save(
+            f"geocontext/editorjs/test/{name}",
+            ContentFile(_png_bytes(width, height)),
+        )
+        saved_paths.append(path)
+        media_url = settings.MEDIA_URL if settings.MEDIA_URL.endswith("/") else settings.MEDIA_URL + "/"
+        return f"{media_url}{path}"
+
+    yield _save
+
+    for path in saved_paths:
+        default_storage.delete(path)
 
 
 def test_empty_inputs_return_canonical_empty_document():
@@ -107,7 +143,7 @@ def test_accepts_safe_url_schemes_in_links():
 
 def test_rejects_unsupported_block_type():
     with pytest.raises(ValidationError):
-        validate_and_normalize({"blocks": [{"type": "image", "data": {"url": "x"}}]})
+        validate_and_normalize({"blocks": [{"type": "checklist", "data": {"items": []}}]})
 
 
 def test_rejects_header_level_out_of_range():
@@ -202,3 +238,150 @@ def test_round_trip_is_byte_equal():
 
 def test_empty_document_helper():
     assert empty_document() == {"blocks": []}
+
+
+# ---- image block ----------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_image_block_normalizes_with_server_derived_metadata(stored_image):
+    url = stored_image(width=320, height=240)
+    doc = {
+        "blocks": [
+            {
+                "type": "image",
+                "data": {
+                    "file": {"url": url, "width": 9999, "height": 9999, "mime": "image/gif", "extra": "drop"},
+                    "alt": "A sample picture",
+                    "caption": "<strong>Hello</strong><script>x</script>",
+                    "withBorder": True,
+                    "withBackground": "truthy",
+                    "stretched": False,
+                    "unknown": "drop",
+                },
+            }
+        ]
+    }
+    out = validate_and_normalize(doc)
+    block = out["blocks"][0]
+    assert block["type"] == "image"
+    data = block["data"]
+    assert data["file"] == {
+        "url": url,
+        "mime": "image/png",
+        "width": 320,
+        "height": 240,
+    }
+    assert data["alt"] == "A sample picture"
+    assert "<strong>Hello</strong>" in data["caption"]
+    assert "<script" not in data["caption"]
+    assert data["withBorder"] is True
+    assert data["withBackground"] is True
+    assert data["stretched"] is False
+    assert "unknown" not in data
+
+
+@pytest.mark.django_db
+def test_image_block_rejects_off_origin_and_unsafe_schemes(stored_image):
+    cases = [
+        "javascript:alert(1)",
+        "data:image/png;base64,AAAA",
+        "https://evil.example.com/foo.png",
+    ]
+    for bad in cases:
+        with pytest.raises(ValidationError):
+            validate_and_normalize(
+                {
+                    "blocks": [
+                        {
+                            "type": "image",
+                            "data": {"file": {"url": bad}, "alt": "x"},
+                        }
+                    ]
+                }
+            )
+
+
+@pytest.mark.django_db
+def test_image_block_requires_alt_or_caption(stored_image):
+    url = stored_image()
+    # Both alt and caption empty -> reject.
+    with pytest.raises(ValidationError):
+        validate_and_normalize(
+            {"blocks": [{"type": "image", "data": {"file": {"url": url}, "alt": "   "}}]}
+        )
+    with pytest.raises(ValidationError):
+        validate_and_normalize(
+            {"blocks": [{"type": "image", "data": {"file": {"url": url}}}]}
+        )
+
+
+@pytest.mark.django_db
+def test_image_block_falls_back_to_caption_for_alt(stored_image):
+    url = stored_image()
+    out = validate_and_normalize(
+        {
+            "blocks": [
+                {
+                    "type": "image",
+                    "data": {
+                        "file": {"url": url},
+                        "caption": "Sunset over the <strong>harbor</strong>",
+                    },
+                }
+            ]
+        }
+    )
+    block_data = out["blocks"][0]["data"]
+    assert block_data["alt"] == "Sunset over the harbor"
+    assert "<strong>harbor</strong>" in block_data["caption"]
+
+
+@pytest.mark.django_db
+def test_image_block_requires_existing_file():
+    fake_url = settings.MEDIA_URL + "geocontext/editorjs/test/missing.png"
+    with pytest.raises(ValidationError):
+        validate_and_normalize(
+            {"blocks": [{"type": "image", "data": {"file": {"url": fake_url}, "alt": "x"}}]}
+        )
+
+
+# ---- per-story quota ------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_quota_passes_at_limit(stored_image, settings):
+    settings.GEOCONTEXT_MAX_INLINE_IMAGES = 5
+    url = stored_image()
+    doc = {
+        "blocks": [
+            {"type": "image", "data": {"file": {"url": url}, "alt": "a"}}
+            for _ in range(5)
+        ]
+    }
+    normalized = validate_and_normalize(doc)
+    validate_image_block_quota(normalized)
+
+
+@pytest.mark.django_db
+def test_quota_rejects_above_limit(stored_image, settings):
+    settings.GEOCONTEXT_MAX_INLINE_IMAGES = 5
+    url = stored_image()
+    doc = {
+        "blocks": [
+            {"type": "image", "data": {"file": {"url": url}, "alt": "a"}}
+            for _ in range(6)
+        ]
+    }
+    normalized = validate_and_normalize(doc)
+    with pytest.raises(ValidationError):
+        validate_image_block_quota(normalized)
+
+
+def test_quota_ignores_non_image_blocks():
+    doc = {
+        "blocks": [
+            {"type": "paragraph", "data": {"text": "x"}} for _ in range(50)
+        ]
+    }
+    validate_image_block_quota(doc)

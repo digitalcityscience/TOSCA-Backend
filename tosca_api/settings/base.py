@@ -155,6 +155,9 @@ STATIC_ROOT = ROOT_DIR / "staticfiles"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = ROOT_DIR / "media"
 
+# Soft cap; remove or relax once UX validates.
+GEOCONTEXT_MAX_INLINE_IMAGES = 5
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 INTERNAL_API_BASE_URL = env(

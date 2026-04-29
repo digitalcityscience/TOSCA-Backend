@@ -24,9 +24,12 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import nh3
+from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.files.storage import default_storage
 
 _ALLOWED_BLOCK_TYPES = {
     "paragraph",
@@ -35,6 +38,13 @@ _ALLOWED_BLOCK_TYPES = {
     "quote",
     "delimiter",
     "code",
+    "image",
+}
+
+_PILLOW_FORMAT_TO_MIME = {
+    "JPEG": "image/jpeg",
+    "PNG": "image/png",
+    "WEBP": "image/webp",
 }
 
 _INLINE_TAGS = {"a", "strong", "em", "code", "br"}
@@ -189,6 +199,108 @@ def _normalize_code(data: dict, idx: int) -> dict:
     return {"code": code}
 
 
+def _media_url_prefix() -> str:
+    media_url = getattr(settings, "MEDIA_URL", "/media/") or "/media/"
+    if not media_url.endswith("/"):
+        media_url += "/"
+    return media_url
+
+
+def _resolve_same_origin_storage_path(url: str, idx: int) -> str:
+    """Reject off-origin / unsafe URLs, return the storage-relative path."""
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.scheme not in ("http", "https"):
+        raise ValidationError(
+            f"image block at {idx} rejects URL scheme '{parsed.scheme}:'."
+        )
+    media_url = _media_url_prefix()
+    path = parsed.path
+    if not path.startswith(media_url):
+        raise ValidationError(
+            f"image block at {idx} 'data.file.url' must be a same-origin "
+            f"storage URL under '{media_url}'."
+        )
+    return path[len(media_url):]
+
+
+def _read_storage_image_metadata(storage_path: str, idx: int) -> dict:
+    """Open the file via Django storage and derive (mime, width, height)."""
+    if not default_storage.exists(storage_path):
+        raise ValidationError(
+            f"image block at {idx} references missing file '{storage_path}'."
+        )
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with default_storage.open(storage_path, "rb") as fh:
+            with Image.open(fh) as img:
+                fmt = (img.format or "").upper()
+                width, height = img.size
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValidationError(
+            f"image block at {idx} failed to decode '{storage_path}': {exc}"
+        ) from exc
+
+    mime = _PILLOW_FORMAT_TO_MIME.get(fmt)
+    if mime is None:
+        raise ValidationError(
+            f"image block at {idx} stored file has unsupported format '{fmt or 'unknown'}'."
+        )
+    return {"mime": mime, "width": int(width), "height": int(height)}
+
+
+def _normalize_image(data: dict, idx: int) -> dict:
+    file_in = data.get("file")
+    if not isinstance(file_in, dict):
+        raise ValidationError(
+            f"image block at {idx} requires a 'data.file' object."
+        )
+
+    url = file_in.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise ValidationError(
+            f"image block at {idx} requires a non-empty 'data.file.url'."
+        )
+
+    storage_path = _resolve_same_origin_storage_path(url, idx)
+    derived = _read_storage_image_metadata(storage_path, idx)
+
+    caption_raw = data.get("caption", "")
+    if not isinstance(caption_raw, str):
+        raise ValidationError(
+            f"image block at {idx} 'data.caption' must be a string."
+        )
+
+    # Alt is required for accessibility, but the upstream @editorjs/image
+    # tool exposes only a caption field. Fall back to the caption (stripped
+    # of all tags) when an explicit data.alt is not provided.
+    alt_raw = data.get("alt")
+    if alt_raw is not None and not isinstance(alt_raw, str):
+        raise ValidationError(
+            f"image block at {idx} 'data.alt' must be a string when set."
+        )
+    alt_source = alt_raw if alt_raw else caption_raw
+    alt_clean = nh3.clean(alt_source or "", tags=set(), attributes={}).strip()
+    if not alt_clean:
+        raise ValidationError(
+            f"image block at {idx} requires non-empty 'data.alt' or 'data.caption' text."
+        )
+
+    return {
+        "file": {
+            "url": url,
+            "mime": derived["mime"],
+            "width": derived["width"],
+            "height": derived["height"],
+        },
+        "caption": _sanitize_inline(caption_raw, idx),
+        "alt": alt_clean,
+        "withBorder": bool(data.get("withBorder", False)),
+        "withBackground": bool(data.get("withBackground", False)),
+        "stretched": bool(data.get("stretched", False)),
+    }
+
+
 _BLOCK_NORMALIZERS = {
     "paragraph": _normalize_paragraph,
     "header": _normalize_header,
@@ -196,7 +308,30 @@ _BLOCK_NORMALIZERS = {
     "quote": _normalize_quote,
     "delimiter": _normalize_delimiter,
     "code": _normalize_code,
+    "image": _normalize_image,
 }
+
+
+def validate_image_block_quota(content: Any) -> None:
+    """Cap ``image`` blocks in a normalized GeoContext document.
+
+    Raises ``ValidationError`` when the count exceeds
+    ``settings.GEOCONTEXT_MAX_INLINE_IMAGES`` (default 5).
+    """
+    if not isinstance(content, dict):
+        return
+    blocks = content.get("blocks") or []
+    if not isinstance(blocks, list):
+        return
+    image_count = sum(
+        1 for b in blocks if isinstance(b, dict) and b.get("type") == "image"
+    )
+    limit = int(getattr(settings, "GEOCONTEXT_MAX_INLINE_IMAGES", 5))
+    if image_count > limit:
+        raise ValidationError(
+            f"GeoStory content contains {image_count} image blocks; "
+            f"maximum allowed is {limit}."
+        )
 
 
 def _sanitize_inline(text: str, block_idx: int) -> str:
