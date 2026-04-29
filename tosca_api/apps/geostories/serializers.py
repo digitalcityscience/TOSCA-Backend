@@ -5,6 +5,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 
+from tosca_api.apps.core.image_policy import validate_hero_image
 from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geodata_providers.api.serializers import (
@@ -13,6 +14,16 @@ from tosca_api.apps.geodata_providers.api.serializers import (
 )
 
 from .models import GeoStory, GeoStoryLayer
+
+
+def _absolute_hero_image_url(obj: GeoStory, request) -> str | None:
+    """Resolve hero image storage value into an absolute URL when possible."""
+    if not obj.hero_image:
+        return None
+    url = obj.hero_image.url
+    if request is not None:
+        return request.build_absolute_uri(url)
+    return url
 
 
 # =============================================================================
@@ -75,16 +86,23 @@ class GeoStoryListSerializer(serializers.ModelSerializer):
     Optimized for fast loading of story cards.
     """
 
+    hero_image_url = serializers.SerializerMethodField()
+
     class Meta:
         model = GeoStory
         fields = [
             "id",
             "title",
             "summary",
+            "hero_image_url",
+            "hero_image_alt",
             "campaign",
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_hero_image_url(self, obj) -> str | None:
+        return _absolute_hero_image_url(obj, self.context.get("request"))
 
 
 class GeoStoryDetailSerializer(serializers.ModelSerializer):
@@ -96,6 +114,7 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
     context = GeoContextSerializer(read_only=True)
     layers = serializers.SerializerMethodField()
     feature_links = serializers.SerializerMethodField()
+    hero_image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = GeoStory
@@ -103,6 +122,8 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "summary",
+            "hero_image_url",
+            "hero_image_alt",
             "status",
             "campaign",
             "context",
@@ -112,6 +133,9 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = fields
+
+    def get_hero_image_url(self, obj) -> str | None:
+        return _absolute_hero_image_url(obj, self.context.get("request"))
 
     def get_layers(self, obj) -> list:
         """
@@ -167,6 +191,23 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         """Invoke model clean() for DB-level validation."""
+        # Route any incoming hero image upload through the hero tier of the
+        # shared image policy before model-level checks run. Validation is
+        # read-only — the underlying file bytes are not mutated.
+        hero_image = attrs.get("hero_image")
+        if hero_image is not None and hasattr(hero_image, "read"):
+            try:
+                validate_hero_image(hero_image)
+            except DjangoValidationError as exc:
+                detail = (
+                    exc.message_dict
+                    if hasattr(exc, "message_dict")
+                    else {"hero_image": exc.messages}
+                )
+                raise serializers.ValidationError(
+                    {"hero_image": detail.get("image", detail)}
+                ) from exc
+
         layer_attrs = {k: v for k, v in attrs.items() if k != "layers"}
         if self.instance:
             instance = copy.copy(self.instance)
