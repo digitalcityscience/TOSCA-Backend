@@ -1,7 +1,9 @@
-from django.contrib.contenttypes.models import ContentType
-from rest_framework import serializers
+import copy
 
+from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from rest_framework import serializers
 
 from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geocontext.models import GeoContext
@@ -151,6 +153,8 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "summary",
+            "hero_image",
+            "hero_image_alt",
             "status",
             "campaign",
             "author",
@@ -164,12 +168,17 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         """Invoke model clean() for DB-level validation."""
         layer_attrs = {k: v for k, v in attrs.items() if k != "layers"}
-        instance = GeoStory(**layer_attrs)
         if self.instance:
+            instance = copy.copy(self.instance)
             for attr, value in layer_attrs.items():
                 setattr(instance, attr, value)
+        else:
+            instance = GeoStory(**layer_attrs)
 
-        instance.clean()
+        try:
+            instance.clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.message_dict) from exc
         return attrs
 
     @transaction.atomic
