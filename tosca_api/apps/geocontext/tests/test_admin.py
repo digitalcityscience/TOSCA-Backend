@@ -3,10 +3,15 @@ Tests for GeoContext Django admin Editor.js authoring.
 """
 
 import json
+import io
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.urls import reverse
+from django.test import override_settings
+from PIL import Image
 
 from tosca_api.apps.geocontext.admin import GeoContextAdmin, _extract_plain_text
 from tosca_api.apps.geocontext.forms import GeoContextAdminForm
@@ -38,6 +43,7 @@ def test_widget_media_includes_vendored_assets():
     assert "geocontext/editorjs/vendor/quote.umd.js" in js
     assert "geocontext/editorjs/vendor/delimiter.umd.js" in js
     assert "geocontext/editorjs/vendor/code.umd.js" in js
+    assert "geocontext/editorjs/vendor/image.umd.js" in js
     assert "geocontext/editorjs/init.js" in js
     assert "geocontext/editorjs/editor.css" in media._css["all"]
 
@@ -53,10 +59,21 @@ def test_vendor_license_files_present():
     from pathlib import Path
 
     base = Path(__file__).resolve().parents[1] / "static" / "geocontext" / "editorjs" / "vendor"
-    for name in ("editorjs", "header", "list", "quote", "delimiter", "code"):
+    for name in ("editorjs", "header", "list", "quote", "delimiter", "code", "image"):
         path = base / f"LICENSE.{name}"
         assert path.exists(), f"missing {path}"
         assert path.stat().st_size > 0
+
+
+def test_editorjs_admin_assets_do_not_reference_cdn():
+    from pathlib import Path
+
+    static_root = Path(__file__).resolve().parents[1] / "static" / "geocontext" / "editorjs"
+    for path in static_root.rglob("*"):
+        if path.is_file():
+            text = path.read_text(errors="ignore")
+            for needle in ("cdn.jsdelivr.net", "unpkg.com", "cdnjs."):
+                assert needle not in text
 
 
 @pytest.mark.django_db
@@ -101,6 +118,57 @@ def test_admin_form_parses_json_and_persists(admin_client, superuser):
     assert ctx.content == {
         "blocks": [{"type": "paragraph", "data": {"text": "Saved"}}]
     }
+
+
+@pytest.mark.django_db
+def test_admin_form_persists_image_block_with_caption_alt_fallback(
+    admin_client, superuser, tmp_path
+):
+    image_buf = io.BytesIO()
+    Image.new("RGB", (240, 240), color=(20, 80, 140)).save(image_buf, format="PNG")
+
+    with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
+        storage_path = default_storage.save(
+            "geocontext/editorjs/context-id/admin.png",
+            ContentFile(image_buf.getvalue()),
+        )
+        url = reverse("admin:geocontext_geocontext_add")
+        payload = {
+            "content": json.dumps(
+                {
+                    "blocks": [
+                        {
+                            "type": "image",
+                            "data": {
+                                "file": {
+                                    "url": f"/media/{storage_path}",
+                                    "mime": "image/jpeg",
+                                    "width": 1,
+                                    "height": 1,
+                                },
+                                "caption": "<strong>Admin caption</strong>",
+                                "withBorder": True,
+                                "withBackground": False,
+                                "stretched": True,
+                            },
+                        }
+                    ]
+                }
+            ),
+            "created_by": str(superuser.id),
+            "_save": "Save",
+        }
+        response = admin_client.post(url, payload, follow=True)
+
+    assert response.status_code == 200
+    ctx = GeoContext.objects.get(created_by=superuser)
+    block = ctx.content["blocks"][0]
+    assert block["type"] == "image"
+    assert block["data"]["alt"] == "Admin caption"
+    assert block["data"]["caption"] == "<strong>Admin caption</strong>"
+    assert block["data"]["file"]["mime"] == "image/png"
+    assert block["data"]["file"]["width"] == 240
+    assert block["data"]["file"]["height"] == 240
 
 
 @pytest.mark.django_db

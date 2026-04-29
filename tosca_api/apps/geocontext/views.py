@@ -26,14 +26,16 @@ from urllib.parse import urlparse
 import requests
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
+from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema, inline_serializer
 from PIL import Image
+from rest_framework import serializers
 from rest_framework import status
 from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from tosca_api.apps.core.image_policy import (
@@ -46,6 +48,54 @@ _UPLOAD_SUBDIR = "geocontext/editorjs"
 _DOWNLOAD_TIMEOUT_SECONDS = 5
 _MAX_REDIRECTS = 1
 _ALLOWED_REMOTE_SCHEMES = {"http", "https"}
+
+_UPLOAD_SUCCESS_SERIALIZER = inline_serializer(
+    name="EditorJSImageUploadSuccess",
+    fields={
+        "success": serializers.IntegerField(),
+        "file": inline_serializer(
+            name="EditorJSImageFile",
+            fields={
+                "url": serializers.URLField(),
+                "mime": serializers.CharField(),
+                "width": serializers.IntegerField(),
+                "height": serializers.IntegerField(),
+            },
+        ),
+    },
+)
+_UPLOAD_FAILURE_SERIALIZER = inline_serializer(
+    name="EditorJSImageUploadFailure",
+    fields={
+        "success": serializers.IntegerField(),
+        "error": serializers.CharField(),
+    },
+)
+_UPLOAD_BY_FILE_REQUEST_SERIALIZER = inline_serializer(
+    name="EditorJSImageUploadByFileRequest",
+    fields={"image": serializers.ImageField()},
+)
+_UPLOAD_BY_URL_REQUEST_SERIALIZER = inline_serializer(
+    name="EditorJSImageUploadByUrlRequest",
+    fields={"url": serializers.URLField()},
+)
+_MEDIA_LIBRARY_SERIALIZER = inline_serializer(
+    name="EditorJSImageMediaLibrary",
+    fields={
+        "results": serializers.ListField(
+            child=inline_serializer(
+                name="EditorJSImageMediaItem",
+                fields={
+                    "url": serializers.URLField(),
+                    "mime": serializers.CharField(),
+                    "width": serializers.IntegerField(),
+                    "height": serializers.IntegerField(),
+                    "name": serializers.CharField(),
+                },
+            )
+        )
+    },
+)
 
 
 def _media_url_prefix() -> str:
@@ -118,7 +168,34 @@ class EditorJSImageUploadByFileView(APIView):
 
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser]
+    throttle_classes = [UserRateThrottle]
 
+    @extend_schema(
+        tags=["geocontext"],
+        operation_id="geocontext_editorjs_upload_by_file",
+        summary="Upload an EditorJS image file",
+        request=_UPLOAD_BY_FILE_REQUEST_SERIALIZER,
+        responses={
+            200: OpenApiResponse(
+                response=_UPLOAD_SUCCESS_SERIALIZER,
+                examples=[
+                    OpenApiExample(
+                        "Uploaded",
+                        value={
+                            "success": 1,
+                            "file": {
+                                "url": "https://example.test/media/geocontext/editorjs/context/image.png",
+                                "mime": "image/png",
+                                "width": 800,
+                                "height": 600,
+                            },
+                        },
+                    )
+                ],
+            ),
+            400: OpenApiResponse(response=_UPLOAD_FAILURE_SERIALIZER),
+        },
+    )
     def post(self, request, *args, **kwargs):
         # ``@editorjs/image`` defaults the multipart field name to ``image``;
         # accept legacy ``file`` for resilience.
@@ -135,7 +212,18 @@ class EditorJSImageUploadByUrlView(APIView):
 
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
+    throttle_classes = [UserRateThrottle]
 
+    @extend_schema(
+        tags=["geocontext"],
+        operation_id="geocontext_editorjs_upload_by_url",
+        summary="Upload an EditorJS image from a remote URL",
+        request=_UPLOAD_BY_URL_REQUEST_SERIALIZER,
+        responses={
+            200: OpenApiResponse(response=_UPLOAD_SUCCESS_SERIALIZER),
+            400: OpenApiResponse(response=_UPLOAD_FAILURE_SERIALIZER),
+        },
+    )
     def post(self, request, *args, **kwargs):
         url = (request.data or {}).get("url")
         if not isinstance(url, str) or not url.strip():
@@ -171,7 +259,14 @@ class EditorJSImageLibraryView(APIView):
     """List previously uploaded EditorJS images for the admin picker."""
 
     permission_classes = [IsAuthenticated]
+    throttle_classes = [UserRateThrottle]
 
+    @extend_schema(
+        tags=["geocontext"],
+        operation_id="geocontext_editorjs_media_library",
+        summary="List uploaded EditorJS images",
+        responses={200: _MEDIA_LIBRARY_SERIALIZER},
+    )
     def get(self, request, *args, **kwargs):
         items = list(_list_existing_uploads(request, limit=100))
         return Response({"results": items})
