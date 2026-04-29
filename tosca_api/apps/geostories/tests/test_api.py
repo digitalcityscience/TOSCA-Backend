@@ -133,9 +133,11 @@ def test_geostory_list_payload_fields(api_client, user, geostory):
     assert "id" in story_data
     assert "title" in story_data
     assert "summary" in story_data
+    assert "hero_image_url" in story_data
+    assert "hero_image_alt" in story_data
     assert "campaign" in story_data
     assert "created_at" in story_data
-    
+
     # These should NOT be in list (detail only)
     assert "context" not in story_data
     assert "layers" not in story_data
@@ -441,6 +443,234 @@ def test_geostory_write_serializer_surfaces_hero_alt_error(api_client, user, geo
 
     assert response.status_code == 400
     assert "hero_image_alt" in response.data
+
+
+@pytest.mark.django_db
+def test_geostory_list_includes_hero_fields(api_client, user, geostory):
+    """List payload exposes hero_image_url + hero_image_alt."""
+    api_client.force_authenticate(user=user)
+    response = api_client.get("/api/v1/stories/")
+    assert response.status_code == 200
+
+    story_data = next(r for r in response.data["results"] if r["id"] == str(geostory.id))
+    assert "hero_image_url" in story_data
+    assert "hero_image_alt" in story_data
+    assert story_data["hero_image_url"] is None  # No hero set on the fixture
+
+
+@pytest.mark.django_db
+def test_geostory_detail_includes_hero_fields_no_image(api_client, user, geostory):
+    """Detail payload exposes hero fields even when no image is set."""
+    api_client.force_authenticate(user=user)
+    response = api_client.get(f"/api/v1/stories/{geostory.id}/")
+    assert response.status_code == 200
+    assert response.data["hero_image_url"] is None
+    assert response.data["hero_image_alt"] == ""
+
+
+@pytest.mark.django_db
+def test_geostory_create_with_hero_image_multipart(api_client, user, campaign):
+    """Multipart POST persists the hero image and returns absolute URL on detail."""
+    import io
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (1200, 800), color=(10, 20, 30)).save(buf, format="JPEG")
+    upload = SimpleUploadedFile("hero.jpg", buf.getvalue(), content_type="image/jpeg")
+
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/stories/",
+        {
+            "title": "Hero Story",
+            "campaign": str(campaign.id),
+            "hero_image": upload,
+            "hero_image_alt": "A descriptive alt",
+        },
+        format="multipart",
+    )
+    assert response.status_code == 201, response.data
+
+    story = GeoStory.objects.get(id=response.data["id"])
+    assert bool(story.hero_image) is True
+    assert story.hero_image_alt == "A descriptive alt"
+
+    detail = api_client.get(f"/api/v1/stories/{story.id}/")
+    assert detail.status_code == 200
+    assert detail.data["hero_image_url"].startswith("http")
+    assert detail.data["hero_image_url"].endswith(story.hero_image.url)
+    assert detail.data["hero_image_alt"] == "A descriptive alt"
+
+
+@pytest.mark.django_db
+def test_geostory_create_rejects_undersized_hero(api_client, user, campaign):
+    """Hero policy rejects below the 800x450 minimum."""
+    import io
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (400, 300)).save(buf, format="PNG")
+    upload = SimpleUploadedFile("small.png", buf.getvalue(), content_type="image/png")
+
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/stories/",
+        {
+            "title": "Bad Hero",
+            "campaign": str(campaign.id),
+            "hero_image": upload,
+            "hero_image_alt": "alt",
+        },
+        format="multipart",
+    )
+    assert response.status_code == 400
+    assert "hero_image" in response.data
+
+
+@pytest.mark.django_db
+def test_geostory_create_rejects_disallowed_mime(api_client, user, campaign):
+    """A GIF body with a forged content-type is rejected by header inspection."""
+    import io
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (1200, 800)).save(buf, format="GIF")
+    upload = SimpleUploadedFile(
+        "fake.png", buf.getvalue(), content_type="image/png"
+    )
+
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/stories/",
+        {
+            "title": "Bad Mime",
+            "campaign": str(campaign.id),
+            "hero_image": upload,
+            "hero_image_alt": "alt",
+        },
+        format="multipart",
+    )
+    assert response.status_code == 400
+    assert "hero_image" in response.data
+
+
+@pytest.mark.django_db
+def test_geostory_create_with_hero_requires_alt(api_client, user, campaign):
+    """Uploading a valid hero image without alt returns a field-keyed 400."""
+    import io
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (1200, 800)).save(buf, format="JPEG")
+    upload = SimpleUploadedFile("hero.jpg", buf.getvalue(), content_type="image/jpeg")
+
+    api_client.force_authenticate(user=user)
+    response = api_client.post(
+        "/api/v1/stories/",
+        {
+            "title": "Missing Alt",
+            "campaign": str(campaign.id),
+            "hero_image": upload,
+        },
+        format="multipart",
+    )
+    assert response.status_code == 400
+    assert "hero_image_alt" in response.data
+
+
+@pytest.mark.django_db
+def test_geostory_patch_replaces_hero_image(api_client, user, campaign):
+    """PATCH with a fresh upload swaps the stored file and updates alt."""
+    import io
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from PIL import Image
+
+    api_client.force_authenticate(user=user)
+
+    buf = io.BytesIO()
+    Image.new("RGB", (1200, 800), color=(1, 2, 3)).save(buf, format="JPEG")
+    initial = SimpleUploadedFile("a.jpg", buf.getvalue(), content_type="image/jpeg")
+    create_response = api_client.post(
+        "/api/v1/stories/",
+        {
+            "title": "Replaceable",
+            "campaign": str(campaign.id),
+            "hero_image": initial,
+            "hero_image_alt": "first",
+        },
+        format="multipart",
+    )
+    assert create_response.status_code == 201
+    story_id = create_response.data["id"]
+    original_path = GeoStory.objects.get(id=story_id).hero_image.name
+
+    buf2 = io.BytesIO()
+    Image.new("RGB", (1600, 900), color=(9, 8, 7)).save(buf2, format="PNG")
+    replacement = SimpleUploadedFile(
+        "b.png", buf2.getvalue(), content_type="image/png"
+    )
+    patch_response = api_client.patch(
+        f"/api/v1/stories/{story_id}/",
+        {"hero_image": replacement, "hero_image_alt": "second"},
+        format="multipart",
+    )
+    assert patch_response.status_code == 200, patch_response.data
+
+    refreshed = GeoStory.objects.get(id=story_id)
+    assert refreshed.hero_image.name != original_path
+    assert refreshed.hero_image_alt == "second"
+
+
+@pytest.mark.django_db
+def test_geostory_patch_clears_hero_image(api_client, user, campaign):
+    """Setting hero_image to null lifts the alt requirement."""
+    import io
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from PIL import Image
+
+    api_client.force_authenticate(user=user)
+    buf = io.BytesIO()
+    Image.new("RGB", (1200, 800)).save(buf, format="JPEG")
+    upload = SimpleUploadedFile("hero.jpg", buf.getvalue(), content_type="image/jpeg")
+    create_response = api_client.post(
+        "/api/v1/stories/",
+        {
+            "title": "Clearable",
+            "campaign": str(campaign.id),
+            "hero_image": upload,
+            "hero_image_alt": "alt",
+        },
+        format="multipart",
+    )
+    assert create_response.status_code == 201
+    story_id = create_response.data["id"]
+
+    response = api_client.patch(
+        f"/api/v1/stories/{story_id}/",
+        {"hero_image": "", "hero_image_alt": ""},
+        format="multipart",
+    )
+    assert response.status_code == 200, response.data
+
+    refreshed = GeoStory.objects.get(id=story_id)
+    assert not refreshed.hero_image
+    assert refreshed.hero_image_alt == ""
+
+
+@pytest.mark.django_db
+def test_geostory_admin_thumbnail_handles_missing_image(geostory):
+    """Admin thumbnail/preview render harmlessly when no image is set."""
+    from django.contrib.admin.sites import AdminSite
+
+    from tosca_api.apps.geostories.admin import GeoStoryAdmin
+
+    admin_instance = GeoStoryAdmin(GeoStory, AdminSite())
+    assert admin_instance.hero_image_thumbnail(geostory) == "—"
+    assert "No image uploaded." in admin_instance.hero_image_preview(geostory)
 
 
 @pytest.mark.django_db

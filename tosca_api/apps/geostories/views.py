@@ -1,5 +1,6 @@
 from rest_framework import permissions, viewsets
 from rest_framework.pagination import CursorPagination
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 
 from .models import GeoStory
 from .serializers import (
@@ -30,6 +31,7 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
     queryset = GeoStory.objects.all()
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = GeoStoryCursorPagination
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_serializer_class(self):
         """
