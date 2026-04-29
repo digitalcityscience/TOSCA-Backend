@@ -1,6 +1,8 @@
 """
 URL configuration for tosca_api project.
 """
+from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import (
@@ -32,3 +34,8 @@ urlpatterns = [
     # Backward-compatible alias (can be removed after clients migrate).
     path('admin/', admin.site.urls),
 ]
+
+if settings.DEBUG:
+    # Serve uploaded media via the dev server. In production, MEDIA_URL is
+    # served by the reverse proxy / object store, not Django.
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
