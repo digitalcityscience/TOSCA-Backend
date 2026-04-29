@@ -37,6 +37,92 @@
         return { blocks: [] };
     }
 
+    function getCSRFToken() {
+        const input = document.querySelector("input[name=csrfmiddlewaretoken]");
+        if (input) return input.value;
+        const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+        return match ? decodeURIComponent(match[1]) : "";
+    }
+
+    function buildLibraryButton(editor) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "geocontext-editorjs-library-button";
+        button.textContent = "Insert image from library";
+        button.addEventListener("click", function () {
+            openLibraryPicker(editor);
+        });
+        return button;
+    }
+
+    function openLibraryPicker(editor) {
+        const overlay = document.createElement("div");
+        overlay.className = "geocontext-editorjs-library-overlay";
+        const panel = document.createElement("div");
+        panel.className = "geocontext-editorjs-library-panel";
+        panel.innerHTML = '<div class="geocontext-editorjs-library-header">'
+            + '<strong>Choose an existing image</strong>'
+            + '<button type="button" class="geocontext-editorjs-library-close">×</button>'
+            + '</div>'
+            + '<div class="geocontext-editorjs-library-grid">Loading…</div>';
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+
+        function close() {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        }
+        overlay.addEventListener("click", function (e) {
+            if (e.target === overlay) close();
+        });
+        panel.querySelector(".geocontext-editorjs-library-close")
+            .addEventListener("click", close);
+
+        fetch("/api/v1/geocontext/editorjs/media/", {
+            credentials: "same-origin",
+            headers: { "X-CSRFToken": getCSRFToken() },
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (payload) {
+                const grid = panel.querySelector(".geocontext-editorjs-library-grid");
+                grid.innerHTML = "";
+                const items = (payload && payload.results) || [];
+                if (items.length === 0) {
+                    grid.textContent = "No uploaded images yet.";
+                    return;
+                }
+                items.forEach(function (item) {
+                    const tile = document.createElement("button");
+                    tile.type = "button";
+                    tile.className = "geocontext-editorjs-library-tile";
+                    const img = document.createElement("img");
+                    img.src = item.url;
+                    img.alt = item.name;
+                    tile.appendChild(img);
+                    tile.addEventListener("click", function () {
+                        editor.blocks.insert("image", {
+                            file: {
+                                url: item.url,
+                                mime: item.mime,
+                                width: item.width,
+                                height: item.height,
+                            },
+                            alt: item.name || "image",
+                            caption: "",
+                            withBorder: false,
+                            withBackground: false,
+                            stretched: false,
+                        });
+                        close();
+                    });
+                    grid.appendChild(tile);
+                });
+            })
+            .catch(function () {
+                panel.querySelector(".geocontext-editorjs-library-grid").textContent =
+                    "Failed to load library.";
+            });
+    }
+
     function mount(textarea) {
         if (typeof EditorJS === "undefined") return;
 
@@ -61,10 +147,28 @@
                 },
             };
         }
-        if (typeof List !== "undefined") tools.list = { class: List, inlineToolbar: true };
+        const ListClass = (typeof EditorjsList !== "undefined") ? EditorjsList
+            : (typeof List !== "undefined") ? List
+            : null;
+        if (ListClass) tools.list = { class: ListClass, inlineToolbar: true };
         if (typeof Quote !== "undefined") tools.quote = { class: Quote, inlineToolbar: true };
         if (typeof Delimiter !== "undefined") tools.delimiter = Delimiter;
         if (typeof CodeTool !== "undefined") tools.code = CodeTool;
+        if (typeof ImageTool !== "undefined") {
+            tools.image = {
+                class: ImageTool,
+                config: {
+                    endpoints: {
+                        byFile: "/api/v1/geocontext/editorjs/upload-by-file/",
+                        byUrl: "/api/v1/geocontext/editorjs/upload-by-url/",
+                    },
+                    field: "image",
+                    additionalRequestHeaders: {
+                        "X-CSRFToken": getCSRFToken(),
+                    },
+                },
+            };
+        }
 
         const editor = new EditorJS({
             holder: holder,
@@ -77,6 +181,10 @@
                 }).catch(function () { /* leave previous textarea value */ });
             },
         });
+
+        if (typeof ImageTool !== "undefined") {
+            holder.parentNode.insertBefore(buildLibraryButton(editor), holder);
+        }
 
         function findCurrentListItem() {
             const sel = window.getSelection();
