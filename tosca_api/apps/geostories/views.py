@@ -1,3 +1,4 @@
+from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema, extend_schema_view
 from rest_framework import permissions, viewsets
 from rest_framework.pagination import CursorPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -17,6 +18,51 @@ class GeoStoryCursorPagination(CursorPagination):
     ordering = "-created_at"
 
 
+@extend_schema_view(
+    list=extend_schema(
+        tags=["geostories"],
+        summary="List GeoStories",
+        responses={200: GeoStoryListSerializer},
+        examples=[
+            OpenApiExample(
+                "GeoStory card",
+                value={
+                    "id": "4a7b90a6-31bd-4b84-9bc0-9a94d61b4d15",
+                    "title": "Waterfront adaptation",
+                    "summary": "A story about planned public-space changes.",
+                    "hero_image_url": "https://example.test/media/geostories/story/hero.jpg",
+                    "hero_image_alt": "A waterfront promenade with new tree planting.",
+                    "campaign": "b0c2d2d5-cd1d-49db-8f4d-a56e37798e80",
+                    "created_at": "2026-04-30T10:30:00Z",
+                },
+                response_only=True,
+            )
+        ],
+    ),
+    retrieve=extend_schema(
+        tags=["geostories"],
+        summary="Retrieve a GeoStory",
+        responses={200: GeoStoryDetailSerializer},
+    ),
+    create=extend_schema(
+        tags=["geostories"],
+        summary="Create a GeoStory",
+        request=GeoStoryWriteSerializer,
+        responses={201: OpenApiResponse(response=GeoStoryWriteSerializer)},
+    ),
+    update=extend_schema(
+        tags=["geostories"],
+        summary="Replace a GeoStory",
+        request=GeoStoryWriteSerializer,
+        responses={200: OpenApiResponse(response=GeoStoryWriteSerializer)},
+    ),
+    partial_update=extend_schema(
+        tags=["geostories"],
+        summary="Update a GeoStory",
+        request=GeoStoryWriteSerializer,
+        responses={200: OpenApiResponse(response=GeoStoryWriteSerializer)},
+    ),
+)
 class GeoStoryViewSet(viewsets.ModelViewSet):
     """
     API endpoint for GeoStory operations.

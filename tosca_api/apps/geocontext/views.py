@@ -223,6 +223,26 @@ class EditorJSImageUploadByUrlView(APIView):
             200: OpenApiResponse(response=_UPLOAD_SUCCESS_SERIALIZER),
             400: OpenApiResponse(response=_UPLOAD_FAILURE_SERIALIZER),
         },
+        examples=[
+            OpenApiExample(
+                "Remote upload request",
+                value={"url": "https://remote.example.test/photos/inline.webp"},
+                request_only=True,
+            ),
+            OpenApiExample(
+                "Uploaded remote image",
+                value={
+                    "success": 1,
+                    "file": {
+                        "url": "https://example.test/media/geocontext/editorjs/context/inline.webp",
+                        "mime": "image/webp",
+                        "width": 960,
+                        "height": 640,
+                    },
+                },
+                response_only=True,
+            ),
+        ],
     )
     def post(self, request, *args, **kwargs):
         url = (request.data or {}).get("url")
