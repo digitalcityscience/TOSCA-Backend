@@ -75,7 +75,7 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
     """
 
     queryset = GeoStory.objects.all()
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     pagination_class = GeoStoryCursorPagination
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
@@ -97,15 +97,18 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
         Filter queryset based on action and parameters.
 
         - List view: Only published stories (unless user is staff).
+        - Anonymous detail view: Only published stories.
         - Filter by campaign_id if provided.
         - Optimize queries with select_related/prefetch_related.
         """
         queryset = super().get_queryset()
 
-        # Apply status filter for list action (public consumption)
+        user = self.request.user
         if self.action == "list":
-            # Staff users can see all, public users see only published
-            if not self.request.user.is_staff:
+            if not (user and user.is_staff):
+                queryset = queryset.filter(status=GeoStory.Status.PUBLISHED)
+        elif self.action == "retrieve":
+            if not (user and user.is_authenticated):
                 queryset = queryset.filter(status=GeoStory.Status.PUBLISHED)
 
         # Filter by campaign_id if provided
