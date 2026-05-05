@@ -25,6 +25,7 @@ FALLBACK_ENV_FILE = ROOT_DIR / ".env"
 env = environ.Env(
     DJANGO_DEBUG=(bool, False),
     DJANGO_ALLOWED_HOSTS=(list, ["localhost", "127.0.0.1"]),
+    DJANGO_CORS_ALLOW_CREDENTIALS=(bool, True),
 )
 
 if ENV_FILE.exists():
@@ -41,6 +42,18 @@ else:
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="change-me-in-production")
 DEBUG = env("DJANGO_DEBUG")
 ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS")
+CORS_ALLOWED_ORIGINS = env.list("DJANGO_CORS_ALLOWED_ORIGINS", default=[])
+CORS_ALLOW_CREDENTIALS = env.bool("DJANGO_CORS_ALLOW_CREDENTIALS")
+CORS_ALLOWED_METHODS = ["DELETE", "GET", "OPTIONS", "PATCH", "POST", "PUT"]
+CORS_ALLOWED_HEADERS = [
+    "accept",
+    "authorization",
+    "content-type",
+    "origin",
+    "x-csrftoken",
+    "x-requested-with",
+]
+CORS_PREFLIGHT_MAX_AGE = 86400
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -85,6 +98,7 @@ SITE_ID = 1
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "tosca_api.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",

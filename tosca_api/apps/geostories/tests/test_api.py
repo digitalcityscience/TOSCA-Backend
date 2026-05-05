@@ -79,9 +79,9 @@ def draft_story(user, campaign):
 
 @pytest.mark.django_db
 def test_geostory_list_unauthenticated(api_client):
-    """Test that unauthenticated users cannot list geostories."""
+    """Anonymous users can list published geostories."""
     response = api_client.get("/api/v1/stories/")
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 # =============================================================================
@@ -118,6 +118,46 @@ def test_geostory_list_staff_sees_all(api_client, staff_user, geostory, draft_st
     # Staff should see both
     assert "Existing Story" in titles
     assert "Draft Story" in titles
+
+
+@pytest.mark.django_db
+def test_geostory_list_unauthenticated_published_only(api_client, geostory, draft_story):
+    """Anonymous users only see published stories."""
+    response = api_client.get("/api/v1/stories/")
+    assert response.status_code == 200
+
+    titles = [r["title"] for r in response.data["results"]]
+    assert "Existing Story" in titles
+    assert "Draft Story" not in titles
+
+
+@pytest.mark.django_db
+def test_geostory_detail_unauthenticated_can_read_published(api_client, geostory):
+    """Anonymous users can retrieve a published story."""
+    response = api_client.get(f"/api/v1/stories/{geostory.id}/")
+    assert response.status_code == 200
+    assert response.data["id"] == str(geostory.id)
+
+
+@pytest.mark.django_db
+def test_geostory_detail_unauthenticated_cannot_read_draft(api_client, draft_story):
+    """Anonymous users cannot retrieve unpublished stories."""
+    response = api_client.get(f"/api/v1/stories/{draft_story.id}/")
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_geostory_create_unauthenticated_forbidden(api_client, campaign):
+    """Anonymous users cannot create stories."""
+    response = api_client.post(
+        "/api/v1/stories/",
+        {
+            "title": "Anonymous Draft",
+            "campaign": str(campaign.id),
+        },
+        format="json",
+    )
+    assert response.status_code == 403
 
 
 @pytest.mark.django_db

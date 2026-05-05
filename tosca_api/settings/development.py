@@ -6,6 +6,10 @@ DEBUG = True
 
 # Allow Postman reverse DNS lookup + testserver for tests
 ALLOWED_HOSTS = ['localhost', '127.0.0.1', '1.0.0.127.in-addr.arpa', 'testserver']
+CORS_ALLOWED_ORIGINS = env.list(  # noqa: F405
+    "DJANGO_CORS_ALLOWED_ORIGINS",
+    default=["http://localhost:5173", "http://127.0.0.1:5173"],
+)
 
 # Django auth redirects
 LOGIN_REDIRECT_URL = '/welcome/'
@@ -36,4 +40,3 @@ for logger_config in LOGGING['loggers'].values():  # noqa: F405
 # -------------------------------------------------
 # Override GeoServer host for Docker Compose
 GEOSERVER_HOST = env("GEOSERVER_HOST", default="geoserver")  # Use container name instead of localhost
-
