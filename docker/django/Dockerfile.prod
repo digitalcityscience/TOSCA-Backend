@@ -1,0 +1,39 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV UV_PROJECT_ENVIRONMENT=/venv
+ENV UV_VENV_CLEAR=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    bash \
+    curl \
+    gosu \
+    gdal-bin \
+    libgdal-dev \
+    libgeos-dev \
+    libproj-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir uv gunicorn
+
+COPY pyproject.toml uv.lock README.md ./
+COPY manage.py ./
+COPY tosca_api ./tosca_api
+COPY templates ./templates
+COPY scripts ./scripts
+COPY docker ./docker
+
+RUN uv sync --no-dev
+
+RUN useradd -m -r -u 10001 appuser \
+    && chown -R appuser:appuser /app /venv
+
+EXPOSE 8000
+
+ENTRYPOINT ["bash", "docker/django/entrypoint.prod.sh"]
+CMD ["uv", "run", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "3", "--threads", "2", "--timeout", "120", "tosca_api.wsgi:application"]
