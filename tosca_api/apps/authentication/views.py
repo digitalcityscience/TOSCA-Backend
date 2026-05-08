@@ -191,8 +191,10 @@ class AutoSignupView(View):
             user.is_superuser = False
             user.is_staff = True
         else:
+            # No Keycloak role: demote superuser, but preserve manually-granted
+            # is_staff so Django admin can grant staff access without a Keycloak role.
             user.is_superuser = False
-            user.is_staff = False
+            # is_staff intentionally NOT touched here
         
         if user.is_staff != old_staff or user.is_superuser != old_superuser:
             logger.info("User permissions updated in views", extra={

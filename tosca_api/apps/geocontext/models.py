@@ -102,8 +102,13 @@ class GeoContext(TimeStampedModel):
                     return text[:max_len] + ("…" if len(text) > max_len else "")
         return ""
 
+    def clean(self) -> None:
+        """Validate and normalize Editor.js content (called by admin forms)."""
+        self.content = validate_and_normalize(self.content)
+        validate_image_block_quota(self.content)
+
     def save(self, *args, **kwargs) -> None:
-        """Validate and normalize Editor.js content before persistence."""
+        """Ensure validation runs even outside admin (e.g. API, shell)."""
         self.content = validate_and_normalize(self.content)
         validate_image_block_quota(self.content)
         super().save(*args, **kwargs)

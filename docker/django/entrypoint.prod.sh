@@ -6,8 +6,8 @@ cd /app
 APP_USER="appuser"
 APP_GROUP="appuser"
 
-mkdir -p /app/staticfiles /app/logs
-chown -R "${APP_USER}:${APP_GROUP}" /app/staticfiles /app/logs /venv
+mkdir -p /app/staticfiles /app/media /app/logs
+chown -R "${APP_USER}:${APP_GROUP}" /app/staticfiles /app/media /app/logs /venv
 
 run_as_appuser() {
   gosu "${APP_USER}:${APP_GROUP}" "$@"

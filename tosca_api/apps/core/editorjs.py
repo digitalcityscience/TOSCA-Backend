@@ -281,10 +281,6 @@ def _normalize_image(data: dict, idx: int) -> dict:
         )
     alt_source = alt_raw if alt_raw else caption_raw
     alt_clean = nh3.clean(alt_source or "", tags=set(), attributes={}).strip()
-    if not alt_clean:
-        raise ValidationError(
-            f"image block at {idx} requires non-empty 'data.alt' or 'data.caption' text."
-        )
 
     return {
         "file": {

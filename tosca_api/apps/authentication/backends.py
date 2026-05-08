@@ -96,8 +96,10 @@ class KeycloakTokenAuthentication(BaseAuthentication):
             user.is_superuser = False
             user.is_staff = True
         else:
+            # No Keycloak role: demote superuser, but preserve manually-granted
+            # is_staff so Django admin can grant staff access without a Keycloak role.
             user.is_superuser = False
-            user.is_staff = False
+            # is_staff intentionally NOT touched here
         #KeycloakTokenAuth] Updated permissions if changed: is_staff={user.is_staff}, is_superuser={user.is_superuser}")
         if user.is_staff != old_staff or user.is_superuser != old_super:
             user.save()
@@ -317,8 +319,10 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
             user.is_staff = True
             permission_level = "ADMIN"
         else:
+            # No Keycloak role: demote superuser, but preserve manually-granted
+            # is_staff so Django admin can grant staff access without a Keycloak role.
             user.is_superuser = False
-            user.is_staff = False
+            # is_staff intentionally NOT touched here
             permission_level = "USER"
         
         # Only save if permissions changed

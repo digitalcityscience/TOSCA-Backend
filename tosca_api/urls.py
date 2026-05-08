@@ -4,7 +4,8 @@ URL configuration for tosca_api project.
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import include, path, re_path
+from django.views.static import serve
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularRedocView,
@@ -38,6 +39,8 @@ urlpatterns = [
 ]
 
 if settings.DEBUG:
-    # Serve uploaded media via the dev server. In production, MEDIA_URL is
-    # served by the reverse proxy / object store, not Django.
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+else:
+    urlpatterns += [
+        re_path(r"^media/(?P<path>.*)$", serve, {"document_root": settings.MEDIA_ROOT}),
+    ]
