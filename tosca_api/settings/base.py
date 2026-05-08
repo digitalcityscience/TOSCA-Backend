@@ -34,7 +34,9 @@ elif FALLBACK_ENV_FILE.exists():
     # Backward-compatible: allow single .env if .env.dev/.env.prod not created yet
     env.read_env(os.fspath(FALLBACK_ENV_FILE))
 else:
-    raise RuntimeError(f"Missing env file: {ENV_FILE} (and no fallback .env found)")
+    # Environment variables may already be injected by Docker/Kubernetes runtime.
+    # In that case, proceed without reading a local .env file.
+    pass
 
 # -------------------------------------------------
 # Core
@@ -98,6 +100,7 @@ SITE_ID = 1
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "tosca_api.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
