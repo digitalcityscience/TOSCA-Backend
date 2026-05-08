@@ -59,12 +59,24 @@ _GEODATA_PROVIDER_ADMIN_LABELS = {
     'Style': 'Style',
 }
 
+_ADMIN_APP_ORDER = {
+    'geocontext': 0,
+    'geostories': 1,
+}
+
 
 def _patch_geodata_providers_admin_app_list():
     original_get_app_list = admin.site.get_app_list
 
     def get_app_list(request, app_label=None):
         app_list = original_get_app_list(request, app_label=app_label)
+
+        app_list.sort(
+            key=lambda app: (
+                _ADMIN_APP_ORDER.get(app.get('app_label'), 999),
+                app.get('name', ''),
+            )
+        )
 
         for app in app_list:
             if app.get('app_label') != 'geodata_providers':

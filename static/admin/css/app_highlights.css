@@ -1,0 +1,30 @@
+#content-main .app-geocontext.module,
+#content-main .app-geostories.module {
+    border-left: 6px solid var(--app-highlight-color);
+    box-shadow: 0 2px 10px rgba(15, 23, 42, 0.14);
+}
+
+#content-main .app-geocontext.module {
+    --app-highlight-color: #0f9f8e;
+}
+
+#content-main .app-geostories.module {
+    --app-highlight-color: #d97706;
+}
+
+#content-main .app-geocontext.module caption,
+#content-main .app-geostories.module caption {
+    background: var(--app-highlight-color);
+}
+
+#content-main .app-geocontext.module caption a.section,
+#content-main .app-geostories.module caption a.section {
+    color: #fff;
+    font-weight: 700;
+}
+
+#content-main .admin-app-divider {
+    height: 1px;
+    margin: 18px 0;
+    background: var(--hairline-color, #e8e8e8);
+}
