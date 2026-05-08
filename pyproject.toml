@@ -30,6 +30,8 @@ dependencies = [
     "requests>=2.32.0",
     "sqlalchemy>=2.0",
     "geoserver-rest",
+    "whitenoise>=6.7.0",
+    "gunicorn>=22.0.0",
 ]
 
 [project.optional-dependencies]
