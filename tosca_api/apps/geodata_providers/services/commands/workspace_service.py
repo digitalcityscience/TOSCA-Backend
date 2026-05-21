@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.utils import timezone
 
 from ...engine_factory import EngineClientFactory
 from ...models import Layer, Store, Workspace
@@ -32,6 +33,7 @@ class WorkspaceService:
 
         existing = Workspace.objects.filter(geodata_engine=engine, name=normalized_name).first()
         if existing:
+            cls._mark_synced(existing, remote_identifier=normalized_name)
             return {
                 'success': True,
                 'idempotent': True,
@@ -65,6 +67,14 @@ class WorkspaceService:
                 geodata_engine=engine,
                 name=normalized_name,
                 description=description,
+                sync_state=(
+                    'SYNCED' if engine and remote_result.get('verified', True)
+                    else 'STALE' if engine
+                    else 'LOCAL_ONLY'
+                ),
+                last_sync_at=timezone.now() if engine else None,
+                last_sync_error='',
+                remote_identifier=normalized_name if engine else '',
                 created_by=user,
             )
 
@@ -102,6 +112,10 @@ class WorkspaceService:
             client = EngineClientFactory.create_client(engine)
             remote_result = client.delete_workspace(workspace.name)
             if not remote_result.get('success', False):
+                cls._mark_failed(
+                    workspace,
+                    remote_result.get('error', remote_result.get('message', 'Engine failed to delete the workspace.')),
+                )
                 return {
                     'success': False,
                     'already_exists': False,
@@ -160,3 +174,20 @@ class WorkspaceService:
     def _dependency_message(cls, workspace: Workspace, counts: dict[str, int]) -> str:
         details = ", ".join(f"{label}={value}" for label, value in counts.items() if value)
         return f"Cannot delete workspace '{workspace.name}': dependent records exist ({details})."
+
+    @staticmethod
+    def _mark_synced(workspace: Workspace, *, remote_identifier: str = '') -> None:
+        Workspace.objects.filter(pk=workspace.pk).update(
+            sync_state='SYNCED',
+            last_sync_at=timezone.now(),
+            last_sync_error='',
+            remote_identifier=remote_identifier,
+        )
+
+    @staticmethod
+    def _mark_failed(workspace: Workspace, error: str) -> None:
+        Workspace.objects.filter(pk=workspace.pk).update(
+            sync_state='FAILED',
+            last_sync_at=timezone.now(),
+            last_sync_error=error,
+        )

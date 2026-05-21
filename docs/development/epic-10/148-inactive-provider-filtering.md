@@ -1,3 +1,6 @@
+> Development note: Run Django, uv, pytest, and migration checks inside the
+> `tosca-django-api` container, not on the host.
+
 # #148 SEF-P10 - Inactive Provider Filtering
 
 ## Purpose

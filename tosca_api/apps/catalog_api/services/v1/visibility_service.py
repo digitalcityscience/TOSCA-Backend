@@ -43,6 +43,7 @@ class CatalogVisibilityService:
                 layers__is_public=True,
                 layers__publishing_state="PUBLISHED",
             )
+            .exclude(layers__sync_state__in=["FAILED", "STALE"])
             .select_related("geodata_engine")
             .order_by("name", "-geodata_engine__is_default", "geodata_engine__name", "id")
         )
@@ -57,6 +58,7 @@ class CatalogVisibilityService:
                 is_public=True,
                 publishing_state="PUBLISHED",
             )
+            .exclude(sync_state__in=["FAILED", "STALE"])
             .order_by(
                 "workspace__name",
                 "name",

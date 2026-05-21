@@ -43,6 +43,7 @@ class LayerQueryService:
             "geometry_type": layer.geometry_type,
             "srid": layer.srid,
             "publishing_state": layer.publishing_state,
+            "sync_state": layer.sync_state,
             "is_public": layer.is_public,
             "published_url": layer.published_url,
             "layer_settings": cls._serialize_layer_settings(layer),

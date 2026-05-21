@@ -27,6 +27,51 @@ from tosca_api.apps.core.models import TimeStampedModel
 from .encryption import EncryptedCharField
 
 
+class SyncStateMixin(models.Model):
+    """Common remote synchronization state for provider-owned resources."""
+
+    class SyncState(models.TextChoices):
+        UNKNOWN = "UNKNOWN", "Unknown"
+        SYNCED = "SYNCED", "Synced"
+        LOCAL_ONLY = "LOCAL_ONLY", "Local only"
+        REMOTE_ONLY = "REMOTE_ONLY", "Remote only"
+        STALE = "STALE", "Stale"
+        FAILED = "FAILED", "Failed"
+
+    sync_state = models.CharField(
+        max_length=20,
+        choices=SyncState.choices,
+        default=SyncState.LOCAL_ONLY,
+        help_text="Current consistency state between Django and the remote provider.",
+    )
+    last_sync_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Last time this resource was successfully synchronized or checked.",
+    )
+    last_sync_error = models.TextField(
+        blank=True,
+        help_text="Most recent synchronization error, if any.",
+    )
+    remote_identifier = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Provider-side identifier for diagnostics, when available.",
+    )
+    remote_hash = models.CharField(
+        max_length=128,
+        blank=True,
+        help_text="Provider-side version/hash for diagnostics, when available.",
+    )
+
+    class Meta:
+        abstract = True
+
+    @property
+    def is_synced(self) -> bool:
+        return self.sync_state == self.SyncState.SYNCED
+
+
 class GeodataEngine(TimeStampedModel, EncryptedCharField):
     """
     Multi-engine geodata engine definition.
@@ -136,7 +181,7 @@ class GeodataEngine(TimeStampedModel, EncryptedCharField):
         return EngineClientFactory.create_client(self)
 
 
-class Workspace(TimeStampedModel):
+class Workspace(SyncStateMixin, TimeStampedModel):
     """
     Logical grouping of data (e.g. 'mobility', 'environment').
 
@@ -175,7 +220,7 @@ class Workspace(TimeStampedModel):
         super().save(*args, **kwargs)
 
 
-class Store(TimeStampedModel, EncryptedCharField):
+class Store(SyncStateMixin, TimeStampedModel, EncryptedCharField):
     """
     Generic data store abstraction.
 
@@ -288,7 +333,7 @@ class Store(TimeStampedModel, EncryptedCharField):
             return False
 
 
-class Layer(TimeStampedModel):
+class Layer(SyncStateMixin, TimeStampedModel):
     """
     Logical dataset backed by a PostGIS table or view.
 
@@ -401,7 +446,7 @@ class Layer(TimeStampedModel):
         }
 
 
-class Style(TimeStampedModel):
+class Style(SyncStateMixin, TimeStampedModel):
     """
     Provider-owned style definition backed by GeoServer SLD or MBStyle content.
 

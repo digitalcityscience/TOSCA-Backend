@@ -99,6 +99,37 @@ class GeodataEngineServiceTestCase(TestCase):
         self.assertTrue(result['workspaces']['skipped'])
         service._get_geoserver_workspaces.assert_not_called()
 
+    def test_sync_workspaces_marks_successful_resources_synced(self):
+        service = GeoServerSyncService(self.engine)
+        service._get_geoserver_workspaces = MagicMock(return_value=['synced_ws'])
+
+        result = service.sync_workspaces(created_by=self.user)
+
+        self.assertEqual(result['created'], 1)
+        workspace = Workspace.objects.get(geodata_engine=self.engine, name='synced_ws')
+        self.assertEqual(workspace.sync_state, 'SYNCED')
+        self.assertEqual(workspace.remote_identifier, 'synced_ws')
+        self.assertEqual(workspace.last_sync_error, '')
+        self.assertIsNotNone(workspace.last_sync_at)
+
+    def test_sync_workspaces_marks_local_resources_failed_on_remote_error(self):
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='existing_ws',
+            description='workspace',
+            created_by=self.user,
+        )
+        service = GeoServerSyncService(self.engine)
+        service._get_geoserver_workspaces = MagicMock(side_effect=Exception('GeoServer unavailable'))
+
+        result = service.sync_workspaces(created_by=self.user)
+
+        self.assertIn('GeoServer unavailable', result['errors'][0])
+        workspace.refresh_from_db()
+        self.assertEqual(workspace.sync_state, 'FAILED')
+        self.assertIn('GeoServer unavailable', workspace.last_sync_error)
+        self.assertIsNotNone(workspace.last_sync_at)
+
     @patch('tosca_api.apps.geodata_providers.services.commands.geodata_engine_service.EngineClientFactory.create_client')
     def test_delete_engine_cascade_removes_tree_remote_and_db(self, mock_create_client):
         workspace = Workspace.objects.create(

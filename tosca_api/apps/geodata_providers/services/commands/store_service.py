@@ -1,6 +1,7 @@
 import os
 
 from django.db import transaction
+from django.utils import timezone
 
 from ...engine_factory import EngineClientFactory
 from ...models import Layer, Store, Workspace
@@ -27,6 +28,8 @@ class StoreService:
     ) -> dict:
         existing = Store.objects.filter(workspace=workspace, name=name).first()
         if existing:
+            if workspace.geodata_engine:
+                cls._mark_synced(existing, remote_identifier=f"{workspace.name}:{name}")
             return {
                 'success': True,
                 'idempotent': True,
@@ -77,6 +80,14 @@ class StoreService:
                 schema=schema,
                 file_path=file_path,
                 charset=charset,
+                sync_state=(
+                    'SYNCED' if engine and remote_result.get('verified', True)
+                    else 'STALE' if engine
+                    else 'LOCAL_ONLY'
+                ),
+                last_sync_at=timezone.now() if engine else None,
+                last_sync_error='',
+                remote_identifier=f"{workspace.name}:{name}" if engine else '',
                 created_by=user,
             )
 
@@ -146,6 +157,10 @@ class StoreService:
             client = EngineClientFactory.create_client(engine)
             remote_result = client.delete_store(workspace_name, store.name)
             if not remote_result.get('success', False):
+                cls._mark_failed(
+                    store,
+                    remote_result.get('error', remote_result.get('message', 'Engine failed to delete the store.')),
+                )
                 return {
                     'success': False,
                     'blocked': False,
@@ -247,3 +262,20 @@ class StoreService:
             return service.sync_stores_for_workspace(workspace, created_by=user)
         except Exception as exc:
             return {'success': False, 'skipped': False, 'error': str(exc)}
+
+    @staticmethod
+    def _mark_synced(store: Store, *, remote_identifier: str = '') -> None:
+        Store.objects.filter(pk=store.pk).update(
+            sync_state='SYNCED',
+            last_sync_at=timezone.now(),
+            last_sync_error='',
+            remote_identifier=remote_identifier,
+        )
+
+    @staticmethod
+    def _mark_failed(store: Store, error: str) -> None:
+        Store.objects.filter(pk=store.pk).update(
+            sync_state='FAILED',
+            last_sync_at=timezone.now(),
+            last_sync_error=error,
+        )

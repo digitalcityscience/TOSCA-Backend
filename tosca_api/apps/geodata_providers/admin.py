@@ -209,6 +209,18 @@ def _run_workspace_sync(modeladmin, request, workspace):
     )
 
 
+def _sync_state_badge(obj):
+    colour = {
+        'SYNCED': '#198754',
+        'LOCAL_ONLY': '#0d6efd',
+        'REMOTE_ONLY': '#6f42c1',
+        'STALE': '#f5a623',
+        'FAILED': '#dc3545',
+        'UNKNOWN': '#6c757d',
+    }.get(obj.sync_state, '#6c757d')
+    return format_html('<strong style="color:{};">{}</strong>', colour, obj.sync_state)
+
+
 # Admin Forms
 class GeodataEngineForm(forms.ModelForm):
     class Meta:
@@ -495,10 +507,10 @@ class StoreInline(admin.TabularInline):
 class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     form = WorkspaceAdminForm
     change_form_template = 'admin/geodata_providers/workspace/change_form.html'
-    list_display = ['name', 'engine_link', 'description', 'store_count', 'layer_count', 'created_at']
-    list_filter = ['geodata_engine', 'geodata_engine__engine_type']
+    list_display = ['name', 'engine_link', 'description', 'sync_state_badge', 'store_count', 'layer_count', 'created_at']
+    list_filter = ['sync_state', 'geodata_engine', 'geodata_engine__engine_type']
     search_fields = ['name', 'geodata_engine__name']
-    readonly_fields = ['id', 'created_at', 'updated_at']
+    readonly_fields = ['id', 'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash', 'created_at', 'updated_at']
     inlines = [StoreInline]
     actions = [sync_workspaces]
     list_per_page = 25
@@ -508,7 +520,7 @@ class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
             'fields': ('geodata_engine', 'name', 'description'),
         }),
         ('Metadata', {
-            'fields': ('id', 'created_at', 'updated_at'),
+            'fields': ('id', 'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash', 'created_at', 'updated_at'),
             'classes': ('collapse',),
         }),
     )
@@ -569,6 +581,11 @@ class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         return obj._layer_count
     layer_count.short_description = 'Layers'
     layer_count.admin_order_field = '_layer_count'
+
+    def sync_state_badge(self, obj):
+        return _sync_state_badge(obj)
+    sync_state_badge.short_description = 'Sync state'
+    sync_state_badge.admin_order_field = 'sync_state'
 
     # ------------------------------------------------------------------
     # Save
@@ -893,11 +910,11 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     actions = [clone_store]
     list_display = [
         'name', 'provider_link', 'workspace_link', 'store_type',
-        'host', 'schema', 'geoserver_access_badge', 'layer_count',
+        'host', 'schema', 'sync_state_badge', 'geoserver_access_badge', 'layer_count',
     ]
-    list_filter = ['store_type', 'workspace__geodata_engine', 'workspace', NoCredentialFilter]
+    list_filter = ['sync_state', 'store_type', 'workspace__geodata_engine', 'workspace', NoCredentialFilter]
     search_fields = ['name', 'workspace__name', 'host', 'schema']
-    readonly_fields = ['provider_link', 'id', 'created_at', 'updated_at']
+    readonly_fields = ['provider_link', 'id', 'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash', 'created_at', 'updated_at']
     inlines = [LayerInline]
     list_per_page = 25
     change_form_template = 'admin/geodata_providers/store/change_form.html'
@@ -916,7 +933,7 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
             'description': 'Required for file-based and GeoTIFF stores.',
         }),
         ('Metadata', {
-            'fields': ('id', 'created_at', 'updated_at'),
+            'fields': ('id', 'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash', 'created_at', 'updated_at'),
             'classes': ('collapse',),
         }),
     )
@@ -1020,6 +1037,11 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     layer_count.short_description = 'Layers'
     layer_count.admin_order_field = '_layer_count'
 
+    def sync_state_badge(self, obj):
+        return _sync_state_badge(obj)
+    sync_state_badge.short_description = 'Sync state'
+    sync_state_badge.admin_order_field = 'sync_state'
+
     # ------------------------------------------------------------------
     # Save — preserve existing encrypted password if submitted blank (3.2.4)
     # ------------------------------------------------------------------
@@ -1107,14 +1129,15 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     change_form_template = 'admin/geodata_providers/layer/change_form.html'
     list_display = [
         'name', 'title', 'workspace_link', 'store_name',
-        'geometry_type', 'srid', 'default_style_name', 'publishing_state_badge', 'is_public',
+        'geometry_type', 'srid', 'default_style_name', 'publishing_state_badge', 'sync_state_badge', 'is_public',
     ]
-    list_filter = ['publishing_state', 'geometry_type', 'workspace__geodata_engine', 'workspace', 'store', 'is_public']
+    list_filter = ['publishing_state', 'sync_state', 'geometry_type', 'workspace__geodata_engine', 'workspace', 'store', 'is_public']
     search_fields = ['name', 'title', 'table_name', 'workspace__name']
     readonly_fields = [
         'id', 'name', 'provider_link', 'table_name', 'geometry_column', 'geometry_type',
         'workspace', 'store', 'created_at', 'updated_at', 'publishing_state',
-        'published_url', 'publishing_error', 'default_style_display',
+        'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier',
+        'remote_hash', 'published_url', 'publishing_error', 'default_style_display',
         'additional_styles_display', 'available_styles_display', 'selected_styles_display',
     ]
     inlines = [LayerStyleInline]
@@ -1132,6 +1155,9 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         }),
         ('Visibility', {
             'fields': ('publishing_state', 'is_public', 'published_url', 'publishing_error'),
+        }),
+        ('Sync Result', {
+            'fields': ('sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash'),
         }),
         ('Layer Settings', {
             'fields': (
@@ -1211,6 +1237,11 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         )
     publishing_state_badge.short_description = 'State'
     publishing_state_badge.admin_order_field = 'publishing_state'
+
+    def sync_state_badge(self, obj):
+        return _sync_state_badge(obj)
+    sync_state_badge.short_description = 'Sync state'
+    sync_state_badge.admin_order_field = 'sync_state'
 
     # ------------------------------------------------------------------
     # Queryset
@@ -1389,14 +1420,15 @@ class StyleAdmin(admin.ModelAdmin):
     change_form_template = 'admin/geodata_providers/style/change_form.html'
     list_display = [
         'name', 'title', 'format', 'provider_link', 'workspace_link',
-        'validation_state_badge', 'remote_state_badge', 'layer_link_count', 'updated_at',
+        'validation_state_badge', 'remote_state_badge', 'sync_state_badge', 'layer_link_count', 'updated_at',
     ]
-    list_filter = ['format', 'validation_state', 'remote_state', 'geodata_engine', 'workspace']
+    list_filter = ['format', 'validation_state', 'remote_state', 'sync_state', 'geodata_engine', 'workspace']
     search_fields = ['name', 'title', 'description', 'file_name']
     readonly_fields = [
         'id', 'content_hash', 'validation_state_badge', 'validation_errors_display',
         'remote_state_badge', 'remote_error_display', 'remote_uploaded_at',
-        'remote_verified_at', 'created_at', 'updated_at',
+        'remote_verified_at', 'sync_state_badge', 'last_sync_at', 'last_sync_error',
+        'remote_identifier', 'remote_hash', 'created_at', 'updated_at',
     ]
     list_per_page = 25
 
@@ -1412,6 +1444,9 @@ class StyleAdmin(admin.ModelAdmin):
         }),
         ('Remote Result', {
             'fields': ('remote_state_badge', 'remote_error_display', 'remote_uploaded_at', 'remote_verified_at'),
+        }),
+        ('Sync Result', {
+            'fields': ('sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash'),
         }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),
@@ -1492,6 +1527,11 @@ class StyleAdmin(admin.ModelAdmin):
         return format_html('<strong style="color:{};">{}</strong>', colour, obj.remote_state)
     remote_state_badge.short_description = 'Remote state'
 
+    def sync_state_badge(self, obj):
+        return _sync_state_badge(obj)
+    sync_state_badge.short_description = 'Sync state'
+    sync_state_badge.admin_order_field = 'sync_state'
+
     def remote_error_display(self, obj):
         return obj.remote_error or '—'
     remote_error_display.short_description = 'Remote error'
@@ -1500,7 +1540,9 @@ class StyleAdmin(admin.ModelAdmin):
         if obj.geodata_engine.engine_type != 'geoserver':
             obj.remote_state = 'UNSUPPORTED'
             obj.remote_error = 'Remote style sync is not supported by this provider type.'
-            obj.save(update_fields=['remote_state', 'remote_error', 'updated_at'])
+            obj.sync_state = 'UNKNOWN'
+            obj.last_sync_error = obj.remote_error
+            obj.save(update_fields=['remote_state', 'remote_error', 'sync_state', 'last_sync_error', 'updated_at'])
             self.message_user(
                 request,
                 'Style validated and saved locally. Remote style sync is unsupported for this provider.',
@@ -1517,20 +1559,32 @@ class StyleAdmin(admin.ModelAdmin):
             overwrite=True,
         )
         if result.get('success'):
+            now = timezone.now()
             obj.remote_state = 'SYNCED'
             obj.remote_error = ''
-            obj.remote_uploaded_at = timezone.now()
-            obj.remote_verified_at = timezone.now()
+            obj.remote_uploaded_at = now
+            obj.remote_verified_at = now
+            obj.sync_state = 'SYNCED'
+            obj.last_sync_at = now
+            obj.last_sync_error = ''
+            obj.remote_identifier = obj.qualified_name
             obj.save(update_fields=[
                 'remote_state', 'remote_error', 'remote_uploaded_at',
-                'remote_verified_at', 'updated_at',
+                'remote_verified_at', 'sync_state', 'last_sync_at',
+                'last_sync_error', 'remote_identifier', 'updated_at',
             ])
             self.message_user(request, 'Style uploaded to GeoServer and verified.', messages.SUCCESS)
             return
 
         obj.remote_state = 'FAILED'
         obj.remote_error = result.get('error') or result.get('message', 'Remote sync failed.')
-        obj.save(update_fields=['remote_state', 'remote_error', 'updated_at'])
+        obj.sync_state = 'FAILED'
+        obj.last_sync_at = timezone.now()
+        obj.last_sync_error = obj.remote_error
+        obj.save(update_fields=[
+            'remote_state', 'remote_error', 'sync_state', 'last_sync_at',
+            'last_sync_error', 'updated_at',
+        ])
         self.message_user(
             request,
             f"Style saved locally, but GeoServer sync failed: {obj.remote_error}",
