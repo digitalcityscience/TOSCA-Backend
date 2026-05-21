@@ -37,6 +37,92 @@ The root Makefile resolves compose files as:
 - `dev` -> `docker-compose-dev.yml`
 - `prod` -> `docker-compose-prod.yml` if present, otherwise `docker-compose.yml`
 
+## Production Docker Compose
+
+The production stack is defined in `docker-compose-prod.yml`. It includes the Django API deployment plus the production GeoServer image published from GitHub Container Registry.
+
+Services:
+
+- `db`: PostgreSQL/PostGIS for Django.
+- `geoserver`: GeoServer from `ghcr.io/digitalcityscience/tosca-geoserver:latest`. Production always pulls this published image; it does not build from `docker/geoserver_docker`.
+- `django`: Gunicorn-backed Django API. Uploaded media is stored under `/app/media`; collected static files are stored under `/app/staticfiles`.
+- `web`: SPA Nginx container. Use `WEB_IMAGE` to point to the production image that contains the built SPA assets.
+- `nginx`: public reverse proxy. It routes `/api/`, `/admin/`, and `/accounts/` to Django, `/geoserver/` to GeoServer, routes the SPA shell to `web`, and serves `/media/` and `/static/` directly.
+
+Shared named volumes:
+
+- `media_files`: mounted at `/app/media` in Django and `/usr/share/nginx/media` in Nginx-based containers.
+- `static_files`: mounted at `/app/staticfiles` in Django and `/usr/share/nginx/staticfiles` in Nginx-based containers.
+
+The production GeoServer service is equivalent to:
+
+```bash
+docker pull ghcr.io/digitalcityscience/tosca-geoserver:latest
+```
+
+`docker-compose-prod.yml` sets `pull_policy: always` for this service so each production deploy checks the published latest image.
+
+Required Django media/static settings for production:
+
+```dotenv
+DJANGO_STATIC_URL=/static/
+DJANGO_STATIC_ROOT=/app/staticfiles
+DJANGO_MEDIA_URL=/media/
+DJANGO_MEDIA_ROOT=/app/media
+```
+
+Start production with:
+
+```bash
+cp .env.example .env.prod
+make set-env ENV=prod
+make up
+```
+
+In a real deployment, set `WEB_IMAGE` to the immutable image produced by the SPA pipeline, for example:
+
+```dotenv
+WEB_IMAGE=registry.example.com/tosca-web:2026-05-21
+```
+
+If you need to test a local SPA build, create a temporary compose override that mounts your built `dist` directory into `/usr/share/nginx/html` for the `web` service. Do not use that pattern as the normal production deployment method.
+
+## SPA Integration And Media/Static Serving
+
+The SPA must load uploaded media and collected static assets from production Nginx, not directly from the Django/Gunicorn container. Django writes files to `/app/media` and `/app/staticfiles`; Nginx serves the same files through shared Docker named volumes:
+
+```text
+Django /app/media        -> media_files  -> Nginx /usr/share/nginx/media       -> https://yourdomain.com/media/...
+Django /app/staticfiles  -> static_files -> Nginx /usr/share/nginx/staticfiles -> https://yourdomain.com/static/...
+```
+
+The Nginx configs use `alias` for these paths:
+
+```nginx
+location /media/ {
+    alias /usr/share/nginx/media/;
+}
+
+location /static/ {
+    alias /usr/share/nginx/staticfiles/;
+}
+```
+
+Integration scenarios:
+
+- Same domain/host: if the SPA and Django API are served under `https://yourdomain.com`, media URLs returned by the API such as `/media/geocontext/editorjs/image.png` work directly in the browser as `https://yourdomain.com/media/geocontext/editorjs/image.png`.
+- Different host/domain: if the SPA is served from another host, for example `https://app.yourdomain.com`, the public production Nginx that owns `https://yourdomain.com/media/...` must mount the same `media_files` volume and serve it. The SPA should render absolute media URLs such as `https://yourdomain.com/media/geocontext/editorjs/image.png`, or prepend the configured API/public asset base URL to relative `/media/...` paths.
+
+Example flow:
+
+1. A user uploads an image through the Django API.
+2. Django stores the file in `/app/media/geocontext/editorjs/example.png`.
+3. The API returns `/media/geocontext/editorjs/example.png`.
+4. The SPA renders `https://yourdomain.com/media/geocontext/editorjs/example.png`.
+5. Production Nginx serves the file from `/usr/share/nginx/media/geocontext/editorjs/example.png` through the shared `media_files` volume.
+
+The same rule applies to Django static assets collected by `collectstatic`: they are served from `https://yourdomain.com/static/...` by Nginx through the shared `static_files` volume.
+
 ## Start
 
 ```bash
@@ -146,3 +232,9 @@ Full command list:
 ```bash
 make help
 ```
+
+## Sık Sorulan Sorular
+
+### SPA ile media entegrasyonu neden böyle?
+
+Production ortamında Django/Gunicorn dosya sunucusu olarak kullanılmamalıdır. Django upload edilen dosyaları üretir ve diske yazar; tarayıcıya yüksek performanslı, cache edilebilir dosya servisini Nginx yapar. Bu yüzden SPA, media dosyalarını doğrudan Django container'ından değil, production Nginx üzerinden almalıdır. Docker ortamında bunun çalışması için Django'nun yazdığı `/app/media` dizini ile Nginx'in servis ettiği `/usr/share/nginx/media` dizini aynı named volume'a bağlanır. Böylece API'nin döndürdüğü `/media/...` URL'leri hem aynı domain senaryosunda hem de ayrı SPA host senaryosunda tutarlı şekilde çalışır.
