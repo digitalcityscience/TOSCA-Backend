@@ -452,6 +452,16 @@ class CatalogV1ApiTestCase(TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    def test_workspace_layer_list_returns_404_for_inactive_provider_workspace(self):
+        response = self.client.get(
+            reverse(
+                "catalog-v1-workspace-layer-list",
+                kwargs={"workspace_name": "inactive"},
+            )
+        )
+
+        self.assertEqual(response.status_code, 404)
+
     def test_layer_info_returns_frontend_v1_shape(self):
         LayerStyleAssignment.objects.create(
             layer=self.layer,
@@ -651,6 +661,32 @@ class CatalogV1ApiTestCase(TestCase):
                 kwargs={
                     "workspace_name": "hidden",
                     "layer_name": "draft_layer",
+                },
+            )
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_layer_info_returns_404_for_inactive_provider_layer(self):
+        response = self.client.get(
+            reverse(
+                "catalog-v1-layer-info",
+                kwargs={
+                    "workspace_name": "inactive",
+                    "layer_name": "inactive_layer",
+                },
+            )
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_layer_detail_returns_404_for_inactive_provider_layer(self):
+        response = self.client.get(
+            reverse(
+                "catalog-v1-layer-detail",
+                kwargs={
+                    "workspace_name": "inactive",
+                    "layer_name": "inactive_layer",
                 },
             )
         )
