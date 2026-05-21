@@ -1,42 +1,60 @@
-.PHONY: help which-env build up down restart logs rebuild rmvolumes \
+.PHONY: help set-env which-env initialize-project jdbc-settings-activation build up down restart logs rebuild rmvolumes \
 	django-restart django-logs django-cmd django-shell django-migrate django-makemigrations \
 	django-test django-test-unit django-test-integration test-geoserver \
 	django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean \
-	sync-django-geoengine smoke-test
+	sync-django-geoengine smoke-test test test-integration
 
 # -------------------------------------------------
 # ENV selection (DEFAULT = dev) or prod
 # -------------------------------------------------
+ENV_CONFIG := .make.env
+-include $(ENV_CONFIG)
+
 ENV ?= dev
 
 ENV_FILE := .env.$(ENV)
 COMPOSE_FILE := docker-compose-$(ENV).yml
+DEV_COMPOSE_FILE := docker-compose-dev.yml
+PROD_COMPOSE_FILE_PRIMARY := docker-compose-prod.yml
+PROD_COMPOSE_FILE_FALLBACK := docker-compose.yml
 
 # Safety: allow only dev / prod
 ifeq ($(ENV),dev)
-  COMPOSE_FILE := docker-compose-dev.yml
+	COMPOSE_FILE := $(DEV_COMPOSE_FILE)
 endif
 
 ifeq ($(ENV),prod)
-  COMPOSE_FILE := docker-compose-prod.yml
+	ifneq ("$(wildcard $(PROD_COMPOSE_FILE_PRIMARY))","")
+		COMPOSE_FILE := $(PROD_COMPOSE_FILE_PRIMARY)
+	else
+		COMPOSE_FILE := $(PROD_COMPOSE_FILE_FALLBACK)
+	endif
+endif
+
+ifneq ($(filter $(ENV),dev prod),$(ENV))
+  $(error ❌ Invalid ENV=$(ENV). Allowed values: dev, prod)
 endif
 
 # -------------------------------------------------
 # Load env file
 # -------------------------------------------------
+ifeq ($(filter set-env,$(MAKECMDGOALS)),)
 ifneq ("$(wildcard $(ENV_FILE))","")
   include $(ENV_FILE)
   export $(shell sed -n 's/^\s*\([A-Za-z_][A-Za-z0-9_]*\)\s*=.*/\1/p' $(ENV_FILE))
 else
   $(error ❌ Missing $(ENV_FILE))
 endif
+endif
 
 # -------------------------------------------------
 # Check compose file
 # -------------------------------------------------
+ifeq ($(filter set-env,$(MAKECMDGOALS)),)
 ifneq ("$(wildcard $(COMPOSE_FILE))","")
 else
   $(error ❌ Missing $(COMPOSE_FILE))
+endif
 endif
 
 # -------------------------------------------------
@@ -93,12 +111,17 @@ help:
 	@echo "$(COLOR_GREEN)Project Initialization:$(COLOR_RESET)"
 	@echo "  make initialize-project - Build, start all services, run migrations, restart Django"
 	@echo "  make jdbc-settings-activation - Run GeoServer JDBC settings activation script"
-	@echo "$(COLOR_GREEN)Environment:$(COLOR_RESET) ENV=$(ENV)"
+	@echo ""
+	@echo "$(COLOR_GREEN)Environment Selection:$(COLOR_RESET)"
+	@echo "  make set-env ENV=dev    - Persist dev environment for future make commands"
+	@echo "  make set-env ENV=prod   - Persist prod environment for future make commands"
+	@echo "  make which-env          - Show active environment and compose file"
+	@echo "$(COLOR_GREEN)Environment:$(COLOR_RESET) ENV=$(ENV) | ENV_FILE=$(ENV_FILE) | COMPOSE_FILE=$(COMPOSE_FILE)"
 	@echo ""
 	@echo "  make test                     # Run pytest suite excluding integration tests"
 	@echo "  make test-integration         # Run integration tests only"
 	@echo "  make test APP=authentication  # Run tests for a single app"
-	@echo "  make test PATH=path/to/tests  # Run tests for a specific path"
+	@echo "  make test TEST_PATH=path/to/tests  # Run tests for a specific path"
 	@echo ""
 
 	
@@ -108,7 +131,6 @@ help:
 # Builds all Docker images, starts all services, runs Django migrations, and restarts only the Django container.
 initialize-project: which-env
 	@echo "$(COLOR_GREEN)🚀 Initializing project: build, up, migrate, restart Django...$(COLOR_RESET)"
-	cp docker-compose.yml $(COMPOSE_FILE)
 	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) build
 	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) up -d
 	@echo "$(COLOR_BLUE)📦 Running Django migrations...$(COLOR_RESET)"
@@ -118,22 +140,38 @@ initialize-project: which-env
 	@echo "$(COLOR_GREEN)✅ Project initialized!$(COLOR_RESET)"
 	@echo ""
 	@sleep 2
-	@echo "$(COLOR_RED)📋 Please initialize PostgreSQL schemas and roles before proceeding. 
-	@echo "make jdbc-settings-activation"$(COLOR_RESET)"
+	@echo "$(COLOR_RED)📋 Please initialize PostgreSQL schemas and roles before proceeding.$(COLOR_RESET)"
+	@echo "  make jdbc-settings-activation"
 
 # -------------------------------------------------
 # Run GeoServer JDBC settings activation script
 jdbc-settings-activation: which-env
-	@echo "Activating GeoServer JDBC settings with ENV_FILE=$(ENV_FILE)"
+	@echo "$(COLOR_BLUE)⚙️  Activating GeoServer JDBC settings (ENV_FILE=$(ENV_FILE))...$(COLOR_RESET)"
 	@cd docker/geoserver_docker && \
 	ENV_FILE="$(abspath $(ENV_FILE))" \
 	./scripts/activate_jdbcS_settings.sh
-	@echo "$(COLOR_GREEN)✅ If you want to see the all system log " make logs" only for django "make django-logs"$(COLOR_RESET)"
+	@echo "$(COLOR_GREEN)✅ Done. For all logs: make logs | For Django only: make django-logs$(COLOR_RESET)"
 
 
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
+set-env:
+	@if [ "$(ENV)" != "dev" ] && [ "$(ENV)" != "prod" ]; then \
+		echo "$(COLOR_RED)❌ Invalid ENV=$(ENV). Allowed values: dev, prod$(COLOR_RESET)"; \
+		exit 1; \
+	fi
+	@if [ ! -f ".env.$(ENV)" ]; then \
+		echo "$(COLOR_RED)❌ Missing .env.$(ENV)$(COLOR_RESET)"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(COMPOSE_FILE)" ]; then \
+		echo "$(COLOR_RED)❌ Missing $(COMPOSE_FILE)$(COLOR_RESET)"; \
+		exit 1; \
+	fi
+	@printf "ENV := %s\n" "$(ENV)" > $(ENV_CONFIG)
+	@echo "$(COLOR_GREEN)✅ Saved ENV=$(ENV) in $(ENV_CONFIG)$(COLOR_RESET)"
+
 which-env:
 	@echo "🔧 ENV=$(ENV)"
 	@echo "📄 ENV_FILE=$(ENV_FILE)"
@@ -239,20 +277,12 @@ rmvolumes: which-env
 # Pytest via uv inside container
 # Usage:
 #   make test
-#   make test app=authentication
-#   make test path=tosca_api/apps/authentication/tests
+#   make test APP=authentication
+#   make test TEST_PATH=tosca_api/apps/authentication/tests
 # -------------------------------------------------
-test:
-	@if [ -n "$(app)" ]; then \
-		docker exec -it tosca-django bash -lc 'APP_PATH=tosca_api/apps/$(app); APP_PKG=tosca_api.apps.$(app); if [ -d "$$APP_PATH/tests" ]; then TARGET="$$APP_PKG.tests"; else TARGET="$$APP_PKG"; fi; DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest --pyargs -m "not integration" --ds=tosca_api.settings.test "$$TARGET"'; \
-	elif [ -n "$(path)" ]; then \
-		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test $(path)"; \
-	else \
-		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test"; \
-	fi
+test: django-test
 
-test-integration:
-	docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m integration --ds=tosca_api.settings.test"
+test-integration: django-test-integration
 
 # -------------------------------------------------
 # Django test commands
@@ -264,24 +294,27 @@ test-integration:
 # -------------------------------------------------
 django-test: which-env
 	@echo "$(COLOR_BLUE)🧪 Running Django pytest suite without integration tests...$(COLOR_RESET)"
-	@if [ -n "$(app)" ]; then \
-		APP_PATH=tosca_api/apps/$(app); \
-		docker exec -it tosca-django bash -lc 'APP_PATH=tosca_api/apps/$(app); APP_PKG=tosca_api.apps.$(app); TARGET=$$([ -d "$$APP_PATH/tests" ] && echo "$$APP_PKG.tests" || echo "$$APP_PKG"); DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest --pyargs -m "not integration" --ds=tosca_api.settings.test "$$TARGET"'; \
+	@if [ -n "$(APP)" ] || [ -n "$(app)" ]; then \
+		APP_NAME=$${APP:-$(app)}; \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T django bash -lc "APP_PATH=tosca_api/apps/$$APP_NAME; APP_PKG=tosca_api.apps.$$APP_NAME; TARGET=\$\$([ -d \"\$\$APP_PATH/tests\" ] && echo \"\$\$APP_PKG.tests\" || echo \"\$\$APP_PKG\"); DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest --pyargs -m 'not integration' --ds=tosca_api.settings.test \"\$\$TARGET\""; \
+	elif [ -n "$(TEST_PATH)" ] || [ -n "$(path)" ]; then \
+		TEST_PATH_VALUE=$${TEST_PATH:-$(path)}; \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test $$TEST_PATH_VALUE"; \
 	elif [ -n "$(test)" ]; then \
-		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test $(test)"; \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test $(test)"; \
 	else \
-		docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test"; \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test"; \
 	fi
 
 # Run unit tests with mocks (fast, no external dependencies)
 django-test-unit: which-env
 	@echo "$(COLOR_BLUE)⚡ Running unit tests without integration markers...$(COLOR_RESET)"
-	docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test -v --tb=short"
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m 'not integration' --ds=tosca_api.settings.test -v --tb=short"
 
 # Run integration tests with real GeoServer (slower, needs services)
 django-test-integration: which-env
 	@echo "$(COLOR_BLUE)🌐 Running integration tests (real services)...$(COLOR_RESET)"
-	docker exec -it tosca-django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m integration --ds=tosca_api.settings.test -v"
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T django bash -lc "DJANGO_SETTINGS_MODULE=tosca_api.settings.test uv run pytest -m integration --ds=tosca_api.settings.test -v"
 
 # Quick alias for integration test
 test-geoserver: django-test-integration

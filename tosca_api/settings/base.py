@@ -167,10 +167,10 @@ USE_I18N = True
 USE_TZ = True
 
 STATICFILES_DIRS = [ROOT_DIR / "static"]
-STATIC_URL = "static/"
-STATIC_ROOT = ROOT_DIR / "staticfiles"
-MEDIA_URL = "/media/"
-MEDIA_ROOT = ROOT_DIR / "media"
+STATIC_URL = env("DJANGO_STATIC_URL", default="/static/")
+STATIC_ROOT = Path(env("DJANGO_STATIC_ROOT", default=os.fspath(ROOT_DIR / "staticfiles")))
+MEDIA_URL = env("DJANGO_MEDIA_URL", default="/media/")
+MEDIA_ROOT = Path(env("DJANGO_MEDIA_ROOT", default=os.fspath(ROOT_DIR / "media")))
 
 # Soft cap; remove or relax once UX validates.
 GEOCONTEXT_MAX_INLINE_IMAGES = 5
@@ -272,8 +272,14 @@ KEYCLOAK_JWKS_URL = env("KEYCLOAK_JWKS_URL", default=f"{KEYCLOAK_SERVER_URL}real
 KEYCLOAK_ISSUER = env("KEYCLOAK_ISSUER", default=f"{KEYCLOAK_SERVER_URL}realms/{KEYCLOAK_REALM}")
 
 # Allow tokens from multiple clients (geoserver, tosca-web, mobile-app)
-ALLOWED_TOKEN_AUDIENCES = ["django-dev", "geoserver", "account"]
-ALLOWED_TOKEN_CLIENTS = ["django-dev", "geoserver", "tosca-web"]
+ALLOWED_TOKEN_AUDIENCES = env.list(
+    "ALLOWED_TOKEN_AUDIENCES",
+    default=["django-dev", "geoserver", "account"],
+)
+ALLOWED_TOKEN_CLIENTS = env.list(
+    "ALLOWED_TOKEN_CLIENTS",
+    default=["django-dev", "geoserver", "tosca-web"],
+)
 
 SOCIALACCOUNT_PROVIDERS = {
     "openid_connect": {

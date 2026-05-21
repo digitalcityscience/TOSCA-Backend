@@ -1,0 +1,211 @@
+# Production Docker Compose for PostgreSQL/PostGIS, GeoServer, Django API, SPA web, and public Nginx.
+# Production GeoServer always uses the CI-published GitHub Container Registry image.
+
+services:
+  # PostgreSQL/PostGIS database used by the Django API.
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: tosca-db
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      POSTGRES_DB: ${PG_DATABASE}
+      POSTGRES_USER: ${PG_SUPERUSER}
+      POSTGRES_PASSWORD: ${PG_SUPERPASS}
+      PG_API_USER: ${PG_API_USER}
+      PG_API_PASSWORD: ${PG_API_PASSWORD}
+      PG_GS_USER: ${PG_GS_USER}
+      PG_GS_PASSWORD: ${PG_GS_PASSWORD}
+      PG_SCHEMA_API: ${PG_SCHEMA_API}
+      PG_SCHEMA_GEOSERVER: ${PG_SCHEMA_GEOSERVER}
+      PG_SCHEMA_GIS: ${PG_SCHEMA_GIS}
+      PG_SCHEMA_JDBCCONF: ${PG_SCHEMA_JDBCCONF}
+    volumes:
+      # Persist PostgreSQL data across container restarts/redeployments.
+      - prod_pg_data:/var/lib/postgresql/data
+      # Initialize DB users/schemas from the Django API repository only.
+      - ./docker/postgis:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -h 127.0.0.1 -p 5432"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # GeoServer in production is always pulled from GHCR; no local submodule build is used here.
+  geoserver:
+    image: ghcr.io/digitalcityscience/tosca-geoserver:latest
+    pull_policy: always
+    container_name: tosca-geoserver-prod
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      GEOSERVER_DATA_DIR: ${GEOSERVER_DATA_DIR:-/geoserver_data/data}
+      GEOSERVER_ADMIN_USER: ${GEOSERVER_ADMIN_USER}
+      GEOSERVER_ADMIN_PASSWORD: ${GEOSERVER_ADMIN_PASSWORD}
+      GEOSERVER_DB_HOST: db
+      GEOSERVER_DB_PORT: 5432
+      GEOSERVER_DB_NAME: ${PG_DATABASE}
+      GEOSERVER_DB_USER: ${PG_GS_USER}
+      GEOSERVER_DB_PASSWORD: ${PG_GS_PASSWORD}
+      GEOSERVER_DB_SCHEMA: ${PG_SCHEMA_GEOSERVER}
+    ports:
+      - "${GEOSERVER_HOST_PORT:-8585}:8080"
+    volumes:
+      # Persistent GeoServer data directory used by the published production image.
+      - geoserver_data:/geoserver_data/data
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/geoserver/web"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  # Django API backend. It writes uploads to /app/media and collectstatic output to /app/staticfiles.
+  django:
+    build:
+      context: .
+      dockerfile: docker/django/Dockerfile.prod
+    image: ${DJANGO_IMAGE:-tosca-django-api:prod}
+    container_name: tosca-django
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      ENV: prod
+      ENV_TYPE: production
+      DJANGO_SETTINGS_MODULE: tosca_api.settings.${ENV_TYPE}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY}
+      DJANGO_DEBUG: ${DJANGO_DEBUG}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      DJANGO_CORS_ALLOWED_ORIGINS: ${DJANGO_CORS_ALLOWED_ORIGINS}
+      DJANGO_CORS_ALLOW_CREDENTIALS: ${DJANGO_CORS_ALLOW_CREDENTIALS:-true}
+      DJANGO_HEALTHCHECK_HOST: ${DJANGO_HEALTHCHECK_HOST:-localhost}
+      DATABASE_URL: postgresql://${PG_API_USER}:${PG_API_PASSWORD}@db:5432/${PG_DATABASE}
+      PG_HOST: db
+      PG_DATABASE: ${PG_DATABASE}
+      PG_API_USER: ${PG_API_USER}
+      PG_API_PASSWORD: ${PG_API_PASSWORD}
+      PG_DOCKER_PORT: 5432
+      PG_SCHEMA_API: ${PG_SCHEMA_API}
+      PG_SCHEMA_GIS: ${PG_SCHEMA_GIS}
+      DJANGO_STATIC_URL: /static/
+      DJANGO_STATIC_ROOT: /app/staticfiles
+      DJANGO_MEDIA_URL: /media/
+      DJANGO_MEDIA_ROOT: /app/media
+      INTERNAL_API_BASE_URL: ${INTERNAL_API_BASE_URL:-http://localhost:8000/api/v1/providers/provider}
+      KEYCLOAK_SERVER_URL: ${KEYCLOAK_SERVER_URL}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+      KEYCLOAK_JWKS_URL: ${KEYCLOAK_JWKS_URL}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER}
+      ALLOWED_TOKEN_AUDIENCES: ${ALLOWED_TOKEN_AUDIENCES}
+      ALLOWED_TOKEN_CLIENTS: ${ALLOWED_TOKEN_CLIENTS}
+      GEOSERVER_HOST: ${GEOSERVER_HOST}
+      GEOSERVER_PORT: ${GEOSERVER_PORT}
+      GEOSERVER_ADMIN_USER: ${GEOSERVER_ADMIN_USER}
+      GEOSERVER_ADMIN_PASSWORD: ${GEOSERVER_ADMIN_PASSWORD}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-3}
+      GUNICORN_THREADS: ${GUNICORN_THREADS:-2}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
+      RUN_SETUP_DEFAULT_ENGINE: ${RUN_SETUP_DEFAULT_ENGINE:-true}
+    volumes:
+      # Shared upload volume. Django writes files here; Nginx/web containers serve them read-only.
+      - media_files:/app/media
+      # Shared collectstatic volume. Django writes collectstatic output here; Nginx/web containers serve it read-only.
+      - static_files:/app/staticfiles
+      # Persist Django log files independently from the application image.
+      - prod_django_logs:/app/logs
+    ports:
+      - "${DJANGO_PORT}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      geoserver:
+        condition: service_healthy
+    entrypoint: bash docker/django/entrypoint.prod.sh
+    command: >
+      uv run gunicorn
+      --bind 0.0.0.0:8000
+      --workers ${GUNICORN_WORKERS:-3}
+      --threads ${GUNICORN_THREADS:-2}
+      --timeout ${GUNICORN_TIMEOUT:-120}
+      tosca_api.wsgi:application
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -H \"Host: $${DJANGO_HEALTHCHECK_HOST:-localhost}\" http://127.0.0.1:8000/ >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # SPA web container. Use WEB_IMAGE for a production image that already contains the built SPA.
+  # It also mounts the shared media/static volumes so a same-host SPA can serve returned URLs directly.
+  web:
+    image: ${WEB_IMAGE:-nginx:1.27-alpine}
+    container_name: tosca-prod-web
+    environment:
+      NGINX_ENTRYPOINT_QUIET_LOGS: "1"
+    volumes:
+      # SPA Nginx config with /media and /static aliases.
+      - ./docker/web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Shared upload volume mounted read-only for browser access at /media/...
+      - media_files:/usr/share/nginx/media:ro
+      # Shared collectstatic volume mounted read-only for browser access at /static/...
+      - static_files:/usr/share/nginx/staticfiles:ro
+    depends_on:
+      django:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # Public Nginx reverse proxy. It terminates the single public HTTP entry point.
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: tosca-prod-nginx
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+    environment:
+      NGINX_ENTRYPOINT_QUIET_LOGS: "1"
+    volumes:
+      # Reverse proxy config for API/admin/web plus /media and /static aliases.
+      - ./docker/nginx/prod.conf:/etc/nginx/conf.d/default.conf:ro
+      # Shared upload volume mounted read-only and served at /media/...
+      - media_files:/usr/share/nginx/media:ro
+      # Shared collectstatic volume mounted read-only and served at /static/...
+      - static_files:/usr/share/nginx/staticfiles:ro
+    depends_on:
+      django:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  # PostgreSQL persistent data volume.
+  prod_pg_data:
+  # GeoServer persistent data volume for the GHCR production image.
+  geoserver_data:
+  # User-uploaded media shared between Django and Nginx/web containers.
+  media_files:
+  # Django collectstatic output shared between Django and Nginx/web containers.
+  static_files:
+  # Django production logs.
+  prod_django_logs:
