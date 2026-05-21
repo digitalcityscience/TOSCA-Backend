@@ -32,6 +32,10 @@ class GeoServerSyncService:
         Always runs an integrity cleanup first to strip legacy 'workspace:name'
         prefixes from Layer records created before the client.py patch.
         """
+        if not self.engine.is_active:
+            logger.info("Skipping sync for inactive engine: %s", self.engine.name)
+            return self._inactive_sync_result()
+
         logger.info(f"Starting full sync for engine: {self.engine.name}")
 
         # ── Integrity cleanup: strip ':' prefix from any corrupted Layer names ──
@@ -92,9 +96,34 @@ class GeoServerSyncService:
             results['success'] = False
             results['error'] = str(e)
             return results
+
+    def _inactive_sync_result(self) -> Dict:
+        return {
+            'workspaces': self._inactive_section_result(),
+            'stores': self._inactive_section_result(),
+            'styles': self._inactive_section_result(),
+            'layers': self._inactive_section_result(),
+            'success': True,
+            'skipped': True,
+            'reason': f"Engine '{self.engine.name}' is inactive.",
+        }
+
+    def _inactive_section_result(self) -> Dict:
+        return {
+            'synced': 0,
+            'created': 0,
+            'deleted': 0,
+            'errors': [],
+            'success': True,
+            'skipped': True,
+            'reason': f"Engine '{self.engine.name}' is inactive.",
+        }
     
     def sync_workspaces(self, created_by: User) -> Dict:
         """Sync workspaces from GeoServer to Django - includes DELETE operations"""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
         
         try:
@@ -159,6 +188,9 @@ class GeoServerSyncService:
 
     def sync_all_stores(self, created_by: User) -> Dict:
         """Sync all stores from GeoServer"""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
         
         # Get all Django workspaces for this engine
@@ -175,6 +207,9 @@ class GeoServerSyncService:
 
     def sync_all_styles(self, created_by: User) -> Dict:
         """Sync global and workspace-scoped GeoServer styles to Django."""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
 
         global_results = self.sync_styles_for_scope(None, created_by)
@@ -194,6 +229,9 @@ class GeoServerSyncService:
 
     def sync_styles_for_scope(self, workspace: Workspace | None, created_by: User) -> Dict:
         """Sync styles for a global provider scope or a single workspace scope."""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
 
         try:
@@ -273,6 +311,9 @@ class GeoServerSyncService:
     
     def sync_stores_for_workspace(self, workspace: Workspace, created_by: User) -> Dict:
         """Sync stores for a specific workspace - includes DELETE operations"""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
         
         try:
@@ -370,6 +411,9 @@ class GeoServerSyncService:
 
     def sync_all_layers(self, created_by: User) -> Dict:
         """Sync all layers from GeoServer"""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
         
         # Get all Django workspaces for this engine
@@ -386,6 +430,9 @@ class GeoServerSyncService:
     
     def sync_layers_for_workspace(self, workspace: Workspace, created_by: User) -> Dict:
         """Sync layers for a specific workspace - includes DELETE operations"""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
         
         try:
@@ -629,6 +676,14 @@ class GeoServerSyncService:
         Pattern: check exists → create if missing → verify → return result.
         Does NOT modify Django state — GeoServer is the destination here.
         """
+        if not self.engine.is_active:
+            return {
+                'success': True,
+                'workspace': workspace.name,
+                'skipped': True,
+                'reason': f"Engine '{self.engine.name}' is inactive.",
+            }
+
         result = {'success': False, 'workspace': workspace.name}
 
         try:
@@ -669,6 +724,16 @@ class GeoServerSyncService:
         Push all Django workspaces for this engine to GeoServer.
         Returns aggregate results.
         """
+        if not self.engine.is_active:
+            return {
+                'pushed': 0,
+                'already_exists': 0,
+                'errors': [],
+                'success': True,
+                'skipped': True,
+                'reason': f"Engine '{self.engine.name}' is inactive.",
+            }
+
         results = {'pushed': 0, 'already_exists': 0, 'errors': [], 'success': True}
         workspaces = Workspace.objects.filter(geodata_engine=self.engine)
 

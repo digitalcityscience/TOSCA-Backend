@@ -137,6 +137,9 @@ class GeodataEngineService:
 
     @classmethod
     def sync_engine(cls, engine: GeodataEngine, *, user) -> dict:
+        if not engine.is_active:
+            return cls._inactive_sync_skipped_result(engine)
+
         service = EngineClientFactory.create_sync_service(engine)
         result = service.sync_all_resources(created_by=user)
         result['db_workspace_count'] = Workspace.objects.filter(geodata_engine=engine).count()
@@ -294,6 +297,18 @@ class GeodataEngineService:
     @staticmethod
     def _sync_skipped_result() -> dict:
         return {'success': None, 'skipped': True, 'reason': 'Sync not requested'}
+
+    @staticmethod
+    def _inactive_sync_skipped_result(engine: GeodataEngine) -> dict:
+        return {
+            'success': True,
+            'skipped': True,
+            'reason': f"Engine '{engine.name}' is inactive.",
+            'db_workspace_count': Workspace.objects.filter(geodata_engine=engine).count(),
+            'db_store_count': Store.objects.filter(workspace__geodata_engine=engine).count(),
+            'db_style_count': Style.objects.filter(geodata_engine=engine).count(),
+            'db_layer_count': Layer.objects.filter(workspace__geodata_engine=engine).count(),
+        }
 
     @classmethod
     def _sync_after_save(cls, engine: GeodataEngine, *, user, trigger_sync: bool) -> dict:

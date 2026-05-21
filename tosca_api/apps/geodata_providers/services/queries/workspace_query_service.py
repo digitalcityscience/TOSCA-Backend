@@ -9,23 +9,23 @@ class WorkspaceQueryService:
     VISIBLE_LAYER_FILTER = Q(is_public=True, publishing_state="PUBLISHED")
 
     @classmethod
-    def get_workspace_detail(cls, *, provider_id, workspace_id) -> dict:
-        workspace = cls._base_queryset().get(
+    def get_workspace_detail(cls, *, provider_id, workspace_id, include_inactive: bool = False) -> dict:
+        workspace = cls._base_queryset(include_inactive=include_inactive).get(
             geodata_engine_id=provider_id,
             id=workspace_id,
         )
         return cls._serialize_workspace_detail(workspace)
 
     @classmethod
-    def list_provider_workspaces(cls, *, provider_id) -> list[dict]:
-        workspaces = cls._base_queryset().filter(geodata_engine_id=provider_id)
+    def list_provider_workspaces(cls, *, provider_id, include_inactive: bool = False) -> list[dict]:
+        workspaces = cls._base_queryset(include_inactive=include_inactive).filter(geodata_engine_id=provider_id)
         return [cls._serialize_workspace_summary(workspace) for workspace in workspaces]
 
     @classmethod
-    def _base_queryset(cls) -> QuerySet[Workspace]:
+    def _base_queryset(cls, *, include_inactive: bool = False) -> QuerySet[Workspace]:
         store_queryset = Store.objects.order_by("name")
         layer_queryset = cls._visible_layer_queryset()
-        return (
+        queryset = (
             Workspace.objects.select_related("geodata_engine")
             .annotate(
                 store_count=Count(
@@ -41,6 +41,9 @@ class WorkspaceQueryService:
             )
             .order_by("name")
         )
+        if not include_inactive:
+            queryset = queryset.filter(geodata_engine__is_active=True)
+        return queryset
 
     @classmethod
     def _serialize_workspace_detail(cls, workspace: Workspace) -> dict:

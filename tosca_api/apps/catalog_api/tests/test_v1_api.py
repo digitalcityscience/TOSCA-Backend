@@ -148,6 +148,18 @@ class CatalogV1ApiTestCase(TestCase):
             remote_state="SYNCED",
             created_by=self.user,
         )
+        self.inactive_style = Style.objects.create(
+            geodata_engine=self.inactive_provider,
+            workspace=self.inactive_workspace,
+            name="inactive-style",
+            title="Inactive Style",
+            format="mbstyle",
+            file_name="inactive-style.mbstyle",
+            file_content='{"version":8,"name":"inactive-style","layers":[]}',
+            validation_state="VALID",
+            remote_state="SYNCED",
+            created_by=self.user,
+        )
         self.raster_layer = Layer.objects.create(
             workspace=self.workspace,
             store=self.raster_store,
@@ -518,6 +530,13 @@ class CatalogV1ApiTestCase(TestCase):
     def test_style_detail_returns_404_when_missing(self):
         response = self.client.get(
             reverse("catalog-v1-style-detail", kwargs={"style_ref": "missing-style"})
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_style_detail_returns_404_for_inactive_provider_style(self):
+        response = self.client.get(
+            reverse("catalog-v1-style-detail", kwargs={"style_ref": str(self.inactive_style.id)})
         )
 
         self.assertEqual(response.status_code, 404)

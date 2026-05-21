@@ -6,6 +6,7 @@ from django.urls import reverse
 
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Style, Workspace
 from tosca_api.apps.geodata_providers.services.commands.geodata_engine_service import GeodataEngineService
+from tosca_api.apps.geodata_providers.sync_service import GeoServerSyncService
 
 
 class GeodataEngineServiceTestCase(TestCase):
@@ -72,6 +73,31 @@ class GeodataEngineServiceTestCase(TestCase):
 
         self.assertTrue(reactivate_result['success'])
         self.assertTrue(self.engine.is_active)
+
+    @patch('tosca_api.apps.geodata_providers.services.commands.geodata_engine_service.EngineClientFactory.create_sync_service')
+    def test_sync_engine_skips_inactive_engine(self, mock_create_sync_service):
+        self.engine.is_active = False
+        self.engine.save(update_fields=['is_active'])
+
+        result = GeodataEngineService.sync_engine(self.engine, user=self.user)
+
+        self.assertTrue(result['success'])
+        self.assertTrue(result['skipped'])
+        self.assertIn('inactive', result['reason'])
+        mock_create_sync_service.assert_not_called()
+
+    def test_sync_service_returns_skipped_result_for_inactive_engine(self):
+        self.engine.is_active = False
+        self.engine.save(update_fields=['is_active'])
+        service = GeoServerSyncService(self.engine)
+        service._get_geoserver_workspaces = MagicMock()
+
+        result = service.sync_all_resources(created_by=self.user)
+
+        self.assertTrue(result['success'])
+        self.assertTrue(result['skipped'])
+        self.assertTrue(result['workspaces']['skipped'])
+        service._get_geoserver_workspaces.assert_not_called()
 
     @patch('tosca_api.apps.geodata_providers.services.commands.geodata_engine_service.EngineClientFactory.create_client')
     def test_delete_engine_cascade_removes_tree_remote_and_db(self, mock_create_client):
