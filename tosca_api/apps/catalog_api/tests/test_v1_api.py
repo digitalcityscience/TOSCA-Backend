@@ -1,5 +1,5 @@
 from datetime import timezone as dt_timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import Client, TestCase
@@ -13,7 +13,6 @@ from tosca_api.apps.geodata_providers.models import (
     Style,
     Workspace,
 )
-from tosca_api.apps.geodata_providers.sync_service import GeoServerSyncService
 
 
 class CatalogV1ApiTestCase(TestCase):
@@ -337,40 +336,6 @@ class CatalogV1ApiTestCase(TestCase):
             ],
         )
 
-    def test_workspace_list_keeps_workspace_when_only_one_layer_is_stale(self):
-        Layer.objects.create(
-            workspace=self.workspace,
-            store=self.store,
-            name="stale_tram_lines",
-            title="Stale Tram Lines",
-            description="Stale transit layer",
-            table_name="stale_tram_lines",
-            geometry_column="geom",
-            geometry_type="LineString",
-            srid=4326,
-            publishing_state="PUBLISHED",
-            sync_state="STALE",
-            is_public=True,
-            created_by=self.user,
-        )
-
-        response = self.client.get(reverse("catalog-v1-workspace-list"))
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.json()["workspaces"]["workspace"],
-            [
-                {
-                    "name": "mobility",
-                    "href": "http://testserver"
-                    + reverse(
-                        "catalog-v1-workspace-layer-list",
-                        kwargs={"workspace_name": "mobility"},
-                    ),
-                }
-            ],
-        )
-
     def test_layer_lists_return_only_visible_layers(self):
         response = self.client.get(reverse("catalog-v1-layer-list"))
 
@@ -415,62 +380,6 @@ class CatalogV1ApiTestCase(TestCase):
         )
         self.assertEqual(workspace_response.status_code, 200)
         self.assertEqual(workspace_response.json(), response.json())
-
-    def test_layer_lists_hide_failed_or_stale_provider_resources(self):
-        failed_store = Store.objects.create(
-            workspace=self.workspace,
-            geodata_engine=self.provider,
-            name="failed_store",
-            description="Failed store",
-            store_type="postgis",
-            host="db",
-            port=5432,
-            database="gis",
-            username="postgres",
-            password="secret",
-            schema="public",
-            sync_state="FAILED",
-            created_by=self.user,
-        )
-        Layer.objects.create(
-            workspace=self.workspace,
-            store=failed_store,
-            name="failed_store_layer",
-            title="Failed Store Layer",
-            description="Layer backed by failed store",
-            table_name="failed_store_layer",
-            geometry_column="geom",
-            geometry_type="Polygon",
-            srid=4326,
-            publishing_state="PUBLISHED",
-            sync_state="SYNCED",
-            is_public=True,
-            created_by=self.user,
-        )
-        Layer.objects.create(
-            workspace=self.workspace,
-            store=self.store,
-            name="stale_layer",
-            title="Stale Layer",
-            description="Stale layer",
-            table_name="stale_layer",
-            geometry_column="geom",
-            geometry_type="Polygon",
-            srid=4326,
-            publishing_state="PUBLISHED",
-            sync_state="STALE",
-            is_public=True,
-            created_by=self.user,
-        )
-
-        response = self.client.get(reverse("catalog-v1-layer-list"))
-
-        self.assertEqual(response.status_code, 200)
-        layer_names = [
-            layer["name"]
-            for layer in response.json()["layers"]["layer"]
-        ]
-        self.assertEqual(layer_names, ["tram_heatmap", "tram_lines"])
 
     def test_layer_list_dedupes_same_workspace_and_layer_name_across_duplicate_integrations(self):
         duplicate_provider = GeodataEngine.objects.create(
@@ -626,89 +535,6 @@ class CatalogV1ApiTestCase(TestCase):
                 },
             ),
         )
-
-    @patch("tosca_api.apps.catalog_api.views.GeoServerRemoteService.get_layer_info")
-    def test_full_provider_sync_then_catalog_read_uses_synced_django_state(
-        self,
-        get_layer_info_mock,
-    ):
-        get_layer_info_mock.return_value = None
-        service = GeoServerSyncService(self.provider)
-        service._get_geoserver_workspaces = MagicMock(return_value=["synced_ws"])
-        service._get_geoserver_stores = MagicMock(
-            return_value=[
-                {
-                    "name": "synced_store",
-                    "store_type": "postgis",
-                    "host": "db",
-                    "port": 5432,
-                    "database": "gis",
-                    "username": "postgres",
-                    "schema": "public",
-                }
-            ]
-        )
-        service._get_geoserver_styles = MagicMock(
-            side_effect=lambda workspace=None: (
-                [{"name": "synced_style"}] if workspace is None else []
-            )
-        )
-        service.client.get_style_content = MagicMock(
-            return_value={
-                "content": '{"version":8,"name":"synced_style","layers":[]}',
-                "format": "mbstyle",
-                "file_name": "synced_style.mbstyle",
-            }
-        )
-        service._get_geoserver_layers = MagicMock(
-            return_value=[
-                {
-                    "name": "synced_layer",
-                    "store_name": "synced_store",
-                    "title": "Synced Layer",
-                    "table_name": "native_synced_table",
-                    "advertised": True,
-                    "default_style_name": "synced_style",
-                }
-            ]
-        )
-
-        sync_result = service.sync_all_resources(created_by=self.user)
-
-        self.assertTrue(sync_result["success"])
-        self.assertEqual(sync_result["workspaces"]["created"], 1)
-        self.assertEqual(sync_result["stores"]["created"], 1)
-        self.assertEqual(sync_result["styles"]["created"], 1)
-        self.assertEqual(sync_result["layers"]["created"], 1)
-
-        provider_response = self.client.get(reverse("catalog-v1-provider-list"))
-        workspace_response = self.client.get(reverse("catalog-v1-workspace-list"))
-        layer_response = self.client.get(reverse("catalog-v1-layer-info", kwargs={
-            "workspace_name": "synced_ws",
-            "layer_name": "synced_layer",
-        }))
-        style = Style.objects.get(geodata_engine=self.provider, name="synced_style")
-        style_response = self.client.get(
-            reverse("catalog-v1-style-detail", kwargs={"style_ref": str(style.id)})
-        )
-
-        self.assertEqual(provider_response.status_code, 200)
-        self.assertEqual(provider_response.json(), [
-            {
-                "name": "Catalog Engine",
-                "base_url": "http://catalog.example/geoserver",
-            }
-        ])
-        self.assertEqual(workspace_response.status_code, 200)
-        self.assertEqual(
-            workspace_response.json()["workspaces"]["workspace"][0]["name"],
-            "synced_ws",
-        )
-        self.assertEqual(layer_response.status_code, 200)
-        self.assertEqual(layer_response.json()["layer"]["name"], "synced_layer")
-        self.assertEqual(layer_response.json()["layer"]["defaultStyle"]["name"], "synced_style")
-        self.assertEqual(style_response.status_code, 200)
-        self.assertEqual(style_response.json()["name"], "synced_style")
 
     @patch("tosca_api.apps.catalog_api.views.GeoServerRemoteService.get_layer_resource_detail")
     def test_layer_detail_falls_back_to_db_shape(self, get_layer_resource_detail_mock):

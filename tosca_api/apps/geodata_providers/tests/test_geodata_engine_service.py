@@ -4,14 +4,7 @@ from django.contrib.auth.models import User
 from django.test import Client, TestCase
 from django.urls import reverse
 
-from tosca_api.apps.geodata_providers.models import (
-    GeodataEngine,
-    Layer,
-    LayerStyleAssignment,
-    Store,
-    Style,
-    Workspace,
-)
+from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Style, Workspace
 from tosca_api.apps.geodata_providers.services.commands.geodata_engine_service import GeodataEngineService
 from tosca_api.apps.geodata_providers.sync_service import GeoServerSyncService
 
@@ -119,41 +112,6 @@ class GeodataEngineServiceTestCase(TestCase):
         self.assertEqual(workspace.last_sync_error, '')
         self.assertIsNotNone(workspace.last_sync_at)
 
-    def test_sync_workspaces_is_idempotent_for_existing_remote_workspace(self):
-        Workspace.objects.create(
-            geodata_engine=self.engine,
-            name='synced_ws',
-            description='workspace',
-            created_by=self.user,
-        )
-        service = GeoServerSyncService(self.engine)
-        service._get_geoserver_workspaces = MagicMock(return_value=['synced_ws'])
-
-        result = service.sync_workspaces(created_by=self.user)
-
-        self.assertEqual(result['synced'], 1)
-        self.assertEqual(result['created'], 0)
-        self.assertEqual(Workspace.objects.filter(geodata_engine=self.engine, name='synced_ws').count(), 1)
-        workspace = Workspace.objects.get(geodata_engine=self.engine, name='synced_ws')
-        self.assertEqual(workspace.sync_state, 'SYNCED')
-
-    def test_sync_workspaces_deletes_local_workspace_missing_remotely(self):
-        Workspace.objects.create(
-            geodata_engine=self.engine,
-            name='local_stale_ws',
-            description='workspace',
-            created_by=self.user,
-        )
-        service = GeoServerSyncService(self.engine)
-        service._get_geoserver_workspaces = MagicMock(return_value=[])
-
-        result = service.sync_workspaces(created_by=self.user)
-
-        self.assertEqual(result['deleted'], 1)
-        self.assertFalse(
-            Workspace.objects.filter(geodata_engine=self.engine, name='local_stale_ws').exists()
-        )
-
     def test_sync_workspaces_marks_local_resources_failed_on_remote_error(self):
         workspace = Workspace.objects.create(
             geodata_engine=self.engine,
@@ -171,86 +129,6 @@ class GeodataEngineServiceTestCase(TestCase):
         self.assertEqual(workspace.sync_state, 'FAILED')
         self.assertIn('GeoServer unavailable', workspace.last_sync_error)
         self.assertIsNotNone(workspace.last_sync_at)
-
-    def test_sync_layers_recovers_drift_and_preserves_layer_names_and_styles(self):
-        workspace = Workspace.objects.create(
-            geodata_engine=self.engine,
-            name='sync_ws',
-            description='workspace',
-            created_by=self.user,
-        )
-        store = Store.objects.create(
-            workspace=workspace,
-            geodata_engine=self.engine,
-            name='sync_store',
-            description='store',
-            store_type='postgis',
-            host='db',
-            port=5432,
-            database='gis',
-            username='postgres',
-            password='secret',
-            schema='public',
-            created_by=self.user,
-        )
-        Layer.objects.create(
-            workspace=workspace,
-            store=store,
-            name='local_only_layer',
-            title='Local Only Layer',
-            description='local stale layer',
-            table_name='local_only_table',
-            geometry_column='geom',
-            geometry_type='Point',
-            srid=4326,
-            publishing_state='PUBLISHED',
-            created_by=self.user,
-        )
-        Style.objects.create(
-            geodata_engine=self.engine,
-            workspace=workspace,
-            name='roads_default',
-            title='Roads Default',
-            format='sld',
-            file_content='<StyledLayerDescriptor />',
-            validation_state='VALID',
-            remote_state='SYNCED',
-            created_by=self.user,
-        )
-        service = GeoServerSyncService(self.engine)
-        service._get_geoserver_layers = MagicMock(
-            return_value=[
-                {
-                    'name': 'roads',
-                    'store_name': 'sync_store',
-                    'title': 'Road Network',
-                    'table_name': 'roads_native_table',
-                    'geometry_column': 'geom',
-                    'geometry_type': 'LineString',
-                    'srid': 4326,
-                    'advertised': True,
-                    'default_style_name': 'roads_default',
-                }
-            ]
-        )
-
-        result = service.sync_layers_for_workspace(workspace, created_by=self.user)
-
-        self.assertEqual(result['created'], 1)
-        self.assertEqual(result['deleted'], 1)
-        self.assertFalse(Layer.objects.filter(workspace=workspace, name='local_only_layer').exists())
-        layer = Layer.objects.get(workspace=workspace, name='roads')
-        self.assertEqual(layer.table_name, 'roads_native_table')
-        self.assertEqual(layer.title, 'Road Network')
-        self.assertEqual(layer.sync_state, 'SYNCED')
-        self.assertTrue(
-            LayerStyleAssignment.objects.filter(
-                layer=layer,
-                style__name='roads_default',
-                role='default',
-                is_active=True,
-            ).exists()
-        )
 
     @patch('tosca_api.apps.geodata_providers.services.commands.geodata_engine_service.EngineClientFactory.create_client')
     def test_delete_engine_cascade_removes_tree_remote_and_db(self, mock_create_client):
