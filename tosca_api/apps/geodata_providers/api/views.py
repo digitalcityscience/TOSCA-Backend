@@ -299,6 +299,24 @@ class StoreViewSet(viewsets.ModelViewSet):
             )
         return Response(_api_result(result), status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=['post'], url_path='test_connection')
+    def test_connection_config(self, request):
+        """
+        POST /api/v1/providers/provider/stores/test_connection/
+        Stateless pre-save validation for store connection details.
+        """
+        result = StoreService.test_store_connection(
+            store_type=request.data.get('store_type', 'postgis'),
+            host=request.data.get('host', ''),
+            port=request.data.get('port') or 5432,
+            database=request.data.get('database', ''),
+            username=request.data.get('username', ''),
+            password=request.data.get('password', ''),
+            schema=request.data.get('schema', 'public'),
+        )
+        code = status.HTTP_200_OK if result.get('success') else status.HTTP_400_BAD_REQUEST
+        return Response(result, status=code)
+
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):
         """

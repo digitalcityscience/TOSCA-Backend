@@ -31,8 +31,9 @@ Likely touch points:
   providers from public catalog responses.
 - Skip synchronization jobs for inactive providers. Return an explicit skipped
   result rather than syncing hidden provider data.
-- Keep admin/internal management views able to see inactive providers unless
-  they already have their own filters.
+- Keep inactive provider records visible in provider management, but hide their
+  child workspaces, stores, layers, and styles from default admin child-resource
+  views.
 - Do not delete inactive provider records or their children.
 - Make the default read behavior safe. If internal code needs inactive records,
   require an explicit opt-in parameter such as `include_inactive=True`.
@@ -137,6 +138,8 @@ Coverage exists at both service and public API levels.
   `404` responses when accessed directly by URL.
 - Sync service tests assert inactive engines are skipped and no remote workspace
   pull is attempted.
+- Admin tests assert child-resource changelists and publish forms hide resources
+  owned by inactive providers.
 
 Targeted verification command used on the #152 development container:
 

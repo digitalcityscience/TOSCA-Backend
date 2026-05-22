@@ -4,7 +4,7 @@
 #148 inactive provider filtering
 #152 GeoServer workspace/store/layer sync fix
 #153 sync state gerekiyorsa
-#149 store test connection
+#149 store test connection : tested and works
 #150 schema update + clone behavior
 #151 catalog providers endpoint
 #154, #155

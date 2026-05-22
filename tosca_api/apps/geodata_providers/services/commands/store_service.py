@@ -5,6 +5,7 @@ from django.utils import timezone
 
 from ...engine_factory import EngineClientFactory
 from ...models import Layer, Store, Workspace
+from ...postgis_inspector import PostGISInspectorError, test_postgis_connection
 
 
 class StoreService:
@@ -36,6 +37,23 @@ class StoreService:
                 'already_exists': True,
                 'message': 'Store already exists',
                 'resource': existing,
+            }
+
+        validation = cls.test_store_connection(
+            store_type=store_type,
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            schema=schema,
+        )
+        if not validation.get('success'):
+            return {
+                'success': False,
+                'message': validation.get('message', 'Store connection validation failed.'),
+                'error': validation.get('error', 'Store connection validation failed.'),
+                'validation': validation,
             }
 
         engine = workspace.geodata_engine
@@ -101,6 +119,99 @@ class StoreService:
         }
 
     @classmethod
+    def test_store_connection(
+        cls,
+        *,
+        store_type: str = 'postgis',
+        host: str = '',
+        port: int | None = 5432,
+        database: str = '',
+        username: str = '',
+        password: str = '',
+        schema: str = 'public',
+    ) -> dict:
+        if store_type != Store.StoreType.POSTGIS:
+            return {
+                'success': True,
+                'skipped': True,
+                'message': f"Connection validation skipped for {store_type} stores.",
+                'details': {},
+            }
+
+        errors = cls._validate_postgis_connection_payload(
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            schema=schema,
+        )
+        if errors:
+            return {
+                'success': False,
+                'error': 'Missing required PostGIS connection fields.',
+                'message': 'Missing required PostGIS connection fields.',
+                'details': {'field_errors': errors},
+            }
+
+        try:
+            normalized_port = int(port or 5432)
+        except (TypeError, ValueError):
+            return {
+                'success': False,
+                'error': 'PostGIS port must be a number.',
+                'message': 'PostGIS port must be a number.',
+                'details': {'field_errors': {'port': 'Enter a valid port number.'}},
+            }
+
+        try:
+            details = test_postgis_connection(
+                host=host,
+                port=normalized_port,
+                database=database,
+                username=username,
+                password=password,
+                schema=schema or 'public',
+            )
+        except PostGISInspectorError as exc:
+            return {
+                'success': False,
+                'error': str(exc),
+                'message': str(exc),
+                'details': {},
+            }
+
+        return {
+            'success': True,
+            'message': 'PostGIS connection validated.',
+            'details': details,
+        }
+
+    @staticmethod
+    def _validate_postgis_connection_payload(
+        *,
+        host: str,
+        port: int | None,
+        database: str,
+        username: str,
+        password: str,
+        schema: str,
+    ) -> dict[str, str]:
+        required = {
+            'host': host,
+            'port': port,
+            'database': database,
+            'username': username,
+            'password': password,
+            'schema': schema,
+        }
+        return {
+            field: 'This field is required for PostGIS connection validation.'
+            for field, value in required.items()
+            if value in (None, '')
+        }
+
+    @classmethod
     def clone_store(
         cls,
         *,
@@ -138,6 +249,135 @@ class StoreService:
         sync_result = cls._sync_after_create(target_workspace, user=user, trigger_sync=trigger_sync)
         create_result['sync_result'] = sync_result
         return create_result
+
+    @classmethod
+    def update_postgis_store_connection(
+        cls,
+        *,
+        store: Store,
+        host: str,
+        port: int | None,
+        database: str,
+        username: str,
+        password: str,
+        schema: str,
+        description: str = '',
+    ) -> dict:
+        if store.store_type != Store.StoreType.POSTGIS:
+            return {
+                'success': False,
+                'message': 'Only PostGIS store connections can be updated with this flow.',
+                'error': 'Unsupported store type.',
+            }
+
+        dependency_counts = cls._dependency_counts(store)
+        if any(dependency_counts.values()):
+            return {
+                'success': False,
+                'blocked': True,
+                'message': (
+                    f"Cannot update store '{store.name}' connection while dependent "
+                    f"layers exist ({cls._dependency_details(dependency_counts)})."
+                ),
+                'dependency_counts': dependency_counts,
+            }
+
+        normalized = {
+            'host': host,
+            'port': port or 5432,
+            'database': database,
+            'username': username,
+            'password': password,
+            'schema': schema or 'public',
+            'description': description,
+        }
+        current_password = store.decrypted_password if store.password else ''
+        if (
+            store.host == normalized['host']
+            and (store.port or 5432) == normalized['port']
+            and store.database == normalized['database']
+            and store.username == normalized['username']
+            and current_password == normalized['password']
+            and (store.schema or 'public') == normalized['schema']
+            and store.description == normalized['description']
+        ):
+            return {
+                'success': True,
+                'updated': False,
+                'idempotent': True,
+                'verified': True,
+                'message': f"Store '{store.name}' connection already matches requested values.",
+                'resource': store,
+                'remote_result': {'success': True, 'verified': True, 'idempotent': True},
+            }
+
+        validation = cls.test_store_connection(
+            store_type=store.store_type,
+            host=normalized['host'],
+            port=normalized['port'],
+            database=normalized['database'],
+            username=normalized['username'],
+            password=normalized['password'],
+            schema=normalized['schema'],
+        )
+        if not validation.get('success'):
+            return {
+                'success': False,
+                'message': validation.get('message', 'Store connection validation failed.'),
+                'error': validation.get('error', 'Store connection validation failed.'),
+                'validation': validation,
+            }
+
+        workspace = store.workspace
+        engine = workspace.geodata_engine if workspace else None
+        remote_result = {'success': True, 'message': 'Updated in DB only.', 'verified': True}
+        if engine and workspace:
+            client = EngineClientFactory.create_client(engine)
+            remote_result = client.update_postgis_store(
+                name=store.name,
+                workspace=workspace.name,
+                host=normalized['host'],
+                port=normalized['port'],
+                database=normalized['database'],
+                username=normalized['username'],
+                password=normalized['password'],
+                schema=normalized['schema'],
+            )
+            if not remote_result.get('success', False):
+                return {
+                    'success': False,
+                    'message': remote_result.get('message', 'Engine failed to update the store.'),
+                    'error': remote_result.get('error', remote_result.get('message', 'Engine failed to update the store.')),
+                    'remote_result': remote_result,
+                }
+
+        with transaction.atomic():
+            store.host = normalized['host']
+            store.port = normalized['port']
+            store.database = normalized['database']
+            store.username = normalized['username']
+            store.password = normalized['password']
+            store.schema = normalized['schema']
+            store.description = normalized['description']
+            store.sync_state = (
+                'SYNCED' if engine and remote_result.get('verified', True)
+                else 'STALE' if engine
+                else 'LOCAL_ONLY'
+            )
+            store.last_sync_at = timezone.now() if engine else None
+            store.last_sync_error = ''
+            store.remote_identifier = f"{workspace.name}:{store.name}" if engine and workspace else ''
+            store.geodata_engine = engine
+            store.save()
+
+        return {
+            'success': True,
+            'updated': True,
+            'verified': remote_result.get('verified'),
+            'message': f"Store '{store.name}' connection updated successfully.",
+            'resource': store,
+            'remote_result': remote_result,
+        }
 
     @classmethod
     def delete_store_safe(cls, store: Store) -> dict:
@@ -241,8 +481,14 @@ class StoreService:
 
     @classmethod
     def _dependency_message(cls, store: Store, counts: dict[str, int]) -> str:
-        details = ", ".join(f"{label}={value}" for label, value in counts.items() if value)
-        return f"Cannot delete store '{store.name}': dependent records exist ({details})."
+        return (
+            f"Cannot delete store '{store.name}': dependent records exist "
+            f"({cls._dependency_details(counts)})."
+        )
+
+    @staticmethod
+    def _dependency_details(counts: dict[str, int]) -> str:
+        return ", ".join(f"{label}={value}" for label, value in counts.items() if value)
 
     @staticmethod
     def _sync_skipped_result() -> dict:

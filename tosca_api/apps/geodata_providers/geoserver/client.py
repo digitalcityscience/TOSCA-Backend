@@ -405,6 +405,87 @@ class GeoServerClient:
             },
         )
 
+    def update_postgis_store(
+        self,
+        name: str,
+        workspace: str,
+        host: str,
+        port: int,
+        database: str,
+        username: str,
+        password: str,
+        schema: str = "public",
+    ) -> Dict:
+        """Update an existing PostGIS datastore in GeoServer and verify details."""
+        logger.info(f"Updating PostGIS store '{name}' in workspace '{workspace}'")
+
+        try:
+            pre_check = self.pre_check_store(workspace, name)
+            if not pre_check.get('exists', False):
+                return {
+                    'success': False,
+                    'store': name,
+                    'workspace': workspace,
+                    'message': f"Store '{name}' does not exist in GeoServer.",
+                    'updated': False,
+                }
+
+            raw_result = self._client.create_featurestore(
+                store_name=name,
+                workspace=workspace,
+                db=database,
+                host=host,
+                port=port,
+                schema=schema or 'public',
+                pg_user=username,
+                pg_password=password,
+                overwrite=True,
+            )
+            validated_result = self.validate_response(raw_result, f"update_featurestore({name})")
+            if not validated_result.get('success', False):
+                raise GeoServerPublishError(
+                    f"Store update failed validation: {validated_result.get('message')}"
+                )
+
+            verification = self.post_verify_store(
+                workspace,
+                name,
+                expected_exists=True,
+                expected_details={
+                    'host': host,
+                    'port': port or 5432,
+                    'database': database,
+                    'username': username,
+                    'schema': schema or 'public',
+                },
+            )
+            if not verification.get('verified', False):
+                raise GeoServerPublishError(
+                    verification.get('message')
+                    or f"Store '{name}' could not be verified in GeoServer after update."
+                )
+
+            return {
+                'success': True,
+                'store': name,
+                'workspace': workspace,
+                'message': f"Store '{name}' updated successfully",
+                'updated': True,
+                'validated': validated_result.get('validated', False),
+                'verified': verification.get('verified', False),
+                'geoserver_response': validated_result,
+            }
+        except Exception as e:
+            logger.error(f"Failed to update store '{name}': {e}")
+            return {
+                'success': False,
+                'store': name,
+                'workspace': workspace,
+                'error': str(e),
+                'message': f"Store update failed: {e}",
+                'updated': False,
+            }
+
     def store_exists(self, workspace: str, store_name: str) -> bool:
         """
         Check if datastore exists in GeoServer.

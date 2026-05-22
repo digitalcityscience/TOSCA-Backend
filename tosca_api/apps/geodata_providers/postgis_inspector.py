@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import URL
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 logger = logging.getLogger(__name__)
@@ -31,11 +32,67 @@ def _make_engine(host: str, port: int, database: str, username: str, password: s
     Connection is NOT pooled — engine is created per-request and disposed
     immediately after the query (use as context: engine.connect()).
     """
-    url = (
-        f"postgresql+psycopg://{username}:{password}"
-        f"@{host}:{port}/{database}"
+    url = URL.create(
+        "postgresql+psycopg",
+        username=username,
+        password=password,
+        host=host,
+        port=port,
+        database=database,
     )
     return create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
+
+
+def test_postgis_connection(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    schema: str,
+) -> dict[str, Any]:
+    """
+    Validate that a PostGIS connection can be opened and that the schema exists.
+
+    Returns diagnostic details on success and raises PostGISInspectorError on
+    connection, authentication, database, or schema failures.
+    """
+    schema_sql = text(
+        """
+        SELECT schema_name
+        FROM information_schema.schemata
+        WHERE schema_name = :schema
+        """
+    )
+    try:
+        engine = _make_engine(host, port, database, username, password)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1")).scalar_one()
+            schema_name = conn.execute(schema_sql, {"schema": schema}).scalar_one_or_none()
+        engine.dispose()
+    except OperationalError as exc:
+        logger.error("PostGIS connection test failed for %s@%s:%s/%s: %s", username, host, port, database, exc)
+        raise PostGISInspectorError(
+            f"Could not connect to PostGIS at {host}:{port}/{database}. "
+            "Check host, port, database, username, and password."
+        ) from exc
+    except SQLAlchemyError as exc:
+        logger.error("PostGIS connection test query failed: %s", exc)
+        raise PostGISInspectorError(f"PostGIS validation query failed: {exc}") from exc
+
+    if schema_name is None:
+        raise PostGISInspectorError(
+            f"Schema '{schema}' does not exist in database '{database}'."
+        )
+
+    return {
+        "host": host,
+        "port": port,
+        "database": database,
+        "username": username,
+        "schema": schema,
+        "schema_exists": True,
+    }
 
 
 def get_geometry_tables(

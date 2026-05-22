@@ -22,7 +22,11 @@ def workspace_sync_view(request, workspace_id):
         return JsonResponse({'error': 'Forbidden'}, status=403)
 
     try:
-        workspace = Workspace.objects.select_related('geodata_engine').get(pk=workspace_id)
+        workspace = (
+            Workspace.objects.select_related('geodata_engine')
+            .filter(geodata_engine__is_active=True)
+            .get(pk=workspace_id)
+        )
     except Workspace.DoesNotExist:
         return JsonResponse({'error': 'Workspace not found.'}, status=404)
 

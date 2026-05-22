@@ -28,7 +28,11 @@ def store_postgis_tables_view(request, store_id):
         return JsonResponse({'error': 'Forbidden'}, status=403)
 
     try:
-        store = Store.objects.select_related('workspace__geodata_engine').get(pk=store_id)
+        store = (
+            Store.objects.select_related('workspace__geodata_engine')
+            .filter(workspace__geodata_engine__is_active=True)
+            .get(pk=store_id)
+        )
     except Store.DoesNotExist:
         return JsonResponse({'error': 'Store not found.'}, status=404)
 
@@ -88,7 +92,9 @@ def store_clone_view(request, store_id):
     from tosca_api.apps.geodata_providers.admin import StoreCloneForm
 
     source = get_object_or_404(
-        Store.objects.select_related('workspace__geodata_engine'),
+        Store.objects.select_related('workspace__geodata_engine').filter(
+            workspace__geodata_engine__is_active=True,
+        ),
         pk=store_id,
     )
 

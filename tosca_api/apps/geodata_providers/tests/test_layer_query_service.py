@@ -147,6 +147,7 @@ class LayerQueryServiceTestCase(TestCase):
                 "geometry_type",
                 "srid",
                 "publishing_state",
+                "sync_state",
                 "is_public",
                 "published_url",
                 "layer_settings",
@@ -161,6 +162,7 @@ class LayerQueryServiceTestCase(TestCase):
         self.assertEqual(result["geometry_type"], "LineString")
         self.assertEqual(result["srid"], 4326)
         self.assertEqual(result["publishing_state"], "PUBLISHED")
+        self.assertEqual(result["sync_state"], "LOCAL_ONLY")
         self.assertTrue(result["is_public"])
         self.assertEqual(
             result["layer_settings"],
