@@ -1,10 +1,12 @@
-from django.db.models import QuerySet
+from django.db.models import Exists, OuterRef, QuerySet
 
 from tosca_api.apps.geodata_providers.models import Layer, Workspace
 
 
 class CatalogVisibilityService:
     """Read helpers for the public catalog visibility surface."""
+
+    BLOCKED_SYNC_STATES = ["FAILED", "STALE"]
 
     @classmethod
     def list_visible_workspaces(cls):
@@ -37,13 +39,21 @@ class CatalogVisibilityService:
 
     @classmethod
     def _visible_workspace_queryset(cls) -> QuerySet[Workspace]:
+        visible_layer_exists = (
+            Layer.objects.filter(
+                workspace_id=OuterRef("pk"),
+                is_public=True,
+                publishing_state="PUBLISHED",
+            )
+            .exclude(sync_state__in=cls.BLOCKED_SYNC_STATES)
+            .exclude(store__sync_state__in=cls.BLOCKED_SYNC_STATES)
+        )
         return (
             Workspace.objects.filter(
                 geodata_engine__is_active=True,
-                layers__is_public=True,
-                layers__publishing_state="PUBLISHED",
             )
-            .exclude(layers__sync_state__in=["FAILED", "STALE"])
+            .exclude(sync_state__in=cls.BLOCKED_SYNC_STATES)
+            .filter(Exists(visible_layer_exists))
             .select_related("geodata_engine")
             .order_by("name", "-geodata_engine__is_default", "geodata_engine__name", "id")
         )
@@ -58,7 +68,9 @@ class CatalogVisibilityService:
                 is_public=True,
                 publishing_state="PUBLISHED",
             )
-            .exclude(sync_state__in=["FAILED", "STALE"])
+            .exclude(sync_state__in=cls.BLOCKED_SYNC_STATES)
+            .exclude(store__sync_state__in=cls.BLOCKED_SYNC_STATES)
+            .exclude(workspace__sync_state__in=cls.BLOCKED_SYNC_STATES)
             .order_by(
                 "workspace__name",
                 "name",
