@@ -58,6 +58,7 @@ Main ideas:
 The catalog planning converged on a small read-oriented surface such as:
 
 - workspace list
+- provider list
 - global layer list
 - workspace layer list
 - layer info/detail
@@ -65,6 +66,10 @@ The catalog planning converged on a small read-oriented surface such as:
 
 The implemented URL structure is versioned and read-oriented under
 `/api/v1/catalog/`.
+
+The provider bootstrap endpoint is available at `/api/v1/catalog/providers`.
+It returns active providers only, with a minimal public shape containing
+`name` and `base_url`.
 
 ## Contract Direction
 

@@ -4,12 +4,18 @@ from .views import (
     GlobalLayerListV1View,
     LayerDetailV1View,
     LayerInfoV1View,
+    ProviderListV1View,
     StyleDetailV1View,
     WorkspaceLayerListV1View,
     WorkspaceListV1View,
 )
 
 urlpatterns = [
+    path(
+        "providers",
+        ProviderListV1View.as_view(),
+        name="catalog-v1-provider-list",
+    ),
     path(
         "workspaces",
         WorkspaceListV1View.as_view(),

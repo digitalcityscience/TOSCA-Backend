@@ -218,6 +218,38 @@ class CatalogV1ApiTestCase(TestCase):
             created_by=self.user,
         )
 
+    def test_provider_list_returns_active_provider_bootstrap_shape(self):
+        response = self.client.get(reverse("catalog-v1-provider-list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            [
+                {
+                    "name": "Catalog Engine",
+                    "base_url": "http://catalog.example/geoserver",
+                }
+            ],
+        )
+
+    def test_provider_list_does_not_expose_internal_connection_fields(self):
+        response = self.client.get(reverse("catalog-v1-provider-list"))
+
+        self.assertEqual(response.status_code, 200)
+        provider = response.json()[0]
+        self.assertNotIn("id", provider)
+        self.assertNotIn("admin_username", provider)
+        self.assertNotIn("admin_password", provider)
+        self.assertNotIn("api_key", provider)
+
+    def test_provider_list_returns_empty_list_when_no_active_providers_exist(self):
+        GeodataEngine.objects.update(is_active=False)
+
+        response = self.client.get(reverse("catalog-v1-provider-list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
     def test_workspace_list_returns_only_visible_workspaces(self):
         response = self.client.get(reverse("catalog-v1-workspace-list"))
 

@@ -114,6 +114,7 @@ class ProviderQueryServiceTestCase(TestCase):
             {
                 "id",
                 "name",
+                "base_url",
                 "engine_type",
                 "description",
                 "is_active",
@@ -124,6 +125,7 @@ class ProviderQueryServiceTestCase(TestCase):
         )
         self.assertEqual(active_provider["workspace_count"], 2)
         self.assertEqual(active_provider["layer_count"], 2)
+        self.assertEqual(active_provider["base_url"], "http://active.example/geoserver")
         self.assertEqual(active_provider["engine_type"], "geoserver")
         self.assertTrue(active_provider["is_default"])
         self.assertEqual(inactive_provider["workspace_count"], 0)

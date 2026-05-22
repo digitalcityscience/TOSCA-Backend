@@ -5,11 +5,29 @@ from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tosca_api.apps.geodata_providers.services.queries import StyleQueryService
+from tosca_api.apps.geodata_providers.services.queries import (
+    ProviderQueryService,
+    StyleQueryService,
+)
 
 from .services.v1.geoserver_v1_builder import GeoServerV1Builder
 from .services.v1.geoserver_remote_service import GeoServerRemoteService
 from .services.v1.visibility_service import CatalogVisibilityService
+
+
+class ProviderListV1View(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        providers = ProviderQueryService.list_providers()
+        payload = [
+            {
+                "name": provider["name"],
+                "base_url": provider["base_url"],
+            }
+            for provider in providers
+        ]
+        return Response(payload)
 
 
 class WorkspaceListV1View(APIView):

@@ -25,6 +25,7 @@ class ProviderQueryService:
         return {
             "id": str(provider.id),
             "name": provider.name,
+            "base_url": provider.base_url,
             "engine_type": provider.engine_type,
             "description": provider.description,
             "is_active": provider.is_active,
