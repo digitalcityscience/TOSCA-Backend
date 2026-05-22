@@ -409,7 +409,12 @@ class AdminFormCreateFlowTests(TestCase):
         mock_test_store_connection.assert_called_once()
 
     @patch('tosca_api.apps.geodata_providers.admin.StoreService.test_store_connection')
-    def test_store_edit_form_blocks_connection_correction_with_layers(self, mock_test_store_connection):
+    def test_store_edit_form_allows_connection_correction_with_layers(self, mock_test_store_connection):
+        mock_test_store_connection.return_value = {
+            'success': True,
+            'message': 'PostGIS connection validated.',
+            'details': {'schema_exists': True},
+        }
         workspace = Workspace.objects.create(
             geodata_engine=self.engine,
             name='locked_ws',
@@ -462,9 +467,8 @@ class AdminFormCreateFlowTests(TestCase):
             instance=store,
         )
 
-        self.assertFalse(form.is_valid())
-        self.assertIn('Cannot update', form.non_field_errors()[0])
-        mock_test_store_connection.assert_not_called()
+        self.assertTrue(form.is_valid(), form.errors)
+        mock_test_store_connection.assert_called_once()
 
     @patch('tosca_api.apps.geodata_providers.admin._run_workspace_sync')
     @patch('tosca_api.apps.geodata_providers.services.commands.store_service.test_postgis_connection')
@@ -803,6 +807,7 @@ class AdminFormCreateFlowTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         mock_clone_store.assert_called_once()
+        self.assertFalse(mock_clone_store.call_args.kwargs['clone_layers'])
         mock_success.assert_called()
         mock_warning.assert_not_called()
 

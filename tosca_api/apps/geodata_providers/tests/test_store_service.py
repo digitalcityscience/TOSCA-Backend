@@ -7,7 +7,9 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from tosca_api.apps.geodata_providers.models import (
     GeodataEngine,
     Layer,
+    LayerStyleAssignment,
     Store,
+    Style,
     Workspace,
 )
 from tosca_api.apps.geodata_providers.api.views import StoreViewSet
@@ -183,6 +185,137 @@ class StoreServiceTestCase(TestCase):
         self.assertEqual(result['sync_result']['created'], 1)
         self.assertTrue(Store.objects.filter(workspace=self.workspace, name='cloned_store').exists())
 
+    @patch('tosca_api.apps.geodata_providers.services.commands.store_service.EngineClientFactory.create_sync_service')
+    @patch('tosca_api.apps.geodata_providers.services.commands.store_service.test_postgis_connection')
+    @patch('tosca_api.apps.geodata_providers.services.commands.store_service.EngineClientFactory.create_client')
+    def test_clone_store_copies_layers_and_valid_style_assignments_when_requested(
+        self,
+        mock_create_client,
+        mock_test_postgis_connection,
+        mock_create_sync_service,
+    ):
+        source_layer = Layer.objects.create(
+            workspace=self.workspace,
+            store=self.store,
+            name='roads',
+            title='Roads',
+            description='Road network',
+            table_name='roads_table',
+            geometry_column='geom',
+            geometry_type='LineString',
+            srid=4326,
+            publishing_state='PUBLISHED',
+            is_public=True,
+            created_by=self.user,
+        )
+        style = Style.objects.create(
+            geodata_engine=self.engine,
+            workspace=None,
+            name='roads_default',
+            title='Roads Default',
+            format='sld',
+            file_content='<StyledLayerDescriptor />',
+            validation_state='VALID',
+            remote_state='SYNCED',
+            created_by=self.user,
+        )
+        LayerStyleAssignment.objects.create(
+            layer=source_layer,
+            style=style,
+            role='default',
+            is_active=True,
+            created_by=self.user,
+        )
+        mock_test_postgis_connection.return_value = {'schema_exists': True}
+        client = mock_create_client.return_value
+        client.create_postgis_store.return_value = {
+            'success': True,
+            'verified': True,
+            'message': 'created',
+        }
+        client.get_layer_info.return_value = None
+        client.publish_featuretype.return_value = {'success': True}
+        client.verify_featuretype.return_value = True
+        mock_create_sync_service.return_value.sync_stores_for_workspace.return_value = {'errors': []}
+        mock_create_sync_service.return_value.sync_layers_for_workspace.return_value = {'errors': []}
+
+        result = StoreService.clone_store(
+            source_store=self.store,
+            target_workspace=self.workspace,
+            name='cloned_store',
+            user=self.user,
+            description='clone',
+            password='secret',
+            clone_layers=True,
+        )
+
+        self.assertTrue(result['success'])
+        self.assertEqual(result['layer_clone_result']['created'], 1)
+        cloned_layer = Layer.objects.get(workspace=self.workspace, name='cloned_store_roads')
+        self.assertEqual(cloned_layer.store.name, 'cloned_store')
+        self.assertEqual(cloned_layer.table_name, 'roads_table')
+        self.assertTrue(
+            LayerStyleAssignment.objects.filter(
+                layer=cloned_layer,
+                style=style,
+                role='default',
+                is_active=True,
+            ).exists()
+        )
+        client.publish_featuretype.assert_called_once_with(
+            store_name='cloned_store',
+            workspace='demo_ws',
+            pg_table='roads_table',
+            srid=4326,
+            geometry_type='LineString',
+            layer_name='cloned_store_roads',
+            title='Roads',
+        )
+
+    @patch('tosca_api.apps.geodata_providers.services.commands.store_service.EngineClientFactory.create_sync_service')
+    @patch('tosca_api.apps.geodata_providers.services.commands.store_service.test_postgis_connection')
+    @patch('tosca_api.apps.geodata_providers.services.commands.store_service.EngineClientFactory.create_client')
+    def test_clone_store_skips_layer_copy_by_default(
+        self,
+        mock_create_client,
+        mock_test_postgis_connection,
+        mock_create_sync_service,
+    ):
+        Layer.objects.create(
+            workspace=self.workspace,
+            store=self.store,
+            name='roads',
+            title='Roads',
+            table_name='roads_table',
+            geometry_column='geom',
+            geometry_type='LineString',
+            srid=4326,
+            publishing_state='PUBLISHED',
+            created_by=self.user,
+        )
+        mock_test_postgis_connection.return_value = {'schema_exists': True}
+        client = mock_create_client.return_value
+        client.create_postgis_store.return_value = {
+            'success': True,
+            'verified': True,
+            'message': 'created',
+        }
+        mock_create_sync_service.return_value.sync_stores_for_workspace.return_value = {'errors': []}
+
+        result = StoreService.clone_store(
+            source_store=self.store,
+            target_workspace=self.workspace,
+            name='cloned_store',
+            user=self.user,
+            description='clone',
+            password='secret',
+        )
+
+        self.assertTrue(result['success'])
+        self.assertTrue(result['layer_clone_result']['skipped'])
+        self.assertFalse(Layer.objects.filter(workspace=self.workspace, name='cloned_store_roads').exists())
+        client.publish_featuretype.assert_not_called()
+
     def test_delete_store_safe_blocks_when_layers_exist(self):
         Layer.objects.create(
             workspace=self.workspace,
@@ -269,7 +402,7 @@ class StoreServiceTestCase(TestCase):
 
     @patch('tosca_api.apps.geodata_providers.services.commands.store_service.test_postgis_connection')
     @patch('tosca_api.apps.geodata_providers.services.commands.store_service.EngineClientFactory.create_client')
-    def test_update_postgis_store_connection_blocks_when_layers_exist(
+    def test_update_postgis_store_connection_syncs_layers_when_layers_exist(
         self,
         mock_create_client,
         mock_test_postgis_connection,
@@ -287,24 +420,37 @@ class StoreServiceTestCase(TestCase):
             created_by=self.user,
         )
 
-        result = StoreService.update_postgis_store_connection(
-            store=self.store,
-            host='db',
-            port=5432,
-            database='gis',
-            username='postgres',
-            password='secret',
-            schema='gis_schema',
-            description='blocked',
-        )
+        mock_test_postgis_connection.return_value = {'schema_exists': True}
+        mock_create_client.return_value.update_postgis_store.return_value = {
+            'success': True,
+            'verified': True,
+            'message': 'updated',
+        }
 
-        self.assertFalse(result['success'])
-        self.assertTrue(result['blocked'])
-        self.assertIn('layers=1', result['message'])
+        with patch(
+            'tosca_api.apps.geodata_providers.services.commands.store_service.EngineClientFactory.create_sync_service'
+        ) as mock_create_sync_service:
+            mock_create_sync_service.return_value.sync_layers_for_workspace.return_value = {
+                'success': True,
+                'synced': 1,
+                'errors': [],
+            }
+            result = StoreService.update_postgis_store_connection(
+                store=self.store,
+                host='db',
+                port=5432,
+                database='gis',
+                username='postgres',
+                password='secret',
+                schema='gis_schema',
+                description='updated',
+            )
+
+        self.assertTrue(result['success'])
+        self.assertEqual(result['layer_sync_result']['synced'], 1)
         self.store.refresh_from_db()
-        self.assertEqual(self.store.schema, 'public')
-        mock_test_postgis_connection.assert_not_called()
-        mock_create_client.assert_not_called()
+        self.assertEqual(self.store.schema, 'gis_schema')
+        self.assertEqual(self.store.description, 'updated')
 
     @patch('tosca_api.apps.geodata_providers.api.views.StoreService.test_store_connection')
     def test_store_test_connection_endpoint_returns_validation_result(self, mock_test_store_connection):

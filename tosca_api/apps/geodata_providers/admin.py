@@ -701,11 +701,6 @@ class StoreAdminForm(forms.ModelForm):
             changed_fields = self._changed_connection_fields(cleaned_data)
             self.connection_fields_changed = bool(changed_fields)
             if changed_fields:
-                if self.instance.layers.exists():
-                    raise ValidationError(
-                        "Cannot update this store's connection while layers depend on it. "
-                        "Delete or republish the dependent layers first."
-                    )
                 try:
                     password = cleaned_data.get('password') or self.instance.decrypted_password
                 except (ValueError, Exception):
@@ -897,6 +892,12 @@ class StoreCloneForm(forms.Form):
         required=False,
         label='DB Password',
         help_text='Required to create the store in GeoServer. Not cloned from source.',
+    )
+    clone_layers = forms.BooleanField(
+        required=False,
+        initial=False,
+        label='Clone layers too',
+        help_text='Leave off to clone only the store. Enable to copy/publish source layers and valid style assignments.',
     )
 
 class LayerInline(admin.TabularInline):
