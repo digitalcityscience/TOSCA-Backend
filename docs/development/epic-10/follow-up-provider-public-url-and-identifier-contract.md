@@ -18,7 +18,7 @@ Use that UUID as the public `provider_id` unless a later product requirement
 explicitly asks for a separate slug. Do not add a duplicate identifier field
 just for routing.
 
-## Current State
+## Implemented State
 
 - `GeodataEngine.id` is a UUID primary key and is suitable for
   `/providers/{provider_id}/...` routes.
@@ -26,22 +26,26 @@ just for routing.
   route identifier.
 - `GeodataEngine.base_url` is the internal engine URL used by Django to talk to
   GeoServer. In local Docker this may be `http://geoserver:8080/geoserver`.
-- The public catalog provider response currently exposes `name` and `base_url`
-  only.
-- `.env.example` already documents `GEOSERVER_PUBLIC_URL`, but the Django
-  model/settings path does not persist or expose a provider public URL.
+- `GeodataEngine.public_url` stores the externally reachable provider URL used
+  by public catalog consumers.
+- The public catalog provider response exposes `id`, display `name`, and
+  `base_url`, where `base_url` is populated from `GeodataEngine.public_url`.
+- `.env.example` documents `GEOSERVER_PUBLIC_URL`; local development can fall
+  back to `http://localhost:{GEOSERVER_PORT}/geoserver` when the setting is not
+  configured.
 
 ## Scope
 
-Add a required public URL contract to provider state and make catalog bootstrap
-return the UUID identifier with the externally reachable URL.
+The backend scope is implemented. Keep this checklist as the contract for
+future frontend and regression work: provider state has a required public URL,
+and catalog bootstrap returns the UUID identifier with the externally reachable
+URL.
 
 Likely touch points:
 
 - `tosca_api/apps/geodata_providers/models.py`
-- new migration under `tosca_api/apps/geodata_providers/migrations/`
+- migration under `tosca_api/apps/geodata_providers/migrations/`
 - `tosca_api/settings/base.py`
-- `tosca_api/settings/development.py` if dev-specific defaults are needed
 - `tosca_api/apps/geodata_providers/management/commands/setup_default_engine.py`
 - `tosca_api/apps/geodata_providers/admin.py`
 - `tosca_api/apps/geodata_providers/api/serializers.py`
