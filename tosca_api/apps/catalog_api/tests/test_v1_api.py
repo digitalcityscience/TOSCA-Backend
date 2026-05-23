@@ -24,7 +24,8 @@ class CatalogV1ApiTestCase(TestCase):
             name="Catalog Engine",
             description="provider",
             engine_type="geoserver",
-            base_url="http://catalog.example/geoserver",
+            base_url="http://catalog.internal/geoserver",
+            public_url="http://catalog.example/geoserver",
             admin_username="admin",
             admin_password="secret",
             is_active=True,
@@ -35,7 +36,8 @@ class CatalogV1ApiTestCase(TestCase):
             name="Inactive Engine",
             description="inactive provider",
             engine_type="geoserver",
-            base_url="http://inactive.example/geoserver",
+            base_url="http://inactive.internal/geoserver",
+            public_url="http://inactive.example/geoserver",
             admin_username="admin",
             admin_password="secret",
             is_active=False,
@@ -219,6 +221,67 @@ class CatalogV1ApiTestCase(TestCase):
             created_by=self.user,
         )
 
+    def _create_duplicate_provider_catalog(self):
+        duplicate_provider = GeodataEngine.objects.create(
+            name="Catalog Engine Duplicate",
+            description="duplicate provider",
+            engine_type="geoserver",
+            base_url="http://catalog-duplicate.internal/geoserver",
+            public_url="http://catalog-duplicate.example/geoserver",
+            admin_username="admin",
+            admin_password="secret",
+            is_active=True,
+            is_default=False,
+            created_by=self.user,
+        )
+        duplicate_workspace = Workspace.objects.create(
+            geodata_engine=duplicate_provider,
+            name="mobility",
+            description="Duplicate mobility workspace",
+            created_by=self.user,
+        )
+        duplicate_store = Store.objects.create(
+            workspace=duplicate_workspace,
+            geodata_engine=duplicate_provider,
+            name="mobility_store_duplicate",
+            description="Duplicate mobility store",
+            store_type="postgis",
+            host="db",
+            port=5432,
+            database="gis",
+            username="postgres",
+            password="secret",
+            schema="public",
+            created_by=self.user,
+        )
+        duplicate_layer = Layer.objects.create(
+            workspace=duplicate_workspace,
+            store=duplicate_store,
+            name="tram_lines",
+            title="Duplicate Tram Lines",
+            description="Duplicate transit layer",
+            table_name="tram_lines_duplicate",
+            geometry_column="geom",
+            geometry_type="LineString",
+            srid=4326,
+            publishing_state="PUBLISHED",
+            is_public=True,
+            created_by=self.user,
+        )
+        duplicate_style = Style.objects.create(
+            geodata_engine=duplicate_provider,
+            workspace=duplicate_workspace,
+            name="mobility-style",
+            title="Duplicate Mobility Style",
+            format="mbstyle",
+            file_name="mobility-style-duplicate.mbstyle",
+            file_content='{"version":8,"name":"duplicate-mobility-style","layers":[]}',
+            validation_state="VALID",
+            remote_state="SYNCED",
+            created_by=self.user,
+        )
+        return duplicate_provider, duplicate_workspace, duplicate_layer, duplicate_style
+
     def test_provider_list_returns_active_provider_bootstrap_shape(self):
         response = self.client.get(reverse("catalog-v1-provider-list"))
 
@@ -227,6 +290,7 @@ class CatalogV1ApiTestCase(TestCase):
             response.json(),
             [
                 {
+                    "id": str(self.provider.id),
                     "name": "Catalog Engine",
                     "base_url": "http://catalog.example/geoserver",
                 }
@@ -238,10 +302,12 @@ class CatalogV1ApiTestCase(TestCase):
 
         self.assertEqual(response.status_code, 200)
         provider = response.json()[0]
-        self.assertNotIn("id", provider)
+        self.assertEqual(provider["id"], str(self.provider.id))
         self.assertNotIn("admin_username", provider)
         self.assertNotIn("admin_password", provider)
         self.assertNotIn("api_key", provider)
+        self.assertNotIn("internal_base_url", provider)
+        self.assertNotEqual(provider["base_url"], self.provider.base_url)
 
     def test_provider_list_returns_empty_list_when_no_active_providers_exist(self):
         GeodataEngine.objects.update(is_active=False)
@@ -251,8 +317,21 @@ class CatalogV1ApiTestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
 
+    def test_unscoped_catalog_routes_are_not_available(self):
+        for path in (
+            "/api/v1/catalog/workspaces",
+            "/api/v1/catalog/layers",
+            "/api/v1/catalog/workspaces/mobility/layers",
+            "/api/v1/catalog/workspaces/mobility/layers/tram_lines",
+            "/api/v1/catalog/workspaces/mobility/resources/tram_lines",
+            "/api/v1/catalog/styles/mobility-style",
+        ):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 404)
+
     def test_workspace_list_returns_only_visible_workspaces(self):
-        response = self.client.get(reverse("catalog-v1-workspace-list"))
+        response = self.client.get(reverse("catalog-v1-provider-workspace-list", kwargs={"provider_id": self.provider.id}))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -264,8 +343,8 @@ class CatalogV1ApiTestCase(TestCase):
                             "name": "mobility",
                             "href": "http://testserver"
                             + reverse(
-                                "catalog-v1-workspace-layer-list",
-                                kwargs={"workspace_name": "mobility"},
+                                "catalog-v1-provider-workspace-layer-list",
+                                kwargs={"provider_id": self.provider.id, "workspace_name": "mobility"},
                             ),
                         }
                     ]
@@ -273,12 +352,52 @@ class CatalogV1ApiTestCase(TestCase):
             },
         )
 
+    def test_provider_scoped_workspace_list_uses_provider_id_in_hrefs(self):
+        response = self.client.get(
+            reverse(
+                "catalog-v1-provider-workspace-list",
+                kwargs={"provider_id": self.provider.id},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "workspaces": {
+                    "workspace": [
+                        {
+                            "name": "mobility",
+                            "href": "http://testserver"
+                            + reverse(
+                                "catalog-v1-provider-workspace-layer-list",
+                                kwargs={"provider_id": self.provider.id,
+                                    "workspace_name": "mobility",
+                                },
+                            ),
+                        }
+                    ]
+                }
+            },
+        )
+
+    def test_provider_scoped_workspace_list_returns_404_for_inactive_provider(self):
+        response = self.client.get(
+            reverse(
+                "catalog-v1-provider-workspace-list",
+                kwargs={"provider_id": self.inactive_provider.id},
+            )
+        )
+
+        self.assertEqual(response.status_code, 404)
+
     def test_workspace_list_dedupes_same_workspace_name_across_duplicate_integrations(self):
         duplicate_provider = GeodataEngine.objects.create(
             name="Catalog Engine Duplicate",
             description="duplicate provider",
             engine_type="geoserver",
             base_url="http://catalog-duplicate.example/geoserver",
+            public_url="http://catalog-duplicate-public.example/geoserver",
             admin_username="admin",
             admin_password="secret",
             is_active=True,
@@ -320,7 +439,7 @@ class CatalogV1ApiTestCase(TestCase):
             created_by=self.user,
         )
 
-        response = self.client.get(reverse("catalog-v1-workspace-list"))
+        response = self.client.get(reverse("catalog-v1-provider-workspace-list", kwargs={"provider_id": self.provider.id}))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -330,8 +449,8 @@ class CatalogV1ApiTestCase(TestCase):
                     "name": "mobility",
                     "href": "http://testserver"
                     + reverse(
-                        "catalog-v1-workspace-layer-list",
-                        kwargs={"workspace_name": "mobility"},
+                        "catalog-v1-provider-workspace-layer-list",
+                        kwargs={"provider_id": self.provider.id, "workspace_name": "mobility"},
                     ),
                 }
             ],
@@ -354,7 +473,7 @@ class CatalogV1ApiTestCase(TestCase):
             created_by=self.user,
         )
 
-        response = self.client.get(reverse("catalog-v1-workspace-list"))
+        response = self.client.get(reverse("catalog-v1-provider-workspace-list", kwargs={"provider_id": self.provider.id}))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -364,15 +483,18 @@ class CatalogV1ApiTestCase(TestCase):
                     "name": "mobility",
                     "href": "http://testserver"
                     + reverse(
-                        "catalog-v1-workspace-layer-list",
-                        kwargs={"workspace_name": "mobility"},
+                        "catalog-v1-provider-workspace-layer-list",
+                        kwargs={
+                            "provider_id": self.provider.id,
+                            "workspace_name": "mobility",
+                        },
                     ),
                 }
             ],
         )
 
     def test_layer_lists_return_only_visible_layers(self):
-        response = self.client.get(reverse("catalog-v1-layer-list"))
+        response = self.client.get(reverse("catalog-v1-provider-layer-list", kwargs={"provider_id": self.provider.id}))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -384,8 +506,8 @@ class CatalogV1ApiTestCase(TestCase):
                             "name": "tram_heatmap",
                             "href": "http://testserver"
                             + reverse(
-                                "catalog-v1-layer-info",
-                                kwargs={
+                                "catalog-v1-provider-layer-info",
+                                kwargs={"provider_id": self.provider.id,
                                     "workspace_name": "mobility",
                                     "layer_name": "tram_heatmap",
                                 },
@@ -395,8 +517,8 @@ class CatalogV1ApiTestCase(TestCase):
                             "name": "tram_lines",
                             "href": "http://testserver"
                             + reverse(
-                                "catalog-v1-layer-info",
-                                kwargs={
+                                "catalog-v1-provider-layer-info",
+                                kwargs={"provider_id": self.provider.id,
                                     "workspace_name": "mobility",
                                     "layer_name": "tram_lines",
                                 },
@@ -409,8 +531,8 @@ class CatalogV1ApiTestCase(TestCase):
 
         workspace_response = self.client.get(
             reverse(
-                "catalog-v1-workspace-layer-list",
-                kwargs={"workspace_name": "mobility"},
+                "catalog-v1-provider-workspace-layer-list",
+                kwargs={"provider_id": self.provider.id, "workspace_name": "mobility"},
             )
         )
         self.assertEqual(workspace_response.status_code, 200)
@@ -463,7 +585,7 @@ class CatalogV1ApiTestCase(TestCase):
             created_by=self.user,
         )
 
-        response = self.client.get(reverse("catalog-v1-layer-list"))
+        response = self.client.get(reverse("catalog-v1-provider-layer-list", kwargs={"provider_id": self.provider.id}))
 
         self.assertEqual(response.status_code, 200)
         layer_names = [
@@ -478,6 +600,7 @@ class CatalogV1ApiTestCase(TestCase):
             description="duplicate provider",
             engine_type="geoserver",
             base_url="http://catalog-duplicate.example/geoserver",
+            public_url="http://catalog-duplicate-public.example/geoserver",
             admin_username="admin",
             admin_password="secret",
             is_active=True,
@@ -521,8 +644,8 @@ class CatalogV1ApiTestCase(TestCase):
 
         response = self.client.get(
             reverse(
-                "catalog-v1-workspace-layer-list",
-                kwargs={"workspace_name": "mobility"},
+                "catalog-v1-provider-workspace-layer-list",
+                kwargs={"provider_id": self.provider.id, "workspace_name": "mobility"},
             )
         )
 
@@ -534,8 +657,8 @@ class CatalogV1ApiTestCase(TestCase):
                     "name": "tram_heatmap",
                     "href": "http://testserver"
                     + reverse(
-                        "catalog-v1-layer-info",
-                        kwargs={
+                        "catalog-v1-provider-layer-info",
+                        kwargs={"provider_id": self.provider.id,
                             "workspace_name": "mobility",
                             "layer_name": "tram_heatmap",
                         },
@@ -545,8 +668,8 @@ class CatalogV1ApiTestCase(TestCase):
                     "name": "tram_lines",
                     "href": "http://testserver"
                     + reverse(
-                        "catalog-v1-layer-info",
-                        kwargs={
+                        "catalog-v1-provider-layer-info",
+                        kwargs={"provider_id": self.provider.id,
                             "workspace_name": "mobility",
                             "layer_name": "tram_lines",
                         },
@@ -555,11 +678,54 @@ class CatalogV1ApiTestCase(TestCase):
             ],
         )
 
+    def test_provider_scoped_layer_lists_do_not_collide_on_duplicate_names(self):
+        duplicate_provider, _, _, _ = self._create_duplicate_provider_catalog()
+
+        primary_response = self.client.get(
+            reverse(
+                "catalog-v1-provider-workspace-layer-list",
+                kwargs={"provider_id": self.provider.id, "workspace_name": "mobility"},
+            )
+        )
+        duplicate_response = self.client.get(
+            reverse(
+                "catalog-v1-provider-workspace-layer-list",
+                kwargs={
+                    "provider_id": duplicate_provider.id,
+                    "workspace_name": "mobility",
+                },
+            )
+        )
+
+        self.assertEqual(primary_response.status_code, 200)
+        self.assertEqual(duplicate_response.status_code, 200)
+        self.assertEqual(
+            [layer["name"] for layer in primary_response.json()["layers"]["layer"]],
+            ["tram_heatmap", "tram_lines"],
+        )
+        self.assertEqual(
+            duplicate_response.json()["layers"]["layer"],
+            [
+                {
+                    "name": "tram_lines",
+                    "href": "http://testserver"
+                    + reverse(
+                        "catalog-v1-provider-layer-info",
+                        kwargs={
+                            "provider_id": duplicate_provider.id,
+                            "workspace_name": "mobility",
+                            "layer_name": "tram_lines",
+                        },
+                    ),
+                }
+            ],
+        )
+
     def test_workspace_layer_list_returns_404_for_hidden_workspace(self):
         response = self.client.get(
             reverse(
-                "catalog-v1-workspace-layer-list",
-                kwargs={"workspace_name": "hidden"},
+                "catalog-v1-provider-workspace-layer-list",
+                kwargs={"provider_id": self.provider.id, "workspace_name": "hidden"},
             )
         )
 
@@ -568,8 +734,8 @@ class CatalogV1ApiTestCase(TestCase):
     def test_workspace_layer_list_returns_404_for_missing_workspace(self):
         response = self.client.get(
             reverse(
-                "catalog-v1-workspace-layer-list",
-                kwargs={"workspace_name": "does-not-exist"},
+                "catalog-v1-provider-workspace-layer-list",
+                kwargs={"provider_id": self.provider.id, "workspace_name": "does-not-exist"},
             )
         )
 
@@ -578,8 +744,8 @@ class CatalogV1ApiTestCase(TestCase):
     def test_workspace_layer_list_returns_404_for_inactive_provider_workspace(self):
         response = self.client.get(
             reverse(
-                "catalog-v1-workspace-layer-list",
-                kwargs={"workspace_name": "inactive"},
+                "catalog-v1-provider-workspace-layer-list",
+                kwargs={"provider_id": self.provider.id, "workspace_name": "inactive"},
             )
         )
 
@@ -596,8 +762,8 @@ class CatalogV1ApiTestCase(TestCase):
 
         response = self.client.get(
             reverse(
-                "catalog-v1-layer-info",
-                kwargs={
+                "catalog-v1-provider-layer-info",
+                kwargs={"provider_id": self.provider.id,
                     "workspace_name": "mobility",
                     "layer_name": "tram_lines",
                 },
@@ -612,20 +778,58 @@ class CatalogV1ApiTestCase(TestCase):
         self.assertEqual(
             payload["defaultStyle"]["href"],
             "http://testserver"
-            + reverse("catalog-v1-style-detail", kwargs={"style_ref": str(self.mbstyle.id)}),
+            + reverse("catalog-v1-provider-style-detail", kwargs={"provider_id": self.provider.id, "style_ref": str(self.mbstyle.id)}),
         )
         self.assertEqual(payload["resource"]["@class"], "featureType")
         self.assertEqual(
             payload["resource"]["href"],
             "http://testserver"
             + reverse(
-                "catalog-v1-layer-detail",
-                kwargs={
+                "catalog-v1-provider-layer-detail",
+                kwargs={"provider_id": self.provider.id,
                     "workspace_name": "mobility",
                     "layer_name": "tram_lines",
                 },
             ),
         )
+
+    def test_provider_scoped_layer_info_reads_layer_from_selected_provider(self):
+        duplicate_provider, _, _, duplicate_style = self._create_duplicate_provider_catalog()
+        LayerStyleAssignment.objects.create(
+            layer=Layer.objects.get(workspace__geodata_engine=duplicate_provider),
+            style=duplicate_style,
+            role="default",
+            is_active=True,
+            created_by=self.user,
+        )
+
+        response = self.client.get(
+            reverse(
+                "catalog-v1-provider-layer-info",
+                kwargs={
+                    "provider_id": duplicate_provider.id,
+                    "workspace_name": "mobility",
+                    "layer_name": "tram_lines",
+                },
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["layer"]
+        self.assertEqual(payload["name"], "tram_lines")
+        self.assertEqual(payload["defaultStyle"]["name"], "mobility-style")
+        self.assertEqual(
+            payload["defaultStyle"]["href"],
+            "http://testserver"
+            + reverse(
+                "catalog-v1-provider-style-detail",
+                kwargs={
+                    "provider_id": duplicate_provider.id,
+                    "style_ref": str(duplicate_style.id),
+                },
+            ),
+        )
+
 
     @patch("tosca_api.apps.catalog_api.views.GeoServerRemoteService.get_layer_info")
     def test_full_provider_sync_then_catalog_read_uses_synced_django_state(
@@ -682,19 +886,21 @@ class CatalogV1ApiTestCase(TestCase):
         self.assertEqual(sync_result["layers"]["created"], 1)
 
         provider_response = self.client.get(reverse("catalog-v1-provider-list"))
-        workspace_response = self.client.get(reverse("catalog-v1-workspace-list"))
-        layer_response = self.client.get(reverse("catalog-v1-layer-info", kwargs={
+        workspace_response = self.client.get(reverse("catalog-v1-provider-workspace-list", kwargs={"provider_id": self.provider.id}))
+        layer_response = self.client.get(reverse("catalog-v1-provider-layer-info", kwargs={
+            "provider_id": self.provider.id,
             "workspace_name": "synced_ws",
             "layer_name": "synced_layer",
         }))
         style = Style.objects.get(geodata_engine=self.provider, name="synced_style")
         style_response = self.client.get(
-            reverse("catalog-v1-style-detail", kwargs={"style_ref": str(style.id)})
+            reverse("catalog-v1-provider-style-detail", kwargs={"provider_id": self.provider.id, "style_ref": str(style.id)})
         )
 
         self.assertEqual(provider_response.status_code, 200)
         self.assertEqual(provider_response.json(), [
             {
+                "id": str(self.provider.id),
                 "name": "Catalog Engine",
                 "base_url": "http://catalog.example/geoserver",
             }
@@ -716,8 +922,8 @@ class CatalogV1ApiTestCase(TestCase):
 
         response = self.client.get(
             reverse(
-                "catalog-v1-layer-detail",
-                kwargs={
+                "catalog-v1-provider-layer-detail",
+                kwargs={"provider_id": self.provider.id,
                     "workspace_name": "mobility",
                     "layer_name": "tram_lines",
                 },
@@ -736,30 +942,88 @@ class CatalogV1ApiTestCase(TestCase):
 
     def test_style_detail_returns_raw_mbstyle_payload_from_db(self):
         response = self.client.get(
-            reverse("catalog-v1-style-detail", kwargs={"style_ref": str(self.mbstyle.id)})
+            reverse("catalog-v1-provider-style-detail", kwargs={"provider_id": self.provider.id, "style_ref": str(self.mbstyle.id)})
         )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["name"], "mobility-style")
         self.assertEqual(response.json()["version"], 8)
 
+    def test_provider_scoped_style_list_returns_only_provider_styles(self):
+        duplicate_provider, _, _, duplicate_style = self._create_duplicate_provider_catalog()
+
+        response = self.client.get(
+            reverse(
+                "catalog-v1-provider-style-list",
+                kwargs={"provider_id": duplicate_provider.id},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([style["id"] for style in response.json()], [str(duplicate_style.id)])
+
+    def test_provider_scoped_style_detail_does_not_cross_provider_name_collision(self):
+        duplicate_provider, _, _, _ = self._create_duplicate_provider_catalog()
+
+        primary_response = self.client.get(
+            reverse(
+                "catalog-v1-provider-style-detail",
+                kwargs={"provider_id": self.provider.id,
+                    "style_ref": "mobility-style",
+                },
+            )
+        )
+        duplicate_response = self.client.get(
+            reverse(
+                "catalog-v1-provider-style-detail",
+                kwargs={
+                    "provider_id": duplicate_provider.id,
+                    "style_ref": "mobility-style",
+                },
+            )
+        )
+
+        self.assertEqual(primary_response.status_code, 200)
+        self.assertEqual(primary_response.json()["name"], "mobility-style")
+        self.assertEqual(duplicate_response.status_code, 200)
+        self.assertEqual(duplicate_response.json()["name"], "duplicate-mobility-style")
+
+    def test_provider_scoped_style_detail_returns_404_for_other_provider_uuid(self):
+        _, _, _, duplicate_style = self._create_duplicate_provider_catalog()
+
+        response = self.client.get(
+            reverse(
+                "catalog-v1-provider-style-detail",
+                kwargs={"provider_id": self.provider.id,
+                    "style_ref": str(duplicate_style.id),
+                },
+            )
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_provider_scoped_routes_return_404_for_invalid_provider_uuid(self):
+        response = self.client.get("/api/v1/catalog/providers/not-a-uuid/workspaces")
+
+        self.assertEqual(response.status_code, 404)
+
     def test_style_detail_returns_404_when_missing(self):
         response = self.client.get(
-            reverse("catalog-v1-style-detail", kwargs={"style_ref": "missing-style"})
+            reverse("catalog-v1-provider-style-detail", kwargs={"provider_id": self.provider.id, "style_ref": "missing-style"})
         )
 
         self.assertEqual(response.status_code, 404)
 
     def test_style_detail_returns_404_for_inactive_provider_style(self):
         response = self.client.get(
-            reverse("catalog-v1-style-detail", kwargs={"style_ref": str(self.inactive_style.id)})
+            reverse("catalog-v1-provider-style-detail", kwargs={"provider_id": self.provider.id, "style_ref": str(self.inactive_style.id)})
         )
 
         self.assertEqual(response.status_code, 404)
 
     def test_style_detail_returns_raw_sld_when_xml_is_accepted(self):
         response = self.client.get(
-            reverse("catalog-v1-style-detail", kwargs={"style_ref": str(self.sld_style.id)}),
+            reverse("catalog-v1-provider-style-detail", kwargs={"provider_id": self.provider.id, "style_ref": str(self.sld_style.id)}),
             HTTP_ACCEPT="application/vnd.ogc.sld+xml",
         )
 
@@ -768,7 +1032,7 @@ class CatalogV1ApiTestCase(TestCase):
 
     def test_style_detail_returns_406_for_sld_when_json_is_requested(self):
         response = self.client.get(
-            reverse("catalog-v1-style-detail", kwargs={"style_ref": str(self.sld_style.id)}),
+            reverse("catalog-v1-provider-style-detail", kwargs={"provider_id": self.provider.id, "style_ref": str(self.sld_style.id)}),
             HTTP_ACCEPT="application/json",
         )
 
@@ -802,8 +1066,8 @@ class CatalogV1ApiTestCase(TestCase):
 
         response = self.client.get(
             reverse(
-                "catalog-v1-layer-detail",
-                kwargs={
+                "catalog-v1-provider-layer-detail",
+                kwargs={"provider_id": self.provider.id,
                     "workspace_name": "mobility",
                     "layer_name": "tram_lines",
                 },
@@ -826,8 +1090,8 @@ class CatalogV1ApiTestCase(TestCase):
 
         response = self.client.get(
             reverse(
-                "catalog-v1-layer-detail",
-                kwargs={
+                "catalog-v1-provider-layer-detail",
+                kwargs={"provider_id": self.provider.id,
                     "workspace_name": "mobility",
                     "layer_name": "tram_heatmap",
                 },
@@ -850,8 +1114,8 @@ class CatalogV1ApiTestCase(TestCase):
     def test_layer_detail_returns_404_for_hidden_layer(self):
         response = self.client.get(
             reverse(
-                "catalog-v1-layer-detail",
-                kwargs={
+                "catalog-v1-provider-layer-detail",
+                kwargs={"provider_id": self.provider.id,
                     "workspace_name": "hidden",
                     "layer_name": "draft_layer",
                 },
@@ -863,8 +1127,8 @@ class CatalogV1ApiTestCase(TestCase):
     def test_layer_info_returns_404_for_hidden_layer(self):
         response = self.client.get(
             reverse(
-                "catalog-v1-layer-info",
-                kwargs={
+                "catalog-v1-provider-layer-info",
+                kwargs={"provider_id": self.provider.id,
                     "workspace_name": "hidden",
                     "layer_name": "draft_layer",
                 },
@@ -876,8 +1140,8 @@ class CatalogV1ApiTestCase(TestCase):
     def test_layer_info_returns_404_for_inactive_provider_layer(self):
         response = self.client.get(
             reverse(
-                "catalog-v1-layer-info",
-                kwargs={
+                "catalog-v1-provider-layer-info",
+                kwargs={"provider_id": self.provider.id,
                     "workspace_name": "inactive",
                     "layer_name": "inactive_layer",
                 },
@@ -889,8 +1153,8 @@ class CatalogV1ApiTestCase(TestCase):
     def test_layer_detail_returns_404_for_inactive_provider_layer(self):
         response = self.client.get(
             reverse(
-                "catalog-v1-layer-detail",
-                kwargs={
+                "catalog-v1-provider-layer-detail",
+                kwargs={"provider_id": self.provider.id,
                     "workspace_name": "inactive",
                     "layer_name": "inactive_layer",
                 },
@@ -903,8 +1167,8 @@ class CatalogV1ApiTestCase(TestCase):
         with patch("tosca_api.apps.catalog_api.views.GeoServerRemoteService.get_layer_info", return_value=None):
             response = self.client.get(
                 reverse(
-                    "catalog-v1-layer-info",
-                    kwargs={
+                    "catalog-v1-provider-layer-info",
+                    kwargs={"provider_id": self.provider.id,
                         "workspace_name": "mobility",
                         "layer_name": "tram_lines",
                     },

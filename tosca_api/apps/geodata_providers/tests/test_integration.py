@@ -30,6 +30,10 @@ class GeoServerIntegrationTestCase(TestCase):
             name='Integration Test Engine',
             description='For integration testing',
             base_url=f"http://{os.getenv('GEOSERVER_HOST')}:{os.getenv('GEOSERVER_PORT')}/geoserver",
+            public_url=os.getenv(
+                'GEOSERVER_PUBLIC_URL',
+                f"http://localhost:{os.getenv('GEOSERVER_PORT')}/geoserver",
+            ),
             admin_username=os.getenv('GEOSERVER_ADMIN_USER'),
             admin_password=os.getenv('GEOSERVER_ADMIN_PASSWORD'),
             is_active=True,

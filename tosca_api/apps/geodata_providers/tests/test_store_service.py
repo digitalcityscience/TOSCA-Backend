@@ -25,6 +25,7 @@ class StoreServiceTestCase(TestCase):
             description='test',
             engine_type='geoserver',
             base_url='http://example.com/geoserver',
+            public_url='http://example.com/geoserver',
             admin_username='admin',
             admin_password='secret',
             created_by=self.user,

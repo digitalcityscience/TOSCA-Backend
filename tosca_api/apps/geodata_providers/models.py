@@ -106,7 +106,11 @@ class GeodataEngine(TimeStampedModel, EncryptedCharField):
     )
     base_url = models.CharField(
         max_length=255,
-        help_text="Full URL to the engine",
+        help_text="Backend-internal URL used by Django to connect to the engine",
+    )
+    public_url = models.CharField(
+        max_length=255,
+        help_text="Externally reachable URL exposed through public catalog bootstrap",
     )
     admin_username = models.CharField(
         max_length=100,

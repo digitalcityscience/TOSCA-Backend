@@ -50,9 +50,17 @@ class StyleQueryService:
         ]
 
     @classmethod
-    def resolve_style_reference(cls, *, style_ref: str, include_inactive: bool = False) -> Style:
+    def resolve_style_reference(
+        cls,
+        *,
+        style_ref: str,
+        provider_id=None,
+        include_inactive: bool = False,
+    ) -> Style:
         normalized_ref = (style_ref or "").strip()
         queryset = cls._catalog_queryset(include_inactive=include_inactive)
+        if provider_id is not None:
+            queryset = queryset.filter(geodata_engine_id=provider_id)
         try:
             style_uuid = uuid.UUID(str(normalized_ref))
         except (TypeError, ValueError):

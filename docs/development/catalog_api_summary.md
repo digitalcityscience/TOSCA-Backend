@@ -69,7 +69,29 @@ The implemented URL structure is versioned and read-oriented under
 
 The provider bootstrap endpoint is available at `/api/v1/catalog/providers`.
 It returns active providers only, with a minimal public shape containing
-`name` and `base_url`.
+`id`, `name`, and `base_url`. The `id` is `GeodataEngine.id` as a UUID string.
+The public response key remains `base_url` for frontend compatibility, but its
+value comes from `GeodataEngine.public_url`; `GeodataEngine.base_url` remains
+the backend-internal connection URL used by Django sync/client code.
+
+Provider-scoped v1 reads are available:
+
+- `/api/v1/catalog/providers/{provider_id}/workspaces`
+- `/api/v1/catalog/providers/{provider_id}/layers`
+- `/api/v1/catalog/providers/{provider_id}/workspaces/{workspace_name}/layers`
+- `/api/v1/catalog/providers/{provider_id}/workspaces/{workspace_name}/layers/{layer_name}`
+- `/api/v1/catalog/providers/{provider_id}/workspaces/{workspace_name}/resources/{layer_name}`
+- `/api/v1/catalog/providers/{provider_id}/styles`
+- `/api/v1/catalog/providers/{provider_id}/styles/{style_ref}`
+
+Frontend consumers should bootstrap from `/providers`, store the selected
+provider UUID, and use the provider-scoped routes for follow-up catalog reads.
+Provider `name` is display text only and must not be inserted into API paths.
+The returned public `base_url` should only be used for externally reachable
+GeoServer/WMS/WMTS URLs.
+Unscoped catalog reads such as `/api/v1/catalog/workspaces`,
+`/api/v1/catalog/layers`, and `/api/v1/catalog/styles/{style_ref}` are not part
+of the public v1 routing contract.
 
 ## Contract Direction
 
@@ -85,6 +107,7 @@ In practice, that means:
 - keep payloads stable
 - normalize provider/workspace/layer/style metadata
 - avoid using provider CRUD endpoints as frontend dependencies
+- route provider-aware catalog reads by provider UUID, not provider name
 
 ## Key Decisions
 
@@ -109,6 +132,7 @@ The important principle is:
 
 - frontend-facing metadata comes from Django
 - map tile delivery can still come from provider map services
+- map service URLs use the public provider URL returned by catalog bootstrap
 
 ## Current Architectural Position
 

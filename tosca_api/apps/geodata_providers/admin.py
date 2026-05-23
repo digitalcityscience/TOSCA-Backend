@@ -238,6 +238,7 @@ class GeodataEngineForm(forms.ModelForm):
             'admin_password': forms.PasswordInput(render_value=False),
             'api_key': forms.PasswordInput(render_value=False),
             'base_url': forms.TextInput(attrs={'size': 60}),
+            'public_url': forms.TextInput(attrs={'size': 60}),
             'description': forms.Textarea(attrs={'rows': 3}),
         }
 
@@ -259,6 +260,7 @@ class GeodataEngineForm(forms.ModelForm):
             description=cleaned_data.get('description') or self.instance.description,
             engine_type=engine_type,
             base_url=cleaned_data.get('base_url') or self.instance.base_url,
+            public_url=cleaned_data.get('public_url') or self.instance.public_url,
             admin_username=cleaned_data.get('admin_username') or self.instance.admin_username,
             admin_password=password or '',
             api_key=cleaned_data.get('api_key') or self.instance.api_key,
@@ -309,13 +311,13 @@ class GeodataEngineAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     form = GeodataEngineForm
     change_form_template = 'admin/geodata_providers/geodataengine/change_form.html'
     list_display = [
-        'name', 'engine_type', 'base_url',
+        'name', 'engine_type', 'base_url', 'public_url',
         'is_active', 'is_default',
         'connection_status_badge', 'workspace_count', 'style_count',
         'layer_count', 'active_layer_settings_count',
     ]
     list_filter = ['engine_type', 'is_active', 'is_default']
-    search_fields = ['name', 'base_url']
+    search_fields = ['name', 'base_url', 'public_url']
     readonly_fields = ['id', 'created_at', 'updated_at']
     list_per_page = 25
     actions = [sync_engines, test_connection, set_as_default, deactivate_engines, reactivate_engines]

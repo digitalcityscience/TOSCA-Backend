@@ -98,6 +98,7 @@ class GeodataEngineSerializer(serializers.ModelSerializer):
             'description',
             'engine_type',
             'base_url',
+            'public_url',
             'engine_url',
             'geoserver_url',
             'admin_username',

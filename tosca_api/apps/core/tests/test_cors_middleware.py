@@ -17,7 +17,7 @@ class CorsMiddlewareTests(SimpleTestCase):
     )
     def test_allowed_preflight_returns_cors_headers(self):
         request = self.factory.options(
-            "/api/v1/catalog/workspaces",
+            "/api/v1/catalog/providers/00000000-0000-4000-8000-000000000000/workspaces",
             HTTP_ORIGIN="http://localhost:5173",
             HTTP_ACCESS_CONTROL_REQUEST_METHOD="GET",
             HTTP_ACCESS_CONTROL_REQUEST_HEADERS="authorization",
@@ -36,7 +36,7 @@ class CorsMiddlewareTests(SimpleTestCase):
     @override_settings(CORS_ALLOWED_ORIGINS=["http://localhost:5173"])
     def test_disallowed_origin_gets_no_cors_headers(self):
         request = self.factory.get(
-            "/api/v1/catalog/workspaces",
+            "/api/v1/catalog/providers/00000000-0000-4000-8000-000000000000/workspaces",
             HTTP_ORIGIN="http://malicious.example",
         )
 

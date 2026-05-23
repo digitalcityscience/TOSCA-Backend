@@ -12,6 +12,7 @@ class GeodataEngineService:
     CONNECTION_FIELDS = {
         'engine_type',
         'base_url',
+        'public_url',
         'admin_username',
         'admin_password',
         'api_key',
@@ -21,6 +22,7 @@ class GeodataEngineService:
         'description',
         'engine_type',
         'base_url',
+        'public_url',
         'admin_username',
         'admin_password',
         'api_key',
@@ -169,6 +171,7 @@ class GeodataEngineService:
         payload.setdefault('description', config.get('description') or '')
         payload.setdefault('engine_type', config.get('engine_type') or 'geoserver')
         payload.setdefault('base_url', config.get('base_url') or '')
+        payload.setdefault('public_url', config.get('public_url') or payload['base_url'])
         payload.setdefault('admin_username', config.get('admin_username') or '')
         payload.setdefault('admin_password', config.get('admin_password') or '')
         payload.setdefault('api_key', config.get('api_key') or '')
@@ -183,6 +186,7 @@ class GeodataEngineService:
             'description': engine.description,
             'engine_type': engine.engine_type,
             'base_url': engine.base_url,
+            'public_url': engine.public_url,
             'admin_username': engine.admin_username,
             'admin_password': engine.admin_password,
             'api_key': engine.api_key,
