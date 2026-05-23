@@ -102,6 +102,10 @@ class LayerService:
                     'srid': srid,
                     'is_public': True,
                     'publishing_state': 'PUBLISHED',
+                    'sync_state': 'SYNCED',
+                    'last_sync_at': timezone.now(),
+                    'last_sync_error': '',
+                    'remote_identifier': f"{workspace.name}:{layer_name}",
                     'published_url': '',
                     'published_at': timezone.now(),
                     'created_by': user,
@@ -118,6 +122,10 @@ class LayerService:
                     srid=srid,
                     is_public=True,
                     publishing_state='PUBLISHED',
+                    sync_state='SYNCED',
+                    last_sync_at=timezone.now(),
+                    last_sync_error='',
+                    remote_identifier=f"{workspace.name}:{layer_name}",
                     published_url='',
                     published_at=timezone.now(),
                     publishing_error='',
@@ -161,6 +169,10 @@ class LayerService:
         if already:
             Layer.objects.filter(pk=layer.pk).update(
                 publishing_state='PUBLISHED',
+                sync_state='SYNCED',
+                last_sync_at=timezone.now(),
+                last_sync_error='',
+                remote_identifier=f"{layer.workspace.name}:{layer.name}",
                 publishing_error='',
                 published_at=timezone.now(),
             )
@@ -188,9 +200,13 @@ class LayerService:
             featuretype_name=layer.name,
         )
         if not verified:
+            error = 'Publish reported success but verification failed.'
             Layer.objects.filter(pk=layer.pk).update(
                 publishing_state='FAILED',
-                publishing_error='Publish reported success but verification failed.',
+                publishing_error=error,
+                sync_state='FAILED',
+                last_sync_at=timezone.now(),
+                last_sync_error=error,
             )
             layer.refresh_from_db()
             return {
@@ -204,6 +220,10 @@ class LayerService:
 
         Layer.objects.filter(pk=layer.pk).update(
             publishing_state='PUBLISHED',
+            sync_state='SYNCED',
+            last_sync_at=timezone.now(),
+            last_sync_error='',
+            remote_identifier=f"{layer.workspace.name}:{layer.name}",
             published_at=timezone.now(),
             publishing_error='',
             published_url='',
@@ -239,13 +259,23 @@ class LayerService:
             expected_abstract=description or '',
         )
         if not verification.get('verified'):
+            error = f"GeoServer metadata verify failed: {verification.get('mismatches', {})}"
+            Layer.objects.filter(pk=layer.pk).update(
+                sync_state='FAILED',
+                last_sync_at=timezone.now(),
+                last_sync_error=error,
+            )
             raise GeodataEngineError(
-                f"GeoServer metadata verify failed: {verification.get('mismatches', {})}"
+                error
             )
 
         Layer.objects.filter(pk=layer.pk).update(
             title=title,
             description=description,
+            sync_state='SYNCED',
+            last_sync_at=timezone.now(),
+            last_sync_error='',
+            remote_identifier=f"{layer.workspace.name}:{layer.name}",
             publishing_error='',
         )
         layer.refresh_from_db()
@@ -283,9 +313,15 @@ class LayerService:
             layer_name=layer.name,
         )
         if not remote_result.get('success'):
+            error = remote_result.get('error', remote_result.get('message', 'Engine unpublish failed'))
+            Layer.objects.filter(pk=layer.pk).update(
+                sync_state='FAILED',
+                last_sync_at=timezone.now(),
+                last_sync_error=error,
+            )
             return {
                 'success': False,
-                'error': remote_result.get('error', remote_result.get('message', 'Engine unpublish failed')),
+                'error': error,
                 'message': remote_result.get('message', 'Engine unpublish failed'),
                 'resource': layer,
             }
@@ -299,16 +335,25 @@ class LayerService:
             )
 
         if not verified:
+            error = f"Layer '{layer.name}' still exists in GeoServer after delete call."
+            Layer.objects.filter(pk=layer.pk).update(
+                sync_state='FAILED',
+                last_sync_at=timezone.now(),
+                last_sync_error=error,
+            )
             return {
                 'success': False,
                 'verified': False,
-                'error': f"Layer '{layer.name}' still exists in GeoServer after delete call.",
+                'error': error,
                 'message': 'Remote unpublish verification failed.',
                 'resource': layer,
             }
 
         Layer.objects.filter(pk=layer.pk).update(
             publishing_state='UNPUBLISHED',
+            sync_state='LOCAL_ONLY',
+            last_sync_at=timezone.now(),
+            last_sync_error='',
             publishing_error='',
             published_url='',
             published_at=None,

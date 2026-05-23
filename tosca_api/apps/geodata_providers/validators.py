@@ -31,6 +31,11 @@ def validate_layer_is_public_and_published(layer: Layer | None) -> None:
             f"GeoStory, Event, or GeoFeedback (current state: "
             f"{layer.publishing_state})."
         )
+    elif layer.sync_state in {Layer.SyncState.FAILED, Layer.SyncState.STALE}:
+        errors["layer"] = (
+            f"Layer '{layer}' is not currently synchronized with its provider "
+            f"(sync state: {layer.sync_state})."
+        )
 
     if errors:
         raise ValidationError(errors)

@@ -8,7 +8,8 @@ class GeoServerV1Builder:
     """Compose GeoServer REST-shaped payload fragments for the v1 surface."""
 
     @classmethod
-    def build_workspace_list(cls, *, request, workspaces) -> dict:
+    def build_workspace_list(cls, *, request, workspaces, provider_id=None) -> dict:
+        cls._require_provider_id(provider_id)
         return {
             "workspaces": {
                 "workspace": [
@@ -16,8 +17,11 @@ class GeoServerV1Builder:
                         "name": workspace.name,
                         "href": request.build_absolute_uri(
                             reverse(
-                                "catalog-v1-workspace-layer-list",
-                                kwargs={"workspace_name": workspace.name},
+                                "catalog-v1-provider-workspace-layer-list",
+                                kwargs=cls._route_kwargs(
+                                    {"workspace_name": workspace.name},
+                                    provider_id=provider_id,
+                                ),
                             )
                         ),
                     }
@@ -27,7 +31,8 @@ class GeoServerV1Builder:
         }
 
     @classmethod
-    def build_layer_list(cls, *, request, layers) -> dict:
+    def build_layer_list(cls, *, request, layers, provider_id=None) -> dict:
+        cls._require_provider_id(provider_id)
         return {
             "layers": {
                 "layer": [
@@ -35,11 +40,14 @@ class GeoServerV1Builder:
                         "name": layer.name,
                         "href": request.build_absolute_uri(
                             reverse(
-                                "catalog-v1-layer-info",
-                                kwargs={
-                                    "workspace_name": layer.workspace.name,
-                                    "layer_name": layer.name,
-                                },
+                                "catalog-v1-provider-layer-info",
+                                kwargs=cls._route_kwargs(
+                                    {
+                                        "workspace_name": layer.workspace.name,
+                                        "layer_name": layer.name,
+                                    },
+                                    provider_id=provider_id,
+                                ),
                             )
                         ),
                     }
@@ -49,7 +57,8 @@ class GeoServerV1Builder:
         }
 
     @classmethod
-    def build_layer_info(cls, *, request, layer, remote_layer_info: dict | None) -> dict:
+    def build_layer_info(cls, *, request, layer, remote_layer_info: dict | None, provider_id=None) -> dict:
+        cls._require_provider_id(provider_id)
         remote_layer = cls._extract_remote_layer(remote_layer_info)
         default_style = cls._get_default_style(layer=layer, remote_layer=remote_layer)
         layer_type = cls._get_layer_type(layer)
@@ -62,7 +71,13 @@ class GeoServerV1Builder:
                 "defaultStyle": {
                     "name": default_style["name"],
                     "href": request.build_absolute_uri(
-                        reverse("catalog-v1-style-detail", kwargs={"style_ref": default_style["href_ref"]})
+                        reverse(
+                            "catalog-v1-provider-style-detail",
+                            kwargs=cls._route_kwargs(
+                                {"style_ref": default_style["href_ref"]},
+                                provider_id=provider_id,
+                            ),
+                        )
                     ),
                 },
                 "resource": {
@@ -70,11 +85,14 @@ class GeoServerV1Builder:
                     "name": layer.name,
                     "href": request.build_absolute_uri(
                         reverse(
-                            "catalog-v1-layer-detail",
-                            kwargs={
-                                "workspace_name": layer.workspace.name,
-                                "layer_name": layer.name,
-                            },
+                            "catalog-v1-provider-layer-detail",
+                            kwargs=cls._route_kwargs(
+                                {
+                                    "workspace_name": layer.workspace.name,
+                                    "layer_name": layer.name,
+                                },
+                                provider_id=provider_id,
+                            ),
                         )
                     ),
                 },
@@ -98,7 +116,13 @@ class GeoServerV1Builder:
             payload["layer"]["defaultStyle"] = {
                 "name": default_style["name"],
                 "href": request.build_absolute_uri(
-                    reverse("catalog-v1-style-detail", kwargs={"style_ref": default_style["href_ref"]})
+                    reverse(
+                        "catalog-v1-provider-style-detail",
+                        kwargs=cls._route_kwargs(
+                            {"style_ref": default_style["href_ref"]},
+                            provider_id=provider_id,
+                        ),
+                    )
                 ),
             }
             payload["layer"]["resource"] = {
@@ -106,11 +130,14 @@ class GeoServerV1Builder:
                 "name": layer.name,
                 "href": request.build_absolute_uri(
                     reverse(
-                        "catalog-v1-layer-detail",
-                        kwargs={
-                            "workspace_name": layer.workspace.name,
-                            "layer_name": layer.name,
-                        },
+                        "catalog-v1-provider-layer-detail",
+                        kwargs=cls._route_kwargs(
+                            {
+                                "workspace_name": layer.workspace.name,
+                                "layer_name": layer.name,
+                            },
+                            provider_id=provider_id,
+                        ),
                     )
                 ),
             }
@@ -272,6 +299,15 @@ class GeoServerV1Builder:
             "maxy": 0,
             "crs": f"EPSG:{srid}",
         }
+
+    @staticmethod
+    def _require_provider_id(provider_id) -> None:
+        if provider_id is None:
+            raise ValueError("Catalog v1 responses require provider_id-scoped routes.")
+
+    @staticmethod
+    def _route_kwargs(kwargs: dict, *, provider_id=None) -> dict:
+        return {"provider_id": provider_id, **kwargs}
 
     @staticmethod
     def _extract_remote_layer(remote_layer_info: dict | None) -> dict | None:

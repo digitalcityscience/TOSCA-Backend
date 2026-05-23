@@ -12,7 +12,8 @@ class ProviderQueryServiceTestCase(TestCase):
             name="Active Engine",
             description="active provider",
             engine_type="geoserver",
-            base_url="http://active.example/geoserver",
+            base_url="http://active.internal/geoserver",
+            public_url="http://active.example/geoserver",
             admin_username="admin",
             admin_password="secret",
             is_active=True,
@@ -24,6 +25,7 @@ class ProviderQueryServiceTestCase(TestCase):
             description="inactive provider",
             engine_type="martin",
             base_url="http://inactive.example",
+            public_url="http://inactive.example",
             admin_username="admin",
             admin_password="secret",
             is_active=False,
@@ -114,6 +116,8 @@ class ProviderQueryServiceTestCase(TestCase):
             {
                 "id",
                 "name",
+                "base_url",
+                "internal_base_url",
                 "engine_type",
                 "description",
                 "is_active",
@@ -124,6 +128,8 @@ class ProviderQueryServiceTestCase(TestCase):
         )
         self.assertEqual(active_provider["workspace_count"], 2)
         self.assertEqual(active_provider["layer_count"], 2)
+        self.assertEqual(active_provider["base_url"], "http://active.example/geoserver")
+        self.assertEqual(active_provider["internal_base_url"], "http://active.internal/geoserver")
         self.assertEqual(active_provider["engine_type"], "geoserver")
         self.assertTrue(active_provider["is_default"])
         self.assertEqual(inactive_provider["workspace_count"], 0)

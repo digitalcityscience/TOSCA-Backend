@@ -8,13 +8,160 @@ from django.http import QueryDict
 from django.test import RequestFactory
 from django.test import TestCase
 
-from tosca_api.apps.geodata_providers.admin import DeleteAborted, LayerAdmin, StoreAdmin, StoreAdminForm, StyleAdmin, WorkspaceAdminForm
+from tosca_api.apps.geodata_providers.admin import (
+    DeleteAborted,
+    LayerAdmin,
+    StoreAdmin,
+    StoreAdminForm,
+    StyleAdmin,
+    WorkspaceAdmin,
+    WorkspaceAdminForm,
+)
 from tosca_api.apps.geodata_providers.admin_actions.layer import publish_layer, unpublish_layer
+from tosca_api.apps.geodata_providers.admin_forms import PublishPostGISForm
 from tosca_api.apps.geodata_providers.admin_views.layer import publish_postgis_view
 from tosca_api.apps.geodata_providers.admin_views.store import store_clone_view
 from tosca_api.apps.geodata_providers.geoserver.client import GeoServerClient
 from tosca_api.apps.geodata_providers.admin_views.layer import tables_for_store_view
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Style, Workspace
+
+
+class InactiveProviderAdminVisibilityTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='inactiveadmin',
+            email='inactiveadmin@example.com',
+            password='testpass123',
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.active_engine = GeodataEngine.objects.create(
+            name='Active Admin Engine',
+            description='active',
+            base_url='http://active.example.com/geoserver',
+            public_url='http://active.example.com/geoserver',
+            admin_username='admin',
+            admin_password='secret',
+            is_active=True,
+            created_by=self.user,
+        )
+        self.inactive_engine = GeodataEngine.objects.create(
+            name='Inactive Admin Engine',
+            description='inactive',
+            base_url='http://inactive.example.com/geoserver',
+            public_url='http://inactive.example.com/geoserver',
+            admin_username='admin',
+            admin_password='secret',
+            is_active=False,
+            created_by=self.user,
+        )
+        self.active_workspace = Workspace.objects.create(
+            geodata_engine=self.active_engine,
+            name='active_ws',
+            description='active',
+            created_by=self.user,
+        )
+        self.inactive_workspace = Workspace.objects.create(
+            geodata_engine=self.inactive_engine,
+            name='inactive_ws',
+            description='inactive',
+            created_by=self.user,
+        )
+        self.active_store = Store.objects.create(
+            workspace=self.active_workspace,
+            geodata_engine=self.active_engine,
+            name='active_store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='active',
+            created_by=self.user,
+        )
+        self.inactive_store = Store.objects.create(
+            workspace=self.inactive_workspace,
+            geodata_engine=self.inactive_engine,
+            name='inactive_store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='inactive',
+            created_by=self.user,
+        )
+        self.active_layer = Layer.objects.create(
+            workspace=self.active_workspace,
+            store=self.active_store,
+            name='active_layer',
+            title='Active Layer',
+            table_name='active_layer',
+            geometry_column='geom',
+            geometry_type='Point',
+            srid=4326,
+            publishing_state='PUBLISHED',
+            created_by=self.user,
+        )
+        self.inactive_layer = Layer.objects.create(
+            workspace=self.inactive_workspace,
+            store=self.inactive_store,
+            name='inactive_layer',
+            title='Inactive Layer',
+            table_name='inactive_layer',
+            geometry_column='geom',
+            geometry_type='Point',
+            srid=4326,
+            publishing_state='PUBLISHED',
+            created_by=self.user,
+        )
+        self.active_style = Style.objects.create(
+            geodata_engine=self.active_engine,
+            name='active_style',
+            title='Active Style',
+            format='sld',
+            file_content='<StyledLayerDescriptor />',
+            created_by=self.user,
+        )
+        self.inactive_style = Style.objects.create(
+            geodata_engine=self.inactive_engine,
+            name='inactive_style',
+            title='Inactive Style',
+            format='sld',
+            file_content='<StyledLayerDescriptor />',
+            created_by=self.user,
+        )
+        self.site = AdminSite()
+        self.request_factory = RequestFactory()
+        self.request = self.request_factory.get('/admin/geodata_providers/')
+        self.request.user = self.user
+
+    def test_child_admin_changelists_hide_inactive_provider_resources(self):
+        admin_expectations = [
+            (WorkspaceAdmin(Workspace, self.site), self.active_workspace, self.inactive_workspace),
+            (StoreAdmin(Store, self.site), self.active_store, self.inactive_store),
+            (LayerAdmin(Layer, self.site), self.active_layer, self.inactive_layer),
+            (StyleAdmin(Style, self.site), self.active_style, self.inactive_style),
+        ]
+
+        for model_admin, visible_obj, hidden_obj in admin_expectations:
+            with self.subTest(model=model_admin.model.__name__):
+                queryset = model_admin.get_queryset(self.request)
+
+                self.assertIn(visible_obj, queryset)
+                self.assertNotIn(hidden_obj, queryset)
+
+    def test_publish_postgis_form_hides_inactive_provider_resources(self):
+        form = PublishPostGISForm()
+
+        self.assertIn(self.active_workspace, form.fields['workspace'].queryset)
+        self.assertNotIn(self.inactive_workspace, form.fields['workspace'].queryset)
+        self.assertIn(self.active_store, form.fields['store'].queryset)
+        self.assertNotIn(self.inactive_store, form.fields['store'].queryset)
 
 
 class AdminFormCreateFlowTests(TestCase):
@@ -28,6 +175,7 @@ class AdminFormCreateFlowTests(TestCase):
             name='Admin Form Engine',
             description='test',
             base_url='http://example.com/geoserver',
+            public_url='http://example.com/geoserver',
             admin_username='admin',
             admin_password='secret',
             is_active=True,
@@ -49,13 +197,13 @@ class AdminFormCreateFlowTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn('reserved', form.errors['name'][0])
 
-    @patch('tosca_api.apps.geodata_providers.admin.EngineClientFactory.create_client')
-    def test_store_add_form_runs_remote_create_for_unsaved_uuid_instance(self, mock_create_client):
-        client = MagicMock()
-        client.create_postgis_store.return_value = {'success': True}
-        client.post_verify_store.return_value = {'verified': True, 'success': True}
-        mock_create_client.return_value = client
-
+    @patch('tosca_api.apps.geodata_providers.admin.StoreService.test_store_connection')
+    def test_store_add_form_validates_connection_without_remote_create(self, mock_test_store_connection):
+        mock_test_store_connection.return_value = {
+            'success': True,
+            'message': 'PostGIS connection validated.',
+            'details': {'schema_exists': True},
+        }
         workspace = Workspace.objects.create(
             geodata_engine=self.engine,
             name='store_ws',
@@ -83,9 +231,8 @@ class AdminFormCreateFlowTests(TestCase):
         )
 
         self.assertTrue(form.is_valid(), form.errors)
-        client.create_postgis_store.assert_called_once_with(
-            name='new_store',
-            workspace='store_ws',
+        mock_test_store_connection.assert_called_once_with(
+            store_type='postgis',
             host='db',
             port=5432,
             database='gis',
@@ -93,18 +240,43 @@ class AdminFormCreateFlowTests(TestCase):
             password='secret',
             schema='public',
         )
-        client.post_verify_store.assert_called_once_with(
-            'store_ws',
-            'new_store',
-            expected_exists=True,
-            expected_details={
+
+    @patch('tosca_api.apps.geodata_providers.admin.StoreService.test_store_connection')
+    def test_store_add_form_rejects_failed_connection_validation(self, mock_test_store_connection):
+        mock_test_store_connection.return_value = {
+            'success': False,
+            'error': 'Could not connect to PostGIS.',
+            'message': 'Could not connect to PostGIS.',
+            'details': {},
+        }
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='invalid_store_ws',
+            description='desc',
+            created_by=self.user,
+        )
+
+        form = StoreAdminForm(
+            data={
+                'workspace': str(workspace.pk),
+                'geodata_engine': '',
+                'name': 'invalid_store',
+                'store_type': 'postgis',
+                'description': 'desc',
                 'host': 'db',
                 'port': 5432,
                 'database': 'gis',
                 'username': 'postgres',
+                'password': 'wrong',
                 'schema': 'public',
-            },
+                'file_path': '',
+                'charset': 'UTF-8',
+                'created_by': str(self.user.pk),
+            }
         )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn('Could not connect to PostGIS.', form.non_field_errors())
 
     def test_store_add_form_requires_file_path_for_file_stores(self):
         workspace = Workspace.objects.create(
@@ -140,7 +312,8 @@ class AdminFormCreateFlowTests(TestCase):
         )
 
     @patch('tosca_api.apps.geodata_providers.admin._run_workspace_sync')
-    def test_store_admin_save_model_sets_engine_from_workspace(self, mock_run_workspace_sync):
+    @patch('tosca_api.apps.geodata_providers.admin.StoreService.create_postgis_store')
+    def test_store_admin_save_model_uses_service(self, mock_create_postgis_store, mock_run_workspace_sync):
         workspace = Workspace.objects.create(
             geodata_engine=self.engine,
             name='save_ws',
@@ -165,11 +338,206 @@ class AdminFormCreateFlowTests(TestCase):
         model_admin = StoreAdmin(Store, self.site)
         form = MagicMock()
         form.cleaned_data = {'password': 'secret'}
+        saved_store = Store.objects.create(
+            workspace=workspace,
+            geodata_engine=self.engine,
+            name='store_to_save',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='desc',
+            created_by=self.user,
+        )
+        mock_create_postgis_store.return_value = {'success': True, 'resource': saved_store}
 
         model_admin.save_model(request, store, form, change=False)
 
-        store.refresh_from_db()
         self.assertEqual(store.geodata_engine, self.engine)
+        mock_create_postgis_store.assert_called_once()
+        mock_run_workspace_sync.assert_called_once()
+
+    @patch('tosca_api.apps.geodata_providers.admin.StoreService.test_store_connection')
+    def test_store_edit_form_allows_connection_correction_without_layers(self, mock_test_store_connection):
+        mock_test_store_connection.return_value = {
+            'success': True,
+            'message': 'PostGIS connection validated.',
+            'details': {'schema_exists': True},
+        }
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='editable_ws',
+            description='desc',
+            created_by=self.user,
+        )
+        store = Store.objects.create(
+            workspace=workspace,
+            geodata_engine=self.engine,
+            name='editable_store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='desc',
+            created_by=self.user,
+        )
+
+        form = StoreAdminForm(
+            data={
+                'workspace': str(workspace.pk),
+                'geodata_engine': str(self.engine.pk),
+                'name': 'editable_store',
+                'store_type': 'postgis',
+                'description': 'desc',
+                'host': 'db',
+                'port': 5432,
+                'database': 'gis',
+                'username': 'postgres',
+                'password': '',
+                'schema': 'gis_schema',
+                'file_path': '',
+                'charset': 'UTF-8',
+                'created_by': str(self.user.pk),
+            },
+            instance=store,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        mock_test_store_connection.assert_called_once()
+
+    @patch('tosca_api.apps.geodata_providers.admin.StoreService.test_store_connection')
+    def test_store_edit_form_allows_connection_correction_with_layers(self, mock_test_store_connection):
+        mock_test_store_connection.return_value = {
+            'success': True,
+            'message': 'PostGIS connection validated.',
+            'details': {'schema_exists': True},
+        }
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='locked_ws',
+            description='desc',
+            created_by=self.user,
+        )
+        store = Store.objects.create(
+            workspace=workspace,
+            geodata_engine=self.engine,
+            name='locked_store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='desc',
+            created_by=self.user,
+        )
+        Layer.objects.create(
+            workspace=workspace,
+            store=store,
+            name='locked_layer',
+            title='Locked Layer',
+            table_name='locked_layer',
+            geometry_column='geom',
+            geometry_type='Point',
+            srid=4326,
+            created_by=self.user,
+        )
+
+        form = StoreAdminForm(
+            data={
+                'workspace': str(workspace.pk),
+                'geodata_engine': str(self.engine.pk),
+                'name': 'locked_store',
+                'store_type': 'postgis',
+                'description': 'desc',
+                'host': 'db',
+                'port': 5432,
+                'database': 'gis',
+                'username': 'postgres',
+                'password': '',
+                'schema': 'gis_schema',
+                'file_path': '',
+                'charset': 'UTF-8',
+                'created_by': str(self.user.pk),
+            },
+            instance=store,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        mock_test_store_connection.assert_called_once()
+
+    @patch('tosca_api.apps.geodata_providers.admin._run_workspace_sync')
+    @patch('tosca_api.apps.geodata_providers.services.commands.store_service.test_postgis_connection')
+    @patch('tosca_api.apps.geodata_providers.services.commands.store_service.EngineClientFactory.create_client')
+    def test_store_admin_save_model_updates_existing_connection(
+        self,
+        mock_create_client,
+        mock_test_postgis_connection,
+        mock_run_workspace_sync,
+    ):
+        mock_test_postgis_connection.return_value = {'schema_exists': True}
+        mock_create_client.return_value.update_postgis_store.return_value = {
+            'success': True,
+            'verified': True,
+            'message': 'updated',
+        }
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='save_update_ws',
+            description='desc',
+            created_by=self.user,
+        )
+        store = Store.objects.create(
+            workspace=workspace,
+            geodata_engine=self.engine,
+            name='save_update_store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='desc',
+            created_by=self.user,
+        )
+        request = self.request_factory.post(f'/admin/geodata_providers/store/{store.pk}/change/')
+        request.user = self.user
+        model_admin = StoreAdmin(Store, self.site)
+        form = StoreAdminForm(
+            data={
+                'workspace': str(workspace.pk),
+                'geodata_engine': str(self.engine.pk),
+                'name': 'save_update_store',
+                'store_type': 'postgis',
+                'description': 'desc',
+                'host': 'db',
+                'port': 5432,
+                'database': 'gis',
+                'username': 'postgres',
+                'password': '',
+                'schema': 'gis_schema',
+                'file_path': '',
+                'charset': 'UTF-8',
+                'created_by': str(self.user.pk),
+            },
+            instance=store,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        changed_store = form.save(commit=False)
+        model_admin.save_model(request, changed_store, form, change=True)
+
+        store.refresh_from_db()
+        self.assertEqual(store.schema, 'gis_schema')
+        mock_create_client.return_value.update_postgis_store.assert_called_once()
         mock_run_workspace_sync.assert_called_once()
 
     def test_store_admin_delete_is_blocked_when_layers_exist(self):
@@ -442,6 +810,7 @@ class AdminFormCreateFlowTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         mock_clone_store.assert_called_once()
+        self.assertFalse(mock_clone_store.call_args.kwargs['clone_layers'])
         mock_success.assert_called()
         mock_warning.assert_not_called()
 
@@ -459,6 +828,7 @@ class LayerAdminAjaxTests(TestCase):
             name='Layer Engine',
             description='test',
             base_url='http://example.com/geoserver',
+            public_url='http://example.com/geoserver',
             admin_username='admin',
             admin_password='secret',
             is_active=True,
@@ -548,6 +918,7 @@ class LayerDeleteBehaviorTests(TestCase):
             name='Delete Engine',
             description='test',
             base_url='http://example.com/geoserver',
+            public_url='http://example.com/geoserver',
             admin_username='admin',
             admin_password='secret',
             is_active=True,
@@ -663,6 +1034,7 @@ class LayerSurfaceRefactorTests(TestCase):
             name='Surface Engine',
             description='test',
             base_url='http://example.com/geoserver',
+            public_url='http://example.com/geoserver',
             admin_username='admin',
             admin_password='secret',
             is_active=True,

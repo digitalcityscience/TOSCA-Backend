@@ -349,12 +349,12 @@ django-logs: which-env
 # Open bash shell in Django container
 django-cmd: which-env
 	@echo "$(COLOR_BLUE)💻 Opening bash shell in Django container...$(COLOR_RESET)"
-	docker exec -it tosca-django bash
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django bash
 
 # Open Django shell
 django-shell: which-env
 	@echo "$(COLOR_BLUE)🐍 Opening Django shell...$(COLOR_RESET)"
-	docker exec -it tosca-django uv run python manage.py shell
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py shell
 
 # Run Django migrations
 # Usage: make django-migrate
@@ -364,13 +364,13 @@ django-migrate: which-env
 	@echo "$(COLOR_BLUE)📦 Running Django migrations...$(COLOR_RESET)"
 	@if [ -n "$(APP)" ] && [ -n "$(MIGRATION)" ]; then \
 		echo "Running: migrate $(APP) $(MIGRATION)"; \
-		docker exec -it tosca-django uv run python manage.py migrate $(APP) $(MIGRATION); \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py migrate $(APP) $(MIGRATION); \
 	elif [ -n "$(APP)" ]; then \
 		echo "Running: migrate $(APP)"; \
-		docker exec -it tosca-django uv run python manage.py migrate $(APP); \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py migrate $(APP); \
 	else \
 		echo "Running: migrate (all apps)"; \
-		docker exec -it tosca-django uv run python manage.py migrate; \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py migrate; \
 	fi
 
 # Create new Django migrations
@@ -380,16 +380,16 @@ django-makemigrations: which-env
 	@echo "$(COLOR_BLUE)📝 Creating new Django migrations...$(COLOR_RESET)"
 	@if [ -n "$(APP)" ]; then \
 		echo "Running: makemigrations $(APP)"; \
-		docker exec -it tosca-django uv run python manage.py makemigrations $(APP); \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py makemigrations $(APP); \
 	else \
 		echo "Running: makemigrations (all apps)"; \
-		docker exec -it tosca-django uv run python manage.py makemigrations; \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py makemigrations; \
 	fi
 
 # Create Django superuser
 django-createsuperuser: which-env
 	@echo "$(COLOR_BLUE)👤 Creating Django superuser...$(COLOR_RESET)"
-	docker exec -it tosca-django uv run python manage.py createsuperuser
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py createsuperuser
 
 # -------------------------------------------------
 # UV Package Management Commands
@@ -398,12 +398,12 @@ django-createsuperuser: which-env
 # Sync dependencies from pyproject.toml and uv.lock
 uv-sync: which-env
 	@echo "$(COLOR_YELLOW)📦 Syncing dependencies with uv...$(COLOR_RESET)"
-	docker exec -it tosca-django uv sync
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv sync
 
 # Install all dependencies including dev
 uv-install: which-env
 	@echo "$(COLOR_YELLOW)📦 Installing all dependencies (including dev)...$(COLOR_RESET)"
-	docker exec -it tosca-django uv sync --all-extras
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv sync --all-extras
 
 # Add a new package
 uv-add: which-env
@@ -413,14 +413,14 @@ ifndef PKG
 	@echo "Example: make uv-add PKG=requests"
 else
 	@echo "$(COLOR_YELLOW)➕ Adding package: $(PKG)$(COLOR_RESET)"
-	docker exec -it tosca-django uv add $(PKG)
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv add $(PKG)
 	@echo "$(COLOR_GREEN)✅ Package added! Don't forget to rebuild the image.$(COLOR_RESET)"
 endif
 
 # Update uv.lock file
 uv-lock: which-env
 	@echo "$(COLOR_YELLOW)🔒 Updating uv.lock file...$(COLOR_RESET)"
-	docker exec -it tosca-django uv lock
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv lock
 
 # -------------------------------------------------
 # Utility Commands
@@ -444,12 +444,12 @@ clean:
 # Sync GeoEngine with active engine
 sync-django-geoengine: which-env
 	@echo "$(COLOR_BLUE)🔄 Syncing GeoEngine with active engine...$(COLOR_RESET)"
-	docker exec -it tosca-django uv run python manage.py sync_geoengine_dev
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py sync_geoengine_dev
 
 # Run GeoEngine smoke test
 smoke-test: which-env
 	@echo "$(COLOR_BLUE)🧪 Running GeoEngine smoke test...$(COLOR_RESET)"
-	docker exec -it tosca-django uv run python manage.py geoengine_smoke_test
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py geoengine_smoke_test
 
 # Allow arguments to be passed to certain commands
 %:

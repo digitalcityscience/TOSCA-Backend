@@ -12,6 +12,7 @@ class GeodataEngineService:
     CONNECTION_FIELDS = {
         'engine_type',
         'base_url',
+        'public_url',
         'admin_username',
         'admin_password',
         'api_key',
@@ -21,6 +22,7 @@ class GeodataEngineService:
         'description',
         'engine_type',
         'base_url',
+        'public_url',
         'admin_username',
         'admin_password',
         'api_key',
@@ -137,6 +139,9 @@ class GeodataEngineService:
 
     @classmethod
     def sync_engine(cls, engine: GeodataEngine, *, user) -> dict:
+        if not engine.is_active:
+            return cls._inactive_sync_skipped_result(engine)
+
         service = EngineClientFactory.create_sync_service(engine)
         result = service.sync_all_resources(created_by=user)
         result['db_workspace_count'] = Workspace.objects.filter(geodata_engine=engine).count()
@@ -166,6 +171,7 @@ class GeodataEngineService:
         payload.setdefault('description', config.get('description') or '')
         payload.setdefault('engine_type', config.get('engine_type') or 'geoserver')
         payload.setdefault('base_url', config.get('base_url') or '')
+        payload.setdefault('public_url', config.get('public_url') or payload['base_url'])
         payload.setdefault('admin_username', config.get('admin_username') or '')
         payload.setdefault('admin_password', config.get('admin_password') or '')
         payload.setdefault('api_key', config.get('api_key') or '')
@@ -180,6 +186,7 @@ class GeodataEngineService:
             'description': engine.description,
             'engine_type': engine.engine_type,
             'base_url': engine.base_url,
+            'public_url': engine.public_url,
             'admin_username': engine.admin_username,
             'admin_password': engine.admin_password,
             'api_key': engine.api_key,
@@ -294,6 +301,18 @@ class GeodataEngineService:
     @staticmethod
     def _sync_skipped_result() -> dict:
         return {'success': None, 'skipped': True, 'reason': 'Sync not requested'}
+
+    @staticmethod
+    def _inactive_sync_skipped_result(engine: GeodataEngine) -> dict:
+        return {
+            'success': True,
+            'skipped': True,
+            'reason': f"Engine '{engine.name}' is inactive.",
+            'db_workspace_count': Workspace.objects.filter(geodata_engine=engine).count(),
+            'db_store_count': Store.objects.filter(workspace__geodata_engine=engine).count(),
+            'db_style_count': Style.objects.filter(geodata_engine=engine).count(),
+            'db_layer_count': Layer.objects.filter(workspace__geodata_engine=engine).count(),
+        }
 
     @classmethod
     def _sync_after_save(cls, engine: GeodataEngine, *, user, trigger_sync: bool) -> dict:

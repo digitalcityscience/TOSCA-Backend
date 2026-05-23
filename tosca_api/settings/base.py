@@ -383,5 +383,6 @@ LOGGING = {
 # -------------------------------------------------
 GEOSERVER_HOST = env("GEOSERVER_HOST", default="localhost")
 GEOSERVER_PORT = env("GEOSERVER_PORT", default="8080")
+GEOSERVER_PUBLIC_URL = env("GEOSERVER_PUBLIC_URL", default="")
 GEOSERVER_ADMIN_USER = env("GEOSERVER_ADMIN_USER", default="admin2")
 GEOSERVER_ADMIN_PASSWORD = env("GEOSERVER_ADMIN_PASSWORD", default="geoserver2")

@@ -117,6 +117,14 @@ def _admin_change_url(obj):
     )
 
 
+def _active_workspace_queryset():
+    return (
+        Workspace.objects.select_related('geodata_engine')
+        .filter(geodata_engine__is_active=True)
+        .order_by('geodata_engine__name', 'name')
+    )
+
+
 class RemoteDeleteAdminMixin:
     def delete_view(self, request, object_id, extra_context=None):
         try:
@@ -209,6 +217,18 @@ def _run_workspace_sync(modeladmin, request, workspace):
     )
 
 
+def _sync_state_badge(obj):
+    colour = {
+        'SYNCED': '#198754',
+        'LOCAL_ONLY': '#0d6efd',
+        'REMOTE_ONLY': '#6f42c1',
+        'STALE': '#f5a623',
+        'FAILED': '#dc3545',
+        'UNKNOWN': '#6c757d',
+    }.get(obj.sync_state, '#6c757d')
+    return format_html('<strong style="color:{};">{}</strong>', colour, obj.sync_state)
+
+
 # Admin Forms
 class GeodataEngineForm(forms.ModelForm):
     class Meta:
@@ -218,6 +238,7 @@ class GeodataEngineForm(forms.ModelForm):
             'admin_password': forms.PasswordInput(render_value=False),
             'api_key': forms.PasswordInput(render_value=False),
             'base_url': forms.TextInput(attrs={'size': 60}),
+            'public_url': forms.TextInput(attrs={'size': 60}),
             'description': forms.Textarea(attrs={'rows': 3}),
         }
 
@@ -239,6 +260,7 @@ class GeodataEngineForm(forms.ModelForm):
             description=cleaned_data.get('description') or self.instance.description,
             engine_type=engine_type,
             base_url=cleaned_data.get('base_url') or self.instance.base_url,
+            public_url=cleaned_data.get('public_url') or self.instance.public_url,
             admin_username=cleaned_data.get('admin_username') or self.instance.admin_username,
             admin_password=password or '',
             api_key=cleaned_data.get('api_key') or self.instance.api_key,
@@ -289,13 +311,13 @@ class GeodataEngineAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     form = GeodataEngineForm
     change_form_template = 'admin/geodata_providers/geodataengine/change_form.html'
     list_display = [
-        'name', 'engine_type', 'base_url',
+        'name', 'engine_type', 'base_url', 'public_url',
         'is_active', 'is_default',
         'connection_status_badge', 'workspace_count', 'style_count',
         'layer_count', 'active_layer_settings_count',
     ]
     list_filter = ['engine_type', 'is_active', 'is_default']
-    search_fields = ['name', 'base_url']
+    search_fields = ['name', 'base_url', 'public_url']
     readonly_fields = ['id', 'created_at', 'updated_at']
     list_per_page = 25
     actions = [sync_engines, test_connection, set_as_default, deactivate_engines, reactivate_engines]
@@ -495,10 +517,10 @@ class StoreInline(admin.TabularInline):
 class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     form = WorkspaceAdminForm
     change_form_template = 'admin/geodata_providers/workspace/change_form.html'
-    list_display = ['name', 'engine_link', 'description', 'store_count', 'layer_count', 'created_at']
-    list_filter = ['geodata_engine', 'geodata_engine__engine_type']
+    list_display = ['name', 'engine_link', 'description', 'sync_state_badge', 'store_count', 'layer_count', 'created_at']
+    list_filter = ['geodata_engine', 'geodata_engine__engine_type', 'sync_state']
     search_fields = ['name', 'geodata_engine__name']
-    readonly_fields = ['id', 'created_at', 'updated_at']
+    readonly_fields = ['id', 'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash', 'created_at', 'updated_at']
     inlines = [StoreInline]
     actions = [sync_workspaces]
     list_per_page = 25
@@ -508,7 +530,7 @@ class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
             'fields': ('geodata_engine', 'name', 'description'),
         }),
         ('Metadata', {
-            'fields': ('id', 'created_at', 'updated_at'),
+            'fields': ('id', 'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash', 'created_at', 'updated_at'),
             'classes': ('collapse',),
         }),
     )
@@ -530,7 +552,11 @@ class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     # Queryset — annotate store + layer counts (tasks 2.1.6)
     # ------------------------------------------------------------------
     def get_queryset(self, request):
-        qs = super().get_queryset(request).select_related('geodata_engine')
+        qs = (
+            super().get_queryset(request)
+            .select_related('geodata_engine')
+            .filter(geodata_engine__is_active=True)
+        )
         return qs.annotate(
             _store_count=Count('stores', distinct=True),
             _layer_count=Count('layers', distinct=True),
@@ -569,6 +595,11 @@ class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         return obj._layer_count
     layer_count.short_description = 'Layers'
     layer_count.admin_order_field = '_layer_count'
+
+    def sync_state_badge(self, obj):
+        return _sync_state_badge(obj)
+    sync_state_badge.short_description = 'Sync state'
+    sync_state_badge.admin_order_field = 'sync_state'
 
     # ------------------------------------------------------------------
     # Save
@@ -636,9 +667,18 @@ class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
 
 class StoreAdminForm(forms.ModelForm):
     """Store form — password widget never pre-populates (task 3.2.3)."""
+    connection_fields_changed = False
+
     class Meta:
         model = Store
         fields = '__all__'
+        exclude = (
+            'sync_state',
+            'last_sync_at',
+            'last_sync_error',
+            'remote_identifier',
+            'remote_hash',
+        )
         widgets = {
             'password': forms.PasswordInput(
                 render_value=False,
@@ -659,21 +699,44 @@ class StoreAdminForm(forms.ModelForm):
         store_type = cleaned_data.get('store_type') or self.instance.store_type
         engine = workspace.geodata_engine if workspace else None
 
-        if not self.instance._state.adding:
-            if engine and store_type == 'postgis':
-                blocked_fields = ['host', 'port', 'database', 'username', 'schema']
-                changed_fields = [
-                    field for field in blocked_fields
-                    if cleaned_data.get(field) != getattr(self.instance, field)
-                ]
-                if cleaned_data.get('password'):
-                    changed_fields.append('password')
-                if changed_fields:
-                    raise ValidationError(
-                        "Updating an existing store's remote connection fields is not supported yet. "
-                        "Recreate the store or use an explicit sync-safe flow."
-                    )
+        if not self.instance._state.adding and engine and store_type == 'postgis':
+            changed_fields = self._changed_connection_fields(cleaned_data)
+            self.connection_fields_changed = bool(changed_fields)
+            if changed_fields:
+                try:
+                    password = cleaned_data.get('password') or self.instance.decrypted_password
+                except (ValueError, Exception):
+                    password = ''
+                result = StoreService.test_store_connection(
+                    store_type=store_type,
+                    host=cleaned_data.get('host') or '',
+                    port=cleaned_data.get('port') or 5432,
+                    database=cleaned_data.get('database') or '',
+                    username=cleaned_data.get('username') or '',
+                    password=password,
+                    schema=cleaned_data.get('schema') or 'public',
+                )
+                if not result.get('success'):
+                    field_errors = result.get('details', {}).get('field_errors', {})
+                    for field, message in field_errors.items():
+                        if field in self.fields:
+                            self.add_error(field, message)
+                    if not field_errors:
+                        raise ValidationError(
+                            result.get('error') or 'Store connection validation failed.'
+                        )
         return cleaned_data
+
+    def _changed_connection_fields(self, cleaned_data):
+        if self.instance._state.adding:
+            return []
+        changed_fields = [
+            field for field in ['host', 'port', 'database', 'username', 'schema']
+            if cleaned_data.get(field) != getattr(self.instance, field)
+        ]
+        if cleaned_data.get('password'):
+            changed_fields.append('password')
+        return changed_fields
 
     def _post_clean(self):
         super()._post_clean()
@@ -692,46 +755,24 @@ class StoreAdminForm(forms.ModelForm):
             self.add_error('password', 'Password is required to create a PostGIS store in the engine.')
             return
 
-        try:
-            client = EngineClientFactory.create_client(engine)
-            result = client.create_postgis_store(
-                name=self.cleaned_data.get('name'),
-                workspace=workspace.name,
-                host=self.cleaned_data.get('host'),
-                port=self.cleaned_data.get('port') or 5432,
-                database=self.cleaned_data.get('database'),
-                username=self.cleaned_data.get('username'),
-                password=password,
-                schema=self.cleaned_data.get('schema') or 'public',
-            )
-        except (GeoServerConnectionError, GeodataEngineError) as exc:
-            self.add_error(None, f"Store could not be created in engine: {exc}")
-            return
-
-        if not result.get('success'):
-            self.add_error(
-                None,
-                result.get('error') or result.get('message') or 'Store create failed in engine.',
-            )
-            return
-
-        verification = client.post_verify_store(
-            workspace.name,
-            self.cleaned_data.get('name'),
-            expected_exists=True,
-            expected_details={
-                'host': self.cleaned_data.get('host'),
-                'port': self.cleaned_data.get('port') or 5432,
-                'database': self.cleaned_data.get('database'),
-                'username': self.cleaned_data.get('username'),
-                'schema': self.cleaned_data.get('schema') or 'public',
-            },
+        result = StoreService.test_store_connection(
+            store_type=store_type,
+            host=self.cleaned_data.get('host') or '',
+            port=self.cleaned_data.get('port') or 5432,
+            database=self.cleaned_data.get('database') or '',
+            username=self.cleaned_data.get('username') or '',
+            password=password,
+            schema=self.cleaned_data.get('schema') or 'public',
         )
-        if not verification.get('verified'):
-            self.add_error(
-                None,
-                verification.get('message') or 'Store creation could not be verified in engine.',
-            )
+        if result.get('success'):
+            return
+
+        field_errors = result.get('details', {}).get('field_errors', {})
+        for field, message in field_errors.items():
+            if field in self.fields:
+                self.add_error(field, message)
+        if not field_errors:
+            self.add_error(None, result.get('error') or 'Store connection validation failed.')
 
 
 class StyleAdminForm(forms.ModelForm):
@@ -835,7 +876,7 @@ class StoreCloneForm(forms.Form):
         help_text='Must be unique within the target workspace.',
     )
     workspace = forms.ModelChoiceField(
-        queryset=Workspace.objects.select_related('geodata_engine').order_by('geodata_engine__name', 'name'),
+        queryset=_active_workspace_queryset(),
         label='Target workspace',
     )
     description = forms.CharField(
@@ -854,7 +895,12 @@ class StoreCloneForm(forms.Form):
         label='DB Password',
         help_text='Required to create the store in GeoServer. Not cloned from source.',
     )
-
+    clone_layers = forms.BooleanField(
+        required=False,
+        initial=False,
+        label='Clone layers too',
+        help_text='Leave off to clone only the store. Enable to copy/publish source layers and valid style assignments.',
+    )
 
 class LayerInline(admin.TabularInline):
     """Read-only layer preview inside the store change form (task 3.4)."""
@@ -893,11 +939,11 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     actions = [clone_store]
     list_display = [
         'name', 'provider_link', 'workspace_link', 'store_type',
-        'host', 'schema', 'geoserver_access_badge', 'layer_count',
+        'host', 'schema', 'sync_state_badge', 'geoserver_access_badge', 'layer_count',
     ]
-    list_filter = ['store_type', 'workspace__geodata_engine', 'workspace', NoCredentialFilter]
+    list_filter = ['workspace__geodata_engine', 'workspace', 'store_type', 'sync_state', NoCredentialFilter]
     search_fields = ['name', 'workspace__name', 'host', 'schema']
-    readonly_fields = ['provider_link', 'id', 'created_at', 'updated_at']
+    readonly_fields = ['provider_link', 'id', 'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash', 'created_at', 'updated_at']
     inlines = [LayerInline]
     list_per_page = 25
     change_form_template = 'admin/geodata_providers/store/change_form.html'
@@ -916,7 +962,7 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
             'description': 'Required for file-based and GeoTIFF stores.',
         }),
         ('Metadata', {
-            'fields': ('id', 'created_at', 'updated_at'),
+            'fields': ('id', 'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash', 'created_at', 'updated_at'),
             'classes': ('collapse',),
         }),
     )
@@ -943,7 +989,11 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     # Queryset — annotate layer count
     # ------------------------------------------------------------------
     def get_queryset(self, request):
-        qs = super().get_queryset(request).select_related('workspace__geodata_engine')
+        qs = (
+            super().get_queryset(request)
+            .select_related('workspace__geodata_engine')
+            .filter(workspace__geodata_engine__is_active=True)
+        )
         return qs.annotate(_layer_count=Count('layers', distinct=True))
 
     # ------------------------------------------------------------------
@@ -958,10 +1008,7 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     def get_form(self, request, obj=None, **kwargs):
         form = super().get_form(request, obj, **kwargs)
         if 'workspace' in form.base_fields:
-            form.base_fields['workspace'].queryset = (
-                Workspace.objects.select_related('geodata_engine')
-                .all().order_by('geodata_engine__name', 'name')
-            )
+            form.base_fields['workspace'].queryset = _active_workspace_queryset()
         return form
 
     def render_change_form(self, request, context, add=False, change=False, form_url='', obj=None):
@@ -1020,10 +1067,20 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     layer_count.short_description = 'Layers'
     layer_count.admin_order_field = '_layer_count'
 
+    def sync_state_badge(self, obj):
+        return _sync_state_badge(obj)
+    sync_state_badge.short_description = 'Sync state'
+    sync_state_badge.admin_order_field = 'sync_state'
+
     # ------------------------------------------------------------------
     # Save — preserve existing encrypted password if submitted blank (3.2.4)
     # ------------------------------------------------------------------
     def save_model(self, request, obj, form, change):
+        connection_fields_changed = (
+            change
+            and obj.store_type == Store.StoreType.POSTGIS
+            and bool(getattr(form, 'connection_fields_changed', False))
+        )
         if change and not form.cleaned_data.get('password'):
             # Reload the stored encrypted value so we never overwrite with ''
             obj.password = Store.objects.filter(pk=obj.pk).values_list('password', flat=True).first() or ''
@@ -1031,8 +1088,44 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
             obj.geodata_engine = obj.workspace.geodata_engine
         if not change:
             obj.created_by = request.user
-        with transaction.atomic():
-            super().save_model(request, obj, form, change)
+            result = StoreService.create_postgis_store(
+                workspace=obj.workspace,
+                name=obj.name,
+                user=request.user,
+                store_type=obj.store_type,
+                description=obj.description,
+                host=obj.host,
+                port=obj.port,
+                database=obj.database,
+                username=obj.username,
+                password=form.cleaned_data.get('password') or obj.password,
+                schema=obj.schema,
+                file_path=obj.file_path,
+                charset=obj.charset,
+            )
+            if not result.get('success'):
+                raise ValidationError(result.get('message', 'Store create failed.'))
+            store = result['resource']
+            obj.__dict__.update(store.__dict__)
+        elif connection_fields_changed:
+            password = form.cleaned_data.get('password') or obj.decrypted_password
+            result = StoreService.update_postgis_store_connection(
+                store=Store.objects.select_related('workspace__geodata_engine').get(pk=obj.pk),
+                host=obj.host,
+                port=obj.port,
+                database=obj.database,
+                username=obj.username,
+                password=password,
+                schema=obj.schema,
+                description=obj.description,
+            )
+            if not result.get('success'):
+                raise ValidationError(result.get('message', 'Store update failed.'))
+            store = result['resource']
+            obj.__dict__.update(store.__dict__)
+        else:
+            with transaction.atomic():
+                super().save_model(request, obj, form, change)
         if obj.workspace:
             _run_workspace_sync(self, request, obj.workspace)
 
@@ -1107,14 +1200,18 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     change_form_template = 'admin/geodata_providers/layer/change_form.html'
     list_display = [
         'name', 'title', 'workspace_link', 'store_name',
-        'geometry_type', 'srid', 'default_style_name', 'publishing_state_badge', 'is_public',
+        'geometry_type', 'srid', 'default_style_name', 'publishing_state_badge', 'sync_state_badge', 'is_public',
     ]
-    list_filter = ['publishing_state', 'geometry_type', 'workspace__geodata_engine', 'workspace', 'store', 'is_public']
+    list_filter = [
+        'workspace__geodata_engine', 'workspace', 'store',
+        'publishing_state', 'sync_state', 'geometry_type', 'is_public',
+    ]
     search_fields = ['name', 'title', 'table_name', 'workspace__name']
     readonly_fields = [
         'id', 'name', 'provider_link', 'table_name', 'geometry_column', 'geometry_type',
         'workspace', 'store', 'created_at', 'updated_at', 'publishing_state',
-        'published_url', 'publishing_error', 'default_style_display',
+        'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier',
+        'remote_hash', 'published_url', 'publishing_error', 'default_style_display',
         'additional_styles_display', 'available_styles_display', 'selected_styles_display',
     ]
     inlines = [LayerStyleInline]
@@ -1132,6 +1229,9 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         }),
         ('Visibility', {
             'fields': ('publishing_state', 'is_public', 'published_url', 'publishing_error'),
+        }),
+        ('Sync Result', {
+            'fields': ('sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash'),
         }),
         ('Layer Settings', {
             'fields': (
@@ -1212,13 +1312,21 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     publishing_state_badge.short_description = 'State'
     publishing_state_badge.admin_order_field = 'publishing_state'
 
+    def sync_state_badge(self, obj):
+        return _sync_state_badge(obj)
+    sync_state_badge.short_description = 'Sync state'
+    sync_state_badge.admin_order_field = 'sync_state'
+
     # ------------------------------------------------------------------
     # Queryset
     # ------------------------------------------------------------------
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related(
-            'workspace__geodata_engine', 'store',
-        ).prefetch_related('style_assignments__style', 'workspace__styles')
+        return (
+            super().get_queryset(request)
+            .select_related('workspace__geodata_engine', 'store')
+            .filter(workspace__geodata_engine__is_active=True)
+            .prefetch_related('style_assignments__style', 'workspace__styles')
+        )
 
     def render_change_form(self, request, context, add=False, change=False, form_url='', obj=None):
         workspace = obj.workspace if obj else None
@@ -1389,14 +1497,15 @@ class StyleAdmin(admin.ModelAdmin):
     change_form_template = 'admin/geodata_providers/style/change_form.html'
     list_display = [
         'name', 'title', 'format', 'provider_link', 'workspace_link',
-        'validation_state_badge', 'remote_state_badge', 'layer_link_count', 'updated_at',
+        'validation_state_badge', 'remote_state_badge', 'sync_state_badge', 'layer_link_count', 'updated_at',
     ]
-    list_filter = ['format', 'validation_state', 'remote_state', 'geodata_engine', 'workspace']
+    list_filter = ['geodata_engine', 'workspace', 'format', 'validation_state', 'remote_state', 'sync_state']
     search_fields = ['name', 'title', 'description', 'file_name']
     readonly_fields = [
         'id', 'content_hash', 'validation_state_badge', 'validation_errors_display',
         'remote_state_badge', 'remote_error_display', 'remote_uploaded_at',
-        'remote_verified_at', 'created_at', 'updated_at',
+        'remote_verified_at', 'sync_state_badge', 'last_sync_at', 'last_sync_error',
+        'remote_identifier', 'remote_hash', 'created_at', 'updated_at',
     ]
     list_per_page = 25
 
@@ -1413,6 +1522,9 @@ class StyleAdmin(admin.ModelAdmin):
         ('Remote Result', {
             'fields': ('remote_state_badge', 'remote_error_display', 'remote_uploaded_at', 'remote_verified_at'),
         }),
+        ('Sync Result', {
+            'fields': ('sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash'),
+        }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),
             'classes': ('collapse',),
@@ -1420,9 +1532,12 @@ class StyleAdmin(admin.ModelAdmin):
     )
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related(
-            'geodata_engine', 'workspace',
-        ).annotate(_layer_link_count=Count('layer_assignments', distinct=True))
+        return (
+            super().get_queryset(request)
+            .select_related('geodata_engine', 'workspace')
+            .filter(geodata_engine__is_active=True)
+            .annotate(_layer_link_count=Count('layer_assignments', distinct=True))
+        )
 
     def get_exclude(self, request, obj=None):
         return ['created_by']
@@ -1430,9 +1545,10 @@ class StyleAdmin(admin.ModelAdmin):
     def get_form(self, request, obj=None, **kwargs):
         form = super().get_form(request, obj, **kwargs)
         if 'workspace' in form.base_fields:
-            form.base_fields['workspace'].queryset = (
-                Workspace.objects.select_related('geodata_engine')
-                .all().order_by('geodata_engine__name', 'name')
+            form.base_fields['workspace'].queryset = _active_workspace_queryset()
+        if 'geodata_engine' in form.base_fields:
+            form.base_fields['geodata_engine'].queryset = (
+                GeodataEngine.objects.filter(is_active=True).order_by('name')
             )
         return form
 
@@ -1492,6 +1608,11 @@ class StyleAdmin(admin.ModelAdmin):
         return format_html('<strong style="color:{};">{}</strong>', colour, obj.remote_state)
     remote_state_badge.short_description = 'Remote state'
 
+    def sync_state_badge(self, obj):
+        return _sync_state_badge(obj)
+    sync_state_badge.short_description = 'Sync state'
+    sync_state_badge.admin_order_field = 'sync_state'
+
     def remote_error_display(self, obj):
         return obj.remote_error or '—'
     remote_error_display.short_description = 'Remote error'
@@ -1500,7 +1621,9 @@ class StyleAdmin(admin.ModelAdmin):
         if obj.geodata_engine.engine_type != 'geoserver':
             obj.remote_state = 'UNSUPPORTED'
             obj.remote_error = 'Remote style sync is not supported by this provider type.'
-            obj.save(update_fields=['remote_state', 'remote_error', 'updated_at'])
+            obj.sync_state = 'UNKNOWN'
+            obj.last_sync_error = obj.remote_error
+            obj.save(update_fields=['remote_state', 'remote_error', 'sync_state', 'last_sync_error', 'updated_at'])
             self.message_user(
                 request,
                 'Style validated and saved locally. Remote style sync is unsupported for this provider.',
@@ -1517,20 +1640,32 @@ class StyleAdmin(admin.ModelAdmin):
             overwrite=True,
         )
         if result.get('success'):
+            now = timezone.now()
             obj.remote_state = 'SYNCED'
             obj.remote_error = ''
-            obj.remote_uploaded_at = timezone.now()
-            obj.remote_verified_at = timezone.now()
+            obj.remote_uploaded_at = now
+            obj.remote_verified_at = now
+            obj.sync_state = 'SYNCED'
+            obj.last_sync_at = now
+            obj.last_sync_error = ''
+            obj.remote_identifier = obj.qualified_name
             obj.save(update_fields=[
                 'remote_state', 'remote_error', 'remote_uploaded_at',
-                'remote_verified_at', 'updated_at',
+                'remote_verified_at', 'sync_state', 'last_sync_at',
+                'last_sync_error', 'remote_identifier', 'updated_at',
             ])
             self.message_user(request, 'Style uploaded to GeoServer and verified.', messages.SUCCESS)
             return
 
         obj.remote_state = 'FAILED'
         obj.remote_error = result.get('error') or result.get('message', 'Remote sync failed.')
-        obj.save(update_fields=['remote_state', 'remote_error', 'updated_at'])
+        obj.sync_state = 'FAILED'
+        obj.last_sync_at = timezone.now()
+        obj.last_sync_error = obj.remote_error
+        obj.save(update_fields=[
+            'remote_state', 'remote_error', 'sync_state', 'last_sync_at',
+            'last_sync_error', 'updated_at',
+        ])
         self.message_user(
             request,
             f"Style saved locally, but GeoServer sync failed: {obj.remote_error}",

@@ -50,6 +50,7 @@ def make_layer(
         defaults={
             "engine_type": "geoserver",
             "base_url": "http://example.com/geoserver",
+            "public_url": "http://example.com/geoserver",
             "admin_username": "admin",
             "admin_password": "secret",
             "created_by": user,

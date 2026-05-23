@@ -27,12 +27,21 @@ class Command(BaseCommand):
         geoserver_admin_user = settings.GEOSERVER_ADMIN_USER
         geoserver_admin_password = settings.GEOSERVER_ADMIN_PASSWORD
         env_type = getattr(settings, 'ENV', 'dev')
+        geoserver_public_url = getattr(settings, 'GEOSERVER_PUBLIC_URL', '')
         
         # Build GeoServer URL
         geoserver_url = f"http://{geoserver_host}:{geoserver_port}/geoserver"
+        if not geoserver_public_url:
+            if env_type == 'prod':
+                self.stdout.write(
+                    self.style.ERROR('❌ GEOSERVER_PUBLIC_URL is required in production')
+                )
+                return
+            geoserver_public_url = f"http://localhost:{geoserver_port}/geoserver"
         
         self.stdout.write(f"🔧 Environment: {env_type}")
         self.stdout.write(f"🌐 GeoServer URL: {geoserver_url}")
+        self.stdout.write(f"🌍 Public GeoServer URL: {geoserver_public_url}")
         self.stdout.write(f"👤 Admin User: {geoserver_admin_user}")
         
         # Test GeoServer connectivity first
@@ -97,6 +106,7 @@ class Command(BaseCommand):
                 name='Default GeoServer',
                 description=f'Auto-created GeoServer engine from {env_type} environment',
                 base_url=geoserver_url,
+                public_url=geoserver_public_url,
                 admin_username=geoserver_admin_user,
                 admin_password=geoserver_admin_password,  # Will be stored as plain text temporarily
                 is_active=True,
@@ -109,6 +119,7 @@ class Command(BaseCommand):
             )
             self.stdout.write(f'   ID: {engine.id}')
             self.stdout.write(f'   URL: {engine.base_url}')
+            self.stdout.write(f'   Public URL: {engine.public_url}')
             self.stdout.write(f'   Username: {engine.admin_username}')
             self.stdout.write(f'   Default: {engine.is_default}')
             

@@ -28,7 +28,11 @@ def store_postgis_tables_view(request, store_id):
         return JsonResponse({'error': 'Forbidden'}, status=403)
 
     try:
-        store = Store.objects.select_related('workspace__geodata_engine').get(pk=store_id)
+        store = (
+            Store.objects.select_related('workspace__geodata_engine')
+            .filter(workspace__geodata_engine__is_active=True)
+            .get(pk=store_id)
+        )
     except Store.DoesNotExist:
         return JsonResponse({'error': 'Store not found.'}, status=404)
 
@@ -88,7 +92,9 @@ def store_clone_view(request, store_id):
     from tosca_api.apps.geodata_providers.admin import StoreCloneForm
 
     source = get_object_or_404(
-        Store.objects.select_related('workspace__geodata_engine'),
+        Store.objects.select_related('workspace__geodata_engine').filter(
+            workspace__geodata_engine__is_active=True,
+        ),
         pk=store_id,
     )
 
@@ -110,6 +116,7 @@ def store_clone_view(request, store_id):
                 username=cd.get('username') or source.username,
                 password=cd['password'],
                 schema=cd.get('schema') or source.schema or 'public',
+                clone_layers=cd.get('clone_layers', False),
             )
             if result.get('already_exists'):
                 form.add_error('name', f"A store named '{new_name}' already exists in workspace '{target_ws.name}'.")
@@ -123,6 +130,15 @@ def store_clone_view(request, store_id):
                     f"into workspace '{target_ws.name}' successfully.",
                 )
                 sync_result = result.get('sync_result', {})
+                layer_clone_result = result.get('layer_clone_result', {})
+                if layer_clone_result.get('errors'):
+                    messages.warning(
+                        request,
+                        (
+                            "Store clone completed with layer/style copy issues: "
+                            f"{' | '.join(layer_clone_result.get('errors', [])[:2])}"
+                        ),
+                    )
                 if sync_result.get('errors'):
                     messages.warning(
                         request,

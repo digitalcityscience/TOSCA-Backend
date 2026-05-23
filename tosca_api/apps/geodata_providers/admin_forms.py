@@ -21,12 +21,20 @@ GEOMETRY_TYPE_CHOICES = [
 
 class PublishPostGISForm(forms.Form):
     workspace = forms.ModelChoiceField(
-        queryset=Workspace.objects.select_related('geodata_engine').order_by('geodata_engine__name', 'name'),
+        queryset=(
+            Workspace.objects.select_related('geodata_engine')
+            .filter(geodata_engine__is_active=True)
+            .order_by('geodata_engine__name', 'name')
+        ),
         label='Workspace',
         help_text='Target workspace. Engine is inferred from this workspace.',
     )
     store = forms.ModelChoiceField(
-        queryset=Store.objects.select_related('workspace').order_by('workspace__name', 'name'),
+        queryset=(
+            Store.objects.select_related('workspace__geodata_engine')
+            .filter(workspace__geodata_engine__is_active=True)
+            .order_by('workspace__name', 'name')
+        ),
         label='Store',
         help_text='PostGIS store to publish from. Must belong to the selected workspace.',
     )

@@ -126,7 +126,10 @@ def stores_for_workspace_view(request):
     try:
         stores = (
             Store.objects
-            .filter(workspace_id=workspace_id)
+            .filter(
+                workspace_id=workspace_id,
+                workspace__geodata_engine__is_active=True,
+            )
             .values('id', 'name', 'store_type', 'host', 'schema')
             .order_by('name')
         )
@@ -150,7 +153,11 @@ def tables_for_store_view(request):
         return JsonResponse({'error': 'store_id is required.'}, status=400)
 
     try:
-        store = Store.objects.select_related('workspace').get(pk=store_id)
+        store = (
+            Store.objects.select_related('workspace__geodata_engine')
+            .filter(workspace__geodata_engine__is_active=True)
+            .get(pk=store_id)
+        )
     except Store.DoesNotExist:
         return JsonResponse({'error': 'Store not found.'}, status=404)
 

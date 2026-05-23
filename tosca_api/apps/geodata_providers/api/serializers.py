@@ -34,6 +34,7 @@ class LayerSummarySerializer(serializers.ModelSerializer):
             "published_url",
             "is_public",
             "publishing_state",
+            "sync_state",
         ]
         read_only_fields = fields
 
@@ -97,6 +98,7 @@ class GeodataEngineSerializer(serializers.ModelSerializer):
             'description',
             'engine_type',
             'base_url',
+            'public_url',
             'engine_url',
             'geoserver_url',
             'admin_username',
@@ -122,8 +124,16 @@ class WorkspaceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Workspace
-        fields = ['id', 'geodata_engine', 'engine_name', 'name', 'description', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'engine_name', 'created_at', 'updated_at']
+        fields = [
+            'id', 'geodata_engine', 'engine_name', 'name', 'description',
+            'sync_state', 'last_sync_at', 'last_sync_error',
+            'remote_identifier', 'remote_hash', 'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'engine_name', 'sync_state', 'last_sync_at',
+            'last_sync_error', 'remote_identifier', 'remote_hash',
+            'created_at', 'updated_at',
+        ]
 
 
 class StoreSerializer(serializers.ModelSerializer):
@@ -151,10 +161,19 @@ class StoreSerializer(serializers.ModelSerializer):
             'schema',
             'file_path',
             'charset',
+            'sync_state',
+            'last_sync_at',
+            'last_sync_error',
+            'remote_identifier',
+            'remote_hash',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'workspace_name', 'has_password', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'workspace_name', 'has_password', 'sync_state',
+            'last_sync_at', 'last_sync_error', 'remote_identifier',
+            'remote_hash', 'created_at', 'updated_at',
+        ]
         extra_kwargs = {'password': {'write_only': True}}
 
     def get_has_password(self, obj) -> bool:
@@ -191,10 +210,20 @@ class LayerSerializer(serializers.ModelSerializer):
             'srid',
             'is_public',
             'publishing_state',
+            'sync_state',
+            'last_sync_at',
+            'last_sync_error',
+            'remote_identifier',
+            'remote_hash',
             'publishing_error',
             'published_url',
             'published_at',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'workspace_name', 'store_name', 'publishing_error', 'published_url', 'published_at', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'workspace_name', 'store_name', 'sync_state',
+            'last_sync_at', 'last_sync_error', 'remote_identifier',
+            'remote_hash', 'publishing_error', 'published_url',
+            'published_at', 'created_at', 'updated_at',
+        ]

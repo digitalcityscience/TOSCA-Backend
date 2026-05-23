@@ -7,18 +7,18 @@ class LayerQueryService:
     """Read-only query helpers for layer-facing catalog data."""
 
     @classmethod
-    def get_layer_detail(cls, *, layer_id) -> dict:
-        layer = cls._base_queryset().get(id=layer_id)
+    def get_layer_detail(cls, *, layer_id, include_inactive: bool = False) -> dict:
+        layer = cls._base_queryset(include_inactive=include_inactive).get(id=layer_id)
         return cls._serialize_layer_detail(layer)
 
     @classmethod
-    def list_workspace_layers(cls, *, workspace_id) -> list[dict]:
-        layers = cls._base_queryset().filter(workspace_id=workspace_id)
+    def list_workspace_layers(cls, *, workspace_id, include_inactive: bool = False) -> list[dict]:
+        layers = cls._base_queryset(include_inactive=include_inactive).filter(workspace_id=workspace_id)
         return [cls._serialize_layer_detail(layer) for layer in layers]
 
     @classmethod
-    def _base_queryset(cls) -> QuerySet[Layer]:
-        return (
+    def _base_queryset(cls, *, include_inactive: bool = False) -> QuerySet[Layer]:
+        queryset = (
             Layer.objects.select_related(
                 "workspace",
                 "workspace__geodata_engine",
@@ -27,6 +27,9 @@ class LayerQueryService:
             .prefetch_related("style_assignments__style")
             .order_by("name")
         )
+        if not include_inactive:
+            queryset = queryset.filter(workspace__geodata_engine__is_active=True)
+        return queryset
 
     @classmethod
     def _serialize_layer_detail(cls, layer: Layer) -> dict:
@@ -40,6 +43,7 @@ class LayerQueryService:
             "geometry_type": layer.geometry_type,
             "srid": layer.srid,
             "publishing_state": layer.publishing_state,
+            "sync_state": layer.sync_state,
             "is_public": layer.is_public,
             "published_url": layer.published_url,
             "layer_settings": cls._serialize_layer_settings(layer),

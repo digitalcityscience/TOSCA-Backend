@@ -5,6 +5,7 @@ Ensures Django DB stays in sync with GeoServer (Single Source of Truth = GeoServ
 import logging
 from typing import Dict, List
 from django.contrib.auth.models import User
+from django.utils import timezone
 from .models import GeodataEngine, Workspace, Store, Layer, Style, LayerStyleAssignment
 from .geoserver.client import GeoServerClient
 from .exceptions import GeoServerConnectionError
@@ -32,6 +33,10 @@ class GeoServerSyncService:
         Always runs an integrity cleanup first to strip legacy 'workspace:name'
         prefixes from Layer records created before the client.py patch.
         """
+        if not self.engine.is_active:
+            logger.info("Skipping sync for inactive engine: %s", self.engine.name)
+            return self._inactive_sync_result()
+
         logger.info(f"Starting full sync for engine: {self.engine.name}")
 
         # ── Integrity cleanup: strip ':' prefix from any corrupted Layer names ──
@@ -92,9 +97,80 @@ class GeoServerSyncService:
             results['success'] = False
             results['error'] = str(e)
             return results
+
+    def _inactive_sync_result(self) -> Dict:
+        return {
+            'workspaces': self._inactive_section_result(),
+            'stores': self._inactive_section_result(),
+            'styles': self._inactive_section_result(),
+            'layers': self._inactive_section_result(),
+            'success': True,
+            'skipped': True,
+            'reason': f"Engine '{self.engine.name}' is inactive.",
+        }
+
+    def _inactive_section_result(self) -> Dict:
+        return {
+            'synced': 0,
+            'created': 0,
+            'deleted': 0,
+            'errors': [],
+            'success': True,
+            'skipped': True,
+            'reason': f"Engine '{self.engine.name}' is inactive.",
+        }
+
+    def _sync_success_defaults(
+        self,
+        *,
+        remote_identifier: str = "",
+        remote_hash: str = "",
+    ) -> dict:
+        return {
+            "sync_state": "SYNCED",
+            "last_sync_at": timezone.now(),
+            "last_sync_error": "",
+            "remote_identifier": remote_identifier,
+            "remote_hash": remote_hash,
+        }
+
+    def _mark_sync_failed(self, obj, error: str) -> None:
+        if not obj or not getattr(obj, "pk", None):
+            return
+        obj.__class__.objects.filter(pk=obj.pk).update(
+            sync_state="FAILED",
+            last_sync_error=error,
+            last_sync_at=timezone.now(),
+        )
+
+    def _mark_resource_synced(
+        self,
+        obj,
+        *,
+        remote_identifier: str = "",
+        remote_hash: str = "",
+    ) -> None:
+        if not obj or not getattr(obj, "pk", None):
+            return
+        obj.__class__.objects.filter(pk=obj.pk).update(
+            **self._sync_success_defaults(
+                remote_identifier=remote_identifier,
+                remote_hash=remote_hash,
+            )
+        )
+
+    def _mark_queryset_sync_failed(self, queryset, error: str) -> None:
+        queryset.update(
+            sync_state="FAILED",
+            last_sync_error=error,
+            last_sync_at=timezone.now(),
+        )
     
     def sync_workspaces(self, created_by: User) -> Dict:
         """Sync workspaces from GeoServer to Django - includes DELETE operations"""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
         
         try:
@@ -115,9 +191,14 @@ class GeoServerSyncService:
                         name=ws_name,
                         defaults={
                             'description': f'Synced from GeoServer: {ws_name}',
-                            'created_by': created_by
+                            'created_by': created_by,
+                            **self._sync_success_defaults(remote_identifier=ws_name),
                         }
                     )
+                    if not created:
+                        Workspace.objects.filter(pk=workspace.pk).update(
+                            **self._sync_success_defaults(remote_identifier=ws_name)
+                        )
                     
                     if created:
                         results['created'] += 1
@@ -130,6 +211,11 @@ class GeoServerSyncService:
                     error_msg = f"Failed to sync workspace {ws_name}: {e}"
                     results['errors'].append(error_msg)
                     logger.error(error_msg)
+                    workspace = Workspace.objects.filter(
+                        geodata_engine=self.engine,
+                        name=ws_name,
+                    ).first()
+                    self._mark_sync_failed(workspace, error_msg)
             
             # 4️⃣ DELETE: Django workspaces that don't exist in GeoServer
             geoserver_workspace_names = set(geoserver_workspaces)
@@ -151,14 +237,26 @@ class GeoServerSyncService:
             
             return results
 
-        except GeoServerConnectionError:
+        except GeoServerConnectionError as e:
+            self._mark_queryset_sync_failed(
+                Workspace.objects.filter(geodata_engine=self.engine),
+                str(e),
+            )
             raise
         except Exception as e:
-            results['errors'].append(f"Failed to sync workspaces: {e}")
+            error = f"Failed to sync workspaces: {e}"
+            results['errors'].append(error)
+            self._mark_queryset_sync_failed(
+                Workspace.objects.filter(geodata_engine=self.engine),
+                error,
+            )
             return results
 
     def sync_all_stores(self, created_by: User) -> Dict:
         """Sync all stores from GeoServer"""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
         
         # Get all Django workspaces for this engine
@@ -175,6 +273,9 @@ class GeoServerSyncService:
 
     def sync_all_styles(self, created_by: User) -> Dict:
         """Sync global and workspace-scoped GeoServer styles to Django."""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
 
         global_results = self.sync_styles_for_scope(None, created_by)
@@ -194,6 +295,9 @@ class GeoServerSyncService:
 
     def sync_styles_for_scope(self, workspace: Workspace | None, created_by: User) -> Dict:
         """Sync styles for a global provider scope or a single workspace scope."""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
 
         try:
@@ -237,6 +341,7 @@ class GeoServerSyncService:
                             'validation_errors': validation_errors,
                             'remote_state': 'SYNCED',
                             'remote_error': '',
+                            **self._sync_success_defaults(remote_identifier=style_name),
                             'created_by': created_by,
                         },
                     )
@@ -250,6 +355,12 @@ class GeoServerSyncService:
                     error_msg = f"Failed to sync style {style_data.get('name')}: {e}"
                     results['errors'].append(error_msg)
                     logger.error(error_msg)
+                    style = Style.objects.filter(
+                        geodata_engine=self.engine,
+                        workspace=workspace,
+                        name=style_data.get('name'),
+                    ).first()
+                    self._mark_sync_failed(style, error_msg)
 
             styles_to_delete = django_style_names - geoserver_style_names
             for style_name in styles_to_delete:
@@ -264,15 +375,27 @@ class GeoServerSyncService:
                     logger.error(error_msg)
 
             return results
-        except GeoServerConnectionError:
+        except GeoServerConnectionError as e:
+            self._mark_queryset_sync_failed(
+                Style.objects.filter(geodata_engine=self.engine, workspace=workspace),
+                str(e),
+            )
             raise
         except Exception as e:
             scope = workspace.name if workspace else 'global'
-            results['errors'].append(f"Failed to sync styles for {scope}: {e}")
+            error = f"Failed to sync styles for {scope}: {e}"
+            results['errors'].append(error)
+            self._mark_queryset_sync_failed(
+                Style.objects.filter(geodata_engine=self.engine, workspace=workspace),
+                error,
+            )
             return results
     
     def sync_stores_for_workspace(self, workspace: Workspace, created_by: User) -> Dict:
         """Sync stores for a specific workspace - includes DELETE operations"""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
         
         try:
@@ -327,7 +450,11 @@ class GeoServerSyncService:
                             'database': store_data.get('database', ''),
                             'username': store_data.get('username', ''),
                             'schema': store_data.get('schema', 'public'),
-                            'created_by': created_by
+                            'created_by': created_by,
+                            **self._sync_success_defaults(
+                                remote_identifier=f"{workspace.name}:{store_name}",
+                                remote_hash=store_data.get('remote_hash', ''),
+                            ),
                         }
                     )
                     
@@ -342,6 +469,11 @@ class GeoServerSyncService:
                     error_msg = f"Failed to sync store {store_data.get('name')}: {e}"
                     results['errors'].append(error_msg)
                     logger.error(error_msg)
+                    store = Store.objects.filter(
+                        workspace=workspace,
+                        name=store_data.get('name'),
+                    ).first()
+                    self._mark_sync_failed(store, error_msg)
             
             # 4️⃣ DELETE: Django stores that don't exist in GeoServer
             stores_to_delete = django_store_names - geoserver_store_names
@@ -362,14 +494,26 @@ class GeoServerSyncService:
             
             return results
 
-        except GeoServerConnectionError:
+        except GeoServerConnectionError as e:
+            self._mark_queryset_sync_failed(
+                Store.objects.filter(workspace=workspace),
+                str(e),
+            )
             raise
         except Exception as e:
-            results['errors'].append(f"Failed to get stores for workspace {workspace.name}: {e}")
+            error = f"Failed to get stores for workspace {workspace.name}: {e}"
+            results['errors'].append(error)
+            self._mark_queryset_sync_failed(
+                Store.objects.filter(workspace=workspace),
+                error,
+            )
             return results
 
     def sync_all_layers(self, created_by: User) -> Dict:
         """Sync all layers from GeoServer"""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
         
         # Get all Django workspaces for this engine
@@ -386,6 +530,9 @@ class GeoServerSyncService:
     
     def sync_layers_for_workspace(self, workspace: Workspace, created_by: User) -> Dict:
         """Sync layers for a specific workspace - includes DELETE operations"""
+        if not self.engine.is_active:
+            return self._inactive_section_result()
+
         results = {'synced': 0, 'created': 0, 'deleted': 0, 'errors': []}
         
         try:
@@ -440,7 +587,11 @@ class GeoServerSyncService:
                             'queryable': layer_data.get('queryable', True),
                             'opaque': layer_data.get('opaque', False),
                             'publishing_state': 'PUBLISHED',
-                            'created_by': created_by
+                            'created_by': created_by,
+                            **self._sync_success_defaults(
+                                remote_identifier=f"{workspace.name}:{layer_name}",
+                                remote_hash=layer_data.get('remote_hash', ''),
+                            ),
                         }
                     )
                     self._sync_layer_style_assignments(
@@ -461,6 +612,11 @@ class GeoServerSyncService:
                     error_msg = f"Failed to sync layer {layer_data.get('name')}: {e}"
                     results['errors'].append(error_msg)
                     logger.error(error_msg)
+                    layer = Layer.objects.filter(
+                        workspace=workspace,
+                        name=layer_data.get('name'),
+                    ).first()
+                    self._mark_sync_failed(layer, error_msg)
             
             # 4️⃣ DELETE: Django layers that don't exist in GeoServer
             layers_to_delete = django_layer_names - geoserver_layer_names
@@ -481,10 +637,19 @@ class GeoServerSyncService:
             
             return results
 
-        except GeoServerConnectionError:
+        except GeoServerConnectionError as e:
+            self._mark_queryset_sync_failed(
+                Layer.objects.filter(workspace=workspace),
+                str(e),
+            )
             raise
         except Exception as e:
-            results['errors'].append(f"Failed to get layers for workspace {workspace.name}: {e}")
+            error = f"Failed to get layers for workspace {workspace.name}: {e}"
+            results['errors'].append(error)
+            self._mark_queryset_sync_failed(
+                Layer.objects.filter(workspace=workspace),
+                error,
+            )
             return results
 
     def _get_geoserver_workspaces(self) -> List[str]:
@@ -616,6 +781,7 @@ class GeoServerSyncService:
             validation_state='UNKNOWN',
             validation_errors=[],
             remote_state='SYNCED',
+            **self._sync_success_defaults(remote_identifier=style_name),
             created_by=created_by,
         )
 
@@ -629,6 +795,14 @@ class GeoServerSyncService:
         Pattern: check exists → create if missing → verify → return result.
         Does NOT modify Django state — GeoServer is the destination here.
         """
+        if not self.engine.is_active:
+            return {
+                'success': True,
+                'workspace': workspace.name,
+                'skipped': True,
+                'reason': f"Engine '{self.engine.name}' is inactive.",
+            }
+
         result = {'success': False, 'workspace': workspace.name}
 
         try:
@@ -636,6 +810,7 @@ class GeoServerSyncService:
             existing = self.client.get_workspaces()
             if workspace.name in existing:
                 logger.info(f"Push workspace '{workspace.name}': already exists in GeoServer.")
+                self._mark_resource_synced(workspace, remote_identifier=workspace.name)
                 result.update({'success': True, 'action': 'already_exists'})
                 return result
 
@@ -644,6 +819,7 @@ class GeoServerSyncService:
             if not create_result.get('success', False):
                 error = create_result.get('error', create_result.get('message', 'Unknown error'))
                 logger.error(f"Push workspace '{workspace.name}' create failed: {error}")
+                self._mark_sync_failed(workspace, error)
                 result['error'] = error
                 return result
 
@@ -652,15 +828,18 @@ class GeoServerSyncService:
             if workspace.name not in workspaces_after:
                 error = f"Workspace '{workspace.name}' not found in GeoServer after create — possible partial failure."
                 logger.error(error)
+                self._mark_sync_failed(workspace, error)
                 result['error'] = error
                 return result
 
             logger.info(f"Push workspace '{workspace.name}': created and verified in GeoServer.")
+            self._mark_resource_synced(workspace, remote_identifier=workspace.name)
             result.update({'success': True, 'action': 'created'})
             return result
 
         except Exception as e:
             logger.error(f"Push workspace '{workspace.name}' unexpected error: {e}")
+            self._mark_sync_failed(workspace, str(e))
             result['error'] = str(e)
             return result
 
@@ -669,6 +848,16 @@ class GeoServerSyncService:
         Push all Django workspaces for this engine to GeoServer.
         Returns aggregate results.
         """
+        if not self.engine.is_active:
+            return {
+                'pushed': 0,
+                'already_exists': 0,
+                'errors': [],
+                'success': True,
+                'skipped': True,
+                'reason': f"Engine '{self.engine.name}' is inactive.",
+            }
+
         results = {'pushed': 0, 'already_exists': 0, 'errors': [], 'success': True}
         workspaces = Workspace.objects.filter(geodata_engine=self.engine)
 

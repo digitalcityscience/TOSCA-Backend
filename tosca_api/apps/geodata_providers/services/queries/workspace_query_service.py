@@ -6,34 +6,46 @@ from ...models import Layer, Store, Workspace
 class WorkspaceQueryService:
     """Read-only query helpers for workspace-facing catalog data."""
 
-    VISIBLE_LAYER_FILTER = Q(is_public=True, publishing_state="PUBLISHED")
+    VISIBLE_LAYER_FILTER = (
+        Q(is_public=True, publishing_state="PUBLISHED")
+        & ~Q(sync_state__in=["FAILED", "STALE"])
+    )
 
     @classmethod
-    def get_workspace_detail(cls, *, provider_id, workspace_id) -> dict:
-        workspace = cls._base_queryset().get(
+    def get_workspace_detail(cls, *, provider_id, workspace_id, include_inactive: bool = False) -> dict:
+        workspace = cls._base_queryset(include_inactive=include_inactive).get(
             geodata_engine_id=provider_id,
             id=workspace_id,
         )
         return cls._serialize_workspace_detail(workspace)
 
     @classmethod
-    def list_provider_workspaces(cls, *, provider_id) -> list[dict]:
-        workspaces = cls._base_queryset().filter(geodata_engine_id=provider_id)
+    def list_provider_workspaces(cls, *, provider_id, include_inactive: bool = False) -> list[dict]:
+        workspaces = cls._base_queryset(include_inactive=include_inactive).filter(geodata_engine_id=provider_id)
         return [cls._serialize_workspace_summary(workspace) for workspace in workspaces]
 
     @classmethod
-    def _base_queryset(cls) -> QuerySet[Workspace]:
+    def _base_queryset(cls, *, include_inactive: bool = False) -> QuerySet[Workspace]:
         store_queryset = Store.objects.order_by("name")
         layer_queryset = cls._visible_layer_queryset()
-        return (
+        queryset = (
             Workspace.objects.select_related("geodata_engine")
             .annotate(
                 store_count=Count(
                     "stores",
-                    filter=Q(stores__layers__is_public=True, stores__layers__publishing_state="PUBLISHED"),
+                    filter=Q(
+                        stores__layers__is_public=True,
+                        stores__layers__publishing_state="PUBLISHED",
+                    )
+                    & ~Q(stores__layers__sync_state__in=["FAILED", "STALE"]),
                     distinct=True,
                 ),
-                layer_count=Count("layers", filter=Q(layers__is_public=True, layers__publishing_state="PUBLISHED"), distinct=True),
+                layer_count=Count(
+                    "layers",
+                    filter=Q(layers__is_public=True, layers__publishing_state="PUBLISHED")
+                    & ~Q(layers__sync_state__in=["FAILED", "STALE"]),
+                    distinct=True,
+                ),
             )
             .prefetch_related(
                 Prefetch("stores", queryset=store_queryset),
@@ -41,6 +53,9 @@ class WorkspaceQueryService:
             )
             .order_by("name")
         )
+        if not include_inactive:
+            queryset = queryset.filter(geodata_engine__is_active=True)
+        return queryset
 
     @classmethod
     def _serialize_workspace_detail(cls, workspace: Workspace) -> dict:
@@ -97,6 +112,7 @@ class WorkspaceQueryService:
             "description": layer.description,
             "table_name": layer.table_name,
             "publishing_state": layer.publishing_state,
+            "sync_state": layer.sync_state,
             "is_public": layer.is_public,
             "store_id": str(layer.store_id),
         }
