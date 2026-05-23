@@ -26,14 +26,12 @@ class CatalogVisibilityService:
         return provider
 
     @classmethod
-    def list_visible_workspaces(cls, *, provider_id=None):
+    def list_visible_workspaces(cls, *, provider_id):
         queryset = cls._visible_workspace_queryset(provider_id=provider_id)
-        if provider_id is not None:
-            return list(queryset)
-        return cls._dedupe_workspaces(queryset)
+        return list(queryset)
 
     @classmethod
-    def get_visible_workspace(cls, *, workspace_name: str, provider_id=None):
+    def get_visible_workspace(cls, *, workspace_name: str, provider_id):
         workspace = (
             cls._visible_workspace_queryset(provider_id=provider_id)
             .filter(name=workspace_name)
@@ -44,7 +42,7 @@ class CatalogVisibilityService:
         return workspace
 
     @classmethod
-    def list_visible_layers(cls, *, workspace_name: str | None = None, provider_id=None):
+    def list_visible_layers(cls, *, provider_id, workspace_name: str | None = None):
         queryset = cls._visible_layer_queryset(provider_id=provider_id)
         if workspace_name:
             workspace = cls.get_visible_workspace(
@@ -52,12 +50,10 @@ class CatalogVisibilityService:
                 provider_id=provider_id,
             )
             queryset = queryset.filter(workspace=workspace)
-        if provider_id is not None:
-            return list(queryset)
-        return cls._dedupe_layers(queryset)
+        return list(queryset)
 
     @classmethod
-    def get_visible_layer(cls, *, workspace_name: str, layer_name: str, provider_id=None):
+    def get_visible_layer(cls, *, workspace_name: str, layer_name: str, provider_id):
         workspace = cls.get_visible_workspace(
             workspace_name=workspace_name,
             provider_id=provider_id,
@@ -70,11 +66,12 @@ class CatalogVisibilityService:
         if layer is None:
             raise Layer.DoesNotExist(
                 f"Layer '{layer_name}' not found in workspace '{workspace_name}'."
-            )
+        )
         return layer
 
     @classmethod
-    def _visible_workspace_queryset(cls, *, provider_id=None) -> QuerySet[Workspace]:
+    def _visible_workspace_queryset(cls, *, provider_id) -> QuerySet[Workspace]:
+        provider = cls.get_visible_provider(provider_id=provider_id)
         visible_layer_exists = (
             Layer.objects.filter(
                 workspace_id=OuterRef("pk"),
@@ -93,13 +90,11 @@ class CatalogVisibilityService:
             .select_related("geodata_engine")
             .order_by("name", "-geodata_engine__is_default", "geodata_engine__name", "id")
         )
-        if provider_id is not None:
-            provider = cls.get_visible_provider(provider_id=provider_id)
-            queryset = queryset.filter(geodata_engine=provider)
-        return queryset
+        return queryset.filter(geodata_engine=provider)
 
     @classmethod
-    def _visible_layer_queryset(cls, *, provider_id=None) -> QuerySet[Layer]:
+    def _visible_layer_queryset(cls, *, provider_id) -> QuerySet[Layer]:
+        provider = cls.get_visible_provider(provider_id=provider_id)
         queryset = (
             Layer.objects.select_related("workspace", "workspace__geodata_engine")
             .prefetch_related("style_assignments__style")
@@ -119,22 +114,4 @@ class CatalogVisibilityService:
                 "id",
             )
         )
-        if provider_id is not None:
-            provider = cls.get_visible_provider(provider_id=provider_id)
-            queryset = queryset.filter(workspace__geodata_engine=provider)
-        return queryset
-
-    @staticmethod
-    def _dedupe_workspaces(queryset: QuerySet[Workspace]) -> list[Workspace]:
-        workspaces_by_name: dict[str, Workspace] = {}
-        for workspace in queryset:
-            workspaces_by_name.setdefault(workspace.name, workspace)
-        return list(workspaces_by_name.values())
-
-    @staticmethod
-    def _dedupe_layers(queryset: QuerySet[Layer]) -> list[Layer]:
-        layers_by_key: dict[tuple[str, str], Layer] = {}
-        for layer in queryset:
-            key = (layer.workspace.name, layer.name)
-            layers_by_key.setdefault(key, layer)
-        return list(layers_by_key.values())
+        return queryset.filter(workspace__geodata_engine=provider)

@@ -77,6 +77,8 @@ Likely touch points:
   - missing provider
   - inactive provider
   - invalid UUID
+- Catalog visibility service methods require an explicit `provider_id`; there
+  is no provider-less compatibility fallback for public catalog reads.
 - Provider-scoped workspace list returns only workspaces owned by that provider.
 - Provider-scoped layer list returns only visible layers owned by that provider.
 - Provider-scoped style list returns only styles owned by that provider.
@@ -121,4 +123,6 @@ Provider-scoped reads still apply all current public catalog constraints:
 
 Prefer extending `CatalogVisibilityService` with explicit provider filters over
 duplicating filtering in views. Views should parse route parameters, call query
-or visibility services, and build response shapes.
+or visibility services, and build response shapes. Do not reintroduce global
+workspace/layer/style reads under `/api/v1/catalog/`; those routes should remain
+absent so stale frontend integrations fail loudly with `404`.

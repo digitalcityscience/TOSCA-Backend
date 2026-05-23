@@ -391,59 +391,22 @@ class CatalogV1ApiTestCase(TestCase):
 
         self.assertEqual(response.status_code, 404)
 
-    def test_workspace_list_dedupes_same_workspace_name_across_duplicate_integrations(self):
-        duplicate_provider = GeodataEngine.objects.create(
-            name="Catalog Engine Duplicate",
-            description="duplicate provider",
-            engine_type="geoserver",
-            base_url="http://catalog-duplicate.example/geoserver",
-            public_url="http://catalog-duplicate-public.example/geoserver",
-            admin_username="admin",
-            admin_password="secret",
-            is_active=True,
-            is_default=False,
-            created_by=self.user,
-        )
-        duplicate_workspace = Workspace.objects.create(
-            geodata_engine=duplicate_provider,
-            name="mobility",
-            description="Duplicate mobility workspace",
-            created_by=self.user,
-        )
-        duplicate_store = Store.objects.create(
-            workspace=duplicate_workspace,
-            geodata_engine=duplicate_provider,
-            name="mobility_store_duplicate",
-            description="Duplicate mobility store",
-            store_type="postgis",
-            host="db",
-            port=5432,
-            database="gis",
-            username="postgres",
-            password="secret",
-            schema="public",
-            created_by=self.user,
-        )
-        Layer.objects.create(
-            workspace=duplicate_workspace,
-            store=duplicate_store,
-            name="tram_lines",
-            title="Duplicate Tram Lines",
-            description="Duplicate transit layer",
-            table_name="tram_lines_duplicate",
-            geometry_column="geom",
-            geometry_type="LineString",
-            srid=4326,
-            publishing_state="PUBLISHED",
-            is_public=True,
-            created_by=self.user,
-        )
+    def test_provider_scoped_workspace_lists_allow_duplicate_workspace_names(self):
+        duplicate_provider, _, _, _ = self._create_duplicate_provider_catalog()
 
-        response = self.client.get(reverse("catalog-v1-provider-workspace-list", kwargs={"provider_id": self.provider.id}))
+        primary_response = self.client.get(reverse(
+            "catalog-v1-provider-workspace-list",
+            kwargs={"provider_id": self.provider.id},
+        ))
+        duplicate_response = self.client.get(reverse(
+            "catalog-v1-provider-workspace-list",
+            kwargs={"provider_id": duplicate_provider.id},
+        ))
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(primary_response.status_code, 200)
+        self.assertEqual(duplicate_response.status_code, 200)
         self.assertEqual(
-            response.json()["workspaces"]["workspace"],
+            primary_response.json()["workspaces"]["workspace"],
             [
                 {
                     "name": "mobility",
@@ -451,6 +414,22 @@ class CatalogV1ApiTestCase(TestCase):
                     + reverse(
                         "catalog-v1-provider-workspace-layer-list",
                         kwargs={"provider_id": self.provider.id, "workspace_name": "mobility"},
+                    ),
+                }
+            ],
+        )
+        self.assertEqual(
+            duplicate_response.json()["workspaces"]["workspace"],
+            [
+                {
+                    "name": "mobility",
+                    "href": "http://testserver"
+                    + reverse(
+                        "catalog-v1-provider-workspace-layer-list",
+                        kwargs={
+                            "provider_id": duplicate_provider.id,
+                            "workspace_name": "mobility",
+                        },
                     ),
                 }
             ],
@@ -594,53 +573,8 @@ class CatalogV1ApiTestCase(TestCase):
         ]
         self.assertEqual(layer_names, ["tram_heatmap", "tram_lines"])
 
-    def test_layer_list_dedupes_same_workspace_and_layer_name_across_duplicate_integrations(self):
-        duplicate_provider = GeodataEngine.objects.create(
-            name="Catalog Engine Duplicate",
-            description="duplicate provider",
-            engine_type="geoserver",
-            base_url="http://catalog-duplicate.example/geoserver",
-            public_url="http://catalog-duplicate-public.example/geoserver",
-            admin_username="admin",
-            admin_password="secret",
-            is_active=True,
-            is_default=False,
-            created_by=self.user,
-        )
-        duplicate_workspace = Workspace.objects.create(
-            geodata_engine=duplicate_provider,
-            name="mobility",
-            description="Duplicate mobility workspace",
-            created_by=self.user,
-        )
-        duplicate_store = Store.objects.create(
-            workspace=duplicate_workspace,
-            geodata_engine=duplicate_provider,
-            name="mobility_store_duplicate",
-            description="Duplicate mobility store",
-            store_type="postgis",
-            host="db",
-            port=5432,
-            database="gis",
-            username="postgres",
-            password="secret",
-            schema="public",
-            created_by=self.user,
-        )
-        Layer.objects.create(
-            workspace=duplicate_workspace,
-            store=duplicate_store,
-            name="tram_lines",
-            title="Duplicate Tram Lines",
-            description="Duplicate transit layer",
-            table_name="tram_lines_duplicate",
-            geometry_column="geom",
-            geometry_type="LineString",
-            srid=4326,
-            publishing_state="PUBLISHED",
-            is_public=True,
-            created_by=self.user,
-        )
+    def test_provider_scoped_layer_list_ignores_duplicate_names_from_other_provider(self):
+        self._create_duplicate_provider_catalog()
 
         response = self.client.get(
             reverse(
