@@ -128,6 +128,7 @@ class EventViewSet(viewsets.ModelViewSet):
             )
             queryset = queryset.prefetch_related(
                 "eventlayer_set__layer__workspace",
+                "feature_links_source__target_content_type",
                 Prefetch(
                     "series__events",
                     queryset=Event.objects.only(

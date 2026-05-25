@@ -2,12 +2,14 @@ import json
 from collections import Counter
 from zoneinfo import ZoneInfoNotFoundError
 
+from django.contrib.contenttypes.models import ContentType
 from django.contrib.gis.geos import GEOSGeometry, Polygon
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 from rest_framework_gis.serializers import GeoFeatureModelSerializer
 
+from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geodata_providers.api.serializers import (
     LayerSummarySerializer,
@@ -101,6 +103,20 @@ class EventGeoContextSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class EventFeatureLinkSerializer(serializers.ModelSerializer):
+    """Outgoing FeatureLink with target type hydrated for navigation."""
+
+    target_type = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FeatureLink
+        fields = ["id", "target_content_type", "target_object_id", "target_type", "link_type"]
+        read_only_fields = fields
+
+    def get_target_type(self, obj) -> str:
+        return obj.target_content_type.model
+
+
 class EventLayerSerializer(serializers.ModelSerializer):
     """
     Serializer for EventLayer through model.
@@ -172,6 +188,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
     layers = serializers.SerializerMethodField()
     taxonomy_assignments = serializers.SerializerMethodField()
     series = serializers.SerializerMethodField()
+    feature_links = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -207,6 +224,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "context",
             "taxonomy_assignments",
             "layers",
+            "feature_links",
             "created_at",
             "updated_at",
         ]
@@ -214,6 +232,14 @@ class EventDetailSerializer(serializers.ModelSerializer):
 
     def get_series(self, obj):
         return resolve_series_navigation(obj)
+
+    def get_feature_links(self, obj) -> list:
+        event_ct = ContentType.objects.get_for_model(Event)
+        links = FeatureLink.objects.filter(
+            source_content_type=event_ct,
+            source_object_id=obj.id,
+        ).select_related("target_content_type")
+        return EventFeatureLinkSerializer(links, many=True).data
 
     def get_layers(self, obj) -> list:
         """Return layers ordered by display_order with full Layer summary."""
