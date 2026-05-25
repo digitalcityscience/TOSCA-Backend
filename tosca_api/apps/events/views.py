@@ -1,3 +1,5 @@
+from django.db.models import Count, Prefetch
+
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin, UpdateModelMixin
@@ -125,10 +127,20 @@ class EventViewSet(viewsets.ModelViewSet):
                 "organizer",
             )
             queryset = queryset.prefetch_related(
-                "eventlayer_set__layer__workspace"
+                "eventlayer_set__layer__workspace",
+                Prefetch(
+                    "series__events",
+                    queryset=Event.objects.only(
+                        "id",
+                        "series_id",
+                        "occurrence_index",
+                        "start_datetime",
+                    ).order_by("occurrence_index", "start_datetime"),
+                ),
             )
         else:
             queryset = queryset.select_related("campaign", "event_type", "series")
+            queryset = queryset.annotate(series_total_occurrences=Count("series__events"))
 
         return queryset
 
@@ -148,7 +160,9 @@ class EventViewSet(viewsets.ModelViewSet):
         filters = self._coerce_public_filters(filters)
 
         base_queryset = self._apply_visibility_scope(
-            Event.objects.all().select_related("campaign", "event_type", "series")
+            Event.objects.all()
+            .select_related("campaign", "event_type", "series")
+            .annotate(series_total_occurrences=Count("series__events"))
         )
         queryset = apply_event_filters(base_queryset, filters=filters).order_by(
             "start_datetime"
@@ -198,7 +212,9 @@ class EventViewSet(viewsets.ModelViewSet):
         data["spatial_geometry"] = data.pop("geometry")
         data = self._coerce_public_filters(data)
 
-        base_queryset = self._apply_visibility_scope(Event.objects.all())
+        base_queryset = self._apply_visibility_scope(
+            Event.objects.all().annotate(series_total_occurrences=Count("series__events"))
+        )
         queryset = apply_event_filters(base_queryset, filters=data)
         queryset = queryset.order_by("start_datetime").select_related(
             "campaign",

@@ -638,6 +638,58 @@ def _can_continue(existing_dates: list[date], candidate: date, series: EventSeri
 # =============================================================================
 
 
+def resolve_series_navigation(event: Event) -> dict | None:
+    """Return the rich series widget payload for an event detail response.
+
+    Returns None for standalone events. Result is cached on the instance
+    (``event._series_nav``) so list/detail rendering does not re-query the
+    sibling occurrences once it has been resolved.
+    """
+    if not event.series_id:
+        return None
+
+    cached = getattr(event, "_series_nav", None)
+    if cached is not None:
+        return cached
+
+    series = event.series
+    siblings = list(
+        series.events.only(
+            "id",
+            "occurrence_index",
+            "start_datetime",
+        ).order_by("occurrence_index", "start_datetime")
+    )
+
+    previous_occurrence = None
+    next_occurrence = None
+    for sibling in siblings:
+        if sibling.occurrence_index is None or event.occurrence_index is None:
+            continue
+        if sibling.occurrence_index < event.occurrence_index:
+            previous_occurrence = sibling
+        elif sibling.occurrence_index > event.occurrence_index and next_occurrence is None:
+            next_occurrence = sibling
+
+    def _ref(sibling: Event | None) -> dict | None:
+        if sibling is None:
+            return None
+        return {"id": str(sibling.id), "start_datetime": sibling.start_datetime}
+
+    payload = {
+        "id": str(series.id),
+        "name": series.name,
+        "occurrence_index": event.occurrence_index,
+        "total_occurrences": len(siblings),
+        "is_exception": event.is_exception,
+        "original_start_datetime": event.original_start_datetime,
+        "previous_occurrence": _ref(previous_occurrence),
+        "next_occurrence": _ref(next_occurrence),
+    }
+    event._series_nav = payload
+    return payload
+
+
 def get_base_template_event(series: EventSeries) -> Event | None:
     """Return the first non-exception occurrence to use as a template for updates.
 

@@ -32,6 +32,7 @@ from .services import (
     orchestrate_series_create,
     orchestrate_series_update,
     persist_explicit_dates,
+    resolve_series_navigation,
     resolve_taxonomy_assignments,
     serialize_occurrence_events,
     validate_publish_requirements,
@@ -126,6 +127,10 @@ class EventListSerializer(serializers.ModelSerializer):
     Used when no spatial filtering is applied.
     """
 
+    series_id = serializers.UUIDField(source="series.id", read_only=True, allow_null=True)
+    series_name = serializers.CharField(source="series.name", read_only=True, default="")
+    total_occurrences = serializers.SerializerMethodField()
+
     class Meta:
         model = Event
         fields = [
@@ -139,9 +144,22 @@ class EventListSerializer(serializers.ModelSerializer):
             "location_mode",
             "status",
             "visibility",
+            "series_id",
+            "series_name",
+            "occurrence_index",
+            "total_occurrences",
+            "is_exception",
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_total_occurrences(self, obj) -> int | None:
+        if obj.series_id is None:
+            return None
+        annotated = getattr(obj, "series_total_occurrences", None)
+        if annotated is not None:
+            return annotated
+        return obj.series.events.count() if obj.series_id else None
 
 
 class EventDetailSerializer(serializers.ModelSerializer):
@@ -153,6 +171,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
     context = serializers.SerializerMethodField()
     layers = serializers.SerializerMethodField()
     taxonomy_assignments = serializers.SerializerMethodField()
+    series = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -182,9 +201,6 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "lead_name",
             "external_url",
             "series",
-            "occurrence_index",
-            "is_exception",
-            "original_start_datetime",
             "status",
             "visibility",
             "organizer",
@@ -195,6 +211,9 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = fields
+
+    def get_series(self, obj):
+        return resolve_series_navigation(obj)
 
     def get_layers(self, obj) -> list:
         """Return layers ordered by display_order with full Layer summary."""
@@ -221,6 +240,10 @@ class EventGeoSerializer(GeoFeatureModelSerializer):
     Returns events as GeoJSON FeatureCollection.
     """
 
+    series_id = serializers.UUIDField(source="series.id", read_only=True, allow_null=True)
+    series_name = serializers.CharField(source="series.name", read_only=True, default="")
+    total_occurrences = serializers.SerializerMethodField()
+
     class Meta:
         model = Event
         geo_field = "location"
@@ -235,12 +258,29 @@ class EventGeoSerializer(GeoFeatureModelSerializer):
             "location_mode",
             "status",
             "visibility",
+            "series_id",
+            "series_name",
+            "occurrence_index",
+            "total_occurrences",
+            "is_exception",
         ]
         read_only_fields = fields
+
+    def get_total_occurrences(self, obj) -> int | None:
+        if obj.series_id is None:
+            return None
+        annotated = getattr(obj, "series_total_occurrences", None)
+        if annotated is not None:
+            return annotated
+        return obj.series.events.count() if obj.series_id else None
 
 
 class EventMapOnlineSerializer(serializers.ModelSerializer):
     """Serializer for online events returned in the dedicated map endpoint."""
+
+    series_id = serializers.UUIDField(source="series.id", read_only=True, allow_null=True)
+    series_name = serializers.CharField(source="series.name", read_only=True, default="")
+    total_occurrences = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -257,8 +297,21 @@ class EventMapOnlineSerializer(serializers.ModelSerializer):
             "online_platform",
             "status",
             "visibility",
+            "series_id",
+            "series_name",
+            "occurrence_index",
+            "total_occurrences",
+            "is_exception",
         ]
         read_only_fields = fields
+
+    def get_total_occurrences(self, obj) -> int | None:
+        if obj.series_id is None:
+            return None
+        annotated = getattr(obj, "series_total_occurrences", None)
+        if annotated is not None:
+            return annotated
+        return obj.series.events.count() if obj.series_id else None
 
 
 class TaxonomyAssignmentSerializer(serializers.Serializer):
