@@ -145,10 +145,10 @@ def draft_event(user, campaign):
 
 
 @pytest.mark.django_db
-def test_events_list_unauthenticated(api_client):
-    """Test that unauthenticated users cannot list events."""
+def test_events_list_unauthenticated_is_public(api_client):
+    """Reads are public; the list endpoint responds with 200 for anonymous clients."""
     response = api_client.get("/api/v1/events/")
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 # =============================================================================
@@ -399,7 +399,7 @@ def test_events_list_v2_area_filter_keeps_eligible_online_events(
 
 @pytest.mark.django_db
 def test_events_list_v2_payload_remains_stable_when_no_online_events_match(
-    api_client, user, campaign
+    api_client, user, staff_user, campaign
 ):
     """The dedicated list payload should remain a normal paginated list without online matches."""
     Event.objects.create(
@@ -424,7 +424,7 @@ def test_events_list_v2_payload_remains_stable_when_no_online_events_match(
         visibility=Event.Visibility.PUBLIC,
     )
 
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=staff_user)
     response = api_client.get(
         "/api/v1/events/list/?bbox=9.5,53.0,10.5,54.0&visibility=private"
     )
@@ -819,7 +819,7 @@ def test_events_within_excludes_past_events_by_default(api_client, user, campaig
 
 
 @pytest.mark.django_db
-def test_events_shared_filters_match_between_list_and_within(api_client, user, campaign):
+def test_events_shared_filters_match_between_list_and_within(api_client, user, staff_user, campaign):
     """List and within endpoints should apply the same non-spatial filter contract."""
     dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
     climate = TaxonomyTerm.objects.create(
@@ -854,7 +854,7 @@ def test_events_shared_filters_match_between_list_and_within(api_client, user, c
     start_after = (timezone.now() + timedelta(days=1)).isoformat()
     start_before = (timezone.now() + timedelta(days=3)).isoformat()
 
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=staff_user)
     list_response = api_client.get(
         "/api/v1/events/",
         {
@@ -1057,7 +1057,7 @@ def test_events_retrieve_detail_returns_grouped_taxonomy_assignments(
 
 @pytest.mark.django_db
 def test_event_series_retrieve_returns_grouped_taxonomy_assignments(
-    api_client, user, campaign, event_type
+    api_client, user, staff_user, campaign, event_type
 ):
     """Series retrieve should derive grouped taxonomy assignments from the base occurrence."""
     dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
@@ -1067,7 +1067,7 @@ def test_event_series_retrieve_returns_grouped_taxonomy_assignments(
         label="Climate",
     )
 
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=staff_user)
     create_response = api_client.post(
         "/api/v1/event-series/",
         {
@@ -1104,9 +1104,13 @@ def test_event_series_retrieve_returns_grouped_taxonomy_assignments(
 
 @pytest.mark.django_db
 def test_event_series_retrieve_fails_without_base_occurrence_template(
-    api_client, user, campaign, event_type
+    api_client, user, staff_user, campaign, event_type
 ):
-    """Series retrieve should fail clearly when no base occurrence/template exists."""
+    """Series retrieve should fail clearly when no base occurrence/template exists.
+
+    Uses a staff user because empty series are filtered out of the non-staff
+    queryset (no visible occurrence) and would otherwise return 404.
+    """
     series = EventSeries.objects.create(
         **build_series_kwargs(
             user,
@@ -1116,7 +1120,7 @@ def test_event_series_retrieve_fails_without_base_occurrence_template(
         )
     )
 
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=staff_user)
     response = api_client.get(f"/api/v1/event-series/{series.id}/")
 
     assert response.status_code == 409
@@ -1283,10 +1287,10 @@ def test_event_series_preview_weekly_preserves_wall_time_across_dst(
 
 @pytest.mark.django_db
 def test_events_patch_marks_generated_occurrence_as_exception(
-    api_client, user, campaign, event_type
+    api_client, user, staff_user, campaign, event_type
 ):
     """Editing a generated occurrence directly should mark it as an exception."""
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=staff_user)
     create_response = api_client.post(
         "/api/v1/event-series/",
         {
@@ -1332,7 +1336,7 @@ def test_events_patch_marks_generated_occurrence_as_exception(
 
 @pytest.mark.django_db
 def test_event_series_patch_skips_future_exception_occurrences_by_default(
-    api_client, user, campaign, event_type
+    api_client, user, staff_user, campaign, event_type
 ):
     """Future bulk updates should leave exception occurrences untouched by default."""
     today = timezone.localdate()
@@ -1341,7 +1345,7 @@ def test_event_series_patch_skips_future_exception_occurrences_by_default(
         days_until_monday = 7
     start_date = today + timedelta(days=days_until_monday)
 
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=staff_user)
     create_response = api_client.post(
         "/api/v1/event-series/",
         {
