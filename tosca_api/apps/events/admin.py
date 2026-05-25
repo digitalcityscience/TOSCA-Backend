@@ -225,7 +225,11 @@ class EventSeriesAdmin(admin.ModelAdmin):
                     ),
                     "fields": (
                         "title",
-                        "description",
+                        "summary",
+                        "lead_name",
+                        "language",
+                        "language_note",
+                        "external_url",
                         "status",
                         "visibility",
                     ),
@@ -238,6 +242,8 @@ class EventSeriesAdmin(admin.ModelAdmin):
                     "fields": (
                         "location_mode",
                         "location",
+                        "venue_address",
+                        "district",
                         "online_url",
                         "online_platform",
                         "access_notes",
@@ -249,8 +255,11 @@ class EventSeriesAdmin(admin.ModelAdmin):
                 {
                     "fields": (
                         "provider_name",
+                        "provider_address",
+                        "provider_phone",
+                        "provider_email",
+                        "provider_social",
                         "provider_url",
-                        "provider_contact",
                     ),
                 },
             ),
@@ -355,7 +364,7 @@ class EventAdmin(GISModelAdmin):
         "organizer",
     ]
     list_filter = ["campaign", "event_type", "location_mode", "status", "visibility", "start_datetime"]
-    search_fields = ["title", "description"]
+    search_fields = ["title", "summary"]
     readonly_fields = [
         "id",
         "occurrence_index",
@@ -384,7 +393,22 @@ class EventAdmin(GISModelAdmin):
             for dimension in get_taxonomy_dimensions_for_source(source_event)
         )
         fieldsets = [
-            (None, {"fields": ("campaign", "event_type", "series", "title", "description")}),
+            (
+                None,
+                {
+                    "fields": (
+                        "campaign",
+                        "event_type",
+                        "series",
+                        "title",
+                        "summary",
+                        "lead_name",
+                        "language",
+                        "language_note",
+                        "external_url",
+                    )
+                },
+            ),
             ("Schedule", {"fields": ("start_datetime", "end_datetime")}),
             (
                 "Delivery",
@@ -393,13 +417,27 @@ class EventAdmin(GISModelAdmin):
                     "fields": (
                         "location_mode",
                         "location",
+                        "venue_address",
+                        "district",
                         "online_url",
                         "online_platform",
                         "access_notes",
                     ),
                 },
             ),
-            ("Provider", {"fields": ("provider_name", "provider_url", "provider_contact")}),
+            (
+                "Provider",
+                {
+                    "fields": (
+                        "provider_name",
+                        "provider_address",
+                        "provider_phone",
+                        "provider_email",
+                        "provider_social",
+                        "provider_url",
+                    )
+                },
+            ),
             (
                 "Public Health Details",
                 {

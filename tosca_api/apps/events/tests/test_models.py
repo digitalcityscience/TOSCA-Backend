@@ -88,7 +88,7 @@ def test_event_create_success(user, campaign):
     event = Event.objects.create(
         campaign=campaign,
         title="Workshop on Climate",
-        description="A workshop about climate action",
+        summary="A workshop about climate action",
         start_datetime=now,
         end_datetime=now + timedelta(hours=2),
         location=Point(10.0, 53.5, srid=4326),
@@ -161,7 +161,7 @@ def test_event_db_constraint_end_after_start(user, campaign):
     )
     # Bypass full_clean to test DB constraint directly
     event.title = "Bypass Test"
-    event.description = ""
+    event.summary = ""
     # Save without validation
     Event.objects.bulk_create([event])
 
@@ -683,7 +683,7 @@ def test_series_occurrence_index_must_be_unique(user, campaign, event_type):
         campaign=campaign,
         event_type=event_type,
         title="Occurrence 1 Duplicate",
-        description="",
+        summary="",
         start_datetime=now + timedelta(days=1),
         end_datetime=now + timedelta(days=1, hours=1),
         location=Point(10.1, 53.6, srid=4326),

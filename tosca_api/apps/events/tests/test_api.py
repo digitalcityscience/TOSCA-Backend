@@ -86,11 +86,13 @@ def future_event(user, campaign):
     return Event.objects.create(
         campaign=campaign,
         title="Future Event",
+        summary="Future event summary",
         start_datetime=timezone.now() + timedelta(days=1),
         end_datetime=timezone.now() + timedelta(days=1, hours=2),
         location=Point(10.0, 53.5, srid=4326),
         organizer=user,
         status=Event.Status.PUBLISHED,
+        provider_phone="+49 89 12345",
     )
 
 
@@ -100,11 +102,13 @@ def past_event(user, campaign):
     return Event.objects.create(
         campaign=campaign,
         title="Past Event",
+        summary="Past event summary",
         start_datetime=timezone.now() - timedelta(days=2),
         end_datetime=timezone.now() - timedelta(days=2, hours=-2),
         location=Point(10.0, 53.5, srid=4326),
         organizer=user,
         status=Event.Status.PUBLISHED,
+        provider_phone="+49 89 12345",
     )
 
 
@@ -114,6 +118,7 @@ def event_without_location(user, campaign):
     return Event.objects.create(
         campaign=campaign,
         title="No Location Event",
+        summary="Online event summary",
         start_datetime=timezone.now() + timedelta(days=3),
         end_datetime=timezone.now() + timedelta(days=3, hours=1),
         location_mode=Event.LocationMode.ONLINE,
@@ -122,6 +127,7 @@ def event_without_location(user, campaign):
         location=None,
         organizer=user,
         status=Event.Status.PUBLISHED,
+        provider_phone="+49 89 12345",
     )
 
 
@@ -1399,7 +1405,7 @@ def test_events_create(api_client, user, campaign):
     api_client.force_authenticate(user=user)
     data = {
         "title": "New Event",
-        "description": "Test description",
+        "summary": "Test summary",
         "campaign": str(campaign.id),
         "start_datetime": (timezone.now() + timedelta(days=1)).isoformat(),
         "end_datetime": (timezone.now() + timedelta(days=1, hours=2)).isoformat(),
