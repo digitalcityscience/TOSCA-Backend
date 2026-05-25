@@ -26,17 +26,54 @@ from .models import (
 
 KEEP_EXISTING_TERMS = object()
 
+
+def validate_publish_requirements(event_data: dict) -> dict:
+    """Return a dict of field->error for publish-time rules.
+
+    Applied at the serializer/admin-form boundary, not on the model itself,
+    so that ad-hoc Event.objects.create() in tests stays lightweight.
+    """
+    from .models import Event  # local import to avoid circular import at module load
+
+    errors: dict[str, str] = {}
+    if event_data.get("status") != Event.Status.PUBLISHED:
+        return errors
+
+    if not event_data.get("summary"):
+        errors["summary"] = "A summary is required to publish an event."
+
+    has_contact = any(
+        event_data.get(field)
+        for field in ("provider_phone", "provider_email", "provider_social", "provider_url")
+    )
+    if not has_contact:
+        errors["provider_phone"] = (
+            "Published events require at least one provider contact "
+            "(phone, email, social, or url)."
+        )
+
+    return errors
+
 EVENT_TEMPLATE_FIELDS = frozenset({
     "title",
-    "description",
+    "summary",
     "location_mode",
     "location",
+    "venue_address",
+    "district",
     "online_url",
     "online_platform",
     "access_notes",
     "provider_name",
+    "provider_address",
+    "provider_phone",
+    "provider_email",
+    "provider_social",
     "provider_url",
-    "provider_contact",
+    "language",
+    "language_note",
+    "lead_name",
+    "external_url",
     "status",
     "visibility",
     "context",

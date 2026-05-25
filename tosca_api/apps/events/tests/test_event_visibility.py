@@ -50,6 +50,8 @@ def published_public_event(organizer, campaign):
         organizer=organizer,
         status=Event.Status.PUBLISHED,
         visibility=Event.Visibility.PUBLIC,
+        summary="Visibility test event",
+        provider_phone="+49 89 12345",
     )
 
 
@@ -78,6 +80,8 @@ def private_event(organizer, campaign):
         organizer=organizer,
         status=Event.Status.PUBLISHED,
         visibility=Event.Visibility.PRIVATE,
+        summary="Private visibility event",
+        provider_phone="+49 89 12345",
     )
 
 

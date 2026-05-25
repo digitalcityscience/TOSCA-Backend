@@ -18,6 +18,7 @@ from .models import (
     EventTerm,
     EventSeries,
     EventType,
+    LANGUAGE_CHOICES,
     PublicHealthEventProfile,
     SportsEventProfile,
     TaxonomyDimension,
@@ -29,6 +30,7 @@ from .services import (
     get_base_template_event,
     resolve_taxonomy_assignments,
     validate_event_template,
+    validate_publish_requirements,
 )
 
 TIMEZONE_CHOICES = [(timezone_name, timezone_name) for timezone_name in sorted(available_timezones())]
@@ -234,7 +236,7 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
 
     # --- Event template fields ---
     title = forms.CharField(max_length=255, required=False)
-    description = forms.CharField(widget=forms.Textarea(attrs={"rows": 3}), required=False)
+    summary = forms.CharField(max_length=100, required=False)
     location_mode = forms.ChoiceField(
         choices=[("", "---------")] + list(Event.LocationMode.choices),
         required=False,
@@ -243,12 +245,25 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
         required=False,
         help_text="Pick a point on the map for physical or hybrid events.",
     )
+    venue_address = forms.CharField(max_length=512, required=False)
+    district = forms.CharField(max_length=120, required=False)
     online_url = forms.URLField(required=False)
     online_platform = forms.CharField(max_length=255, required=False)
     access_notes = forms.CharField(widget=forms.Textarea(attrs={"rows": 2}), required=False)
     provider_name = forms.CharField(max_length=255, required=False)
+    provider_address = forms.CharField(max_length=512, required=False)
+    provider_phone = forms.CharField(max_length=50, required=False)
+    provider_email = forms.EmailField(required=False)
+    provider_social = forms.CharField(max_length=512, required=False)
     provider_url = forms.URLField(required=False)
-    provider_contact = forms.CharField(widget=forms.Textarea(attrs={"rows": 2}), required=False)
+    language = forms.MultipleChoiceField(
+        choices=LANGUAGE_CHOICES,
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+    )
+    language_note = forms.CharField(max_length=255, required=False)
+    lead_name = forms.CharField(max_length=120, required=False)
+    external_url = forms.URLField(required=False)
     status = forms.ChoiceField(
         choices=Event.Status.choices,
         initial=Event.Status.DRAFT,
@@ -312,16 +327,25 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
 
         # Event template fields
         self.fields["title"].initial = base_event.title
-        self.fields["description"].initial = base_event.description
+        self.fields["summary"].initial = base_event.summary
         self.fields["location_mode"].initial = base_event.location_mode
         if base_event.location:
             self.fields["location"].initial = base_event.location
+        self.fields["venue_address"].initial = base_event.venue_address
+        self.fields["district"].initial = base_event.district
         self.fields["online_url"].initial = base_event.online_url
         self.fields["online_platform"].initial = base_event.online_platform
         self.fields["access_notes"].initial = base_event.access_notes
         self.fields["provider_name"].initial = base_event.provider_name
+        self.fields["provider_address"].initial = base_event.provider_address
+        self.fields["provider_phone"].initial = base_event.provider_phone
+        self.fields["provider_email"].initial = base_event.provider_email
+        self.fields["provider_social"].initial = base_event.provider_social
         self.fields["provider_url"].initial = base_event.provider_url
-        self.fields["provider_contact"].initial = base_event.provider_contact
+        self.fields["language"].initial = list(base_event.language or [])
+        self.fields["language_note"].initial = base_event.language_note
+        self.fields["lead_name"].initial = base_event.lead_name
+        self.fields["external_url"].initial = base_event.external_url
         self.fields["status"].initial = base_event.status
         self.fields["visibility"].initial = base_event.visibility
         self.fields["context"].initial = base_event.context_id
@@ -421,15 +445,24 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
         # Build event template dict
         event_template = {
             "title": title,
-            "description": cleaned_data.get("description", ""),
+            "summary": cleaned_data.get("summary", ""),
             "location_mode": location_mode,
             "location": location_geom,
+            "venue_address": cleaned_data.get("venue_address", ""),
+            "district": cleaned_data.get("district", ""),
             "online_url": cleaned_data.get("online_url", ""),
             "online_platform": cleaned_data.get("online_platform", ""),
             "access_notes": cleaned_data.get("access_notes", ""),
             "provider_name": cleaned_data.get("provider_name", ""),
+            "provider_address": cleaned_data.get("provider_address", ""),
+            "provider_phone": cleaned_data.get("provider_phone", ""),
+            "provider_email": cleaned_data.get("provider_email", ""),
+            "provider_social": cleaned_data.get("provider_social", ""),
             "provider_url": cleaned_data.get("provider_url", ""),
-            "provider_contact": cleaned_data.get("provider_contact", ""),
+            "language": cleaned_data.get("language", []) or [],
+            "language_note": cleaned_data.get("language_note", ""),
+            "lead_name": cleaned_data.get("lead_name", ""),
+            "external_url": cleaned_data.get("external_url", ""),
             "status": cleaned_data.get("status", Event.Status.DRAFT),
             "visibility": cleaned_data.get("visibility", Event.Visibility.PUBLIC),
             "context": cleaned_data.get("context"),
@@ -500,6 +533,10 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
                     else:
                         self.add_error(None, messages)
 
+        publish_errors = validate_publish_requirements(event_template)
+        for field, message in publish_errors.items():
+            self.add_error(field if field in self.fields else None, message)
+
         # Stash validated data for use in admin save_related
         self._template_data = event_template
         self._profile_data = self._build_profile_data(cleaned_data)
@@ -547,6 +584,9 @@ class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
     def clean(self):
         cleaned_data = super().clean()
         self._taxonomy_terms = self.clean_taxonomy_assignments(cleaned_data)
+        publish_errors = validate_publish_requirements(cleaned_data)
+        for field, message in publish_errors.items():
+            self.add_error(field if field in self.fields else None, message)
         return cleaned_data
 
     def _load_existing_profile_initials(self) -> None:

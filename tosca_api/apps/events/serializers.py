@@ -20,6 +20,7 @@ from .models import (
     EventSeries,
     EventTerm,
     EventType,
+    LANGUAGE_CHOICES,
     VALID_WEEKDAYS,
 )
 from .services import (
@@ -33,6 +34,7 @@ from .services import (
     persist_explicit_dates,
     resolve_taxonomy_assignments,
     serialize_occurrence_events,
+    validate_publish_requirements,
 )
 
 EVENT_SERIES_FIELDS = {
@@ -59,17 +61,26 @@ EVENT_SERIES_FIELDS = {
 
 EXCEPTION_TRIGGER_FIELDS = {
     "title",
-    "description",
+    "summary",
     "start_datetime",
     "end_datetime",
     "location_mode",
     "location",
+    "venue_address",
+    "district",
     "online_url",
     "online_platform",
     "access_notes",
     "provider_name",
+    "provider_address",
+    "provider_phone",
+    "provider_email",
+    "provider_social",
     "provider_url",
-    "provider_contact",
+    "language",
+    "language_note",
+    "lead_name",
+    "external_url",
     "status",
     "visibility",
 }
@@ -120,7 +131,7 @@ class EventListSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "title",
-            "description",
+            "summary",
             "campaign",
             "event_type",
             "start_datetime",
@@ -148,19 +159,28 @@ class EventDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "title",
-            "description",
+            "summary",
             "campaign",
             "event_type",
             "start_datetime",
             "end_datetime",
             "location_mode",
             "location",
+            "venue_address",
+            "district",
             "online_url",
             "online_platform",
             "access_notes",
             "provider_name",
+            "provider_address",
+            "provider_phone",
+            "provider_email",
+            "provider_social",
             "provider_url",
-            "provider_contact",
+            "language",
+            "language_note",
+            "lead_name",
+            "external_url",
             "series",
             "occurrence_index",
             "is_exception",
@@ -207,7 +227,7 @@ class EventGeoSerializer(GeoFeatureModelSerializer):
         fields = [
             "id",
             "title",
-            "description",
+            "summary",
             "campaign",
             "event_type",
             "start_datetime",
@@ -227,7 +247,7 @@ class EventMapOnlineSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "title",
-            "description",
+            "summary",
             "campaign",
             "event_type",
             "start_datetime",
@@ -303,19 +323,28 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
         fields = [
             "id",
             "title",
-            "description",
+            "summary",
             "campaign",
             "event_type",
             "start_datetime",
             "end_datetime",
             "location_mode",
             "location",
+            "venue_address",
+            "district",
             "online_url",
             "online_platform",
             "access_notes",
             "provider_name",
+            "provider_address",
+            "provider_phone",
+            "provider_email",
+            "provider_social",
             "provider_url",
-            "provider_contact",
+            "language",
+            "language_note",
+            "lead_name",
+            "external_url",
             "series",
             "occurrence_index",
             "is_exception",
@@ -352,6 +381,19 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
 
         # Event.clean() enforces start_datetime <= end_datetime
         instance.clean()
+
+        publish_errors = validate_publish_requirements(
+            {
+                "status": instance.status,
+                "summary": instance.summary,
+                "provider_phone": instance.provider_phone,
+                "provider_email": instance.provider_email,
+                "provider_social": instance.provider_social,
+                "provider_url": instance.provider_url,
+            }
+        )
+        if publish_errors:
+            raise serializers.ValidationError(publish_errors)
         return attrs
 
     @transaction.atomic
@@ -538,18 +580,31 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
     )
 
     title = serializers.CharField(required=False, max_length=255)
-    description = serializers.CharField(required=False, allow_blank=True)
+    summary = serializers.CharField(required=False, allow_blank=True, max_length=100)
     location_mode = serializers.ChoiceField(
         choices=Event.LocationMode.choices,
         required=False,
     )
     location = serializers.JSONField(required=False, allow_null=True)
+    venue_address = serializers.CharField(required=False, allow_blank=True, max_length=512)
+    district = serializers.CharField(required=False, allow_blank=True, max_length=120)
     online_url = serializers.URLField(required=False, allow_blank=True)
     online_platform = serializers.CharField(required=False, allow_blank=True)
     access_notes = serializers.CharField(required=False, allow_blank=True)
     provider_name = serializers.CharField(required=False, allow_blank=True)
+    provider_address = serializers.CharField(required=False, allow_blank=True, max_length=512)
+    provider_phone = serializers.CharField(required=False, allow_blank=True, max_length=50)
+    provider_email = serializers.EmailField(required=False, allow_blank=True)
+    provider_social = serializers.CharField(required=False, allow_blank=True, max_length=512)
     provider_url = serializers.URLField(required=False, allow_blank=True)
-    provider_contact = serializers.CharField(required=False, allow_blank=True)
+    language = serializers.ListField(
+        child=serializers.ChoiceField(choices=[code for code, _ in LANGUAGE_CHOICES]),
+        required=False,
+        allow_empty=True,
+    )
+    language_note = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    lead_name = serializers.CharField(required=False, allow_blank=True, max_length=120)
+    external_url = serializers.URLField(required=False, allow_blank=True)
     status = serializers.ChoiceField(choices=Event.Status.choices, required=False)
     visibility = serializers.ChoiceField(choices=Event.Visibility.choices, required=False)
     context = serializers.PrimaryKeyRelatedField(

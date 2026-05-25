@@ -13,6 +13,7 @@ import uuid
 from django.conf import settings
 from django.contrib.contenttypes.fields import GenericRelation
 from django.contrib.gis.db import models as gis_models
+from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
@@ -23,6 +24,21 @@ from tosca_api.apps.core.sanitization import sanitize_simple
 VALID_WEEKDAYS = frozenset(
     ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 )
+
+LANGUAGE_CHOICES = [
+    ("de", "Deutsch"),
+    ("en", "English"),
+    ("tr", "Türkçe"),
+    ("ar", "العربية"),
+    ("ru", "Русский"),
+    ("fr", "Français"),
+    ("es", "Español"),
+    ("uk", "Українська"),
+    ("fa", "فارسی"),
+    ("pl", "Polski"),
+    ("other", "Other"),
+]
+LANGUAGE_CODES = frozenset(code for code, _ in LANGUAGE_CHOICES)
 
 
 class EventType(TimeStampedModel):
@@ -457,7 +473,7 @@ class Event(TimeStampedModel):
     )
 
     title = models.CharField(max_length=255)
-    description = models.TextField(blank=True, default="")
+    summary = models.CharField(max_length=100, blank=True, default="")
 
     context = models.ForeignKey(
         "geocontext.GeoContext",
@@ -478,12 +494,25 @@ class Event(TimeStampedModel):
 
     # Spatial location (optional) - WGS84
     location = gis_models.PointField(srid=4326, blank=True, null=True)
+    venue_address = models.CharField(max_length=512, blank=True, default="")
+    district = models.CharField(max_length=120, blank=True, default="")
     online_url = models.URLField(blank=True, default="")
     online_platform = models.CharField(max_length=255, blank=True, default="")
     access_notes = models.TextField(blank=True, default="")
     provider_name = models.CharField(max_length=255, blank=True, default="")
+    provider_address = models.CharField(max_length=512, blank=True, default="")
+    provider_phone = models.CharField(max_length=50, blank=True, default="")
+    provider_email = models.EmailField(blank=True, default="")
+    provider_social = models.CharField(max_length=512, blank=True, default="")
     provider_url = models.URLField(blank=True, default="")
-    provider_contact = models.TextField(blank=True, default="")
+    language = ArrayField(
+        models.CharField(max_length=8, choices=LANGUAGE_CHOICES),
+        default=list,
+        blank=True,
+    )
+    language_note = models.CharField(max_length=255, blank=True, default="")
+    lead_name = models.CharField(max_length=120, blank=True, default="")
+    external_url = models.URLField(blank=True, default="")
     series = models.ForeignKey(
         EventSeries,
         on_delete=models.SET_NULL,
@@ -617,6 +646,18 @@ class Event(TimeStampedModel):
             if not has_online_access:
                 errors["online_url"] = "Hybrid events require an online URL or platform."
 
+        if self.language:
+            invalid_codes = [code for code in self.language if code not in LANGUAGE_CODES]
+            if invalid_codes:
+                errors["language"] = (
+                    f"Unknown language codes: {sorted(set(invalid_codes))}"
+                )
+
+        if self.language_note and "other" not in (self.language or []):
+            errors["language_note"] = (
+                "language_note is only allowed when 'other' is included in language."
+            )
+
         if self.is_exception and not self.series_id:
             errors["is_exception"] = "Only series events can be marked as exceptions."
 
@@ -644,7 +685,7 @@ class Event(TimeStampedModel):
     def save(self, *args, **kwargs) -> None:
         """Override save to sanitize inputs and validate."""
         self.title = sanitize_simple(self.title)
-        self.description = sanitize_simple(self.description)
+        self.summary = sanitize_simple(self.summary)
         self.full_clean()
         super().save(*args, **kwargs)
 
