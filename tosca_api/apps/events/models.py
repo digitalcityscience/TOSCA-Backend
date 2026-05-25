@@ -456,6 +456,8 @@ class Event(TimeStampedModel):
         PHYSICAL = "physical", "Physical"
         ONLINE = "online", "Online"
         HYBRID = "hybrid", "Hybrid"
+        BY_ARRANGEMENT = "by_arrangement", "By Arrangement"
+        HOME_VISIT = "home_visit", "Home Visit"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -645,6 +647,15 @@ class Event(TimeStampedModel):
                 errors["location"] = "Hybrid events require geometry."
             if not has_online_access:
                 errors["online_url"] = "Hybrid events require an online URL or platform."
+
+        if (
+            self.location_mode
+            in (self.LocationMode.BY_ARRANGEMENT, self.LocationMode.HOME_VISIT)
+            and self.location is not None
+        ):
+            errors["location"] = (
+                "By-arrangement and home-visit events cannot include geometry."
+            )
 
         if self.language:
             invalid_codes = [code for code in self.language if code not in LANGUAGE_CODES]

@@ -22,7 +22,9 @@ User = get_user_model()
 
 
 def build_series_kwargs(user, campaign, event_type, **overrides):
-    now = timezone.now()
+    # Anchor wallclock to mid-day so end_time stays after start_time even
+    # when the suite runs late-evening UTC (where now.time()+1h wraps midnight).
+    now = timezone.now().replace(hour=10, minute=0, second=0, microsecond=0)
     kwargs = {
         "campaign": campaign,
         "event_type": event_type,

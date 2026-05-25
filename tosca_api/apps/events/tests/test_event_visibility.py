@@ -273,10 +273,8 @@ def test_anon_cannot_retrieve_series_with_no_visible_occurrences(
         name="All-draft series",
         series_mode=EventSeries.SeriesMode.MANUAL_BATCH,
         start_date=timezone.now().date(),
-        start_time=timezone.now().time().replace(microsecond=0),
-        end_time=(timezone.now() + timedelta(hours=1))
-        .time()
-        .replace(microsecond=0),
+        start_time=timezone.now().replace(hour=10, minute=0, microsecond=0).time(),
+        end_time=timezone.now().replace(hour=11, minute=0, microsecond=0).time(),
         timezone="Europe/Berlin",
     )
     draft_event.series = series
@@ -301,10 +299,8 @@ def test_anon_can_retrieve_series_with_at_least_one_visible_occurrence(
         name="Visible series",
         series_mode=EventSeries.SeriesMode.MANUAL_BATCH,
         start_date=timezone.now().date(),
-        start_time=timezone.now().time().replace(microsecond=0),
-        end_time=(timezone.now() + timedelta(hours=1))
-        .time()
-        .replace(microsecond=0),
+        start_time=timezone.now().replace(hour=10, minute=0, microsecond=0).time(),
+        end_time=timezone.now().replace(hour=11, minute=0, microsecond=0).time(),
         timezone="Europe/Berlin",
     )
     published_public_event.series = series
