@@ -317,7 +317,7 @@ def test_events_list_v2_returns_mixed_modes_ordered_by_start_datetime(
     )
 
     api_client.force_authenticate(user=user)
-    response = api_client.get("/api/v1/events/list/")
+    response = api_client.get("/api/v1/events/")
 
     assert response.status_code == 200
     titles = [event["title"] for event in response.data["results"]]
@@ -356,7 +356,7 @@ def test_events_list_v2_paginates_mixed_event_types(api_client, user, campaign):
         Event.objects.create(**kwargs)
 
     api_client.force_authenticate(user=user)
-    response = api_client.get("/api/v1/events/list/")
+    response = api_client.get("/api/v1/events/")
 
     assert response.status_code == 200
     assert len(response.data["results"]) == 20
@@ -364,65 +364,78 @@ def test_events_list_v2_paginates_mixed_event_types(api_client, user, campaign):
 
 
 @pytest.mark.django_db
-def test_events_list_v2_area_filter_keeps_eligible_online_events(
-    api_client, user, campaign
-):
-    """Area-filtered list results should include matching mapped events plus online events."""
+def test_events_list_ignores_bbox_query_param(api_client, user, campaign):
+    """`bbox` on the list endpoint is accepted but does not change the result shape."""
     Event.objects.create(
         campaign=campaign,
         title="Inside Physical Event",
+        summary="Inside",
         start_datetime=timezone.now() + timedelta(days=1),
         end_datetime=timezone.now() + timedelta(days=1, hours=1),
         location=Point(10.0, 53.5, srid=4326),
         organizer=user,
         status=Event.Status.PUBLISHED,
+        provider_phone="+49 89 12345",
     )
     Event.objects.create(
         campaign=campaign,
         title="Outside Physical Event",
+        summary="Outside",
         start_datetime=timezone.now() + timedelta(days=2),
         end_datetime=timezone.now() + timedelta(days=2, hours=1),
         location=Point(13.4, 52.5, srid=4326),
         organizer=user,
         status=Event.Status.PUBLISHED,
+        provider_phone="+49 89 12345",
     )
     Event.objects.create(
         campaign=campaign,
         title="Eligible Online Event",
+        summary="Online",
         start_datetime=timezone.now() + timedelta(days=3),
         end_datetime=timezone.now() + timedelta(days=3, hours=1),
         location_mode=Event.LocationMode.ONLINE,
         online_url="https://example.org/live",
         organizer=user,
         status=Event.Status.PUBLISHED,
+        provider_phone="+49 89 12345",
     )
 
-    api_client.force_authenticate(user=user)
-    response = api_client.get("/api/v1/events/list/?bbox=9.5,53.0,10.5,54.0")
-
+    response = api_client.get("/api/v1/events/?bbox=9.5,53.0,10.5,54.0")
     assert response.status_code == 200
-    titles = [event["title"] for event in response.data["results"]]
-    assert titles == ["Inside Physical Event", "Eligible Online Event"]
+    # Plain paginated JSON, not GeoJSON. bbox is ignored on the list endpoint;
+    # the spatial response lives at /events/map/.
+    assert "results" in response.data
+    assert "features" not in response.data
+    titles = {item["title"] for item in response.data["results"]}
+    assert titles == {
+        "Inside Physical Event",
+        "Outside Physical Event",
+        "Eligible Online Event",
+    }
 
 
 @pytest.mark.django_db
-def test_events_list_v2_payload_remains_stable_when_no_online_events_match(
+def test_events_list_staff_visibility_private_filter(
     api_client, user, staff_user, campaign
 ):
-    """The dedicated list payload should remain a normal paginated list without online matches."""
+    """Staff can narrow the list to private events via the visibility filter."""
     Event.objects.create(
         campaign=campaign,
-        title="Inside Physical Event",
+        title="Private Physical Event",
+        summary="Private",
         start_datetime=timezone.now() + timedelta(days=1),
         end_datetime=timezone.now() + timedelta(days=1, hours=1),
         location=Point(10.0, 53.5, srid=4326),
         organizer=user,
         status=Event.Status.PUBLISHED,
         visibility=Event.Visibility.PRIVATE,
+        provider_phone="+49 89 12345",
     )
     Event.objects.create(
         campaign=campaign,
-        title="Filtered Online Event",
+        title="Public Online Event",
+        summary="Public",
         start_datetime=timezone.now() + timedelta(days=2),
         end_datetime=timezone.now() + timedelta(days=2, hours=1),
         location_mode=Event.LocationMode.ONLINE,
@@ -430,16 +443,14 @@ def test_events_list_v2_payload_remains_stable_when_no_online_events_match(
         organizer=user,
         status=Event.Status.PUBLISHED,
         visibility=Event.Visibility.PUBLIC,
+        provider_phone="+49 89 12345",
     )
 
     api_client.force_authenticate(user=staff_user)
-    response = api_client.get(
-        "/api/v1/events/list/?bbox=9.5,53.0,10.5,54.0&visibility=private"
-    )
-
+    response = api_client.get("/api/v1/events/?visibility=private")
     assert response.status_code == 200
-    assert "results" in response.data
-    assert response.data["results"][0]["title"] == "Inside Physical Event"
+    titles = [item["title"] for item in response.data["results"]]
+    assert titles == ["Private Physical Event"]
 
 
 # =============================================================================
@@ -643,76 +654,8 @@ def test_events_map_v2_empty_spatial_bucket_still_returns_feature_collection(
 
 
 @pytest.mark.django_db
-def test_events_bbox_returns_geojson(api_client, user, future_event):
-    """Test that bbox filter returns GeoJSON format."""
-    api_client.force_authenticate(user=user)
-    response = api_client.get("/api/v1/events/?bbox=9.0,53.0,11.0,54.0")
-    assert response.status_code == 200
-
-    # GeoJSON FeatureCollection structure
-    assert response.data["type"] == "FeatureCollection"
-    assert "features" in response.data
-    assert len(response.data["features"]) >= 1
-
-    feature = response.data["features"][0]
-    assert feature["type"] == "Feature"
-    assert "geometry" in feature
-    assert "properties" in feature
-    assert feature["properties"]["title"] == "Future Event"
-
-
-@pytest.mark.django_db
-def test_events_bbox_keeps_online_events_after_non_spatial_filtering(
-    api_client, user, future_event, event_without_location
-):
-    """Spatial filters should not drop eligible online events."""
-    api_client.force_authenticate(user=user)
-    response = api_client.get("/api/v1/events/?bbox=9.0,53.0,11.0,54.0")
-    assert response.status_code == 200
-
-    titles = [f["properties"]["title"] for f in response.data["features"]]
-    assert "Future Event" in titles
-    assert "No Location Event" in titles
-
-
-@pytest.mark.django_db
-def test_events_bbox_excludes_events_outside_bbox(api_client, user, campaign):
-    """Test that bbox filter excludes events outside the bounding box."""
-    # Create event in Hamburg
-    Event.objects.create(
-        campaign=campaign,
-        title="Hamburg Event",
-        start_datetime=timezone.now() + timedelta(days=1),
-        end_datetime=timezone.now() + timedelta(days=1, hours=1),
-        location=Point(10.0, 53.5, srid=4326),
-        organizer=user,
-        status=Event.Status.PUBLISHED,
-    )
-
-    # Create event in Berlin (outside Hamburg bbox)
-    Event.objects.create(
-        campaign=campaign,
-        title="Berlin Event",
-        start_datetime=timezone.now() + timedelta(days=1),
-        end_datetime=timezone.now() + timedelta(days=1, hours=1),
-        location=Point(13.4, 52.5, srid=4326),  # Berlin
-        organizer=user,
-        status=Event.Status.PUBLISHED,
-    )
-
-    api_client.force_authenticate(user=user)
-    # Hamburg area bbox
-    response = api_client.get("/api/v1/events/?bbox=9.5,53.0,10.5,54.0")
-    assert response.status_code == 200
-
-    titles = [f["properties"]["title"] for f in response.data["features"]]
-    assert "Hamburg Event" in titles
-    assert "Berlin Event" not in titles
-
-
-@pytest.mark.django_db
-def test_events_bbox_invalid_format(api_client, user):
-    """Test that invalid bbox returns 400."""
+def test_events_list_invalid_bbox_format(api_client, user):
+    """Even though bbox is ignored on the list endpoint, malformed values still 400."""
     api_client.force_authenticate(user=user)
     response = api_client.get("/api/v1/events/?bbox=invalid")
     assert response.status_code == 400
@@ -902,33 +845,6 @@ def test_events_shared_filters_match_between_list_and_within(api_client, user, s
     within_titles = [feature["properties"]["title"] for feature in within_response.data["features"]]
     assert list_titles == ["Matching Event"]
     assert within_titles == ["Matching Event"]
-
-
-@pytest.mark.django_db
-def test_events_bbox_non_spatial_filters_remove_non_matching_online_events(
-    api_client, user, campaign
-):
-    """Online events should still be removed when they fail non-spatial filters."""
-    Event.objects.create(
-        campaign=campaign,
-        title="Private Online Event",
-        start_datetime=timezone.now() + timedelta(days=1),
-        end_datetime=timezone.now() + timedelta(days=1, hours=1),
-        location_mode=Event.LocationMode.ONLINE,
-        online_url="https://example.org/live",
-        organizer=user,
-        status=Event.Status.PUBLISHED,
-        visibility=Event.Visibility.PRIVATE,
-    )
-
-    api_client.force_authenticate(user=user)
-    response = api_client.get(
-        "/api/v1/events/?bbox=9.0,53.0,11.0,54.0&visibility=public"
-    )
-
-    assert response.status_code == 200
-    titles = [feature["properties"]["title"] for feature in response.data["features"]]
-    assert "Private Online Event" not in titles
 
 
 @pytest.mark.django_db
