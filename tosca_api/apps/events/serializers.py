@@ -367,6 +367,7 @@ class TaxonomyAssignmentReadSerializer(serializers.Serializer):
     dimension_code = serializers.CharField()
     dimension_label = serializers.CharField()
     selection_mode = serializers.CharField()
+    profile_key = serializers.CharField(allow_blank=True)
     term_ids = serializers.ListField(child=serializers.UUIDField())
     terms = TaxonomyAssignmentReadTermSerializer(many=True)
 
@@ -374,9 +375,17 @@ class TaxonomyAssignmentReadSerializer(serializers.Serializer):
 class TaxonomyAssignmentResolutionMixin:
     """Shared taxonomy assignment validation and replacement helpers."""
 
-    def _resolve_taxonomy_assignments(self, taxonomy_assignments):
+    def _resolve_taxonomy_assignments(
+        self,
+        taxonomy_assignments,
+        *,
+        event_profile_key: str | None = None,
+    ):
         try:
-            return resolve_taxonomy_assignments(taxonomy_assignments)
+            return resolve_taxonomy_assignments(
+                taxonomy_assignments,
+                event_profile_key=event_profile_key,
+            )
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.message_dict) from exc
 
@@ -441,8 +450,13 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
         """Invoke model clean() to ensure DB constraints surface as API 400s."""
         taxonomy_assignments = attrs.pop("taxonomy_assignments", serializers.empty)
         if taxonomy_assignments is not serializers.empty:
+            event_type = attrs.get("event_type")
+            if event_type is None and self.instance is not None:
+                event_type = self.instance.event_type
+            event_profile_key = (event_type.profile_key or "") if event_type else ""
             attrs["_taxonomy_terms"] = self._resolve_taxonomy_assignments(
-                taxonomy_assignments
+                taxonomy_assignments,
+                event_profile_key=event_profile_key,
             )
 
         instance = Event()
@@ -717,8 +731,13 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
     def validate(self, attrs):
         taxonomy_assignments = attrs.pop("taxonomy_assignments", serializers.empty)
         if taxonomy_assignments is not serializers.empty:
+            event_type = attrs.get("event_type") or (
+                self.instance.event_type if self.instance else None
+            )
+            event_profile_key = (event_type.profile_key or "") if event_type else ""
             attrs["_taxonomy_terms"] = self._resolve_taxonomy_assignments(
-                taxonomy_assignments
+                taxonomy_assignments,
+                event_profile_key=event_profile_key,
             )
 
         series_attrs = self._merged_series_attrs(attrs)

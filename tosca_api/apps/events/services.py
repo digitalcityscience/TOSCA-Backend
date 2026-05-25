@@ -285,8 +285,14 @@ def resolve_taxonomy_assignments(
     *,
     allow_inactive_dimension_ids: set[Any] | None = None,
     allow_inactive_term_ids: set[Any] | None = None,
+    event_profile_key: str | None = None,
 ) -> list[TaxonomyTerm]:
-    """Validate grouped taxonomy assignments and return the resolved terms."""
+    """Validate grouped taxonomy assignments and return the resolved terms.
+
+    ``event_profile_key`` is the ``profile_key`` of the target event's
+    ``event_type`` (or ``""`` when the event has no event type). When supplied,
+    any taxonomy dimension whose ``profile_key`` is non-empty must match it.
+    """
     if not taxonomy_assignments:
         return []
 
@@ -327,6 +333,19 @@ def resolve_taxonomy_assignments(
             "Inactive taxonomy dimensions cannot be assigned: "
             f"{', '.join(sorted(inactive_dimension_ids))}"
         )
+
+    if event_profile_key is not None:
+        mismatched_profile_dimensions = [
+            f"{dimension.code} (profile_key='{dimension.profile_key}')"
+            for dimension in dimension_map.values()
+            if dimension.profile_key
+            and dimension.profile_key != event_profile_key
+        ]
+        if mismatched_profile_dimensions:
+            errors.append(
+                "Taxonomy dimensions restricted to other profiles cannot be "
+                f"assigned: {', '.join(sorted(mismatched_profile_dimensions))}"
+            )
 
     all_term_ids: list[Any] = []
     duplicate_term_ids: list[str] = []
@@ -449,6 +468,7 @@ def serialize_taxonomy_assignments(
                 "dimension_code": term.dimension.code,
                 "dimension_label": term.dimension.label,
                 "selection_mode": term.dimension.selection_mode,
+                "profile_key": term.dimension.profile_key,
                 "term_ids": [],
                 "terms": [],
             },
