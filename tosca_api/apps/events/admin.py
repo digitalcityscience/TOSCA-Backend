@@ -92,9 +92,16 @@ class EventTypeAdmin(admin.ModelAdmin):
 
 @admin.register(TaxonomyDimension)
 class TaxonomyDimensionAdmin(SortOrderHelpTextMixin, admin.ModelAdmin):
-    list_display = ["label", "code", "selection_mode", "is_active", "sort_order"]
-    list_filter = ["selection_mode", "is_active"]
-    search_fields = ["label", "code", "description"]
+    list_display = [
+        "label",
+        "code",
+        "selection_mode",
+        "profile_key",
+        "is_active",
+        "sort_order",
+    ]
+    list_filter = ["selection_mode", "profile_key", "is_active"]
+    search_fields = ["label", "code", "description", "profile_key"]
     readonly_fields = ["id", "created_at", "updated_at"]
     inlines = [TaxonomyTermInline]
     fieldsets = (
@@ -107,6 +114,7 @@ class TaxonomyDimensionAdmin(SortOrderHelpTextMixin, admin.ModelAdmin):
                     "label",
                     "description",
                     "selection_mode",
+                    "profile_key",
                     "is_active",
                     "sort_order",
                 )

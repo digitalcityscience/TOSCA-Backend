@@ -52,8 +52,25 @@ def taxonomy_dimension_field_name(dimension: TaxonomyDimension) -> str:
 
 
 def get_taxonomy_dimensions_for_source(source_event: Event | None = None) -> list[TaxonomyDimension]:
-    """Return active dimensions plus any inactive dimensions already assigned."""
-    dimensions = list(TaxonomyDimension.objects.filter(is_active=True).order_by("sort_order", "label"))
+    """Return active dimensions plus any inactive dimensions already assigned.
+
+    Dimensions with a non-empty ``profile_key`` are restricted to events whose
+    ``event_type.profile_key`` matches. Unscoped dimensions are always offered.
+    Already-assigned dimensions are kept even when they would otherwise be
+    filtered out so admin can review/clear them.
+    """
+    event_profile_key = ""
+    if source_event is not None and source_event.event_type_id:
+        event_profile_key = source_event.event_type.profile_key or ""
+
+    active = TaxonomyDimension.objects.filter(is_active=True).order_by(
+        "sort_order", "label"
+    )
+    dimensions = [
+        dimension
+        for dimension in active
+        if not dimension.profile_key or dimension.profile_key == event_profile_key
+    ]
     seen_dimension_ids = {dimension.id for dimension in dimensions}
 
     if source_event is None:

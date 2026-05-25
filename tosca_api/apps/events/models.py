@@ -102,6 +102,15 @@ class TaxonomyDimension(TimeStampedModel):
         choices=SelectionMode.choices,
         default=SelectionMode.MULTIPLE,
     )
+    profile_key = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text=(
+            "Restrict this dimension to events whose event_type.profile_key "
+            "matches. Empty = available to every event."
+        ),
+    )
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
 
@@ -802,6 +811,18 @@ class EventTerm(TimeStampedModel):
                 if conflicting_terms.exclude(term_id=self.term_id).exists():
                     errors["term"] = (
                         "Single-select dimensions allow only one term per event."
+                    )
+
+            if dimension.profile_key:
+                event_profile_key = (
+                    (self.event.event_type.profile_key or "")
+                    if self.event.event_type_id
+                    else ""
+                )
+                if event_profile_key != dimension.profile_key:
+                    errors["term"] = (
+                        f"Dimension '{dimension.code}' is restricted to events with "
+                        f"profile_key='{dimension.profile_key}'."
                     )
 
         if errors:
