@@ -68,8 +68,31 @@ class EventViewSet(viewsets.ModelViewSet):
     """
 
     queryset = Event.objects.all()
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     pagination_class = EventCursorPagination
+
+    def get_permissions(self):
+        if self.action == "within":
+            return [permissions.AllowAny()]
+        return super().get_permissions()
+
+    def _is_admin_reader(self) -> bool:
+        user = self.request.user
+        return bool(user and user.is_authenticated and user.is_staff)
+
+    def _apply_visibility_scope(self, queryset):
+        if self._is_admin_reader():
+            return queryset
+        return queryset.filter(
+            status=Event.Status.PUBLISHED,
+            visibility=Event.Visibility.PUBLIC,
+        )
+
+    def _coerce_public_filters(self, filters: dict) -> dict:
+        if not self._is_admin_reader():
+            filters["status"] = Event.Status.PUBLISHED
+            filters["visibility"] = Event.Visibility.PUBLIC
+        return filters
 
     def get_serializer_class(self):
         """Return appropriate serializer based on action and request."""
@@ -101,13 +124,14 @@ class EventViewSet(viewsets.ModelViewSet):
         - Status filtering
         - Campaign filtering
         """
-        queryset = super().get_queryset()
+        queryset = self._apply_visibility_scope(super().get_queryset())
 
         if self.action in ("list", "list_v2"):
             bbox_serializer = BBoxSerializer(data=self.request.query_params)
             bbox_serializer.is_valid(raise_exception=True)
             validated_filters = dict(bbox_serializer.validated_data)
             validated_filters["spatial_geometry"] = validated_filters.pop("bbox", None)
+            validated_filters = self._coerce_public_filters(validated_filters)
 
             queryset = apply_event_filters(queryset, filters=validated_filters)
 
@@ -170,11 +194,14 @@ class EventViewSet(viewsets.ModelViewSet):
         bbox_serializer.is_valid(raise_exception=True)
         filters = dict(bbox_serializer.validated_data)
         filters["spatial_geometry"] = filters.pop("bbox", None)
+        filters = self._coerce_public_filters(filters)
 
-        queryset = apply_event_filters(
-            Event.objects.all().select_related("campaign", "event_type", "series"),
-            filters=filters,
-        ).order_by("start_datetime")
+        base_queryset = self._apply_visibility_scope(
+            Event.objects.all().select_related("campaign", "event_type", "series")
+        )
+        queryset = apply_event_filters(base_queryset, filters=filters).order_by(
+            "start_datetime"
+        )
 
         spatial_queryset = queryset.filter(
             location_mode__in=[Event.LocationMode.PHYSICAL, Event.LocationMode.HYBRID],
@@ -212,8 +239,10 @@ class EventViewSet(viewsets.ModelViewSet):
         filter_serializer.is_valid(raise_exception=True)
         data = dict(filter_serializer.validated_data)
         data["spatial_geometry"] = data.pop("geometry")
+        data = self._coerce_public_filters(data)
 
-        queryset = apply_event_filters(Event.objects.all(), filters=data)
+        base_queryset = self._apply_visibility_scope(Event.objects.all())
+        queryset = apply_event_filters(base_queryset, filters=data)
         queryset = queryset.order_by("start_datetime").select_related(
             "campaign",
             "event_type",
@@ -239,7 +268,17 @@ class EventSeriesViewSet(
         "default_context",
         "created_by",
     )
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        if user and user.is_authenticated and user.is_staff:
+            return queryset
+        return queryset.filter(
+            events__status=Event.Status.PUBLISHED,
+            events__visibility=Event.Visibility.PUBLIC,
+        ).distinct()
 
     def get_serializer_class(self):
         if self.action == "retrieve":
