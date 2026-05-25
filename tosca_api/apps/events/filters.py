@@ -54,7 +54,13 @@ def apply_event_filters(queryset, *, filters: dict):
                 location__isnull=False,
                 location__within=spatial_geometry,
             )
-            | Q(location_mode=Event.LocationMode.ONLINE)
+            | Q(
+                location_mode__in=[
+                    Event.LocationMode.ONLINE,
+                    Event.LocationMode.BY_ARRANGEMENT,
+                    Event.LocationMode.HOME_VISIT,
+                ]
+            )
         )
 
     if term_id or dimension_id:

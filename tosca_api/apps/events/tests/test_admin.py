@@ -170,8 +170,8 @@ def test_event_series_admin_assigns_creator_from_request(admin_request, admin_us
         name="Spring Workshops",
         series_mode=EventSeries.SeriesMode.MANUAL_BATCH,
         start_date=timezone.localdate() + timedelta(days=10),
-        start_time=timezone.now().time().replace(microsecond=0),
-        end_time=(timezone.now() + timedelta(hours=1)).time().replace(microsecond=0),
+        start_time=timezone.now().replace(hour=10, minute=0, microsecond=0).time(),
+        end_time=timezone.now().replace(hour=11, minute=0, microsecond=0).time(),
         timezone="UTC",
     )
 

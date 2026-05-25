@@ -207,7 +207,13 @@ class EventViewSet(viewsets.ModelViewSet):
             location_mode__in=[Event.LocationMode.PHYSICAL, Event.LocationMode.HYBRID],
             location__isnull=False,
         )
-        online_queryset = queryset.filter(location_mode=Event.LocationMode.ONLINE)
+        online_queryset = queryset.filter(
+            location_mode__in=[
+                Event.LocationMode.ONLINE,
+                Event.LocationMode.BY_ARRANGEMENT,
+                Event.LocationMode.HOME_VISIT,
+            ],
+        )
 
         spatial_events = EventGeoSerializer(spatial_queryset, many=True).data
         online_events = EventMapOnlineSerializer(online_queryset, many=True).data
