@@ -33,38 +33,34 @@ class EventViewSet(viewsets.ModelViewSet):
     """
     API endpoint for Event operations.
 
-    ## List Endpoints
+    ## Read Endpoints
 
-    ### Calendar View (default)
+    ### Calendar / chronological list
     ```
     GET /api/v1/events/
+    GET /api/v1/events/?campaign_id=<uuid>&start_after=<...>&start_before=<...>
     ```
-    Returns all events (with or without location) as JSON.
-    By default, only future events are returned.
+    Always paginated JSON ordered by start_datetime. Accepts the shared
+    filter contract documented in BBoxSerializer (campaign_id, event_type_id,
+    dimension_id, term_id, include_past, start_after, start_before, status,
+    visibility). The `bbox` parameter is ignored here; use `/events/map/`
+    for the spatial response.
 
-    **Query Parameters:**
-    - `campaign_id`: Filter by campaign UUID
-    - `include_past`: Set to `true` to include past events (default: false)
-    - `start_after`: Filter events starting after this datetime
-    - `start_before`: Filter events starting before this datetime
-    - `status`: Filter by status (default: published)
-
-    ### Map View (bbox)
+    ### Map response
     ```
-    GET /api/v1/events/?bbox=min_lon,min_lat,max_lon,max_lat
+    GET /api/v1/events/map/?bbox=min_lon,min_lat,max_lon,max_lat
     ```
-    Returns events WITH location inside bounding box as GeoJSON FeatureCollection.
+    Returns `{spatial_events: FeatureCollection, online_events: [...]}`.
+    Spatial bucket contains mapped physical/hybrid events; online bucket
+    contains online, by_arrangement, and home_visit events.
 
-    ### Map View (polygon) - POST
+    ### Polygon filter
     ```
     POST /api/v1/events/within/
-    {
-        "geometry": {GeoJSON Polygon/MultiPolygon},
-        "campaign_id": "uuid",
-        "include_past": false
-    }
+    { "geometry": {GeoJSON Polygon/MultiPolygon}, ... }
     ```
-    Returns events WITH location inside geometry as GeoJSON FeatureCollection.
+    Returns events whose geometry is inside the supplied polygon as a
+    GeoJSON FeatureCollection.
     """
 
     queryset = Event.objects.all()
@@ -95,13 +91,7 @@ class EventViewSet(viewsets.ModelViewSet):
         return filters
 
     def get_serializer_class(self):
-        """Return appropriate serializer based on action and request."""
         if self.action == "list":
-            # Check if spatial filter is applied
-            if self._is_spatial_request():
-                return EventGeoSerializer
-            return EventListSerializer
-        if self.action == "list_v2":
             return EventListSerializer
         if self.action == "map_v2":
             return EventMapOnlineSerializer
@@ -111,31 +101,21 @@ class EventViewSet(viewsets.ModelViewSet):
             return EventGeoSerializer
         return EventWriteSerializer
 
-    def _is_spatial_request(self) -> bool:
-        """Check if request has bbox parameter."""
-        return bool(self.request.query_params.get("bbox"))
-
     def get_queryset(self):
-        """
-        Filter queryset based on request parameters.
-
-        - Default: Only upcoming events (start_datetime >= now)
-        - Spatial requests (bbox): Only events with location
-        - Status filtering
-        - Campaign filtering
-        """
         queryset = self._apply_visibility_scope(super().get_queryset())
 
-        if self.action in ("list", "list_v2"):
+        if self.action == "list":
             bbox_serializer = BBoxSerializer(data=self.request.query_params)
             bbox_serializer.is_valid(raise_exception=True)
             validated_filters = dict(bbox_serializer.validated_data)
-            validated_filters["spatial_geometry"] = validated_filters.pop("bbox", None)
+            # bbox is accepted on /events/map/ only; ignore it here so list
+            # results never silently change shape based on query params.
+            validated_filters.pop("bbox", None)
+            validated_filters["spatial_geometry"] = None
             validated_filters = self._coerce_public_filters(validated_filters)
 
             queryset = apply_event_filters(queryset, filters=validated_filters)
 
-        # Optimize queries
         if self.action == "retrieve":
             queryset = queryset.select_related(
                 "context",
@@ -155,35 +135,6 @@ class EventViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Set the organizer to the current user."""
         serializer.save(organizer=self.request.user)
-
-    def list(self, request, *args, **kwargs):
-        """
-        Override list to return GeoJSON FeatureCollection for spatial requests.
-        Non-spatial requests use standard paginated response.
-        """
-        if self._is_spatial_request():
-            queryset = self.filter_queryset(self.get_queryset()).order_by("start_datetime")
-            serializer = self.get_serializer(queryset, many=True)
-            return Response(serializer.data)
-        return super().list(request, *args, **kwargs)
-
-    @action(detail=False, methods=["get"], url_path="list")
-    def list_v2(self, request):
-        """
-        Return a paginated chronological mixed stream of events.
-
-        This endpoint keeps list responses in JSON form even when spatial
-        filters are supplied, unlike the legacy `/events/` route which still
-        switches to GeoJSON for bbox requests.
-        """
-        queryset = self.filter_queryset(self.get_queryset()).order_by("start_datetime")
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
 
     @action(detail=False, methods=["get"], url_path="map")
     def map_v2(self, request):
