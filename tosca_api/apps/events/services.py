@@ -861,6 +861,13 @@ def apply_profiles_to_events(
             profile, _ = PublicHealthEventProfile.objects.get_or_create(event=event)
             profile.insurance_eligible = profile_data.get("insurance_eligible", False)
             profile.referral_required = profile_data.get("referral_required", False)
+            profile.target_age_note = profile_data.get("target_age_note", "")
+            profile.registration = profile_data.get("registration", "")
+            profile.short_notice_possible = profile_data.get("short_notice_possible", False)
+            profile.cost_amount_eur = profile_data.get("cost_amount_eur")
+            profile.reduced_amount_eur = profile_data.get("reduced_amount_eur")
+            profile.subsidy_program = profile_data.get("subsidy_program", "")
+            profile.transit_note = profile_data.get("transit_note", "")
             profile.save()
         elif profile_key == SportsEventProfile.expected_profile_key:
             profile, _ = SportsEventProfile.objects.get_or_create(event=event)

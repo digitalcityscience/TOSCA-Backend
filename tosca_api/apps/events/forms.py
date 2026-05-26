@@ -26,7 +26,6 @@ from .models import (
     VALID_WEEKDAYS,
 )
 from .services import (
-    EVENT_TEMPLATE_FIELDS,
     get_base_template_event,
     resolve_taxonomy_assignments,
     validate_event_template,
@@ -46,12 +45,42 @@ WEEKDAY_ORDER = (
 WEEKDAY_CHOICES = [(weekday, weekday.title()) for weekday in WEEKDAY_ORDER if weekday in VALID_WEEKDAYS]
 
 
+def validate_public_health_admin_amounts(form: forms.BaseForm, cleaned_data: dict) -> None:
+    cost = cleaned_data.get("public_health_cost_amount_eur")
+    reduced = cleaned_data.get("public_health_reduced_amount_eur")
+    if cost is not None and reduced is not None and reduced > cost:
+        form.add_error(
+            "public_health_reduced_amount_eur",
+            "Reduced amount cannot exceed cost amount.",
+        )
+
+
 def taxonomy_dimension_field_name(dimension: TaxonomyDimension) -> str:
     """Build the dynamic admin field name for a taxonomy dimension."""
     return f"taxonomy_dimension_{dimension.id.hex}"
 
 
-def get_taxonomy_dimensions_for_source(source_event: Event | None = None) -> list[TaxonomyDimension]:
+def get_profile_key_choices() -> list[tuple[str, str]]:
+    """Return profile-key choices backed by extension event types."""
+    choices = [("", "Unscoped")]
+    seen_profile_keys = {""}
+    event_types = EventType.objects.filter(
+        profile_mode=EventType.ProfileMode.EXTENSION,
+        profile_key__isnull=False,
+    ).exclude(profile_key="")
+    for event_type in event_types.order_by("label", "code"):
+        if event_type.profile_key in seen_profile_keys:
+            continue
+        choices.append((event_type.profile_key, event_type.label))
+        seen_profile_keys.add(event_type.profile_key)
+    return choices
+
+
+def get_taxonomy_dimensions_for_source(
+    source_event: Event | None = None,
+    *,
+    include_all_profile_dimensions: bool = False,
+) -> list[TaxonomyDimension]:
     """Return active dimensions plus any inactive dimensions already assigned.
 
     Dimensions with a non-empty ``profile_key`` are restricted to events whose
@@ -69,7 +98,11 @@ def get_taxonomy_dimensions_for_source(source_event: Event | None = None) -> lis
     dimensions = [
         dimension
         for dimension in active
-        if not dimension.profile_key or dimension.profile_key == event_profile_key
+        if (
+            include_all_profile_dimensions
+            or not dimension.profile_key
+            or dimension.profile_key == event_profile_key
+        )
     ]
     seen_dimension_ids = {dimension.id for dimension in dimensions}
 
@@ -92,6 +125,8 @@ def get_taxonomy_dimensions_for_source(source_event: Event | None = None) -> lis
 
 def build_taxonomy_dimension_form_fields(
     source_event: Event | None = None,
+    *,
+    include_all_profile_dimensions: bool = False,
 ) -> tuple[
     list[TaxonomyDimension],
     dict[str, TaxonomyDimension],
@@ -100,7 +135,10 @@ def build_taxonomy_dimension_form_fields(
     set[UUID],
 ]:
     """Build reusable dynamic admin fields for taxonomy dimensions."""
-    taxonomy_dimensions = get_taxonomy_dimensions_for_source(source_event)
+    taxonomy_dimensions = get_taxonomy_dimensions_for_source(
+        source_event,
+        include_all_profile_dimensions=include_all_profile_dimensions,
+    )
     taxonomy_dimension_fields: dict[str, TaxonomyDimension] = {}
     form_fields: dict[str, forms.Field] = {}
 
@@ -158,6 +196,7 @@ def build_taxonomy_dimension_form_fields(
             )
             field.initial = assigned_term_ids_by_dimension.get(dimension.id, [])
 
+        field.widget.attrs["data-taxonomy-profile-key"] = dimension.profile_key or ""
         form_fields[field_name] = field
         taxonomy_dimension_fields[field_name] = dimension
 
@@ -182,6 +221,7 @@ class TaxonomyAssignmentAdminMixin:
         self,
         *,
         source_event: Event | None = None,
+        include_all_profile_dimensions: bool = False,
     ) -> None:
         (
             self._taxonomy_dimensions,
@@ -189,7 +229,10 @@ class TaxonomyAssignmentAdminMixin:
             taxonomy_form_fields,
             self._taxonomy_allowed_inactive_dimension_ids,
             self._taxonomy_allowed_inactive_term_ids,
-        ) = build_taxonomy_dimension_form_fields(source_event)
+        ) = build_taxonomy_dimension_form_fields(
+            source_event,
+            include_all_profile_dimensions=include_all_profile_dimensions,
+        )
         self.fields.update(taxonomy_form_fields)
 
     def clean_taxonomy_assignments(self, cleaned_data: dict) -> list[TaxonomyTerm]:
@@ -211,6 +254,7 @@ class TaxonomyAssignmentAdminMixin:
         try:
             return resolve_taxonomy_assignments(
                 taxonomy_assignments,
+                event_profile_key=self._event_profile_key_for_cleaned_data(cleaned_data),
                 allow_inactive_dimension_ids=self._taxonomy_allowed_inactive_dimension_ids,
                 allow_inactive_term_ids=self._taxonomy_allowed_inactive_term_ids,
             )
@@ -218,6 +262,34 @@ class TaxonomyAssignmentAdminMixin:
             error_messages = exc.message_dict.get("taxonomy_assignments", exc.messages)
             self.add_error(None, error_messages)
             return []
+
+    @staticmethod
+    def _event_profile_key_for_cleaned_data(cleaned_data: dict) -> str:
+        event_type = cleaned_data.get("event_type")
+        if (
+            event_type is not None
+            and event_type.profile_mode == EventType.ProfileMode.EXTENSION
+        ):
+            return event_type.profile_key or ""
+        return ""
+
+
+class TaxonomyDimensionAdminForm(forms.ModelForm):
+    """Admin form that restricts profile_key to known event-type profiles."""
+
+    profile_key = forms.ChoiceField(required=False)
+
+    class Meta:
+        model = TaxonomyDimension
+        fields = "__all__"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        choices = get_profile_key_choices()
+        current_profile_key = self.instance.profile_key if self.instance.pk else ""
+        if current_profile_key and current_profile_key not in {value for value, _ in choices}:
+            choices.append((current_profile_key, current_profile_key))
+        self.fields["profile_key"].choices = choices
 
 
 class EventTypeSelect(forms.Select):
@@ -300,6 +372,44 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
     # --- Profile extension fields ---
     public_health_insurance_eligible = forms.BooleanField(required=False, label="Insurance eligible")
     public_health_referral_required = forms.BooleanField(required=False, label="Referral required")
+    public_health_target_age_note = forms.CharField(
+        required=False,
+        max_length=120,
+        label="Target age note",
+    )
+    public_health_registration = forms.ChoiceField(
+        choices=[("", "---------"), *PublicHealthEventProfile.Registration.choices],
+        required=False,
+        label="Registration",
+    )
+    public_health_short_notice_possible = forms.BooleanField(
+        required=False,
+        label="Short-notice participation possible",
+    )
+    public_health_cost_amount_eur = forms.DecimalField(
+        required=False,
+        max_digits=10,
+        decimal_places=2,
+        min_value=0,
+        label="Cost amount (EUR)",
+    )
+    public_health_reduced_amount_eur = forms.DecimalField(
+        required=False,
+        max_digits=10,
+        decimal_places=2,
+        min_value=0,
+        label="Reduced amount (EUR)",
+    )
+    public_health_subsidy_program = forms.CharField(
+        required=False,
+        max_length=255,
+        label="Subsidy program",
+    )
+    public_health_transit_note = forms.CharField(
+        required=False,
+        max_length=255,
+        label="Transit note",
+    )
     sports_sport_name = forms.CharField(required=False, max_length=255, label="Sport name")
     sports_skill_level = forms.CharField(required=False, max_length=100, label="Skill level")
     culture_format_label = forms.CharField(required=False, max_length=255, label="Format label")
@@ -331,7 +441,10 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
 
         # Pre-populate template fields from the base occurrence on edit
         base_event = self._load_template_from_base_occurrence()
-        self._initialize_taxonomy_dimension_fields(source_event=base_event)
+        self._initialize_taxonomy_dimension_fields(
+            source_event=base_event,
+            include_all_profile_dimensions=base_event is None,
+        )
 
     def _load_template_from_base_occurrence(self) -> Event | None:
         """Pre-fill event template fields from the first non-exception occurrence."""
@@ -378,6 +491,15 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
             profile = base_event.public_health_profile
             self.fields["public_health_insurance_eligible"].initial = profile.insurance_eligible
             self.fields["public_health_referral_required"].initial = profile.referral_required
+            self.fields["public_health_target_age_note"].initial = profile.target_age_note
+            self.fields["public_health_registration"].initial = profile.registration
+            self.fields["public_health_short_notice_possible"].initial = (
+                profile.short_notice_possible
+            )
+            self.fields["public_health_cost_amount_eur"].initial = profile.cost_amount_eur
+            self.fields["public_health_reduced_amount_eur"].initial = profile.reduced_amount_eur
+            self.fields["public_health_subsidy_program"].initial = profile.subsidy_program
+            self.fields["public_health_transit_note"].initial = profile.transit_note
         except PublicHealthEventProfile.DoesNotExist:
             pass
 
@@ -421,6 +543,7 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
             cleaned_data["weekday_of_month"] = ""
 
         # --- Validate template fields ---
+        validate_public_health_admin_amounts(self, cleaned_data)
         self._clean_event_template(cleaned_data)
         self._taxonomy_terms = self.clean_taxonomy_assignments(cleaned_data)
 
@@ -564,6 +687,16 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
         return {
             "insurance_eligible": cleaned_data.get("public_health_insurance_eligible", False),
             "referral_required": cleaned_data.get("public_health_referral_required", False),
+            "target_age_note": cleaned_data.get("public_health_target_age_note", ""),
+            "registration": cleaned_data.get("public_health_registration", ""),
+            "short_notice_possible": cleaned_data.get(
+                "public_health_short_notice_possible",
+                False,
+            ),
+            "cost_amount_eur": cleaned_data.get("public_health_cost_amount_eur"),
+            "reduced_amount_eur": cleaned_data.get("public_health_reduced_amount_eur"),
+            "subsidy_program": cleaned_data.get("public_health_subsidy_program", ""),
+            "transit_note": cleaned_data.get("public_health_transit_note", ""),
             "sport_name": cleaned_data.get("sports_sport_name", ""),
             "skill_level": cleaned_data.get("sports_skill_level", ""),
             "format_label": cleaned_data.get("culture_format_label", ""),
@@ -576,6 +709,26 @@ class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
 
     public_health_insurance_eligible = forms.BooleanField(required=False)
     public_health_referral_required = forms.BooleanField(required=False)
+    public_health_target_age_note = forms.CharField(required=False, max_length=120)
+    public_health_registration = forms.ChoiceField(
+        choices=[("", "---------"), *PublicHealthEventProfile.Registration.choices],
+        required=False,
+    )
+    public_health_short_notice_possible = forms.BooleanField(required=False)
+    public_health_cost_amount_eur = forms.DecimalField(
+        required=False,
+        max_digits=10,
+        decimal_places=2,
+        min_value=0,
+    )
+    public_health_reduced_amount_eur = forms.DecimalField(
+        required=False,
+        max_digits=10,
+        decimal_places=2,
+        min_value=0,
+    )
+    public_health_subsidy_program = forms.CharField(required=False, max_length=255)
+    public_health_transit_note = forms.CharField(required=False, max_length=255)
     sports_sport_name = forms.CharField(required=False, max_length=255)
     sports_skill_level = forms.CharField(required=False, max_length=100)
     culture_format_label = forms.CharField(required=False, max_length=255)
@@ -590,16 +743,29 @@ class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
         self.fields["event_type"].widget = EventTypeSelect(choices=self.fields["event_type"].choices)
         self.fields["public_health_insurance_eligible"].label = "Insurance eligible"
         self.fields["public_health_referral_required"].label = "Referral required"
+        self.fields["public_health_target_age_note"].label = "Target age note"
+        self.fields["public_health_registration"].label = "Registration"
+        self.fields["public_health_short_notice_possible"].label = (
+            "Short-notice participation possible"
+        )
+        self.fields["public_health_cost_amount_eur"].label = "Cost amount (EUR)"
+        self.fields["public_health_reduced_amount_eur"].label = "Reduced amount (EUR)"
+        self.fields["public_health_subsidy_program"].label = "Subsidy program"
+        self.fields["public_health_transit_note"].label = "Transit note"
         self.fields["sports_sport_name"].label = "Sport name"
         self.fields["sports_skill_level"].label = "Skill level"
         self.fields["culture_format_label"].label = "Format label"
         self.fields["culture_age_rating"].label = "Age rating"
         source_event = self.instance if self.instance.pk else None
-        self._initialize_taxonomy_dimension_fields(source_event=source_event)
+        self._initialize_taxonomy_dimension_fields(
+            source_event=source_event,
+            include_all_profile_dimensions=source_event is None,
+        )
         self._load_existing_profile_initials()
 
     def clean(self):
         cleaned_data = super().clean()
+        validate_public_health_admin_amounts(self, cleaned_data)
         self._taxonomy_terms = self.clean_taxonomy_assignments(cleaned_data)
         publish_errors = validate_publish_requirements(cleaned_data)
         for field, message in publish_errors.items():
@@ -618,6 +784,15 @@ class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
             self.fields["public_health_referral_required"].initial = (
                 profile.referral_required
             )
+            self.fields["public_health_target_age_note"].initial = profile.target_age_note
+            self.fields["public_health_registration"].initial = profile.registration
+            self.fields["public_health_short_notice_possible"].initial = (
+                profile.short_notice_possible
+            )
+            self.fields["public_health_cost_amount_eur"].initial = profile.cost_amount_eur
+            self.fields["public_health_reduced_amount_eur"].initial = profile.reduced_amount_eur
+            self.fields["public_health_subsidy_program"].initial = profile.subsidy_program
+            self.fields["public_health_transit_note"].initial = profile.transit_note
         except PublicHealthEventProfile.DoesNotExist:
             pass
 
@@ -657,6 +832,15 @@ class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
             profile, _ = PublicHealthEventProfile.objects.get_or_create(event=event)
             profile.insurance_eligible = self.cleaned_data["public_health_insurance_eligible"]
             profile.referral_required = self.cleaned_data["public_health_referral_required"]
+            profile.target_age_note = self.cleaned_data["public_health_target_age_note"]
+            profile.registration = self.cleaned_data["public_health_registration"]
+            profile.short_notice_possible = self.cleaned_data[
+                "public_health_short_notice_possible"
+            ]
+            profile.cost_amount_eur = self.cleaned_data["public_health_cost_amount_eur"]
+            profile.reduced_amount_eur = self.cleaned_data["public_health_reduced_amount_eur"]
+            profile.subsidy_program = self.cleaned_data["public_health_subsidy_program"]
+            profile.transit_note = self.cleaned_data["public_health_transit_note"]
             profile.save()
         elif profile_key == SportsEventProfile.expected_profile_key:
             profile, _ = SportsEventProfile.objects.get_or_create(event=event)

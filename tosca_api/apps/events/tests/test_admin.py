@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 
 import pytest
 from django.contrib import admin
@@ -14,6 +15,7 @@ from tosca_api.apps.events.admin import EventAdmin, EventSeriesAdmin, EventTypeA
 from tosca_api.apps.events.forms import (
     EventAdminForm,
     EventSeriesAdminForm,
+    TaxonomyDimensionAdminForm,
     taxonomy_dimension_field_name,
 )
 from tosca_api.apps.events.models import (
@@ -93,12 +95,29 @@ def test_event_type_admin_can_store_inactive_custom_type(admin_request):
 @pytest.mark.django_db
 def test_taxonomy_dimension_admin_form_exposes_expected_fields(admin_request):
     """Dimension admin should expose the taxonomy configuration fields."""
+    EventType.objects.create(
+        code="taxonomy-ph",
+        label="Public Health",
+        profile_mode=EventType.ProfileMode.EXTENSION,
+        profile_key="public_health",
+    )
     model_admin = admin.site._registry[TaxonomyDimension]
     form_class = model_admin.get_form(admin_request)
+    form = form_class()
 
-    assert {"code", "label", "description", "selection_mode", "is_active", "sort_order"} <= set(
-        form_class.base_fields
-    )
+    assert model_admin.form is TaxonomyDimensionAdminForm
+    assert {
+        "code",
+        "label",
+        "description",
+        "selection_mode",
+        "profile_key",
+        "is_active",
+        "sort_order",
+    } <= set(form_class.base_fields)
+    assert isinstance(form.fields["profile_key"], ChoiceField)
+    assert ("", "Unscoped") in list(form.fields["profile_key"].choices)
+    assert ("public_health", "Public Health") in list(form.fields["profile_key"].choices)
     assert "auto-append" in form_class.base_fields["sort_order"].help_text
     assert model_admin.inlines
 
@@ -225,9 +244,19 @@ def test_event_admin_form_embeds_profile_fields(admin_request):
     form = form_class()
 
     assert model_admin.form is EventAdminForm
-    assert {"public_health_insurance_eligible", "sports_sport_name", "culture_format_label"} <= set(
-        form_class.base_fields
-    )
+    assert {
+        "public_health_insurance_eligible",
+        "public_health_referral_required",
+        "public_health_target_age_note",
+        "public_health_registration",
+        "public_health_short_notice_possible",
+        "public_health_cost_amount_eur",
+        "public_health_reduced_amount_eur",
+        "public_health_subsidy_program",
+        "public_health_transit_note",
+        "sports_sport_name",
+        "culture_format_label",
+    } <= set(form_class.base_fields)
     assert taxonomy_dimension_field_name(dimension) in form_class.base_fields
     assert taxonomy_dimension_field_name(dimension) in form.fields
     add_sections = {
@@ -239,6 +268,39 @@ def test_event_admin_form_embeds_profile_fields(admin_request):
         title for title, _options in model_admin.get_fieldsets(admin_request, obj=Event())
     }
     assert "Series Metadata" not in unsaved_sections
+
+
+@pytest.mark.django_db
+def test_event_admin_add_form_embeds_profile_scoped_taxonomy_fields(admin_request):
+    """The add form should render scoped taxonomy fields so JS can reveal them."""
+    EventType.objects.create(
+        code="event-admin-ph",
+        label="Public Health",
+        profile_mode=EventType.ProfileMode.EXTENSION,
+        profile_key="public_health",
+    )
+    dimension = TaxonomyDimension.objects.create(
+        code="field_of_action_admin",
+        label="Field of Action",
+        profile_key="public_health",
+    )
+    taxonomy_field = taxonomy_dimension_field_name(dimension)
+    model_admin = admin.site._registry[Event]
+
+    form_class = model_admin.get_form(admin_request, obj=None)
+    fieldsets = model_admin.get_fieldsets(admin_request, obj=None)
+    fieldset_fields = {
+        field
+        for _title, options in fieldsets
+        for field in options.get("fields", ())
+    }
+
+    assert taxonomy_field in form_class.base_fields
+    assert taxonomy_field in fieldset_fields
+    assert (
+        form_class.base_fields[taxonomy_field].widget.attrs["data-taxonomy-profile-key"]
+        == "public_health"
+    )
 
 
 @pytest.mark.django_db
@@ -284,6 +346,13 @@ def test_event_admin_save_model_persists_selected_extension_profile(admin_reques
             "organizer": str(admin_user.id),
             "public_health_insurance_eligible": "on",
             "public_health_referral_required": "",
+            "public_health_target_age_note": "Adults 35 to 50",
+            "public_health_registration": "required",
+            "public_health_short_notice_possible": "on",
+            "public_health_cost_amount_eur": "40.00",
+            "public_health_reduced_amount_eur": "20.00",
+            "public_health_subsidy_program": "Health insurance subsidy",
+            "public_health_transit_note": "Metro station 3 minutes away",
             "sports_sport_name": "",
             "sports_skill_level": "",
             "culture_format_label": "",
@@ -299,6 +368,13 @@ def test_event_admin_save_model_persists_selected_extension_profile(admin_reques
     event.refresh_from_db()
     assert event.public_health_profile.insurance_eligible is True
     assert event.public_health_profile.referral_required is False
+    assert event.public_health_profile.target_age_note == "Adults 35 to 50"
+    assert event.public_health_profile.registration == "required"
+    assert event.public_health_profile.short_notice_possible is True
+    assert event.public_health_profile.cost_amount_eur == Decimal("40.00")
+    assert event.public_health_profile.reduced_amount_eur == Decimal("20.00")
+    assert event.public_health_profile.subsidy_program == "Health insurance subsidy"
+    assert event.public_health_profile.transit_note == "Metro station 3 minutes away"
 
 
 @pytest.mark.django_db
@@ -363,6 +439,13 @@ def test_event_admin_save_model_replaces_old_profile_when_event_type_changes(adm
             "organizer": str(admin_user.id),
             "public_health_insurance_eligible": "",
             "public_health_referral_required": "",
+            "public_health_target_age_note": "",
+            "public_health_registration": "",
+            "public_health_short_notice_possible": "",
+            "public_health_cost_amount_eur": "",
+            "public_health_reduced_amount_eur": "",
+            "public_health_subsidy_program": "",
+            "public_health_transit_note": "",
             "sports_sport_name": "Running",
             "sports_skill_level": "Beginner",
             "culture_format_label": "",
@@ -545,6 +628,13 @@ def _build_series_admin_form_data(
         # Profile fields
         "public_health_insurance_eligible": "",
         "public_health_referral_required": "",
+        "public_health_target_age_note": "",
+        "public_health_registration": "",
+        "public_health_short_notice_possible": "",
+        "public_health_cost_amount_eur": "",
+        "public_health_reduced_amount_eur": "",
+        "public_health_subsidy_program": "",
+        "public_health_transit_note": "",
         "sports_sport_name": "",
         "sports_skill_level": "",
         "culture_format_label": "",
@@ -916,6 +1006,13 @@ def test_event_series_admin_profile_fields_applied(admin_request, admin_user):
         admin_user=admin_user,
         public_health_insurance_eligible="on",
         public_health_referral_required="",
+        public_health_target_age_note="Adults 18 and older",
+        public_health_registration="by_arrangement",
+        public_health_short_notice_possible="on",
+        public_health_cost_amount_eur="15.00",
+        public_health_reduced_amount_eur="5.00",
+        public_health_subsidy_program="Community grant",
+        public_health_transit_note="Bus stop nearby",
     )
     form_class = model_admin.get_form(admin_request)
     form = form_class(data=data)
@@ -929,3 +1026,10 @@ def test_event_series_admin_profile_fields_applied(admin_request, admin_user):
     for event in events:
         assert event.public_health_profile.insurance_eligible is True
         assert event.public_health_profile.referral_required is False
+        assert event.public_health_profile.target_age_note == "Adults 18 and older"
+        assert event.public_health_profile.registration == "by_arrangement"
+        assert event.public_health_profile.short_notice_possible is True
+        assert event.public_health_profile.cost_amount_eur == Decimal("15.00")
+        assert event.public_health_profile.reduced_amount_eur == Decimal("5.00")
+        assert event.public_health_profile.subsidy_program == "Community grant"
+        assert event.public_health_profile.transit_note == "Bus stop nearby"

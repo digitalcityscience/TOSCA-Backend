@@ -19,6 +19,21 @@ window.addEventListener("load", function () {
             return $("#id_event_type option:selected");
         }
 
+        function updateTaxonomyFields(profileKey) {
+            $("[data-taxonomy-profile-key]").each(function () {
+                var fieldProfileKey = $(this).data("taxonomy-profile-key") || "";
+                var shouldShow = !fieldProfileKey || fieldProfileKey === profileKey;
+                var row = $(this).closest(".form-row");
+                row.toggle(shouldShow);
+            });
+
+            $(".events-taxonomy-section").each(function () {
+                var section = $(this);
+                var visibleRows = section.find(".form-row:visible").length;
+                section.toggle(visibleRows > 0);
+            });
+        }
+
         function updateSeriesForm() {
             var seriesMode = $("#id_series_mode").val();
             var recurrenceType = $("#id_recurrence_type").val();
@@ -71,6 +86,8 @@ window.addEventListener("load", function () {
             if (profileMode === "extension" && profileKey) {
                 $(".events-profile-" + profileKey).toggle(true);
             }
+
+            updateTaxonomyFields(profileKey || "");
         }
 
         $("#id_series_mode, #id_recurrence_type, #id_monthly_rule_type").on(
