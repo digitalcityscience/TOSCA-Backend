@@ -5,6 +5,7 @@ from django.db import transaction
 from .forms import (
     EventAdminForm,
     EventSeriesAdminForm,
+    TaxonomyDimensionAdminForm,
     build_taxonomy_dimension_form_fields,
     get_taxonomy_dimensions_for_source,
     taxonomy_dimension_field_name,
@@ -26,12 +27,37 @@ from .services import (
 )
 
 
-def build_admin_taxonomy_form_class(form_class, *, source_event=None, class_name: str):
+def build_admin_taxonomy_form_class(
+    form_class,
+    *,
+    source_event=None,
+    include_all_profile_dimensions: bool = False,
+    class_name: str,
+):
     """Return a form subclass with taxonomy fields declared at class creation time."""
-    _, _, taxonomy_form_fields, _, _ = build_taxonomy_dimension_form_fields(source_event)
+    _, _, taxonomy_form_fields, _, _ = build_taxonomy_dimension_form_fields(
+        source_event,
+        include_all_profile_dimensions=include_all_profile_dimensions,
+    )
     if not taxonomy_form_fields:
         return form_class
     return type(class_name, (form_class,), taxonomy_form_fields)
+
+
+def taxonomy_dimension_fieldset_classes(dimensions):
+    classes = ["events-taxonomy-section"]
+    profile_keys = {
+        dimension.profile_key
+        for dimension in dimensions
+        if dimension.profile_key
+    }
+    classes.extend(
+        f"events-taxonomy-{profile_key.replace('_', '-')}"
+        for profile_key in sorted(profile_keys)
+    )
+    if any(not dimension.profile_key for dimension in dimensions):
+        classes.append("events-taxonomy-unscoped")
+    return tuple(classes)
 
 
 class SortOrderHelpTextMixin:
@@ -91,6 +117,7 @@ class EventTypeAdmin(admin.ModelAdmin):
 
 @admin.register(TaxonomyDimension)
 class TaxonomyDimensionAdmin(SortOrderHelpTextMixin, admin.ModelAdmin):
+    form = TaxonomyDimensionAdminForm
     list_display = [
         "label",
         "code",
@@ -168,9 +195,11 @@ class EventSeriesAdmin(admin.ModelAdmin):
 
     def get_form(self, request, obj=None, change=False, **kwargs):
         base_event = get_base_template_event(obj) if obj else None
+        include_all_profile_dimensions = base_event is None
         kwargs["form"] = build_admin_taxonomy_form_class(
             self.form,
             source_event=base_event,
+            include_all_profile_dimensions=include_all_profile_dimensions,
             class_name="DynamicEventSeriesAdminForm",
         )
         base_form = super().get_form(request, obj, change=change, **kwargs)
@@ -184,9 +213,14 @@ class EventSeriesAdmin(admin.ModelAdmin):
 
     def get_fieldsets(self, request, obj=None):
         base_event = get_base_template_event(obj) if obj else None
+        include_all_profile_dimensions = base_event is None
+        taxonomy_dimensions = get_taxonomy_dimensions_for_source(
+            base_event,
+            include_all_profile_dimensions=include_all_profile_dimensions,
+        )
         taxonomy_fields = tuple(
             taxonomy_dimension_field_name(dimension)
-            for dimension in get_taxonomy_dimensions_for_source(base_event)
+            for dimension in taxonomy_dimensions
         )
         fieldsets = [
             (
@@ -310,6 +344,7 @@ class EventSeriesAdmin(admin.ModelAdmin):
             (
                 "Content & Taxonomy",
                 {
+                    "classes": taxonomy_dimension_fieldset_classes(taxonomy_dimensions),
                     "fields": (
                         "context",
                         *taxonomy_fields,
@@ -393,18 +428,25 @@ class EventAdmin(GISModelAdmin):
 
     def get_form(self, request, obj=None, change=False, **kwargs):
         source_event = obj if obj and obj.pk else None
+        include_all_profile_dimensions = source_event is None
         kwargs["form"] = build_admin_taxonomy_form_class(
             self.form,
             source_event=source_event,
+            include_all_profile_dimensions=include_all_profile_dimensions,
             class_name="DynamicEventAdminForm",
         )
         return super().get_form(request, obj, change=change, **kwargs)
 
     def get_fieldsets(self, request, obj=None):
         source_event = obj if obj and obj.pk else None
+        include_all_profile_dimensions = source_event is None
+        taxonomy_dimensions = get_taxonomy_dimensions_for_source(
+            source_event,
+            include_all_profile_dimensions=include_all_profile_dimensions,
+        )
         taxonomy_fields = tuple(
             taxonomy_dimension_field_name(dimension)
-            for dimension in get_taxonomy_dimensions_for_source(source_event)
+            for dimension in taxonomy_dimensions
         )
         fieldsets = [
             (
@@ -493,7 +535,16 @@ class EventAdmin(GISModelAdmin):
             ("Settings", {"fields": ("status", "visibility", "organizer")}),
         ]
         if taxonomy_fields:
-            fieldsets.insert(-1, ("Taxonomy", {"fields": taxonomy_fields}))
+            fieldsets.insert(
+                -1,
+                (
+                    "Taxonomy",
+                    {
+                        "classes": taxonomy_dimension_fieldset_classes(taxonomy_dimensions),
+                        "fields": taxonomy_fields,
+                    },
+                ),
+            )
 
         if obj and not obj._state.adding:
             fieldsets.append(

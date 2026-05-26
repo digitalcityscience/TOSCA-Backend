@@ -15,6 +15,7 @@ from tosca_api.apps.events.admin import EventAdmin, EventSeriesAdmin, EventTypeA
 from tosca_api.apps.events.forms import (
     EventAdminForm,
     EventSeriesAdminForm,
+    TaxonomyDimensionAdminForm,
     taxonomy_dimension_field_name,
 )
 from tosca_api.apps.events.models import (
@@ -94,12 +95,29 @@ def test_event_type_admin_can_store_inactive_custom_type(admin_request):
 @pytest.mark.django_db
 def test_taxonomy_dimension_admin_form_exposes_expected_fields(admin_request):
     """Dimension admin should expose the taxonomy configuration fields."""
+    EventType.objects.create(
+        code="taxonomy-ph",
+        label="Public Health",
+        profile_mode=EventType.ProfileMode.EXTENSION,
+        profile_key="public_health",
+    )
     model_admin = admin.site._registry[TaxonomyDimension]
     form_class = model_admin.get_form(admin_request)
+    form = form_class()
 
-    assert {"code", "label", "description", "selection_mode", "is_active", "sort_order"} <= set(
-        form_class.base_fields
-    )
+    assert model_admin.form is TaxonomyDimensionAdminForm
+    assert {
+        "code",
+        "label",
+        "description",
+        "selection_mode",
+        "profile_key",
+        "is_active",
+        "sort_order",
+    } <= set(form_class.base_fields)
+    assert isinstance(form.fields["profile_key"], ChoiceField)
+    assert ("", "Unscoped") in list(form.fields["profile_key"].choices)
+    assert ("public_health", "Public Health") in list(form.fields["profile_key"].choices)
     assert "auto-append" in form_class.base_fields["sort_order"].help_text
     assert model_admin.inlines
 
@@ -250,6 +268,39 @@ def test_event_admin_form_embeds_profile_fields(admin_request):
         title for title, _options in model_admin.get_fieldsets(admin_request, obj=Event())
     }
     assert "Series Metadata" not in unsaved_sections
+
+
+@pytest.mark.django_db
+def test_event_admin_add_form_embeds_profile_scoped_taxonomy_fields(admin_request):
+    """The add form should render scoped taxonomy fields so JS can reveal them."""
+    EventType.objects.create(
+        code="event-admin-ph",
+        label="Public Health",
+        profile_mode=EventType.ProfileMode.EXTENSION,
+        profile_key="public_health",
+    )
+    dimension = TaxonomyDimension.objects.create(
+        code="field_of_action_admin",
+        label="Field of Action",
+        profile_key="public_health",
+    )
+    taxonomy_field = taxonomy_dimension_field_name(dimension)
+    model_admin = admin.site._registry[Event]
+
+    form_class = model_admin.get_form(admin_request, obj=None)
+    fieldsets = model_admin.get_fieldsets(admin_request, obj=None)
+    fieldset_fields = {
+        field
+        for _title, options in fieldsets
+        for field in options.get("fields", ())
+    }
+
+    assert taxonomy_field in form_class.base_fields
+    assert taxonomy_field in fieldset_fields
+    assert (
+        form_class.base_fields[taxonomy_field].widget.attrs["data-taxonomy-profile-key"]
+        == "public_health"
+    )
 
 
 @pytest.mark.django_db

@@ -60,7 +60,27 @@ def taxonomy_dimension_field_name(dimension: TaxonomyDimension) -> str:
     return f"taxonomy_dimension_{dimension.id.hex}"
 
 
-def get_taxonomy_dimensions_for_source(source_event: Event | None = None) -> list[TaxonomyDimension]:
+def get_profile_key_choices() -> list[tuple[str, str]]:
+    """Return profile-key choices backed by extension event types."""
+    choices = [("", "Unscoped")]
+    seen_profile_keys = {""}
+    event_types = EventType.objects.filter(
+        profile_mode=EventType.ProfileMode.EXTENSION,
+        profile_key__isnull=False,
+    ).exclude(profile_key="")
+    for event_type in event_types.order_by("label", "code"):
+        if event_type.profile_key in seen_profile_keys:
+            continue
+        choices.append((event_type.profile_key, event_type.label))
+        seen_profile_keys.add(event_type.profile_key)
+    return choices
+
+
+def get_taxonomy_dimensions_for_source(
+    source_event: Event | None = None,
+    *,
+    include_all_profile_dimensions: bool = False,
+) -> list[TaxonomyDimension]:
     """Return active dimensions plus any inactive dimensions already assigned.
 
     Dimensions with a non-empty ``profile_key`` are restricted to events whose
@@ -78,7 +98,11 @@ def get_taxonomy_dimensions_for_source(source_event: Event | None = None) -> lis
     dimensions = [
         dimension
         for dimension in active
-        if not dimension.profile_key or dimension.profile_key == event_profile_key
+        if (
+            include_all_profile_dimensions
+            or not dimension.profile_key
+            or dimension.profile_key == event_profile_key
+        )
     ]
     seen_dimension_ids = {dimension.id for dimension in dimensions}
 
@@ -101,6 +125,8 @@ def get_taxonomy_dimensions_for_source(source_event: Event | None = None) -> lis
 
 def build_taxonomy_dimension_form_fields(
     source_event: Event | None = None,
+    *,
+    include_all_profile_dimensions: bool = False,
 ) -> tuple[
     list[TaxonomyDimension],
     dict[str, TaxonomyDimension],
@@ -109,7 +135,10 @@ def build_taxonomy_dimension_form_fields(
     set[UUID],
 ]:
     """Build reusable dynamic admin fields for taxonomy dimensions."""
-    taxonomy_dimensions = get_taxonomy_dimensions_for_source(source_event)
+    taxonomy_dimensions = get_taxonomy_dimensions_for_source(
+        source_event,
+        include_all_profile_dimensions=include_all_profile_dimensions,
+    )
     taxonomy_dimension_fields: dict[str, TaxonomyDimension] = {}
     form_fields: dict[str, forms.Field] = {}
 
@@ -167,6 +196,7 @@ def build_taxonomy_dimension_form_fields(
             )
             field.initial = assigned_term_ids_by_dimension.get(dimension.id, [])
 
+        field.widget.attrs["data-taxonomy-profile-key"] = dimension.profile_key or ""
         form_fields[field_name] = field
         taxonomy_dimension_fields[field_name] = dimension
 
@@ -191,6 +221,7 @@ class TaxonomyAssignmentAdminMixin:
         self,
         *,
         source_event: Event | None = None,
+        include_all_profile_dimensions: bool = False,
     ) -> None:
         (
             self._taxonomy_dimensions,
@@ -198,7 +229,10 @@ class TaxonomyAssignmentAdminMixin:
             taxonomy_form_fields,
             self._taxonomy_allowed_inactive_dimension_ids,
             self._taxonomy_allowed_inactive_term_ids,
-        ) = build_taxonomy_dimension_form_fields(source_event)
+        ) = build_taxonomy_dimension_form_fields(
+            source_event,
+            include_all_profile_dimensions=include_all_profile_dimensions,
+        )
         self.fields.update(taxonomy_form_fields)
 
     def clean_taxonomy_assignments(self, cleaned_data: dict) -> list[TaxonomyTerm]:
@@ -220,6 +254,7 @@ class TaxonomyAssignmentAdminMixin:
         try:
             return resolve_taxonomy_assignments(
                 taxonomy_assignments,
+                event_profile_key=self._event_profile_key_for_cleaned_data(cleaned_data),
                 allow_inactive_dimension_ids=self._taxonomy_allowed_inactive_dimension_ids,
                 allow_inactive_term_ids=self._taxonomy_allowed_inactive_term_ids,
             )
@@ -227,6 +262,34 @@ class TaxonomyAssignmentAdminMixin:
             error_messages = exc.message_dict.get("taxonomy_assignments", exc.messages)
             self.add_error(None, error_messages)
             return []
+
+    @staticmethod
+    def _event_profile_key_for_cleaned_data(cleaned_data: dict) -> str:
+        event_type = cleaned_data.get("event_type")
+        if (
+            event_type is not None
+            and event_type.profile_mode == EventType.ProfileMode.EXTENSION
+        ):
+            return event_type.profile_key or ""
+        return ""
+
+
+class TaxonomyDimensionAdminForm(forms.ModelForm):
+    """Admin form that restricts profile_key to known event-type profiles."""
+
+    profile_key = forms.ChoiceField(required=False)
+
+    class Meta:
+        model = TaxonomyDimension
+        fields = "__all__"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        choices = get_profile_key_choices()
+        current_profile_key = self.instance.profile_key if self.instance.pk else ""
+        if current_profile_key and current_profile_key not in {value for value, _ in choices}:
+            choices.append((current_profile_key, current_profile_key))
+        self.fields["profile_key"].choices = choices
 
 
 class EventTypeSelect(forms.Select):
@@ -378,7 +441,10 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
 
         # Pre-populate template fields from the base occurrence on edit
         base_event = self._load_template_from_base_occurrence()
-        self._initialize_taxonomy_dimension_fields(source_event=base_event)
+        self._initialize_taxonomy_dimension_fields(
+            source_event=base_event,
+            include_all_profile_dimensions=base_event is None,
+        )
 
     def _load_template_from_base_occurrence(self) -> Event | None:
         """Pre-fill event template fields from the first non-exception occurrence."""
@@ -691,7 +757,10 @@ class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
         self.fields["culture_format_label"].label = "Format label"
         self.fields["culture_age_rating"].label = "Age rating"
         source_event = self.instance if self.instance.pk else None
-        self._initialize_taxonomy_dimension_fields(source_event=source_event)
+        self._initialize_taxonomy_dimension_fields(
+            source_event=source_event,
+            include_all_profile_dimensions=source_event is None,
+        )
         self._load_existing_profile_initials()
 
     def clean(self):
