@@ -23,6 +23,7 @@ from .models import (
     EventTerm,
     EventType,
     LANGUAGE_CHOICES,
+    PublicHealthEventProfile,
     VALID_WEEKDAYS,
 )
 from .services import (
@@ -101,6 +102,50 @@ class EventGeoContextSerializer(serializers.ModelSerializer):
         model = GeoContext
         fields = ["id", "title", "content"]
         read_only_fields = fields
+
+
+PROFILE_KEY_PUBLIC_HEALTH = "public_health"
+
+
+class PublicHealthProfileSerializer(serializers.ModelSerializer):
+    """Typed profile payload for events with event_type.profile_key='public_health'."""
+
+    class Meta:
+        model = PublicHealthEventProfile
+        fields = [
+            "target_age_note",
+            "registration",
+            "short_notice_possible",
+            "cost_amount_eur",
+            "reduced_amount_eur",
+            "subsidy_program",
+            "transit_note",
+            "insurance_eligible",
+            "referral_required",
+        ]
+
+    def validate(self, attrs):
+        cost = attrs.get("cost_amount_eur")
+        reduced = attrs.get("reduced_amount_eur")
+        if cost is not None and cost < 0:
+            raise serializers.ValidationError(
+                {"cost_amount_eur": "cost_amount_eur must be non-negative."}
+            )
+        if reduced is not None and reduced < 0:
+            raise serializers.ValidationError(
+                {"reduced_amount_eur": "reduced_amount_eur must be non-negative."}
+            )
+        if cost is not None and reduced is not None and reduced > cost:
+            raise serializers.ValidationError(
+                {"reduced_amount_eur": "reduced_amount_eur cannot exceed cost_amount_eur."}
+            )
+        return attrs
+
+
+def _profile_key_for_event_type(event_type) -> str:
+    if event_type is None:
+        return ""
+    return event_type.profile_key or ""
 
 
 class EventFeatureLinkSerializer(serializers.ModelSerializer):
@@ -189,6 +234,8 @@ class EventDetailSerializer(serializers.ModelSerializer):
     taxonomy_assignments = serializers.SerializerMethodField()
     series = serializers.SerializerMethodField()
     feature_links = serializers.SerializerMethodField()
+    profile_key = serializers.SerializerMethodField()
+    profile = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -222,6 +269,8 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "visibility",
             "organizer",
             "context",
+            "profile_key",
+            "profile",
             "taxonomy_assignments",
             "layers",
             "feature_links",
@@ -229,6 +278,19 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = fields
+
+    def get_profile_key(self, obj) -> str:
+        return _profile_key_for_event_type(obj.event_type)
+
+    def get_profile(self, obj):
+        profile_key = _profile_key_for_event_type(obj.event_type)
+        if profile_key == PROFILE_KEY_PUBLIC_HEALTH:
+            try:
+                profile = obj.public_health_profile
+            except PublicHealthEventProfile.DoesNotExist:
+                return None
+            return PublicHealthProfileSerializer(profile).data
+        return None
 
     def get_series(self, obj):
         return resolve_series_navigation(obj)
@@ -405,6 +467,7 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
         write_only=True,
     )
     layers = LayerUUIDListField(required=False, write_only=True)
+    profile = serializers.DictField(required=False, write_only=True)
 
     class Meta:
         model = Event
@@ -443,32 +506,50 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
             "context",
             "taxonomy_assignments",
             "layers",
+            "profile",
         ]
         read_only_fields = ["id", "organizer"]
 
     def validate(self, attrs):
         """Invoke model clean() to ensure DB constraints surface as API 400s."""
         taxonomy_assignments = attrs.pop("taxonomy_assignments", serializers.empty)
+        event_type = attrs.get("event_type")
+        if event_type is None and self.instance is not None:
+            event_type = self.instance.event_type
+        event_profile_key = (event_type.profile_key or "") if event_type else ""
+
         if taxonomy_assignments is not serializers.empty:
-            event_type = attrs.get("event_type")
-            if event_type is None and self.instance is not None:
-                event_type = self.instance.event_type
-            event_profile_key = (event_type.profile_key or "") if event_type else ""
             attrs["_taxonomy_terms"] = self._resolve_taxonomy_assignments(
                 taxonomy_assignments,
                 event_profile_key=event_profile_key,
             )
 
+        raw_profile = attrs.pop("profile", serializers.empty)
+        if raw_profile is not serializers.empty:
+            if event_profile_key != PROFILE_KEY_PUBLIC_HEALTH:
+                raise serializers.ValidationError(
+                    {
+                        "profile": (
+                            "A `profile` payload is only accepted for events whose "
+                            "event_type.profile_key='public_health'."
+                        )
+                    }
+                )
+            profile_serializer = PublicHealthProfileSerializer(data=raw_profile)
+            if not profile_serializer.is_valid():
+                raise serializers.ValidationError({"profile": profile_serializer.errors})
+            attrs["_profile_data"] = dict(profile_serializer.validated_data)
+
         instance = Event()
         if self.instance is not None:
             for field in self.Meta.fields:
-                if field in {"id", "taxonomy_assignments", "layers"}:
+                if field in {"id", "taxonomy_assignments", "layers", "profile"}:
                     continue
                 setattr(instance, field, getattr(self.instance, field))
             instance.pk = self.instance.pk
 
         for attr, value in attrs.items():
-            if attr.startswith("_") or attr == "layers":
+            if attr.startswith("_") or attr in {"layers", "profile"}:
                 continue
             setattr(instance, attr, value)
 
@@ -493,17 +574,21 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
     def create(self, validated_data):
         taxonomy_terms = validated_data.pop("_taxonomy_terms", serializers.empty)
         layers = validated_data.pop("layers", None)
+        profile_data = validated_data.pop("_profile_data", None)
         event = super().create(validated_data)
         if taxonomy_terms is not serializers.empty:
             self._replace_event_terms(event, taxonomy_terms)
         if layers is not None:
             self._sync_layers(event, layers)
+        if profile_data is not None:
+            self._upsert_public_health_profile(event, profile_data)
         return event
 
     @transaction.atomic
     def update(self, instance, validated_data):
         taxonomy_terms = validated_data.pop("_taxonomy_terms", serializers.empty)
         layers = validated_data.pop("layers", None)
+        profile_data = validated_data.pop("_profile_data", None)
         should_mark_exception = self._should_mark_exception(
             instance=instance,
             validated_data=validated_data,
@@ -522,7 +607,16 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
             self._replace_event_terms(event, taxonomy_terms)
         if layers is not None:
             self._sync_layers(event, layers)
+        if profile_data is not None:
+            self._upsert_public_health_profile(event, profile_data)
         return event
+
+    @staticmethod
+    def _upsert_public_health_profile(event: Event, profile_data: dict) -> None:
+        PublicHealthEventProfile.objects.update_or_create(
+            event=event,
+            defaults=profile_data,
+        )
 
     @staticmethod
     def _sync_layers(event: Event, layers: list) -> None:
