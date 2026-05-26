@@ -24,6 +24,8 @@ from .models import (
     EventType,
     LANGUAGE_CHOICES,
     PublicHealthEventProfile,
+    TaxonomyDimension,
+    TaxonomyTerm,
     VALID_WEEKDAYS,
 )
 from .services import (
@@ -38,6 +40,7 @@ from .services import (
     resolve_series_navigation,
     resolve_taxonomy_assignments,
     serialize_occurrence_events,
+    serialize_taxonomy_assignments,
     validate_publish_requirements,
 )
 
@@ -177,6 +180,66 @@ class EventLayerSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class EventTypeRegistrySerializer(serializers.ModelSerializer):
+    """Public event-type registry payload for frontend filter/bootstrap state."""
+
+    profile_key = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventType
+        fields = ["id", "code", "label", "profile_mode", "profile_key"]
+        read_only_fields = fields
+
+    def get_profile_key(self, obj) -> str:
+        return obj.profile_key or ""
+
+
+class EventTaxonomyTermRegistrySerializer(serializers.ModelSerializer):
+    """Public taxonomy term payload for frontend filters."""
+
+    parent_id = serializers.UUIDField(read_only=True, allow_null=True)
+
+    class Meta:
+        model = TaxonomyTerm
+        fields = ["id", "code", "label", "parent_id", "is_active"]
+        read_only_fields = fields
+
+
+class EventTaxonomyDimensionRegistrySerializer(serializers.ModelSerializer):
+    """Public taxonomy dimension payload with active terms."""
+
+    terms = EventTaxonomyTermRegistrySerializer(many=True, read_only=True)
+
+    class Meta:
+        model = TaxonomyDimension
+        fields = ["id", "code", "label", "selection_mode", "terms"]
+        read_only_fields = fields
+
+
+def _compact_taxonomy_assignments(obj) -> list[dict]:
+    """Return list/map taxonomy chips without UUID/edit-only metadata."""
+    taxonomy_terms = [
+        event_term.term
+        for event_term in obj.event_terms.all()
+        if event_term.term is not None
+    ]
+    assignments = serialize_taxonomy_assignments(taxonomy_terms)
+    return [
+        {
+            "dimension_code": assignment["dimension_code"],
+            "dimension_label": assignment["dimension_label"],
+            "terms": [
+                {
+                    "code": term["code"],
+                    "label": term["label"],
+                }
+                for term in assignment["terms"]
+            ],
+        }
+        for assignment in assignments
+    ]
+
+
 # =============================================================================
 # Event Serializers
 # =============================================================================
@@ -191,6 +254,8 @@ class EventListSerializer(serializers.ModelSerializer):
     series_id = serializers.UUIDField(source="series.id", read_only=True, allow_null=True)
     series_name = serializers.CharField(source="series.name", read_only=True, default="")
     total_occurrences = serializers.SerializerMethodField()
+    profile_key = serializers.SerializerMethodField()
+    taxonomy_assignments = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -210,9 +275,17 @@ class EventListSerializer(serializers.ModelSerializer):
             "occurrence_index",
             "total_occurrences",
             "is_exception",
+            "profile_key",
+            "taxonomy_assignments",
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_profile_key(self, obj) -> str:
+        return _profile_key_for_event_type(obj.event_type)
+
+    def get_taxonomy_assignments(self, obj) -> list[dict]:
+        return _compact_taxonomy_assignments(obj)
 
     def get_total_occurrences(self, obj) -> int | None:
         if obj.series_id is None:
@@ -331,6 +404,8 @@ class EventGeoSerializer(GeoFeatureModelSerializer):
     series_id = serializers.UUIDField(source="series.id", read_only=True, allow_null=True)
     series_name = serializers.CharField(source="series.name", read_only=True, default="")
     total_occurrences = serializers.SerializerMethodField()
+    profile_key = serializers.SerializerMethodField()
+    taxonomy_assignments = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -351,8 +426,16 @@ class EventGeoSerializer(GeoFeatureModelSerializer):
             "occurrence_index",
             "total_occurrences",
             "is_exception",
+            "profile_key",
+            "taxonomy_assignments",
         ]
         read_only_fields = fields
+
+    def get_profile_key(self, obj) -> str:
+        return _profile_key_for_event_type(obj.event_type)
+
+    def get_taxonomy_assignments(self, obj) -> list[dict]:
+        return _compact_taxonomy_assignments(obj)
 
     def get_total_occurrences(self, obj) -> int | None:
         if obj.series_id is None:
@@ -369,6 +452,8 @@ class EventMapOnlineSerializer(serializers.ModelSerializer):
     series_id = serializers.UUIDField(source="series.id", read_only=True, allow_null=True)
     series_name = serializers.CharField(source="series.name", read_only=True, default="")
     total_occurrences = serializers.SerializerMethodField()
+    profile_key = serializers.SerializerMethodField()
+    taxonomy_assignments = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -390,8 +475,16 @@ class EventMapOnlineSerializer(serializers.ModelSerializer):
             "occurrence_index",
             "total_occurrences",
             "is_exception",
+            "profile_key",
+            "taxonomy_assignments",
         ]
         read_only_fields = fields
+
+    def get_profile_key(self, obj) -> str:
+        return _profile_key_for_event_type(obj.event_type)
+
+    def get_taxonomy_assignments(self, obj) -> list[dict]:
+        return _compact_taxonomy_assignments(obj)
 
     def get_total_occurrences(self, obj) -> int | None:
         if obj.series_id is None:
@@ -1064,6 +1157,9 @@ class BBoxSerializer(serializers.Serializer):
     event_type_id = serializers.UUIDField(required=False)
     dimension_id = serializers.UUIDField(required=False)
     term_id = serializers.UUIDField(required=False)
+    profile_key = serializers.CharField(required=False, allow_blank=True)
+    dimension_code = serializers.CharField(required=False, allow_blank=False)
+    term_code = serializers.CharField(required=False, allow_blank=False)
     include_past = serializers.BooleanField(default=False)
     start_after = serializers.DateTimeField(required=False)
     start_before = serializers.DateTimeField(required=False)
@@ -1117,6 +1213,9 @@ class GeometryFilterSerializer(serializers.Serializer):
     event_type_id = serializers.UUIDField(required=False)
     dimension_id = serializers.UUIDField(required=False)
     term_id = serializers.UUIDField(required=False)
+    profile_key = serializers.CharField(required=False, allow_blank=True)
+    dimension_code = serializers.CharField(required=False, allow_blank=False)
+    term_code = serializers.CharField(required=False, allow_blank=False)
     include_past = serializers.BooleanField(default=False)
     start_after = serializers.DateTimeField(required=False)
     start_before = serializers.DateTimeField(required=False)

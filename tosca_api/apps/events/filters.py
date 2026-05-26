@@ -19,6 +19,17 @@ def apply_event_filters(queryset, *, filters: dict):
     if event_type_id:
         queryset = queryset.filter(event_type_id=event_type_id)
 
+    if "profile_key" in filters:
+        profile_key = filters.get("profile_key") or ""
+        if profile_key:
+            queryset = queryset.filter(event_type__profile_key=profile_key)
+        else:
+            queryset = queryset.filter(
+                Q(event_type__isnull=True)
+                | Q(event_type__profile_key__isnull=True)
+                | Q(event_type__profile_key="")
+            )
+
     visibility = filters.get("visibility")
     if visibility:
         queryset = queryset.filter(visibility=visibility)
@@ -43,6 +54,14 @@ def apply_event_filters(queryset, *, filters: dict):
     if dimension_id:
         queryset = queryset.filter(event_terms__term__dimension_id=dimension_id)
 
+    dimension_code = filters.get("dimension_code")
+    if dimension_code:
+        queryset = queryset.filter(event_terms__term__dimension__code=dimension_code)
+
+    term_code = filters.get("term_code")
+    if term_code:
+        queryset = queryset.filter(event_terms__term__code=term_code)
+
     spatial_geometry = filters.get("spatial_geometry")
     if spatial_geometry is not None:
         queryset = queryset.filter(
@@ -63,7 +82,7 @@ def apply_event_filters(queryset, *, filters: dict):
             )
         )
 
-    if term_id or dimension_id:
+    if term_id or dimension_id or dimension_code or term_code:
         queryset = queryset.distinct()
 
     return queryset
