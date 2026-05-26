@@ -1,3 +1,4 @@
+# pyright: reportIncompatibleVariableOverride=false
 """
 Event model - Time-bound spatial events.
 
@@ -8,6 +9,7 @@ to a Campaign and can have associated map layers and rich content (GeoContext).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
 import uuid
 
 from django.conf import settings
@@ -135,6 +137,10 @@ class TaxonomyDimension(TimeStampedModel):
 class TaxonomyTerm(TimeStampedModel):
     """Term within a taxonomy dimension, with optional parent nesting."""
 
+    if TYPE_CHECKING:
+        dimension_id: uuid.UUID
+        parent_id: uuid.UUID | None
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dimension = models.ForeignKey(
         TaxonomyDimension,
@@ -172,9 +178,14 @@ class TaxonomyTerm(TimeStampedModel):
         errors = {}
 
         if self.parent_id:
+            parent = self.parent
             if self.parent_id == self.id:
                 errors["parent"] = "A taxonomy term cannot be its own parent."
-            elif self.dimension_id and self.parent.dimension_id != self.dimension_id:
+            elif (
+                self.dimension_id
+                and parent is not None
+                and parent.dimension_id != self.dimension_id
+            ):
                 errors["parent"] = "Parent term must belong to the same dimension."
 
         if errors:
@@ -195,6 +206,12 @@ class TaxonomyTerm(TimeStampedModel):
 
 class EventSeries(TimeStampedModel):
     """Grouping and recurrence definition model for batch and recurring events."""
+
+    if TYPE_CHECKING:
+        campaign_id: uuid.UUID | None
+        created_by_id: int | None
+        default_context_id: uuid.UUID | None
+        event_type_id: uuid.UUID | None
 
     class SeriesMode(models.TextChoices):
         MANUAL_BATCH = "manual_batch", "Manual Batch"
@@ -452,6 +469,12 @@ class Event(TimeStampedModel):
         visibility: Public/Private
     """
 
+    if TYPE_CHECKING:
+        campaign_id: uuid.UUID
+        context_id: uuid.UUID | None
+        event_type_id: uuid.UUID | None
+        series_id: uuid.UUID | None
+
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
         PUBLISHED = "published", "Published"
@@ -626,10 +649,12 @@ class Event(TimeStampedModel):
         2. EventSeries.default_context
         3. None
         """
-        if self.context_id:
+        if self.context_id is not None:
             return self.context
-        if self.series_id and self.series and self.series.default_context_id:
-            return self.series.default_context
+        if self.series_id is not None:
+            series = self.series
+            if series is not None and series.default_context_id is not None:
+                return series.default_context
         return None
 
     def clean(self) -> None:
@@ -684,17 +709,22 @@ class Event(TimeStampedModel):
         if self.series_id and self.occurrence_index is None:
             errors["occurrence_index"] = "Series events require an occurrence index."
 
-        if self.series_id:
-            if self.series.campaign_id is None:
+        if self.series_id is not None:
+            series = self.series
+            if series is None:
+                errors["series"] = "Series-linked events require a series."
+            elif series.campaign_id is None:
                 errors["series"] = "Series-linked events require a series campaign."
-            elif self.series.campaign_id != self.campaign_id:
+            elif series.campaign_id != self.campaign_id:
                 errors["campaign"] = "Series-linked events must match the series campaign."
 
-            if self.series.event_type_id is None:
+            if series is None:
+                pass
+            elif series.event_type_id is None:
                 errors["series"] = "Series-linked events require a series event type."
             elif self.event_type_id is None:
                 errors["event_type"] = "Series-linked events require an event type."
-            elif self.series.event_type_id != self.event_type_id:
+            elif series.event_type_id != self.event_type_id:
                 errors["event_type"] = "Series-linked events must match the series event type."
 
         if errors:
@@ -717,6 +747,10 @@ class EventLayer(models.Model):
     Allows ordering of layers within an event. Layers must be public and
     published — see ``clean()``.
     """
+
+    if TYPE_CHECKING:
+        event_id: uuid.UUID
+        layer_id: uuid.UUID | None
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     event = models.ForeignKey(Event, on_delete=models.CASCADE)
@@ -769,6 +803,10 @@ class EventLayer(models.Model):
 class EventTerm(TimeStampedModel):
     """Assignment table linking events to taxonomy terms."""
 
+    if TYPE_CHECKING:
+        event_id: uuid.UUID | None
+        term_id: uuid.UUID | None
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     event = models.ForeignKey(
         Event,
@@ -814,9 +852,10 @@ class EventTerm(TimeStampedModel):
                     )
 
             if dimension.profile_key:
+                event_type = self.event.event_type if self.event.event_type_id else None
                 event_profile_key = (
-                    (self.event.event_type.profile_key or "")
-                    if self.event.event_type_id
+                    (event_type.profile_key or "")
+                    if event_type is not None
                     else ""
                 )
                 if event_profile_key != dimension.profile_key:
@@ -840,6 +879,9 @@ class BaseEventProfile(TimeStampedModel):
 
     expected_profile_key: str | None = None
 
+    if TYPE_CHECKING:
+        event_id: uuid.UUID | None
+
     class Meta:
         abstract = True
 
@@ -849,7 +891,8 @@ class BaseEventProfile(TimeStampedModel):
         if not self.event_id:
             errors["event"] = "Extension profiles require an event."
         else:
-            event_type = self.event.event_type
+            event = cast("Event", getattr(self, "event", None))
+            event_type = event.event_type
             if event_type is None:
                 errors["event"] = "Extension profiles require an event type."
             elif event_type.profile_mode != EventType.ProfileMode.EXTENSION:
