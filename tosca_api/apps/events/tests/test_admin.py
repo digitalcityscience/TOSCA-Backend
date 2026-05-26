@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 
 import pytest
 from django.contrib import admin
@@ -225,9 +226,19 @@ def test_event_admin_form_embeds_profile_fields(admin_request):
     form = form_class()
 
     assert model_admin.form is EventAdminForm
-    assert {"public_health_insurance_eligible", "sports_sport_name", "culture_format_label"} <= set(
-        form_class.base_fields
-    )
+    assert {
+        "public_health_insurance_eligible",
+        "public_health_referral_required",
+        "public_health_target_age_note",
+        "public_health_registration",
+        "public_health_short_notice_possible",
+        "public_health_cost_amount_eur",
+        "public_health_reduced_amount_eur",
+        "public_health_subsidy_program",
+        "public_health_transit_note",
+        "sports_sport_name",
+        "culture_format_label",
+    } <= set(form_class.base_fields)
     assert taxonomy_dimension_field_name(dimension) in form_class.base_fields
     assert taxonomy_dimension_field_name(dimension) in form.fields
     add_sections = {
@@ -284,6 +295,13 @@ def test_event_admin_save_model_persists_selected_extension_profile(admin_reques
             "organizer": str(admin_user.id),
             "public_health_insurance_eligible": "on",
             "public_health_referral_required": "",
+            "public_health_target_age_note": "Adults 35 to 50",
+            "public_health_registration": "required",
+            "public_health_short_notice_possible": "on",
+            "public_health_cost_amount_eur": "40.00",
+            "public_health_reduced_amount_eur": "20.00",
+            "public_health_subsidy_program": "Health insurance subsidy",
+            "public_health_transit_note": "Metro station 3 minutes away",
             "sports_sport_name": "",
             "sports_skill_level": "",
             "culture_format_label": "",
@@ -299,6 +317,13 @@ def test_event_admin_save_model_persists_selected_extension_profile(admin_reques
     event.refresh_from_db()
     assert event.public_health_profile.insurance_eligible is True
     assert event.public_health_profile.referral_required is False
+    assert event.public_health_profile.target_age_note == "Adults 35 to 50"
+    assert event.public_health_profile.registration == "required"
+    assert event.public_health_profile.short_notice_possible is True
+    assert event.public_health_profile.cost_amount_eur == Decimal("40.00")
+    assert event.public_health_profile.reduced_amount_eur == Decimal("20.00")
+    assert event.public_health_profile.subsidy_program == "Health insurance subsidy"
+    assert event.public_health_profile.transit_note == "Metro station 3 minutes away"
 
 
 @pytest.mark.django_db
@@ -363,6 +388,13 @@ def test_event_admin_save_model_replaces_old_profile_when_event_type_changes(adm
             "organizer": str(admin_user.id),
             "public_health_insurance_eligible": "",
             "public_health_referral_required": "",
+            "public_health_target_age_note": "",
+            "public_health_registration": "",
+            "public_health_short_notice_possible": "",
+            "public_health_cost_amount_eur": "",
+            "public_health_reduced_amount_eur": "",
+            "public_health_subsidy_program": "",
+            "public_health_transit_note": "",
             "sports_sport_name": "Running",
             "sports_skill_level": "Beginner",
             "culture_format_label": "",
@@ -545,6 +577,13 @@ def _build_series_admin_form_data(
         # Profile fields
         "public_health_insurance_eligible": "",
         "public_health_referral_required": "",
+        "public_health_target_age_note": "",
+        "public_health_registration": "",
+        "public_health_short_notice_possible": "",
+        "public_health_cost_amount_eur": "",
+        "public_health_reduced_amount_eur": "",
+        "public_health_subsidy_program": "",
+        "public_health_transit_note": "",
         "sports_sport_name": "",
         "sports_skill_level": "",
         "culture_format_label": "",
@@ -916,6 +955,13 @@ def test_event_series_admin_profile_fields_applied(admin_request, admin_user):
         admin_user=admin_user,
         public_health_insurance_eligible="on",
         public_health_referral_required="",
+        public_health_target_age_note="Adults 18 and older",
+        public_health_registration="by_arrangement",
+        public_health_short_notice_possible="on",
+        public_health_cost_amount_eur="15.00",
+        public_health_reduced_amount_eur="5.00",
+        public_health_subsidy_program="Community grant",
+        public_health_transit_note="Bus stop nearby",
     )
     form_class = model_admin.get_form(admin_request)
     form = form_class(data=data)
@@ -929,3 +975,10 @@ def test_event_series_admin_profile_fields_applied(admin_request, admin_user):
     for event in events:
         assert event.public_health_profile.insurance_eligible is True
         assert event.public_health_profile.referral_required is False
+        assert event.public_health_profile.target_age_note == "Adults 18 and older"
+        assert event.public_health_profile.registration == "by_arrangement"
+        assert event.public_health_profile.short_notice_possible is True
+        assert event.public_health_profile.cost_amount_eur == Decimal("15.00")
+        assert event.public_health_profile.reduced_amount_eur == Decimal("5.00")
+        assert event.public_health_profile.subsidy_program == "Community grant"
+        assert event.public_health_profile.transit_note == "Bus stop nearby"

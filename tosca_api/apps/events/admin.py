@@ -23,7 +23,6 @@ from .services import (
     get_base_template_event,
     orchestrate_series_create,
     orchestrate_series_update,
-    serialize_occurrence_events,
 )
 
 
@@ -278,6 +277,13 @@ class EventSeriesAdmin(admin.ModelAdmin):
                     "fields": (
                         "public_health_insurance_eligible",
                         "public_health_referral_required",
+                        "public_health_target_age_note",
+                        "public_health_registration",
+                        "public_health_short_notice_possible",
+                        "public_health_cost_amount_eur",
+                        "public_health_reduced_amount_eur",
+                        "public_health_subsidy_program",
+                        "public_health_transit_note",
                     ),
                 },
             ),
@@ -453,6 +459,13 @@ class EventAdmin(GISModelAdmin):
                     "fields": (
                         "public_health_insurance_eligible",
                         "public_health_referral_required",
+                        "public_health_target_age_note",
+                        "public_health_registration",
+                        "public_health_short_notice_possible",
+                        "public_health_cost_amount_eur",
+                        "public_health_reduced_amount_eur",
+                        "public_health_subsidy_program",
+                        "public_health_transit_note",
                     ),
                 },
             ),
