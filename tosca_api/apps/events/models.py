@@ -875,6 +875,11 @@ class PublicHealthEventProfile(BaseEventProfile):
 
     expected_profile_key = "public_health"
 
+    class Registration(models.TextChoices):
+        REQUIRED = "required", "Required"
+        NOT_REQUIRED = "not_required", "Not Required"
+        BY_ARRANGEMENT = "by_arrangement", "By Arrangement"
+
     event = models.OneToOneField(
         Event,
         on_delete=models.CASCADE,
@@ -883,6 +888,28 @@ class PublicHealthEventProfile(BaseEventProfile):
     )
     insurance_eligible = models.BooleanField(default=False)
     referral_required = models.BooleanField(default=False)
+    target_age_note = models.CharField(max_length=120, blank=True, default="")
+    registration = models.CharField(
+        max_length=20,
+        choices=Registration.choices,
+        blank=True,
+        default="",
+    )
+    short_notice_possible = models.BooleanField(default=False)
+    cost_amount_eur = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    reduced_amount_eur = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    subsidy_program = models.CharField(max_length=255, blank=True, default="")
+    transit_note = models.CharField(max_length=255, blank=True, default="")
 
     class Meta:
         verbose_name = "Public Health Event Profile"
@@ -890,6 +917,24 @@ class PublicHealthEventProfile(BaseEventProfile):
 
     def __str__(self) -> str:
         return f"Public Health Profile: {self.event}"
+
+    def clean(self) -> None:
+        errors = {}
+        if self.cost_amount_eur is not None and self.cost_amount_eur < 0:
+            errors["cost_amount_eur"] = "cost_amount_eur must be non-negative."
+        if self.reduced_amount_eur is not None and self.reduced_amount_eur < 0:
+            errors["reduced_amount_eur"] = "reduced_amount_eur must be non-negative."
+        if (
+            self.cost_amount_eur is not None
+            and self.reduced_amount_eur is not None
+            and self.reduced_amount_eur > self.cost_amount_eur
+        ):
+            errors["reduced_amount_eur"] = (
+                "reduced_amount_eur cannot exceed cost_amount_eur."
+            )
+        if errors:
+            raise ValidationError(errors)
+        super().clean()
 
 
 class SportsEventProfile(BaseEventProfile):
