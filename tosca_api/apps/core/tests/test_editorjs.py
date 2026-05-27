@@ -160,7 +160,27 @@ def test_rejects_quote_alignment():
         )
 
 
-def test_rejects_non_empty_list_meta():
+def test_accepts_ordered_list_meta_from_editorjs():
+    doc = {
+        "blocks": [
+            {
+                "type": "list",
+                "data": {
+                    "style": "ordered",
+                    "items": ["a"],
+                    "meta": {"start": 5, "counterType": "lower-roman"},
+                },
+            }
+        ]
+    }
+    out = validate_and_normalize(doc)
+    assert out["blocks"][0]["data"]["meta"] == {
+        "start": 5,
+        "counterType": "lower-roman",
+    }
+
+
+def test_rejects_non_empty_unordered_list_meta():
     with pytest.raises(ValidationError):
         validate_and_normalize(
             {
@@ -168,7 +188,7 @@ def test_rejects_non_empty_list_meta():
                     {
                         "type": "list",
                         "data": {
-                            "style": "ordered",
+                            "style": "unordered",
                             "items": ["a"],
                             "meta": {"start": 5},
                         },
@@ -176,6 +196,31 @@ def test_rejects_non_empty_list_meta():
                 ]
             }
         )
+
+
+def test_rejects_invalid_ordered_list_meta():
+    cases = [
+        {"start": 0},
+        {"start": True},
+        {"counterType": "emoji"},
+        {"foo": "bar"},
+    ]
+    for meta in cases:
+        with pytest.raises(ValidationError):
+            validate_and_normalize(
+                {
+                    "blocks": [
+                        {
+                            "type": "list",
+                            "data": {
+                                "style": "ordered",
+                                "items": ["a"],
+                                "meta": meta,
+                            },
+                        }
+                    ]
+                }
+            )
 
 
 def test_accepts_nested_list_items():

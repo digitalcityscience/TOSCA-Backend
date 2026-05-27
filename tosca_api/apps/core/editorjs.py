@@ -53,6 +53,13 @@ _INLINE_URL_SCHEMES = {"http", "https", "mailto"}
 
 _HEADER_LEVELS = {1, 2, 3, 4}
 _LIST_STYLES = {"ordered", "unordered"}
+_ORDERED_LIST_COUNTER_TYPES = {
+    "numeric",
+    "lower-roman",
+    "upper-roman",
+    "lower-alpha",
+    "upper-alpha",
+}
 
 _B_OPEN = re.compile(r"<b(\s[^>]*)?>", re.IGNORECASE)
 _B_CLOSE = re.compile(r"</b\s*>", re.IGNORECASE)
@@ -144,12 +151,47 @@ def _normalize_list(data: dict, idx: int) -> dict:
     if not isinstance(items, list):
         raise ValidationError(f"list block at {idx} requires an 'items' array.")
     meta = data.get("meta", {})
-    if meta != {}:
-        raise ValidationError(
-            f"list block at {idx} must have 'meta' equal to {{}} (MVP); got {meta!r}."
-        )
+    normalized_meta = _normalize_list_meta(meta, style, idx)
     normalized_items = [_normalize_list_item(item, idx, path=str(i)) for i, item in enumerate(items)]
-    return {"style": style, "items": normalized_items, "meta": {}}
+    return {"style": style, "items": normalized_items, "meta": normalized_meta}
+
+
+def _normalize_list_meta(meta: Any, style: str, idx: int) -> dict:
+    if meta is None:
+        meta = {}
+    if not isinstance(meta, dict):
+        raise ValidationError(f"list block at {idx} 'meta' must be an object.")
+    if style == "unordered":
+        if meta != {}:
+            raise ValidationError(
+                f"unordered list block at {idx} must have empty 'meta'; got {meta!r}."
+            )
+        return {}
+
+    normalized: dict[str, Any] = {}
+    start = meta.get("start")
+    if start is not None:
+        if not isinstance(start, int) or isinstance(start, bool) or start < 1:
+            raise ValidationError(
+                f"ordered list block at {idx} 'meta.start' must be a positive integer."
+            )
+        normalized["start"] = start
+
+    counter_type = meta.get("counterType")
+    if counter_type is not None:
+        if counter_type not in _ORDERED_LIST_COUNTER_TYPES:
+            raise ValidationError(
+                f"ordered list block at {idx} 'meta.counterType' must be in "
+                f"{sorted(_ORDERED_LIST_COUNTER_TYPES)}, got {counter_type!r}."
+            )
+        normalized["counterType"] = counter_type
+
+    unknown = set(meta) - {"start", "counterType"}
+    if unknown:
+        raise ValidationError(
+            f"ordered list block at {idx} has unsupported 'meta' keys: {sorted(unknown)}."
+        )
+    return normalized
 
 
 def _normalize_list_item(item: Any, block_idx: int, path: str) -> dict:
