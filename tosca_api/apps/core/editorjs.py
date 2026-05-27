@@ -248,19 +248,30 @@ def _media_url_prefix() -> str:
     return media_url
 
 
-def _resolve_same_origin_storage_path(url: str, idx: int) -> str:
-    """Reject off-origin / unsafe URLs, return the storage-relative path."""
+def _media_url_path_prefix() -> str:
+    media_url = _media_url_prefix()
+    parsed = urlparse(media_url)
+    path = parsed.path or media_url
+    if not path.startswith("/"):
+        path = f"/{path}"
+    if not path.endswith("/"):
+        path += "/"
+    return path
+
+
+def _resolve_storage_path(url: str, idx: int) -> str:
+    """Reject unsafe / non-storage URLs, return the storage-relative path."""
     parsed = urlparse(url)
     if parsed.scheme and parsed.scheme not in ("http", "https"):
         raise ValidationError(
             f"image block at {idx} rejects URL scheme '{parsed.scheme}:'."
         )
-    media_url = _media_url_prefix()
+    media_url = _media_url_path_prefix()
     path = parsed.path
     if not path.startswith(media_url):
         raise ValidationError(
-            f"image block at {idx} 'data.file.url' must be a same-origin "
-            f"storage URL under '{media_url}'."
+            f"image block at {idx} 'data.file.url' must be a storage URL "
+            f"under '{media_url}'."
         )
     return path[len(media_url):]
 
@@ -304,7 +315,7 @@ def _normalize_image(data: dict, idx: int) -> dict:
             f"image block at {idx} requires a non-empty 'data.file.url'."
         )
 
-    storage_path = _resolve_same_origin_storage_path(url, idx)
+    storage_path = _resolve_storage_path(url, idx)
     derived = _read_storage_image_metadata(storage_path, idx)
 
     caption_raw = data.get("caption", "")

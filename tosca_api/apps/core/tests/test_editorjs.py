@@ -9,6 +9,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.test import override_settings
 from PIL import Image
 
 from tosca_api.apps.core.editorjs import (
@@ -326,7 +327,7 @@ def test_image_block_normalizes_with_server_derived_metadata(stored_image):
 
 
 @pytest.mark.django_db
-def test_image_block_rejects_off_origin_and_unsafe_schemes(stored_image):
+def test_image_block_rejects_non_storage_paths_and_unsafe_schemes(stored_image):
     cases = [
         "javascript:alert(1)",
         "data:image/png;base64,AAAA",
@@ -344,6 +345,16 @@ def test_image_block_rejects_off_origin_and_unsafe_schemes(stored_image):
                     ]
                 }
             )
+
+
+def test_image_block_allows_absolute_media_url(stored_image):
+    with override_settings(MEDIA_URL="https://gq2.dcs.hcu-hamburg.de/media/"):
+        url = stored_image(width=320, height=240)
+        out = validate_and_normalize(
+            {"blocks": [{"type": "image", "data": {"file": {"url": url}, "alt": "x"}}]}
+        )
+
+    assert out["blocks"][0]["data"]["file"]["url"] == url
 
 
 @pytest.mark.django_db
