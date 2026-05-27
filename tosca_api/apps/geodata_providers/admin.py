@@ -327,7 +327,7 @@ class GeodataEngineAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
             'fields': ('name', 'description', 'engine_type'),
         }),
         ('Connection', {
-            'fields': ('base_url', 'admin_username', 'admin_password', 'api_key'),
+            'fields': ('base_url', 'public_url', 'admin_username', 'admin_password', 'api_key'),
         }),
         ('State', {
             'fields': ('is_active', 'is_default'),
