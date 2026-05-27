@@ -88,30 +88,6 @@ class Command(BaseCommand):
             self.stdout.write(
                 self.style.WARNING(f'⚠️ Default engine already exists: {existing_engine.name}')
             )
-            changed_fields = []
-            updates = {
-                'base_url': geoserver_url,
-                'public_url': geoserver_public_url,
-                'admin_username': geoserver_admin_user,
-                'admin_password': geoserver_admin_password,
-                'is_active': True,
-            }
-            for field, value in updates.items():
-                if getattr(existing_engine, field) != value:
-                    setattr(existing_engine, field, value)
-                    changed_fields.append(field)
-
-            if changed_fields:
-                existing_engine.save(update_fields=changed_fields + ['updated_at'])
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f'✅ Updated existing default GeodataEngine fields: {", ".join(changed_fields)}'
-                    )
-                )
-                self.stdout.write(f'   URL: {existing_engine.base_url}')
-                self.stdout.write(f'   Public URL: {existing_engine.public_url}')
-            else:
-                self.stdout.write('Default engine already matches current settings.')
             self.stdout.write('Use --force to recreate it')
             return
         
