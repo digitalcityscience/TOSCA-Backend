@@ -450,6 +450,7 @@ class GeoServerSyncService:
                             'database': store_data.get('database', ''),
                             'username': store_data.get('username', ''),
                             'schema': store_data.get('schema', 'public'),
+                            'file_path': store_data.get('file_path', ''),
                             'created_by': created_by,
                             **self._sync_success_defaults(
                                 remote_identifier=f"{workspace.name}:{store_name}",

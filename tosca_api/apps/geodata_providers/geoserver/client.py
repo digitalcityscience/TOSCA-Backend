@@ -80,6 +80,17 @@ class GeoServerClient:
     def _is_not_found_error(cls, exc) -> bool:
         return cls._exception_status(exc) == 404
 
+    @staticmethod
+    def _file_path_from_url(value: str) -> str:
+        """Normalize GeoServer file URLs to the path Django stores locally."""
+        if not value:
+            return ""
+        if value.startswith("file://"):
+            return value.removeprefix("file://")
+        if value.startswith("file:"):
+            return value.removeprefix("file:")
+        return value
+
     # Workspace operations
 
     def create_workspace(self, name: str) -> Dict:
@@ -506,42 +517,48 @@ class GeoServerClient:
 
     def get_datastores(self, workspace: str) -> list:
         """
-        Get list of datastores from GeoServer workspace with full connection details.
-        Calls individual store detail endpoint for each store so the returned dicts
-        contain real host/port/database/username/schema values suitable for
-        directly populating Django Store model fields.
+        Get list of vector/raster stores from a GeoServer workspace.
+
+        Vector stores come from the datastore endpoint. Raster GeoTIFF stores
+        come from the coverage-store endpoint and are normalized into the same
+        store dict shape with store_type='geotiff'.
+
+        For datastores, calls individual store detail endpoint for each store so
+        the returned dicts contain real host/port/database/username/schema values
+        suitable for directly populating Django Store model fields.
 
         Args:
             workspace: Workspace name
 
         Returns:
             List of normalised datastore dicts:
-              name, host, port, database, username, schema, store_type
+              name, host, port, database, username, schema, store_type, file_path
         """
         try:
             stores_resp = self._client.get_datastores(workspace)
             logger.info(f"GeoServer datastores list for {workspace}: {stores_resp}")
 
-            if not stores_resp or 'dataStores' not in stores_resp:
-                return []
-
-            store_data = stores_resp['dataStores']
-            if store_data == '' or store_data is None:
-                return []
-
-            store_list = store_data.get('dataStore', [])
-            if isinstance(store_list, dict):
-                store_list = [store_list]
-
             result = []
-            for ds in store_list:
-                if not isinstance(ds, dict):
-                    continue
-                name = ds.get('name', '')
-                if not name:
-                    continue
-                detail = self.get_datastore_detail(workspace, name)
-                result.append(detail)
+            if not stores_resp or 'dataStores' not in stores_resp:
+                stores_resp = None
+
+            if stores_resp:
+                store_data = stores_resp['dataStores']
+                if store_data != '' and store_data is not None:
+                    store_list = store_data.get('dataStore', [])
+                    if isinstance(store_list, dict):
+                        store_list = [store_list]
+
+                    for ds in store_list:
+                        if not isinstance(ds, dict):
+                            continue
+                        name = ds.get('name', '')
+                        if not name:
+                            continue
+                        detail = self.get_datastore_detail(workspace, name)
+                        result.append(detail)
+
+            result.extend(self.get_coverage_stores(workspace))
             return result
 
         except GeoServerConnectionError:
@@ -578,6 +595,11 @@ class GeoServerClient:
 
             dbtype = params.get('dbtype', '').lower()
             store_type = 'postgis' if dbtype in ('postgis', 'postgis_jndi', 'postgis ng') else 'file'
+            file_path = ""
+            if store_type == "file":
+                file_path = self._file_path_from_url(
+                    params.get("url", "") or params.get("database", "")
+                )
 
             try:
                 port = int(params.get('port', 5432))
@@ -604,6 +626,7 @@ class GeoServerClient:
                 'username': params.get('user', ''),
                 'schema': params.get('schema', 'public'),
                 'store_type': store_type,
+                'file_path': file_path,
             }
         except Exception as e:
             logger.warning(
@@ -617,7 +640,71 @@ class GeoServerClient:
                 'username': '',
                 'schema': 'public',
                 'store_type': 'postgis',
+                'file_path': '',
             }
+
+    def get_coverage_stores(self, workspace: str) -> list:
+        """Return GeoServer coverage stores normalized as Django geotiff stores."""
+        try:
+            response = self._request(
+                "get",
+                f"/rest/workspaces/{workspace}/coveragestores.json",
+            )
+            if response.status_code == 404:
+                return []
+            if response.status_code != 200:
+                raise GeoServerConnectionError(
+                    f"Coverage-store list failed with HTTP {response.status_code}: {response.text}"
+                )
+
+            payload = response.json()
+            coverage_stores = payload.get("coverageStores", {}) if isinstance(payload, dict) else {}
+            store_list = coverage_stores.get("coverageStore", []) if isinstance(coverage_stores, dict) else []
+            if isinstance(store_list, dict):
+                store_list = [store_list]
+            if not isinstance(store_list, list):
+                return []
+
+            result = []
+            for item in store_list:
+                if not isinstance(item, dict) or not item.get("name"):
+                    continue
+                result.append(self.get_coverage_store_detail(workspace, item["name"]))
+            return result
+        except GeoServerConnectionError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get coverage stores from workspace {workspace}: {e}")
+            raise GeoServerConnectionError(
+                f"Failed to get coverage stores for workspace '{workspace}' from GeoServer at {self.url}: {e}"
+            )
+
+    def get_coverage_store_detail(self, workspace: str, store_name: str) -> dict:
+        """Fetch details for a single coverage store."""
+        response = self._request(
+            "get",
+            f"/rest/workspaces/{workspace}/coveragestores/{store_name}.json",
+        )
+        if response.status_code != 200:
+            raise GeoServerConnectionError(
+                f"Coverage-store detail failed with HTTP {response.status_code}: {response.text}"
+            )
+
+        payload = response.json()
+        coverage_store = payload.get("coverageStore", {}) if isinstance(payload, dict) else {}
+        raw_name = coverage_store.get("name", store_name)
+        name = raw_name.split(":", 1)[1] if ":" in raw_name else raw_name
+        file_path = self._file_path_from_url(coverage_store.get("url", ""))
+        return {
+            "name": name,
+            "host": "",
+            "port": 5432,
+            "database": "",
+            "username": "",
+            "schema": "public",
+            "store_type": "geotiff",
+            "file_path": file_path,
+        }
 
     def probe_store_access(self, workspace: str, store_name: str) -> Dict:
         """
@@ -1514,6 +1601,8 @@ class GeoServerClient:
                                 f"{workspace}/{store_name}: {ft_err}"
                             )
 
+            result.extend(self.get_coverage_layers(workspace))
+
             logger.info(
                 f"get_layers({workspace}) found {len(result)} layers across all stores"
             )
@@ -1526,6 +1615,102 @@ class GeoServerClient:
             raise GeoServerConnectionError(
                 f"Failed to get layers for workspace '{workspace}' from GeoServer at {self.url}: {e}"
             )
+
+    def get_coverage_layers(self, workspace: str) -> list:
+        """Return coverage layers for all coverage stores in a workspace."""
+        result = []
+        for store in self.get_coverage_stores(workspace):
+            store_name = store.get("name", "")
+            if not store_name:
+                continue
+            try:
+                response = self._request(
+                    "get",
+                    f"/rest/workspaces/{workspace}/coveragestores/{store_name}/coverages.json",
+                )
+                if response.status_code == 404:
+                    continue
+                if response.status_code != 200:
+                    raise GeoServerConnectionError(
+                        f"Coverage list failed with HTTP {response.status_code}: {response.text}"
+                    )
+
+                payload = response.json()
+                coverages = payload.get("coverages", {}) if isinstance(payload, dict) else {}
+                coverage_items = coverages.get("coverage", []) if isinstance(coverages, dict) else []
+                if isinstance(coverage_items, dict):
+                    coverage_items = [coverage_items]
+                if not isinstance(coverage_items, list):
+                    continue
+
+                for item in coverage_items:
+                    if not isinstance(item, dict):
+                        continue
+                    raw_name = item.get("name", "")
+                    if not raw_name:
+                        continue
+                    clean = raw_name.split(":", 1)[1] if ":" in raw_name else raw_name
+                    detail = self.get_coverage_detail(workspace, store_name, clean)
+                    layer_settings = self.get_layer_settings(workspace, clean)
+                    result.append({
+                        "name": clean,
+                        "store_name": store_name,
+                        "advertised": detail.get("advertised", True),
+                        "title": detail.get("title", clean),
+                        "table_name": detail.get("native_name", clean),
+                        "geometry_column": "rast",
+                        "geometry_type": "Point",
+                        "srid": detail.get("srid", 4326),
+                        "queryable": layer_settings.get("queryable", True),
+                        "opaque": layer_settings.get("opaque", False),
+                        "default_style_name": layer_settings.get("default_style_name", ""),
+                        "additional_style_names": layer_settings.get("additional_style_names", []),
+                    })
+            except Exception as coverage_err:
+                logger.warning(
+                    "Could not list coverages for store %s/%s: %s",
+                    workspace,
+                    store_name,
+                    coverage_err,
+                )
+        return result
+
+    def get_coverage_detail(self, workspace: str, store_name: str, coverage_name: str) -> dict:
+        """Fetch normalized metadata for a GeoServer coverage."""
+        response = self._request(
+            "get",
+            f"/rest/workspaces/{workspace}/coveragestores/{store_name}/coverages/{coverage_name}.json",
+        )
+        if response.status_code != 200:
+            logger.warning(
+                "get_coverage_detail: HTTP %s for %s/%s/%s — using fallback values",
+                response.status_code,
+                workspace,
+                store_name,
+                coverage_name,
+            )
+            return {
+                "title": coverage_name,
+                "native_name": coverage_name,
+                "advertised": True,
+                "srid": 4326,
+            }
+
+        payload = response.json()
+        coverage = payload.get("coverage", {}) if isinstance(payload, dict) else {}
+        srs = coverage.get("srs", "") or coverage.get("nativeCRS", "")
+        srid = 4326
+        if isinstance(srs, str) and "EPSG:" in srs.upper():
+            try:
+                srid = int(srs.upper().rsplit("EPSG:", 1)[1].split()[0])
+            except (ValueError, IndexError):
+                srid = 4326
+        return {
+            "title": coverage.get("title") or coverage_name,
+            "native_name": coverage.get("nativeName") or coverage_name,
+            "advertised": coverage.get("advertised", True),
+            "srid": srid,
+        }
 
     def get_styles(self, workspace: Optional[str] = None) -> list:
         """Return GeoServer styles normalized as {name, href, workspace} records."""

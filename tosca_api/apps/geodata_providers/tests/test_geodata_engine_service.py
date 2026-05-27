@@ -174,6 +174,58 @@ class GeodataEngineServiceTestCase(TestCase):
         self.assertIn('GeoServer unavailable', workspace.last_sync_error)
         self.assertIsNotNone(workspace.last_sync_at)
 
+    def test_sync_stores_persists_geopackage_file_path(self):
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='hamburg',
+            description='workspace',
+            created_by=self.user,
+        )
+        service = GeoServerSyncService(self.engine)
+        service._get_geoserver_stores = MagicMock(
+            return_value=[
+                {
+                    'name': 'apotheken',
+                    'store_type': 'file',
+                    'file_path': '/mnt/home/apotheken.gpkg',
+                }
+            ]
+        )
+
+        result = service.sync_stores_for_workspace(workspace, created_by=self.user)
+
+        self.assertEqual(result['created'], 1)
+        store = Store.objects.get(workspace=workspace, name='apotheken')
+        self.assertEqual(store.store_type, 'file')
+        self.assertEqual(store.file_path, '/mnt/home/apotheken.gpkg')
+        self.assertEqual(store.sync_state, 'SYNCED')
+
+    def test_sync_stores_persists_geotiff_coverage_store_file_path(self):
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='hamburg',
+            description='workspace',
+            created_by=self.user,
+        )
+        service = GeoServerSyncService(self.engine)
+        service._get_geoserver_stores = MagicMock(
+            return_value=[
+                {
+                    'name': 'flood_depth',
+                    'store_type': 'geotiff',
+                    'file_path': '/mnt/home/flood_depth.tif',
+                }
+            ]
+        )
+
+        result = service.sync_stores_for_workspace(workspace, created_by=self.user)
+
+        self.assertEqual(result['created'], 1)
+        store = Store.objects.get(workspace=workspace, name='flood_depth')
+        self.assertEqual(store.store_type, 'geotiff')
+        self.assertEqual(store.file_path, '/mnt/home/flood_depth.tif')
+        self.assertEqual(store.sync_state, 'SYNCED')
+
     def test_sync_layers_recovers_drift_and_preserves_layer_names_and_styles(self):
         workspace = Workspace.objects.create(
             geodata_engine=self.engine,
@@ -253,6 +305,47 @@ class GeodataEngineServiceTestCase(TestCase):
                 is_active=True,
             ).exists()
         )
+
+    def test_sync_layers_imports_geotiff_layer_with_required_metadata(self):
+        workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='hamburg',
+            description='workspace',
+            created_by=self.user,
+        )
+        store = Store.objects.create(
+            workspace=workspace,
+            geodata_engine=self.engine,
+            name='tifo',
+            description='store',
+            store_type='geotiff',
+            file_path='/mnt/home/test.tiff',
+            created_by=self.user,
+        )
+        service = GeoServerSyncService(self.engine)
+        service._get_geoserver_layers = MagicMock(
+            return_value=[
+                {
+                    'name': 'test',
+                    'store_name': 'tifo',
+                    'title': 'test',
+                    'table_name': 'test',
+                    'geometry_column': 'rast',
+                    'geometry_type': 'Point',
+                    'srid': 4326,
+                    'advertised': True,
+                    'default_style_name': 'raster',
+                }
+            ]
+        )
+
+        result = service.sync_layers_for_workspace(workspace, created_by=self.user)
+
+        self.assertEqual(result['created'], 1)
+        layer = Layer.objects.get(workspace=workspace, store=store, name='test')
+        self.assertEqual(layer.geometry_column, 'rast')
+        self.assertEqual(layer.geometry_type, 'Point')
+        self.assertEqual(layer.sync_state, 'SYNCED')
 
     @patch('tosca_api.apps.geodata_providers.services.commands.geodata_engine_service.EngineClientFactory.create_client')
     def test_delete_engine_cascade_removes_tree_remote_and_db(self, mock_create_client):
