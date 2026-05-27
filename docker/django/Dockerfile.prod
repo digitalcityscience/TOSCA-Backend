@@ -26,7 +26,8 @@ COPY manage.py ./
 COPY tosca_api ./tosca_api
 COPY templates ./templates
 COPY scripts ./scripts
-COPY docker ./docker
+COPY docker/django ./docker/django
+COPY static ./static
 
 RUN uv sync --no-dev
 
