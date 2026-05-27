@@ -312,28 +312,6 @@ _BLOCK_NORMALIZERS = {
 }
 
 
-def validate_image_block_quota(content: Any) -> None:
-    """Cap ``image`` blocks in a normalized GeoContext document.
-
-    Raises ``ValidationError`` when the count exceeds
-    ``settings.GEOCONTEXT_MAX_INLINE_IMAGES`` (default 5).
-    """
-    if not isinstance(content, dict):
-        return
-    blocks = content.get("blocks") or []
-    if not isinstance(blocks, list):
-        return
-    image_count = sum(
-        1 for b in blocks if isinstance(b, dict) and b.get("type") == "image"
-    )
-    limit = int(getattr(settings, "GEOCONTEXT_MAX_INLINE_IMAGES", 5))
-    if image_count > limit:
-        raise ValidationError(
-            f"GeoStory content contains {image_count} image blocks; "
-            f"maximum allowed is {limit}."
-        )
-
-
 def _sanitize_inline(text: str, block_idx: int) -> str:
     """Normalize <b>/<i> to <strong>/<em>, strip disallowed tags, reject unsafe URLs."""
     if not text:

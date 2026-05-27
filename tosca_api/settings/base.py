@@ -172,9 +172,6 @@ STATIC_ROOT = Path(env("DJANGO_STATIC_ROOT", default=os.fspath(ROOT_DIR / "stati
 MEDIA_URL = env("DJANGO_MEDIA_URL", default="/media/")
 MEDIA_ROOT = Path(env("DJANGO_MEDIA_ROOT", default=os.fspath(ROOT_DIR / "media")))
 
-# Soft cap; remove or relax once UX validates.
-GEOCONTEXT_MAX_INLINE_IMAGES = 5
-
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 INTERNAL_API_BASE_URL = env(
