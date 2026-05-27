@@ -1,10 +1,9 @@
 """
 Admin form for GeoContext.
 
-Parses the raw JSON submitted through the Editor.js-enhanced textarea,
-surfacing malformed JSON as a clear form error. Block-level schema
-validation continues to happen in the model's ``save()`` via the
-Editor.js layer in :mod:`tosca_api.apps.core.editorjs`.
+Parses and validates the raw JSON submitted through the Editor.js-enhanced
+textarea, surfacing malformed JSON and block-level schema issues as clear
+form errors.
 """
 
 from __future__ import annotations
@@ -12,6 +11,8 @@ from __future__ import annotations
 import json
 
 from django import forms
+
+from tosca_api.apps.core.editorjs import validate_and_normalize
 
 from .models import GeoContext
 from .widgets import EditorJsWidget
@@ -30,10 +31,16 @@ class GeoContextAdminForm(forms.ModelForm):
         if value in (None, "", {}):
             return {"blocks": []}
         if isinstance(value, dict):
-            return value
-        if isinstance(value, str):
+            parsed = value
+        elif isinstance(value, str):
             try:
-                return json.loads(value)
+                parsed = json.loads(value)
             except json.JSONDecodeError as exc:
                 raise forms.ValidationError(f"Invalid JSON: {exc.msg}")
-        raise forms.ValidationError("Content must be a JSON object.")
+        else:
+            raise forms.ValidationError("Content must be a JSON object.")
+
+        try:
+            return validate_and_normalize(parsed)
+        except forms.ValidationError as exc:
+            raise forms.ValidationError(exc.messages)

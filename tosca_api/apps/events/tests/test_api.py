@@ -47,6 +47,23 @@ def parse_api_datetime(value):
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def create_published_event(user, campaign, **overrides):
+    defaults = {
+        "campaign": campaign,
+        "title": "Published Event",
+        "summary": "Published event summary",
+        "start_datetime": timezone.now() + timedelta(days=2),
+        "end_datetime": timezone.now() + timedelta(days=2, hours=1),
+        "location": Point(10.0, 53.5, srid=4326),
+        "organizer": user,
+        "status": Event.Status.PUBLISHED,
+        "visibility": Event.Visibility.PUBLIC,
+        "provider_phone": "+49 89 12345",
+    }
+    defaults.update(overrides)
+    return Event.objects.create(**defaults)
+
+
 @pytest.fixture
 def api_client():
     return APIClient()
@@ -80,6 +97,125 @@ def geocontext(user):
 @pytest.fixture
 def event_type():
     return EventType.objects.create(code="api-core", label="API Core Event")
+
+
+# =============================================================================
+# Public Registry Tests
+# =============================================================================
+
+
+@pytest.mark.django_db
+def test_event_types_registry_returns_active_types_with_normalized_profile_key(
+    api_client,
+):
+    core_type = EventType.objects.create(
+        code="registry-core",
+        label="Registry Core",
+        profile_mode=EventType.ProfileMode.CORE,
+        profile_key=None,
+    )
+    ph_type = EventType.objects.create(
+        code="registry-ph",
+        label="Registry Public Health",
+        profile_mode=EventType.ProfileMode.EXTENSION,
+        profile_key="public_health",
+    )
+    EventType.objects.create(
+        code="registry-inactive",
+        label="Registry Inactive",
+        profile_mode=EventType.ProfileMode.CORE,
+        is_active=False,
+    )
+
+    response = api_client.get("/api/v1/event-types/")
+
+    assert response.status_code == 200
+    by_code = {item["code"]: item for item in response.data}
+    assert by_code["registry-core"]["id"] == str(core_type.id)
+    assert by_code["registry-core"]["profile_key"] == ""
+    assert by_code["registry-ph"]["id"] == str(ph_type.id)
+    assert by_code["registry-ph"]["profile_key"] == "public_health"
+    assert "registry-inactive" not in by_code
+
+
+@pytest.mark.django_db
+def test_event_taxonomy_registry_returns_compatible_active_dimensions_and_terms(
+    api_client,
+):
+    global_dimension = TaxonomyDimension.objects.create(
+        code="registry-global-topic",
+        label="Registry Global Topic",
+    )
+    active_global_term = TaxonomyTerm.objects.create(
+        dimension=global_dimension,
+        code="registry-global-active",
+        label="Registry Global Active",
+    )
+    TaxonomyTerm.objects.create(
+        dimension=global_dimension,
+        code="registry-global-inactive",
+        label="Registry Global Inactive",
+        is_active=False,
+    )
+    ph_dimension = TaxonomyDimension.objects.create(
+        code="registry-ph-topic",
+        label="Registry PH Topic",
+        profile_key="public_health",
+    )
+    active_ph_term = TaxonomyTerm.objects.create(
+        dimension=ph_dimension,
+        code="registry-ph-active",
+        label="Registry PH Active",
+    )
+    inactive_dimension = TaxonomyDimension.objects.create(
+        code="registry-inactive-dimension",
+        label="Registry Inactive Dimension",
+        profile_key="public_health",
+        is_active=False,
+    )
+    TaxonomyTerm.objects.create(
+        dimension=inactive_dimension,
+        code="registry-hidden-term",
+        label="Registry Hidden Term",
+    )
+
+    response = api_client.get("/api/v1/event-taxonomy/?profile_key=public_health")
+
+    assert response.status_code == 200
+    assert response.data["profile_key"] == "public_health"
+    by_code = {dimension["code"]: dimension for dimension in response.data["dimensions"]}
+    assert "registry-global-topic" in by_code
+    assert "registry-ph-topic" in by_code
+    assert "registry-inactive-dimension" not in by_code
+    assert by_code["registry-global-topic"]["terms"] == [
+        {
+            "id": str(active_global_term.id),
+            "code": "registry-global-active",
+            "label": "Registry Global Active",
+            "parent_id": None,
+            "is_active": True,
+        }
+    ]
+    assert by_code["registry-ph-topic"]["terms"][0]["id"] == str(active_ph_term.id)
+
+
+@pytest.mark.django_db
+def test_event_taxonomy_registry_without_profile_returns_global_dimensions_only(
+    api_client,
+):
+    TaxonomyDimension.objects.create(code="registry-core-only", label="Registry Core Only")
+    TaxonomyDimension.objects.create(
+        code="registry-ph-hidden",
+        label="Registry PH Hidden",
+        profile_key="public_health",
+    )
+
+    response = api_client.get("/api/v1/event-taxonomy/")
+
+    assert response.status_code == 200
+    by_code = {dimension["code"] for dimension in response.data["dimensions"]}
+    assert "registry-core-only" in by_code
+    assert "registry-ph-hidden" not in by_code
 
 
 @pytest.fixture
@@ -272,6 +408,187 @@ def test_events_list_filter_by_event_type(api_client, user, campaign, event_type
 
     assert response.status_code == 200
     assert [event["title"] for event in response.data["results"]] == ["Typed Event"]
+
+
+@pytest.mark.django_db
+def test_events_list_and_map_filter_by_profile_key(api_client, user, campaign):
+    ph_type = EventType.objects.create(
+        code="filter-ph-type",
+        label="Filter PH Type",
+        profile_mode=EventType.ProfileMode.EXTENSION,
+        profile_key="public_health",
+    )
+    core_type = EventType.objects.create(
+        code="filter-core-type",
+        label="Filter Core Type",
+        profile_mode=EventType.ProfileMode.CORE,
+    )
+    create_published_event(
+        user,
+        campaign,
+        event_type=ph_type,
+        title="PH Filter Match",
+    )
+    create_published_event(
+        user,
+        campaign,
+        event_type=core_type,
+        title="Core Filter Miss",
+        start_datetime=timezone.now() + timedelta(days=3),
+        end_datetime=timezone.now() + timedelta(days=3, hours=1),
+    )
+
+    list_response = api_client.get("/api/v1/events/?profile_key=public_health")
+    map_response = api_client.get("/api/v1/events/map/?profile_key=public_health")
+
+    assert list_response.status_code == 200
+    assert map_response.status_code == 200
+    assert [event["title"] for event in list_response.data["results"]] == [
+        "PH Filter Match"
+    ]
+    assert [
+        feature["properties"]["title"]
+        for feature in map_response.data["spatial_events"]["features"]
+    ] == ["PH Filter Match"]
+
+
+@pytest.mark.django_db
+def test_events_list_and_map_filter_by_taxonomy_codes(api_client, user, campaign):
+    dimension = TaxonomyDimension.objects.create(
+        code="filter-field-of-action",
+        label="Filter Field of Action",
+    )
+    sport = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="filter-sport",
+        label="Filter Sport",
+    )
+    other_term = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="filter-culture",
+        label="Filter Culture",
+    )
+    matching_event = create_published_event(user, campaign, title="Taxonomy Code Match")
+    other_event = create_published_event(
+        user,
+        campaign,
+        title="Taxonomy Code Miss",
+        start_datetime=timezone.now() + timedelta(days=3),
+        end_datetime=timezone.now() + timedelta(days=3, hours=1),
+    )
+    EventTerm.objects.create(event=matching_event, term=sport)
+    EventTerm.objects.create(event=other_event, term=other_term)
+
+    params = "?dimension_code=filter-field-of-action&term_code=filter-sport"
+    list_response = api_client.get(f"/api/v1/events/{params}")
+    map_response = api_client.get(f"/api/v1/events/map/{params}")
+
+    assert list_response.status_code == 200
+    assert map_response.status_code == 200
+    assert [event["title"] for event in list_response.data["results"]] == [
+        "Taxonomy Code Match"
+    ]
+    assert [
+        feature["properties"]["title"]
+        for feature in map_response.data["spatial_events"]["features"]
+    ] == ["Taxonomy Code Match"]
+
+
+@pytest.mark.django_db
+def test_events_taxonomy_uuid_and_code_filter_mismatch_returns_empty(
+    api_client, user, campaign
+):
+    matching_dimension = TaxonomyDimension.objects.create(
+        code="filter-mismatch-matching",
+        label="Filter Mismatch Matching",
+    )
+    other_dimension = TaxonomyDimension.objects.create(
+        code="filter-mismatch-other",
+        label="Filter Mismatch Other",
+    )
+    sport = TaxonomyTerm.objects.create(
+        dimension=matching_dimension,
+        code="filter-mismatch-sport",
+        label="Filter Mismatch Sport",
+    )
+    event = create_published_event(user, campaign, title="Mismatch Hidden")
+    EventTerm.objects.create(event=event, term=sport)
+
+    params = (
+        f"?dimension_id={other_dimension.id}"
+        "&dimension_code=filter-mismatch-matching"
+        "&term_code=filter-mismatch-sport"
+    )
+    list_response = api_client.get(f"/api/v1/events/{params}")
+    map_response = api_client.get(f"/api/v1/events/map/{params}")
+
+    assert list_response.status_code == 200
+    assert map_response.status_code == 200
+    assert list_response.data["results"] == []
+    assert map_response.data["spatial_events"]["features"] == []
+
+
+@pytest.mark.django_db
+def test_events_list_and_map_include_profile_key_and_compact_taxonomy(
+    api_client, user, campaign
+):
+    ph_type = EventType.objects.create(
+        code="shape-ph-type",
+        label="Shape PH Type",
+        profile_mode=EventType.ProfileMode.EXTENSION,
+        profile_key="public_health",
+    )
+    dimension = TaxonomyDimension.objects.create(
+        code="shape-field-of-action",
+        label="Shape Field of Action",
+        profile_key="public_health",
+    )
+    sport = TaxonomyTerm.objects.create(
+        dimension=dimension,
+        code="shape-sport",
+        label="Shape Sport",
+    )
+    spatial_event = create_published_event(
+        user,
+        campaign,
+        event_type=ph_type,
+        title="Shape Spatial",
+    )
+    online_event = create_published_event(
+        user,
+        campaign,
+        event_type=ph_type,
+        title="Shape Online",
+        start_datetime=timezone.now() + timedelta(days=3),
+        end_datetime=timezone.now() + timedelta(days=3, hours=1),
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.org/shape",
+        location=None,
+    )
+    EventTerm.objects.create(event=spatial_event, term=sport)
+    EventTerm.objects.create(event=online_event, term=sport)
+
+    list_response = api_client.get("/api/v1/events/?profile_key=public_health")
+    map_response = api_client.get("/api/v1/events/map/?profile_key=public_health")
+
+    assert list_response.status_code == 200
+    assert map_response.status_code == 200
+    compact_assignment = {
+        "dimension_code": "shape-field-of-action",
+        "dimension_label": "Shape Field of Action",
+        "terms": [{"code": "shape-sport", "label": "Shape Sport"}],
+    }
+    list_item = list_response.data["results"][0]
+    assert list_item["profile_key"] == "public_health"
+    assert list_item["taxonomy_assignments"] == [compact_assignment]
+
+    spatial_properties = map_response.data["spatial_events"]["features"][0]["properties"]
+    assert spatial_properties["profile_key"] == "public_health"
+    assert spatial_properties["taxonomy_assignments"] == [compact_assignment]
+
+    online_item = map_response.data["online_events"][0]
+    assert online_item["profile_key"] == "public_health"
+    assert online_item["taxonomy_assignments"] == [compact_assignment]
 
 
 # =============================================================================

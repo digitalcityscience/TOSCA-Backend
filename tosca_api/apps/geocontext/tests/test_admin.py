@@ -172,6 +172,40 @@ def test_admin_form_persists_image_block_with_caption_alt_fallback(
 
 
 @pytest.mark.django_db
+def test_admin_form_shows_image_block_validation_errors(
+    admin_client, superuser, tmp_path
+):
+    image_buf = io.BytesIO()
+    Image.new("RGB", (240, 240), color=(20, 80, 140)).save(image_buf, format="PNG")
+
+    with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
+        storage_path = default_storage.save(
+            "geocontext/editorjs/context-id/missing-alt.png",
+            ContentFile(image_buf.getvalue()),
+        )
+        url = reverse("admin:geocontext_geocontext_add")
+        payload = {
+            "content": json.dumps(
+                {
+                    "blocks": [
+                        {
+                            "type": "image",
+                            "data": {"file": {"url": f"/media/{storage_path}"}},
+                        }
+                    ]
+                }
+            ),
+            "created_by": str(superuser.id),
+            "_save": "Save",
+        }
+        response = admin_client.post(url, payload)
+
+    assert response.status_code == 200
+    assert b"requires non-empty" in response.content
+    assert not GeoContext.objects.filter(created_by=superuser).exists()
+
+
+@pytest.mark.django_db
 def test_admin_form_rejects_malformed_json(admin_client, superuser):
     url = reverse("admin:geocontext_geocontext_add")
     payload = {

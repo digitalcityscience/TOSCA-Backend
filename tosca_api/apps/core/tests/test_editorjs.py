@@ -14,7 +14,6 @@ from PIL import Image
 from tosca_api.apps.core.editorjs import (
     empty_document,
     validate_and_normalize,
-    validate_image_block_quota,
 )
 
 
@@ -161,7 +160,27 @@ def test_rejects_quote_alignment():
         )
 
 
-def test_rejects_non_empty_list_meta():
+def test_accepts_ordered_list_meta_from_editorjs():
+    doc = {
+        "blocks": [
+            {
+                "type": "list",
+                "data": {
+                    "style": "ordered",
+                    "items": ["a"],
+                    "meta": {"start": 5, "counterType": "lower-roman"},
+                },
+            }
+        ]
+    }
+    out = validate_and_normalize(doc)
+    assert out["blocks"][0]["data"]["meta"] == {
+        "start": 5,
+        "counterType": "lower-roman",
+    }
+
+
+def test_rejects_non_empty_unordered_list_meta():
     with pytest.raises(ValidationError):
         validate_and_normalize(
             {
@@ -169,7 +188,7 @@ def test_rejects_non_empty_list_meta():
                     {
                         "type": "list",
                         "data": {
-                            "style": "ordered",
+                            "style": "unordered",
                             "items": ["a"],
                             "meta": {"start": 5},
                         },
@@ -177,6 +196,31 @@ def test_rejects_non_empty_list_meta():
                 ]
             }
         )
+
+
+def test_rejects_invalid_ordered_list_meta():
+    cases = [
+        {"start": 0},
+        {"start": True},
+        {"counterType": "emoji"},
+        {"foo": "bar"},
+    ]
+    for meta in cases:
+        with pytest.raises(ValidationError):
+            validate_and_normalize(
+                {
+                    "blocks": [
+                        {
+                            "type": "list",
+                            "data": {
+                                "style": "ordered",
+                                "items": ["a"],
+                                "meta": meta,
+                            },
+                        }
+                    ]
+                }
+            )
 
 
 def test_accepts_nested_list_items():
@@ -346,26 +390,11 @@ def test_image_block_requires_existing_file():
         )
 
 
-# ---- per-story quota ------------------------------------------------------
+# ---- image block count ----------------------------------------------------
 
 
 @pytest.mark.django_db
-def test_quota_passes_at_limit(stored_image, settings):
-    settings.GEOCONTEXT_MAX_INLINE_IMAGES = 5
-    url = stored_image()
-    doc = {
-        "blocks": [
-            {"type": "image", "data": {"file": {"url": url}, "alt": "a"}}
-            for _ in range(5)
-        ]
-    }
-    normalized = validate_and_normalize(doc)
-    validate_image_block_quota(normalized)
-
-
-@pytest.mark.django_db
-def test_quota_rejects_above_limit(stored_image, settings):
-    settings.GEOCONTEXT_MAX_INLINE_IMAGES = 5
+def test_image_blocks_are_not_capped(stored_image):
     url = stored_image()
     doc = {
         "blocks": [
@@ -374,14 +403,4 @@ def test_quota_rejects_above_limit(stored_image, settings):
         ]
     }
     normalized = validate_and_normalize(doc)
-    with pytest.raises(ValidationError):
-        validate_image_block_quota(normalized)
-
-
-def test_quota_ignores_non_image_blocks():
-    doc = {
-        "blocks": [
-            {"type": "paragraph", "data": {"text": "x"}} for _ in range(50)
-        ]
-    }
-    validate_image_block_quota(doc)
+    assert sum(1 for block in normalized["blocks"] if block["type"] == "image") == 6

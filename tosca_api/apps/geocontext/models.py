@@ -16,7 +16,6 @@ from django.db import models
 from tosca_api.apps.core.editorjs import (
     empty_document,
     validate_and_normalize,
-    validate_image_block_quota,
 )
 from tosca_api.apps.core.models import TimeStampedModel
 
@@ -105,5 +104,4 @@ class GeoContext(TimeStampedModel):
     def save(self, *args, **kwargs) -> None:
         """Validate and normalize Editor.js content before persistence."""
         self.content = validate_and_normalize(self.content)
-        validate_image_block_quota(self.content)
         super().save(*args, **kwargs)

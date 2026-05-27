@@ -1,15 +1,17 @@
-from django.db.models import Count, Prefetch
+from django.db.models import Count, Prefetch, Q
 
-from rest_framework import permissions, status, viewsets
+from rest_framework import permissions, status, views, viewsets
 from rest_framework.decorators import action
 from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin, UpdateModelMixin
 from rest_framework.pagination import CursorPagination
 from rest_framework.response import Response
 
 from .filters import apply_event_filters
-from .models import Event, EventSeries
+from .models import Event, EventSeries, EventTerm, EventType, TaxonomyDimension, TaxonomyTerm
 from .serializers import (
     BBoxSerializer,
+    EventTaxonomyDimensionRegistrySerializer,
+    EventTypeRegistrySerializer,
     EventWriteSerializer,
     EventDetailSerializer,
     EventGeoSerializer,
@@ -29,6 +31,47 @@ class EventCursorPagination(CursorPagination):
 
     page_size = 20
     ordering = "start_datetime"
+
+
+class EventTypeRegistryView(views.APIView):
+    """Public read-only event-type registry."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        event_types = EventType.objects.filter(is_active=True).order_by("label")
+        serializer = EventTypeRegistrySerializer(event_types, many=True)
+        return Response(serializer.data)
+
+
+class EventTaxonomyRegistryView(views.APIView):
+    """Public read-only taxonomy registry for user-facing event filters."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        profile_key = (request.query_params.get("profile_key") or "").strip()
+        profile_filter = Q(profile_key="")
+        if profile_key:
+            profile_filter |= Q(profile_key=profile_key)
+
+        dimensions = (
+            TaxonomyDimension.objects.filter(is_active=True)
+            .filter(profile_filter)
+            .prefetch_related(
+                Prefetch(
+                    "terms",
+                    queryset=TaxonomyTerm.objects.filter(is_active=True).order_by(
+                        "parent_id",
+                        "sort_order",
+                        "label",
+                    ),
+                )
+            )
+            .order_by("sort_order", "label")
+        )
+        serializer = EventTaxonomyDimensionRegistrySerializer(dimensions, many=True)
+        return Response({"profile_key": profile_key, "dimensions": serializer.data})
 
 
 class EventViewSet(viewsets.ModelViewSet):
@@ -92,6 +135,15 @@ class EventViewSet(viewsets.ModelViewSet):
             filters["visibility"] = Event.Visibility.PUBLIC
         return filters
 
+    @staticmethod
+    def _with_taxonomy_prefetch(queryset):
+        return queryset.prefetch_related(
+            Prefetch(
+                "event_terms",
+                queryset=EventTerm.objects.select_related("term__dimension"),
+            )
+        )
+
     def get_serializer_class(self):
         if self.action == "list":
             return EventListSerializer
@@ -142,6 +194,7 @@ class EventViewSet(viewsets.ModelViewSet):
         else:
             queryset = queryset.select_related("campaign", "event_type", "series")
             queryset = queryset.annotate(series_total_occurrences=Count("series__events"))
+            queryset = self._with_taxonomy_prefetch(queryset)
 
         return queryset
 
@@ -165,6 +218,7 @@ class EventViewSet(viewsets.ModelViewSet):
             .select_related("campaign", "event_type", "series")
             .annotate(series_total_occurrences=Count("series__events"))
         )
+        base_queryset = self._with_taxonomy_prefetch(base_queryset)
         queryset = apply_event_filters(base_queryset, filters=filters).order_by(
             "start_datetime"
         )
@@ -216,6 +270,7 @@ class EventViewSet(viewsets.ModelViewSet):
         base_queryset = self._apply_visibility_scope(
             Event.objects.all().annotate(series_total_occurrences=Count("series__events"))
         )
+        base_queryset = self._with_taxonomy_prefetch(base_queryset)
         queryset = apply_event_filters(base_queryset, filters=data)
         queryset = queryset.order_by("start_datetime").select_related(
             "campaign",
