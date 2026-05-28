@@ -19,18 +19,26 @@ window.addEventListener("load", function () {
             return $("#id_event_type option:selected");
         }
 
+        function taxonomyFieldMatchesProfile(element, profileKey) {
+            var fieldProfileKey = $(element).attr("data-taxonomy-profile-key") || "";
+            return !fieldProfileKey || fieldProfileKey === profileKey;
+        }
+
         function updateTaxonomyFields(profileKey) {
             $("[data-taxonomy-profile-key]").each(function () {
-                var fieldProfileKey = $(this).data("taxonomy-profile-key") || "";
-                var shouldShow = !fieldProfileKey || fieldProfileKey === profileKey;
                 var row = $(this).closest(".form-row");
-                row.toggle(shouldShow);
+                row.toggle(taxonomyFieldMatchesProfile(this, profileKey));
             });
 
             $(".events-taxonomy-section").each(function () {
                 var section = $(this);
-                var visibleRows = section.find(".form-row:visible").length;
-                section.toggle(visibleRows > 0);
+                var matchingFields = section
+                    .find("[data-taxonomy-profile-key]")
+                    .filter(function () {
+                        return taxonomyFieldMatchesProfile(this, profileKey);
+                    })
+                    .length;
+                section.toggle(matchingFields > 0);
             });
         }
 
@@ -72,8 +80,8 @@ window.addEventListener("load", function () {
         function updateEventForm() {
             var locationMode = $("#id_location_mode").val();
             var selectedOption = selectedEventTypeOption();
-            var profileMode = selectedOption.data("profile-mode");
-            var profileKey = selectedOption.data("profile-key");
+            var profileMode = selectedOption.attr("data-profile-mode");
+            var profileKey = selectedOption.attr("data-profile-key");
             var showOnlineFields = locationMode === "online" || locationMode === "hybrid";
             var showLocationField = locationMode === "physical" || locationMode === "hybrid";
 
