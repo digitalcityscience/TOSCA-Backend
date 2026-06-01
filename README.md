@@ -156,6 +156,39 @@ Environment resolution:
 Keep `ENV`, `ENV_TYPE`, `ENV_FILE`, ports, passwords, and public URLs aligned in
 the selected env file.
 
+## Keycloak OIDC Note
+
+When using Keycloak/OIDC, the Keycloak client's valid redirect URIs and the
+realm's browser security headers must both allow the public Django callback
+origin.
+
+Chrome may stop after the Keycloak login POST if the realm
+`Content-Security-Policy` does not allow the Django site in `form-action`. In
+Network this looks like Keycloak returning `302 Found` with a `Location` header
+pointing at `/accounts/oidc/.../callback/`, but Chrome never makes the callback
+request. Firefox may appear more forgiving, and refreshing can work because the
+Keycloak SSO session already exists.
+
+Check the Keycloak realm setting:
+
+```text
+Realm settings -> Security defenses -> Headers -> Content-Security-Policy
+```
+
+The `form-action` directive must include the Django public origin. For multiple
+deployment subdomains, keep the policy explicit where possible:
+
+```text
+form-action 'self' https://<django-public-origin> https://<other-allowed-origin>
+```
+
+If all trusted deployments live below the same controlled DNS zone, a wildcard
+can be used, but it is broader than an explicit allowlist:
+
+```text
+form-action 'self' https://*.example.org
+```
+
 ## Docker Model
 
 Development and production intentionally use different GeoServer image sources.
