@@ -263,6 +263,14 @@ LOGOUT_REDIRECT_URL = "/accounts/logout/"
 KEYCLOAK_SERVER_URL = env("KEYCLOAK_SERVER_URL", default="https://auth.dcs.hcu-hamburg.de/")
 KEYCLOAK_REALM = env("KEYCLOAK_REALM", default="prod-realm")
 KEYCLOAK_CLIENT_ID = env("KEYCLOAK_CLIENT_ID", default="django-dev")
+KEYCLOAK_DJANGO_STAFF_ROLES = env.list(
+    "KEYCLOAK_DJANGO_STAFF_ROLES",
+    default=["DJANGO_STAFF", "ADMIN", "SUPERADMIN"],
+)
+KEYCLOAK_DJANGO_SUPERUSER_ROLES = env.list(
+    "KEYCLOAK_DJANGO_SUPERUSER_ROLES",
+    default=["SUPERADMIN"],
+)
 
 # JWKS / issuer used to verify access/id tokens
 KEYCLOAK_JWKS_URL = env("KEYCLOAK_JWKS_URL", default=f"{KEYCLOAK_SERVER_URL}realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs")
