@@ -5,6 +5,11 @@ from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 import logging
 from tosca_api.apps.core.jwt_utils import verify_and_decode_token
+from tosca_api.apps.authentication.role_sync import (
+    extract_roles_from_social_data,
+    extract_roles_from_token,
+    sync_user_permissions_from_roles,
+)
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -65,7 +70,7 @@ class KeycloakTokenAuthentication(BaseAuthentication):
             )
 
             # Sync roles from token
-            roles = self._extract_roles_from_token(decoded_token)
+            roles = extract_roles_from_token(decoded_token)
             self._apply_permissions(user, roles)
 
             # return decoded token as request.auth for downstream use
@@ -75,32 +80,9 @@ class KeycloakTokenAuthentication(BaseAuthentication):
         except Exception as e:
             raise AuthenticationFailed(f'Authentication failed: {str(e)}')
     
-    def _extract_roles_from_token(self, decoded_token):
-        """Extract roles from decoded JWT token."""
-        roles = set()
-        realm_access = decoded_token.get("realm_access", {})
-        if isinstance(realm_access, dict):
-            roles.update(realm_access.get("roles", []))
-        return roles
-    
     def _apply_permissions(self, user, roles):
         """Apply roles to Django user permissions."""
-        
-        old_staff = user.is_staff
-        old_super = user.is_superuser
-        
-        if "SUPERADMIN" in roles:
-            user.is_superuser = True
-            user.is_staff = True
-        elif "ADMIN" in roles:
-            user.is_superuser = False
-            user.is_staff = True
-        else:
-            user.is_superuser = False
-            user.is_staff = False
-        #KeycloakTokenAuth] Updated permissions if changed: is_staff={user.is_staff}, is_superuser={user.is_superuser}")
-        if user.is_staff != old_staff or user.is_superuser != old_super:
-            user.save()
+        sync_user_permissions_from_roles(user, roles)
 
 
 class KeycloakAdapter(DefaultSocialAccountAdapter):
@@ -246,99 +228,9 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
 
     def _extract_roles(self, extra_data):
         """Extract roles from Keycloak token."""
-        roles = set()
-        role_sources = []
-        
-        # Try to get roles from different locations
-        # 1. Try realm_access (standard location)
-        realm_access = extra_data.get("realm_access", {})
-        if realm_access:
-            realm_roles = realm_access.get("roles", [])
-            roles.update(realm_roles)
-            if realm_roles:
-                role_sources.append(f"realm_access({len(realm_roles)})")
-        
-        # 2. Try to decode id_token if it's a JWT string
-        id_token = extra_data.get("id_token")
-        if id_token:
-            if isinstance(id_token, str):
-                try:
-                    decoded_token = verify_and_decode_token(id_token)
-                    id_realm_access = decoded_token.get("realm_access", {})
-                    if id_realm_access:
-                        id_roles = id_realm_access.get("roles", [])
-                        roles.update(id_roles)
-                        if id_roles:
-                            role_sources.append(f"id_token({len(id_roles)})")
-                except Exception as e:
-                    logger.warning("Failed to decode id_token for role extraction", extra={
-                        'error': str(e),
-                        'token_present': bool(id_token)
-                    })
-            elif isinstance(id_token, dict):
-                # Already decoded
-                id_realm_access = id_token.get("realm_access", {})
-                if id_realm_access:
-                    id_roles = id_realm_access.get("roles", [])
-                    roles.update(id_roles)
-                    if id_roles:
-                        role_sources.append(f"id_token_dict({len(id_roles)})")
-        
-        # 3. Try userinfo
-        userinfo = extra_data.get("userinfo", {})
-        if userinfo and isinstance(userinfo, dict):
-            ui_realm_access = userinfo.get("realm_access", {})
-            if ui_realm_access:
-                ui_roles = ui_realm_access.get("roles", [])
-                roles.update(ui_roles)
-                if ui_roles:
-                    role_sources.append(f"userinfo({len(ui_roles)})")
-        
-        logger.info("Extracted roles from Keycloak token", extra={
-            'roles_count': len(roles),
-            'roles': sorted(list(roles)),
-            'sources': role_sources
-        })
-        return roles
+        return extract_roles_from_social_data(extra_data)
     
     def _apply_permissions(self, user, roles):
-        """
-        Apply roles to Django user permissions.
-        """
-        old_staff = user.is_staff
-        old_superuser = user.is_superuser
-        
-        if "SUPERADMIN" in roles:
-            user.is_superuser = True
-            user.is_staff = True
-            permission_level = "SUPERADMIN"
-        elif "ADMIN" in roles:
-            user.is_superuser = False
-            user.is_staff = True
-            permission_level = "ADMIN"
-        else:
-            user.is_superuser = False
-            user.is_staff = False
-            permission_level = "USER"
-        
-        # Only save if permissions changed
-        if user.is_staff != old_staff or user.is_superuser != old_superuser:
-            user.save()
-            logger.info("User permissions updated", extra={
-                'user_id': user.id,
-                'username': user.username,
-                'permission_level': permission_level,
-                'is_staff': user.is_staff,
-                'is_superuser': user.is_superuser,
-                'roles': sorted(list(roles)),
-                'changed': True
-            })
-        else:
-            logger.info("User permissions unchanged", extra={
-                'user_id': user.id,
-                'username': user.username,
-                'permission_level': permission_level,
-                'roles': sorted(list(roles)),
-                'changed': False
-            })
+        """Apply roles to Django user permissions."""
+        sync_user_permissions_from_roles(user, roles)
         

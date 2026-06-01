@@ -5,6 +5,10 @@ from django.urls import reverse
 from django.views import View
 from django.contrib.auth import get_user_model
 import logging
+from tosca_api.apps.authentication.role_sync import (
+    extract_roles_from_social_data,
+    sync_user_permissions_from_roles,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,13 +101,15 @@ class AutoSignupView(View):
         extra_data = sociallogin.account.extra_data
         userinfo = extra_data.get("userinfo", {})
         id_token = extra_data.get("id_token", {})
+        userinfo_data = userinfo if isinstance(userinfo, dict) else {}
+        id_token_data = id_token if isinstance(id_token, dict) else {}
         
         # Get user info - prefer userinfo, fallback to id_token
-        username = userinfo.get("preferred_username") or id_token.get("preferred_username")
-        email = userinfo.get("email") or id_token.get("email", "")
-        first_name = userinfo.get("given_name") or id_token.get("given_name", "")
-        last_name = userinfo.get("family_name") or id_token.get("family_name", "")
-        sub = userinfo.get("sub") or id_token.get("sub")  # Keycloak unique ID
+        username = userinfo_data.get("preferred_username") or id_token_data.get("preferred_username")
+        email = userinfo_data.get("email") or id_token_data.get("email", "")
+        first_name = userinfo_data.get("given_name") or id_token_data.get("given_name", "")
+        last_name = userinfo_data.get("family_name") or id_token_data.get("family_name", "")
+        sub = userinfo_data.get("sub") or id_token_data.get("sub")  # Keycloak unique ID
         
         if not username:
             logger.warning("No username found in sociallogin", extra={
@@ -140,11 +146,11 @@ class AutoSignupView(View):
             user.email = email
             user.first_name = first_name
             user.last_name = last_name
+            user.save(update_fields=["email", "first_name", "last_name"])
         
         # Extract and apply roles
         roles = self._extract_roles(extra_data)
         self._apply_permissions(user, roles)
-        user.save()
         
         # Connect social account to user
         sociallogin.user = user
@@ -171,35 +177,8 @@ class AutoSignupView(View):
     
     def _extract_roles(self, extra_data):
         """Extract roles from Keycloak token."""
-        roles = set()
-        id_token = extra_data.get("id_token", {})
-        if isinstance(id_token, dict):
-            realm_access = id_token.get("realm_access", {})
-            if realm_access:
-                roles.update(realm_access.get("roles", []))
-        return roles
+        return extract_roles_from_social_data(extra_data)
     
     def _apply_permissions(self, user, roles):
         """Apply roles to Django user permissions."""
-        old_staff = user.is_staff
-        old_superuser = user.is_superuser
-        
-        if "SUPERADMIN" in roles:
-            user.is_superuser = True
-            user.is_staff = True
-        elif "ADMIN" in roles:
-            user.is_superuser = False
-            user.is_staff = True
-        else:
-            user.is_superuser = False
-            user.is_staff = False
-        
-        if user.is_staff != old_staff or user.is_superuser != old_superuser:
-            logger.info("User permissions updated in views", extra={
-                'user_id': user.id,
-                'username': user.username,
-                'roles': sorted(list(roles)),
-                'is_staff': user.is_staff,
-                'is_superuser': user.is_superuser,
-                'changed': True
-            })
+        sync_user_permissions_from_roles(user, roles)
