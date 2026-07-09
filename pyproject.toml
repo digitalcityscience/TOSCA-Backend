@@ -57,6 +57,17 @@ markers = [
 line-length = 100
 target-version = "py312"
 
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+exclude = [
+    "tosca_api/apps/geodata_providers/geoserver/geoserver-rest/",
+    "migrations/",
+]
+# Minimal, permissive baseline: runs non-blocking in CI (see
+# .github/workflows/ci.yml) until the codebase has real type coverage to
+# tighten against. Do not add strict flags here until that's true.
+
 [tool.setuptools.packages.find]
 include = ["tosca_api*"]
 exclude = ["docker*"]

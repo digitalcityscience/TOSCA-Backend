@@ -1172,12 +1172,21 @@ def test_taxonomy_dimension_supports_active_and_inactive_states():
 
 @pytest.mark.django_db
 def test_taxonomy_dimension_auto_assigns_sort_order():
-    """Dimensions should auto-append when sort_order is left at the default 0."""
+    """Dimensions should auto-append when sort_order is left at the default 0.
+
+    Asserts relative ordering rather than absolute values: a data migration
+    seeds taxonomy dimensions, so the table is not empty when this test runs
+    against a freshly migrated database (e.g. in CI), and hardcoded values
+    of 1/2 do not hold there.
+    """
+    baseline = TaxonomyDimension.objects.order_by('-sort_order').first()
+    baseline_sort_order = baseline.sort_order if baseline else 0
+
     first = TaxonomyDimension.objects.create(code="audience", label="Audience")
     second = TaxonomyDimension.objects.create(code="theme", label="Theme")
 
-    assert first.sort_order == 1
-    assert second.sort_order == 2
+    assert first.sort_order == baseline_sort_order + 1
+    assert second.sort_order == baseline_sort_order + 2
 
 
 @pytest.mark.django_db
