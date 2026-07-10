@@ -93,3 +93,51 @@ def test_campaign_sanitization(test_user):
     
     assert "<script>" not in campaign.summary
     assert campaign.summary == "A summary with  tags."
+
+
+@pytest.mark.django_db
+def test_usage_summary_zero_for_empty_campaign(test_user):
+    campaign = Campaign.objects.create(title="Empty Campaign", created_by=test_user)
+
+    assert campaign.usage_summary() == {
+        "events": 0,
+        "event_series": 0,
+        "geostories": 0,
+        "feedbacks": 0,
+    }
+
+
+@pytest.mark.django_db
+def test_usage_summary_counts_dependents(test_user):
+    from datetime import timedelta
+
+    from django.contrib.gis.geos import Point
+    from django.utils import timezone
+
+    from tosca_api.apps.events.models import Event
+    from tosca_api.apps.feedback.models import GeoFeedback
+    from tosca_api.apps.geostories.models import GeoStory
+
+    campaign = Campaign.objects.create(title="Busy Campaign", created_by=test_user)
+    now = timezone.now()
+    Event.objects.create(
+        campaign=campaign,
+        title="Workshop",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=test_user,
+    )
+    GeoStory.objects.create(title="Story", campaign=campaign, author=test_user)
+    GeoFeedback.objects.create(
+        campaign=campaign,
+        title="Feedback",
+        rating_enabled=True,
+        created_by=test_user,
+    )
+
+    usage = campaign.usage_summary()
+    assert usage["events"] == 1
+    assert usage["geostories"] == 1
+    assert usage["feedbacks"] == 1
+    assert usage["event_series"] == 0

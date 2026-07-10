@@ -20,7 +20,7 @@ import uuid
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 
 from tosca_api.apps.core.models import TimeStampedModel
 
@@ -158,12 +158,17 @@ class GeodataEngine(TimeStampedModel, EncryptedCharField):
     def save(self, *args, **kwargs) -> None:
         self.full_clean()
         # Keep a single default engine — exclude self so re-saving the existing
-        # default doesn't accidentally clear its own flag.
+        # default doesn't accidentally clear its own flag. Wrapped in atomic
+        # so a failure between unsetting the old default and saving the new
+        # one can't leave zero default engines.
         if self.is_default:
-            GeodataEngine.objects.exclude(pk=self.pk).filter(is_default=True).update(
-                is_default=False
-            )
-        super().save(*args, **kwargs)
+            with transaction.atomic():
+                GeodataEngine.objects.exclude(pk=self.pk).filter(is_default=True).update(
+                    is_default=False
+                )
+                super().save(*args, **kwargs)
+        else:
+            super().save(*args, **kwargs)
 
     @property
     def decrypted_admin_password(self) -> str:

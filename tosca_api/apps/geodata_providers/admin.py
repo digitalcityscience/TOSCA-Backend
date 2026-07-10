@@ -1421,14 +1421,18 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         _run_workspace_sync(self, request, obj.workspace)
 
     def save_formset(self, request, form, formset, change):
-        instances = formset.save(commit=False)
-        for obj in instances:
-            if isinstance(obj, LayerStyleAssignment) and not obj.pk:
-                obj.created_by = request.user
-            obj.save()
-        for obj in formset.deleted_objects:
-            obj.delete()
-        formset.save_m2m()
+        # Pure Django ORM work (no remote calls) — safe and necessary to
+        # wrap in one transaction so a failure partway through a batch of
+        # style-assignment saves/deletes can't leave the formset half-applied.
+        with transaction.atomic():
+            instances = formset.save(commit=False)
+            for obj in instances:
+                if isinstance(obj, LayerStyleAssignment) and not obj.pk:
+                    obj.created_by = request.user
+                obj.save()
+            for obj in formset.deleted_objects:
+                obj.delete()
+            formset.save_m2m()
 
     # ------------------------------------------------------------------
     # 4.5 — Delete safety: GeoServer-first for PUBLISHED layers
