@@ -11,7 +11,6 @@ from django.contrib import admin, messages
 
 from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeodataEngineError
-from ..models import GeodataEngine
 from ..services.commands.geodata_engine_service import GeodataEngineService
 from ..sync_service import GeoServerSyncService
 
@@ -102,7 +101,8 @@ def set_as_default(modeladmin, request, queryset):
         return
 
     engine = queryset.first()
-    GeodataEngine.objects.filter(is_default=True).exclude(pk=engine.pk).update(is_default=False)
+    # GeodataEngine.save() already atomically unsets any other default
+    # engine when is_default=True — no need to duplicate that here.
     engine.is_default = True
     engine.save(update_fields=['is_default'])
     modeladmin.message_user(
