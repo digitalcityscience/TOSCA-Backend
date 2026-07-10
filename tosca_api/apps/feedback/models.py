@@ -100,7 +100,6 @@ class GeoFeedback(TimeStampedModel):
         max_length=20,
         choices=Status.choices,
         default=Status.DRAFT,
-        db_index=True,
     )
 
     visibility = models.CharField(
@@ -143,6 +142,12 @@ class GeoFeedback(TimeStampedModel):
         indexes = [
             models.Index(fields=["campaign"]),
             models.Index(fields=["status"]),
+            # Matches the public GeoFeedback listing's combined
+            # status=PUBLISHED, visibility=PUBLIC filter (views.py).
+            models.Index(
+                fields=["status", "visibility"],
+                name="feedback_geofb_stat_vis_idx",
+            ),
         ]
 
     def __str__(self) -> str:

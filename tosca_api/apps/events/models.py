@@ -575,7 +575,6 @@ class Event(TimeStampedModel):
         max_length=20,
         choices=Status.choices,
         default=Status.DRAFT,
-        db_index=True,
     )
 
     visibility = models.CharField(
@@ -621,6 +620,12 @@ class Event(TimeStampedModel):
             models.Index(
                 fields=["series", "start_datetime"],
                 name="events_evt_series_start_idx",
+            ),
+            # Matches _apply_visibility_scope()'s combined status+visibility
+            # filter used on every public (unauthenticated) event listing.
+            models.Index(
+                fields=["status", "visibility", "start_datetime"],
+                name="events_evt_stat_vis_start_idx",
             ),
         ]
         constraints = [
