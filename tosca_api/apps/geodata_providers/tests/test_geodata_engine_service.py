@@ -99,18 +99,18 @@ class GeodataEngineServiceTestCase(TestCase):
         self.engine.is_active = False
         self.engine.save(update_fields=['is_active'])
         service = GeoServerSyncService(self.engine)
-        service._get_geoserver_workspaces = MagicMock()
+        service._workspace_syncer._fetch_remote = MagicMock()
 
         result = service.sync_all_resources(created_by=self.user)
 
         self.assertTrue(result['success'])
         self.assertTrue(result['skipped'])
         self.assertTrue(result['workspaces']['skipped'])
-        service._get_geoserver_workspaces.assert_not_called()
+        service._workspace_syncer._fetch_remote.assert_not_called()
 
     def test_sync_workspaces_marks_successful_resources_synced(self):
         service = GeoServerSyncService(self.engine)
-        service._get_geoserver_workspaces = MagicMock(return_value=['synced_ws'])
+        service._workspace_syncer._fetch_remote = MagicMock(return_value=['synced_ws'])
 
         result = service.sync_workspaces(created_by=self.user)
 
@@ -129,7 +129,7 @@ class GeodataEngineServiceTestCase(TestCase):
             created_by=self.user,
         )
         service = GeoServerSyncService(self.engine)
-        service._get_geoserver_workspaces = MagicMock(return_value=['synced_ws'])
+        service._workspace_syncer._fetch_remote = MagicMock(return_value=['synced_ws'])
 
         result = service.sync_workspaces(created_by=self.user)
 
@@ -147,7 +147,7 @@ class GeodataEngineServiceTestCase(TestCase):
             created_by=self.user,
         )
         service = GeoServerSyncService(self.engine)
-        service._get_geoserver_workspaces = MagicMock(return_value=[])
+        service._workspace_syncer._fetch_remote = MagicMock(return_value=[])
 
         result = service.sync_workspaces(created_by=self.user)
 
@@ -164,7 +164,7 @@ class GeodataEngineServiceTestCase(TestCase):
             created_by=self.user,
         )
         service = GeoServerSyncService(self.engine)
-        service._get_geoserver_workspaces = MagicMock(side_effect=Exception('GeoServer unavailable'))
+        service._workspace_syncer._fetch_remote = MagicMock(side_effect=Exception('GeoServer unavailable'))
 
         result = service.sync_workspaces(created_by=self.user)
 
@@ -182,7 +182,7 @@ class GeodataEngineServiceTestCase(TestCase):
             created_by=self.user,
         )
         service = GeoServerSyncService(self.engine)
-        service._get_geoserver_stores = MagicMock(
+        service._store_syncer._fetch_remote = MagicMock(
             return_value=[
                 {
                     'name': 'apotheken',
@@ -208,7 +208,7 @@ class GeodataEngineServiceTestCase(TestCase):
             created_by=self.user,
         )
         service = GeoServerSyncService(self.engine)
-        service._get_geoserver_stores = MagicMock(
+        service._store_syncer._fetch_remote = MagicMock(
             return_value=[
                 {
                     'name': 'flood_depth',
@@ -272,7 +272,7 @@ class GeodataEngineServiceTestCase(TestCase):
             created_by=self.user,
         )
         service = GeoServerSyncService(self.engine)
-        service._get_geoserver_layers = MagicMock(
+        service._layer_syncer._fetch_remote = MagicMock(
             return_value=[
                 {
                     'name': 'roads',
@@ -323,7 +323,7 @@ class GeodataEngineServiceTestCase(TestCase):
             created_by=self.user,
         )
         service = GeoServerSyncService(self.engine)
-        service._get_geoserver_layers = MagicMock(
+        service._layer_syncer._fetch_remote = MagicMock(
             return_value=[
                 {
                     'name': 'test',

@@ -772,8 +772,8 @@ class CatalogV1ApiTestCase(TestCase):
     ):
         get_layer_info_mock.return_value = None
         service = GeoServerSyncService(self.provider)
-        service._get_geoserver_workspaces = MagicMock(return_value=["synced_ws"])
-        service._get_geoserver_stores = MagicMock(
+        service._workspace_syncer._fetch_remote = MagicMock(return_value=["synced_ws"])
+        service._store_syncer._fetch_remote = MagicMock(
             return_value=[
                 {
                     "name": "synced_store",
@@ -786,7 +786,7 @@ class CatalogV1ApiTestCase(TestCase):
                 }
             ]
         )
-        service._get_geoserver_styles = MagicMock(
+        service._style_syncer._fetch_remote = MagicMock(
             side_effect=lambda workspace=None: (
                 [{"name": "synced_style"}] if workspace is None else []
             )
@@ -798,7 +798,7 @@ class CatalogV1ApiTestCase(TestCase):
                 "file_name": "synced_style.mbstyle",
             }
         )
-        service._get_geoserver_layers = MagicMock(
+        service._layer_syncer._fetch_remote = MagicMock(
             return_value=[
                 {
                     "name": "synced_layer",
