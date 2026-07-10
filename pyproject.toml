@@ -2,14 +2,14 @@
 name = "tosca_api"
 version = "0.1.0"
 description = "TOSCA-Web API - Backend for geospatial web applications"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 readme = "README.md"
 authors = [
     { name = "TOSCA Team", email = "team@example.com" }
 ]
 license = "MIT"
 dependencies = [
-    "django>=5.1.15,<5.2",
+    "django>=5.2.16,<5.3",
     "djangorestframework>=3.15.0",
     "django-environ>=0.11.0",
     "python-keycloak>=4.0.0",
@@ -22,7 +22,7 @@ dependencies = [
     "nh3>=0.3.2",
     "drf-spectacular>=0.29.0",
     "djangorestframework-gis>=1.2.0",
-    "django-basic-form-builder>=0.1.4",
+    "django-basic-form-builder>=0.1.5",
     "xmltodict>=1.0.2",
     "django-cryptography>=1.1",
     "cryptography>=46.0.3",
@@ -55,7 +55,7 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.setuptools.packages.find]
 include = ["tosca_api*"]
