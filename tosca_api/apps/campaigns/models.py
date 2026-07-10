@@ -39,7 +39,7 @@ class Campaign(TimeStampedModel):
         PUBLIC = "public", "Public"
         PRIVATE = "private", "Private"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     title = models.CharField(max_length=255)
     summary = models.TextField(blank=True, default="")
     status = models.CharField(

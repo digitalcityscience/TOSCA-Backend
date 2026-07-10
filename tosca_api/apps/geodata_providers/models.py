@@ -86,7 +86,7 @@ class GeodataEngine(TimeStampedModel, EncryptedCharField):
         MARTIN = "martin", "Martin Tiles"
         PG_TILESERV = "pg_tileserv", "PostGIS TileServer"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     name = models.CharField(
         max_length=100,
         unique=True,
@@ -193,7 +193,7 @@ class Workspace(SyncStateMixin, TimeStampedModel):
     every store and layer published under it.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     geodata_engine = models.ForeignKey(
         GeodataEngine,
         on_delete=models.CASCADE,
@@ -238,7 +238,7 @@ class Store(SyncStateMixin, TimeStampedModel, EncryptedCharField):
         FILE = "file", "File-based Store (Shapefile, GeoPackage, GeoJSON, Directory)"
         GEOTIFF = "geotiff", "GeoTIFF"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     geodata_engine = models.ForeignKey(
         GeodataEngine,
         on_delete=models.CASCADE,
@@ -361,7 +361,7 @@ class Layer(SyncStateMixin, TimeStampedModel):
         FAILED = "FAILED", "Failed"
         UNPUBLISHED = "UNPUBLISHED", "Unpublished"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     name = models.CharField(max_length=100, help_text="Layer name")
     title = models.CharField(max_length=200, blank=True, help_text="Human-readable title")
     description = models.TextField(blank=True)
@@ -476,7 +476,7 @@ class Style(SyncStateMixin, TimeStampedModel):
         UNSUPPORTED = "UNSUPPORTED", "Unsupported by provider"
         DELETED = "DELETED", "Deleted"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     geodata_engine = models.ForeignKey(
         GeodataEngine,
         on_delete=models.CASCADE,
@@ -591,7 +591,7 @@ class LayerStyleAssignment(TimeStampedModel):
         DEFAULT = "default", "Default"
         ALTERNATE = "alternate", "Alternate"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     layer = models.ForeignKey(
         Layer,
         on_delete=models.CASCADE,

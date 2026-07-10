@@ -32,7 +32,7 @@ class FeatureLink(TimeStampedModel):
         READ_MORE = "read_more", "Read More"
         ACTION = "action", "Action"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     
     campaign = models.ForeignKey(
         "campaigns.Campaign",

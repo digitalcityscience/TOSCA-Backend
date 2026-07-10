@@ -45,7 +45,7 @@ class GeoStory(TimeStampedModel):
         PUBLISHED = "published", "Published"
         ARCHIVED = "archived", "Archived"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     title = models.CharField(max_length=255)
     summary = models.TextField(blank=True, default="")
     hero_image = models.ImageField(
@@ -135,7 +135,7 @@ class GeoStoryLayer(models.Model):
     published — see ``clean()``.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     geostory = models.ForeignKey(GeoStory, on_delete=models.CASCADE)
     layer = models.ForeignKey(
         "geodata_providers.Layer",

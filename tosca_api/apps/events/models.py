@@ -50,7 +50,7 @@ class EventType(TimeStampedModel):
         CORE = "core", "Core"
         EXTENSION = "extension", "Extension"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     code = models.CharField(max_length=100, unique=True)
     label = models.CharField(max_length=255)
     profile_mode = models.CharField(
@@ -95,7 +95,7 @@ class TaxonomyDimension(TimeStampedModel):
         SINGLE = "single", "Single"
         MULTIPLE = "multiple", "Multiple"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     code = models.CharField(max_length=100, unique=True)
     label = models.CharField(max_length=255)
     description = models.TextField(blank=True, default="")
@@ -141,7 +141,7 @@ class TaxonomyTerm(TimeStampedModel):
         dimension_id: uuid.UUID
         parent_id: uuid.UUID | None
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     dimension = models.ForeignKey(
         TaxonomyDimension,
         on_delete=models.CASCADE,
@@ -226,7 +226,7 @@ class EventSeries(TimeStampedModel):
         DAY_OF_MONTH = "day_of_month", "Day of Month"
         NTH_WEEKDAY = "nth_weekday", "Nth Weekday"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     campaign = models.ForeignKey(
         "campaigns.Campaign",
         on_delete=models.CASCADE,
@@ -415,7 +415,7 @@ class EventSeries(TimeStampedModel):
 class EventSeriesDate(TimeStampedModel):
     """Explicit occurrence date for manual batch event series."""
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     series = models.ForeignKey(
         EventSeries,
         on_delete=models.CASCADE,
@@ -491,7 +491,7 @@ class Event(TimeStampedModel):
         BY_ARRANGEMENT = "by_arrangement", "By Arrangement"
         HOME_VISIT = "home_visit", "Home Visit"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
 
     campaign = models.ForeignKey(
         "campaigns.Campaign",
@@ -752,7 +752,7 @@ class EventLayer(models.Model):
         event_id: uuid.UUID
         layer_id: uuid.UUID | None
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     event = models.ForeignKey(Event, on_delete=models.CASCADE)
     layer = models.ForeignKey(
         "geodata_providers.Layer",
@@ -807,7 +807,7 @@ class EventTerm(TimeStampedModel):
         event_id: uuid.UUID | None
         term_id: uuid.UUID | None
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     event = models.ForeignKey(
         Event,
         on_delete=models.CASCADE,

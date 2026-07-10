@@ -55,7 +55,7 @@ class GeoFeedback(TimeStampedModel):
         PUBLIC = "public", "Public"
         PRIVATE = "private", "Private"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
 
     campaign = models.ForeignKey(
         "campaigns.Campaign",
@@ -188,7 +188,7 @@ class FeedbackLayer(models.Model):
     published — see ``clean()``.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     feedback = models.ForeignKey(GeoFeedback, on_delete=models.CASCADE)
     layer = models.ForeignKey(
         "geodata_providers.Layer",
@@ -245,7 +245,7 @@ class FeedbackSubmission(TimeStampedModel):
         is_anonymized: Whether PII has been stripped from this submission
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
 
     feedback = models.ForeignKey(
         GeoFeedback,
