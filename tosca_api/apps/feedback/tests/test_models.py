@@ -780,3 +780,29 @@ class TestFeedbackLayerValidation:
             feedback=feedback_rating_only, layer=layer
         )
         assert fl.id is not None
+
+
+class TestGeoFeedbackIndexes:
+    """Structural checks that the status+visibility composite index exists.
+
+    Asserted against model metadata rather than via EXPLAIN, since query
+    planner index choice on an empty/small test database is data-volume
+    dependent and not a reliable signal in CI.
+    """
+
+    def test_status_visibility_composite_index_declared(self):
+        index_field_sets = {
+            tuple(index.fields) for index in GeoFeedback._meta.indexes
+        }
+        assert ("status", "visibility") in index_field_sets
+
+    def test_status_field_relies_on_meta_index_not_field_level_db_index(self):
+        # Regression guard: status previously had db_index=True *and* a
+        # separate Meta.indexes entry, creating two redundant single-column
+        # indexes on the same column. Only the Meta.indexes entry should
+        # remain.
+        status_field = GeoFeedback._meta.get_field("status")
+        assert status_field.db_index is False
+        assert ("status",) in {
+            tuple(index.fields) for index in GeoFeedback._meta.indexes
+        }

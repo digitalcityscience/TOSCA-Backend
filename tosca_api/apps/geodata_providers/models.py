@@ -42,6 +42,7 @@ class SyncStateMixin(models.Model):
         max_length=20,
         choices=SyncState.choices,
         default=SyncState.LOCAL_ONLY,
+        db_index=True,
         help_text="Current consistency state between Django and the remote provider.",
     )
     last_sync_at = models.DateTimeField(
@@ -135,6 +136,7 @@ class GeodataEngine(TimeStampedModel, EncryptedCharField):
     # Status
     is_active = models.BooleanField(
         default=True,
+        db_index=True,
         help_text="Is this engine instance active?",
     )
     is_default = models.BooleanField(
@@ -403,6 +405,14 @@ class Layer(SyncStateMixin, TimeStampedModel):
         verbose_name_plural = "Layers"
         ordering = ["workspace__name", "name"]
         unique_together = ["workspace", "name"]
+        indexes = [
+            # Matches CatalogVisibilityService's Exists subquery and direct
+            # catalog listing filter (workspace + is_public + publishing_state).
+            models.Index(
+                fields=["workspace", "is_public", "publishing_state"],
+                name="geoprov_layer_ws_pub_state_idx",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.workspace.name}/{self.name}"

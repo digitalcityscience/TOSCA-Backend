@@ -1417,3 +1417,24 @@ def test_event_layer_accepts_public_published(user, campaign):
     layer = make_layer("workspace:evt_ok", user=user)
     el = EventLayer.objects.create(event=event, layer=layer)
     assert el.id is not None
+
+
+def test_status_visibility_start_datetime_composite_index_declared():
+    """Structural check for the composite index backing the public listing
+    filter (_apply_visibility_scope: status=PUBLISHED, visibility=PUBLIC).
+
+    Asserted against model metadata rather than via EXPLAIN, since query
+    planner index choice on an empty/small test database is data-volume
+    dependent and not a reliable signal in CI.
+    """
+    index_field_sets = {tuple(index.fields) for index in Event._meta.indexes}
+    assert ("status", "visibility", "start_datetime") in index_field_sets
+
+
+def test_status_field_relies_on_meta_index_not_field_level_db_index():
+    # Regression guard: status previously had db_index=True *and* a
+    # separate Meta.indexes entry, creating two redundant single-column
+    # indexes on the same column. Only the Meta.indexes entry should remain.
+    status_field = Event._meta.get_field("status")
+    assert status_field.db_index is False
+    assert ("status",) in {tuple(index.fields) for index in Event._meta.indexes}
