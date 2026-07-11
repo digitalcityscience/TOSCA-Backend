@@ -231,16 +231,11 @@ class CreateWorkspaceTests(TestCase):
         with patch.object(self.client, "workspace_exists", return_value=True):
             result = self.client.create_workspace("mobility")
 
-        self.assertEqual(
-            result,
-            {
-                "success": True,
-                "workspace": "mobility",
-                "message": "Workspace 'mobility' already exists",
-                "created": False,
-                "pre_existed": True,
-            },
-        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.message, "Workspace 'mobility' already exists")
+        self.assertEqual(result["workspace"], "mobility")
+        self.assertFalse(result["created"])
+        self.assertTrue(result["pre_existed"])
 
     def test_success_cycle(self):
         response = MagicMock(status_code=201, text="")
@@ -280,16 +275,11 @@ class DeleteWorkspaceTests(TestCase):
         with patch.object(self.client, "workspace_exists", return_value=False):
             result = self.client.delete_workspace("mobility")
 
-        self.assertEqual(
-            result,
-            {
-                "success": True,
-                "workspace": "mobility",
-                "message": "Workspace 'mobility' does not exist",
-                "deleted": False,
-                "already_deleted": True,
-            },
-        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.message, "Workspace 'mobility' does not exist")
+        self.assertEqual(result["workspace"], "mobility")
+        self.assertFalse(result["deleted"])
+        self.assertTrue(result["already_deleted"])
 
     def test_success_ignores_lingering_post_check(self):
         """delete_workspace's post-check is soft: even if the workspace

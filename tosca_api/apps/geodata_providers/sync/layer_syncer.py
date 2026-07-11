@@ -69,6 +69,9 @@ class LayerSyncer(BaseSyncer):
                 str(e),
             )
             raise
+        # Genuinely-unexpected fallback below the known GeoServerConnectionError
+        # case above — kept broad so a bug here still reports a sync error
+        # instead of crashing the admin action that called this.
         except Exception as e:
             error = f"Failed to get layers for workspace {workspace.name}: {e}"
             results['errors'].append(error)
@@ -150,6 +153,8 @@ class LayerSyncer(BaseSyncer):
                     results['synced'] += 1
                     logger.info(f"✅ Synced layer: {workspace.name}/{layer_name}")
 
+            # Per-item isolation: one bad remote layer must not abort
+            # the whole sync loop — record it and keep going.
             except Exception as e:
                 error_msg = f"Failed to sync layer {layer_data.get('name')}: {e}"
                 results['errors'].append(error_msg)
@@ -174,6 +179,7 @@ class LayerSyncer(BaseSyncer):
                 layer.delete()
                 results['deleted'] += 1
                 logger.info(f"🗑️ Deleted layer: {workspace.name}/{layer_name}")
+            # Per-item isolation: same as above, for the delete pass.
             except Exception as e:
                 error_msg = f"Failed to delete layer {layer_name}: {e}"
                 results['errors'].append(error_msg)

@@ -14,6 +14,7 @@ if geoserver_rest_path not in sys.path:
 
 from geo.Geoserver import Geoserver as GeoServerRestClient
 from ..exceptions import GeoServerConnectionError, GeoServerPublishError
+from ..results import OperationResult
 
 logger = logging.getLogger(__name__)
 
@@ -95,16 +96,16 @@ class GeoServerClient:
         self,
         *,
         exists_check: Callable[[], bool],
-        already_exists_result: Callable[[], Dict],
+        already_exists_result: Callable[[], OperationResult],
         perform_create: Callable[[], Dict],
         validate_operation_label: str,
         validation_failure_prefix: str,
         perform_verify: Callable[[], Dict],
         verify_failure_message: str,
-        success_result: Callable[[Dict, Dict], Dict],
-        error_result: Callable[[Exception], Dict],
+        success_result: Callable[[Dict, Dict], OperationResult],
+        error_result: Callable[[Exception], OperationResult],
         error_log_message: Callable[[Exception], str],
-    ) -> Dict:
+    ) -> OperationResult:
         """
         Shared GeoServer-first create cycle: pre-check -> operation ->
         response validation -> post-verify -> final response.
@@ -144,16 +145,16 @@ class GeoServerClient:
         self,
         *,
         exists_check: Callable[[], bool],
-        already_deleted_result: Callable[[], Dict],
+        already_deleted_result: Callable[[], OperationResult],
         perform_delete: Callable[[], Optional[Dict]],
         validate_operation_label: Optional[str],
         validation_failure_prefix: str,
         perform_verify: Callable[[], Dict],
         verify_failure_message: str,
-        success_result: Callable[[Optional[Dict], Dict], Dict],
-        error_result: Callable[[Exception], Dict],
+        success_result: Callable[[Optional[Dict], Dict], OperationResult],
+        error_result: Callable[[Exception], OperationResult],
         error_log_message: Callable[[Exception], str],
-    ) -> Dict:
+    ) -> OperationResult:
         """
         Shared GeoServer-first delete cycle: pre-check -> operation ->
         optional response validation -> post-verify -> final response.
@@ -191,7 +192,7 @@ class GeoServerClient:
 
     # Workspace operations
 
-    def create_workspace(self, name: str) -> Dict:
+    def create_workspace(self, name: str) -> OperationResult:
         """
         Create workspace in GeoServer using GeoServer-first pattern.
         Implements: Pre-Check -> Operation + Validation -> Post-Check
@@ -200,7 +201,7 @@ class GeoServerClient:
             name: Workspace name
 
         Returns:
-            Dict with success status and details
+            OperationResult with success status and details
         """
         logger.info(f"Starting workspace creation with GeoServer-first pattern: {name}")
 
@@ -233,15 +234,13 @@ class GeoServerClient:
                 logger.error(f"Post-verification failed for workspace {name}: {verification['message']}")
             return verification
 
-        def _already_exists_result() -> Dict:
+        def _already_exists_result() -> OperationResult:
             logger.info(f"Workspace {name} already exists (pre-check)")
-            return {
-                'success': True,
-                'workspace': name,
-                'message': f"Workspace '{name}' already exists",
-                'created': False,
-                'pre_existed': True,
-            }
+            return OperationResult(
+                success=True,
+                message=f"Workspace '{name}' already exists",
+                data={'workspace': name, 'created': False, 'pre_existed': True},
+            )
 
         result = self._create_resource(
             exists_check=lambda: self.workspace_exists(name),
@@ -251,24 +250,24 @@ class GeoServerClient:
             validation_failure_prefix="Workspace creation failed validation",
             perform_verify=_perform_verify,
             verify_failure_message=f"Workspace '{name}' could not be verified in GeoServer after create.",
-            success_result=lambda validated, verification: {
-                'success': True,
-                'workspace': name,
-                'message': f"Workspace '{name}' created successfully",
-                'created': True,
-                'pre_existed': False,
-                'validated': validated.get('validated', False),
-                'verified': True,
-                'geoserver_response': validated,
-            },
-            error_result=lambda e: {
-                'success': False,
-                'workspace': name,
-                'error': str(e),
-                'message': f"Failed to create workspace '{name}': {e}",
-                'created': False,
-                'recovery_needed': True,
-            },
+            success_result=lambda validated, verification: OperationResult(
+                success=True,
+                message=f"Workspace '{name}' created successfully",
+                data={
+                    'workspace': name,
+                    'created': True,
+                    'pre_existed': False,
+                    'validated': validated.get('validated', False),
+                    'verified': True,
+                    'geoserver_response': validated,
+                },
+            ),
+            error_result=lambda e: OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to create workspace '{name}': {e}",
+                data={'workspace': name, 'created': False, 'recovery_needed': True},
+            ),
             error_log_message=lambda e: f"Failed to create workspace {name}: {e}",
         )
 
@@ -276,7 +275,7 @@ class GeoServerClient:
             logger.info(f"Workspace creation completed: {name} (verified: {result.get('verified')})")
         return result
 
-    def delete_workspace(self, name: str) -> Dict:
+    def delete_workspace(self, name: str) -> OperationResult:
         """
         Delete workspace from GeoServer
 
@@ -284,19 +283,17 @@ class GeoServerClient:
             name: Workspace name
 
         Returns:
-            Dict with success status and details
+            OperationResult with success status and details
         """
         logger.info(f"Deleting workspace from GeoServer: {name}")
 
-        def _already_deleted_result() -> Dict:
+        def _already_deleted_result() -> OperationResult:
             logger.info(f"Workspace {name} does not exist, nothing to delete")
-            return {
-                'success': True,
-                'workspace': name,
-                'message': f"Workspace '{name}' does not exist",
-                'deleted': False,
-                'already_deleted': True,
-            }
+            return OperationResult(
+                success=True,
+                message=f"Workspace '{name}' does not exist",
+                data={'workspace': name, 'deleted': False, 'already_deleted': True},
+            )
 
         def _perform_delete() -> Dict:
             response = self._request("delete", f"/rest/workspaces/{name}", params={"recurse": "true"})
@@ -314,15 +311,13 @@ class GeoServerClient:
                 logger.warning(f"Workspace {name} still exists after deletion attempt")
             return {'verified': True}
 
-        def _success_result(validated: Dict, verification: Dict) -> Dict:
+        def _success_result(validated: Dict, verification: Dict) -> OperationResult:
             logger.info(f"Workspace deleted successfully: {name}")
-            return {
-                'success': True,
-                'workspace': name,
-                'message': f"Workspace '{name}' deleted successfully",
-                'deleted': True,
-                'geoserver_response': validated,
-            }
+            return OperationResult(
+                success=True,
+                message=f"Workspace '{name}' deleted successfully",
+                data={'workspace': name, 'deleted': True, 'geoserver_response': validated},
+            )
 
         return self._delete_resource(
             exists_check=lambda: self.workspace_exists(name),
@@ -333,13 +328,12 @@ class GeoServerClient:
             perform_verify=_perform_verify,
             verify_failure_message=f"Workspace '{name}' could not be verified as deleted.",
             success_result=_success_result,
-            error_result=lambda e: {
-                'success': False,
-                'workspace': name,
-                'error': str(e),
-                'message': f"Failed to delete workspace '{name}': {e}",
-                'deleted': False,
-            },
+            error_result=lambda e: OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to delete workspace '{name}': {e}",
+                data={'workspace': name, 'deleted': False},
+            ),
             error_log_message=lambda e: f"Failed to delete workspace {name}: {e}",
         )
 
@@ -940,7 +934,7 @@ class GeoServerClient:
 
         return []
 
-    def create_store(self, workspace: str, store_data: dict) -> Dict:
+    def create_store(self, workspace: str, store_data: dict) -> OperationResult:
         """
         Create PostGIS datastore in GeoServer using GeoServer-first pattern.
 
@@ -949,7 +943,7 @@ class GeoServerClient:
             store_data: Store connection details
 
         Returns:
-            Dict with creation results and verification status
+            OperationResult with creation results and verification status
         """
         store_name = store_data.get('name')
         logger.info(f"Creating store '{store_name}' in workspace '{workspace}'")
@@ -981,47 +975,45 @@ class GeoServerClient:
                 },
             )
 
-        def _success_result(validated: Dict, verification: Dict) -> Dict:
+        def _success_result(validated: Dict, verification: Dict) -> OperationResult:
             logger.info(f"Store creation completed: {store_name} (verified: {verification.get('verified')})")
-            return {
-                'success': True,
-                'store': store_name,
-                'workspace': workspace,
-                'message': f"Store '{store_name}' created successfully",
-                'created': True,
-                'pre_existed': False,
-                'validated': validated.get('validated', False),
-                'verified': verification.get('verified', False),
-                'geoserver_response': validated,
-            }
+            return OperationResult(
+                success=True,
+                message=f"Store '{store_name}' created successfully",
+                data={
+                    'store': store_name,
+                    'workspace': workspace,
+                    'created': True,
+                    'pre_existed': False,
+                    'validated': validated.get('validated', False),
+                    'verified': verification.get('verified', False),
+                    'geoserver_response': validated,
+                },
+            )
 
         return self._create_resource(
             exists_check=lambda: self.pre_check_store(workspace, store_name).get('exists', False),
-            already_exists_result=lambda: {
-                'success': True,
-                'store': store_name,
-                'workspace': workspace,
-                'message': f"Store '{store_name}' already exists",
-                'created': False,
-                'pre_existed': True,
-            },
+            already_exists_result=lambda: OperationResult(
+                success=True,
+                message=f"Store '{store_name}' already exists",
+                data={'store': store_name, 'workspace': workspace, 'created': False, 'pre_existed': True},
+            ),
             perform_create=_perform_create,
             validate_operation_label=f"create_featurestore({store_name})",
             validation_failure_prefix="Store creation failed validation",
             perform_verify=_perform_verify,
             verify_failure_message=f"Store '{store_name}' could not be verified in GeoServer after create.",
             success_result=_success_result,
-            error_result=lambda e: {
-                'success': False,
-                'store': store_name,
-                'workspace': workspace,
-                'error': str(e),
-                'message': f"Store creation failed: {e}",
-            },
+            error_result=lambda e: OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Store creation failed: {e}",
+                data={'store': store_name, 'workspace': workspace},
+            ),
             error_log_message=lambda e: f"Failed to create store '{store_name}': {e}",
         )
 
-    def delete_store(self, workspace: str, store: str) -> Dict:
+    def delete_store(self, workspace: str, store: str) -> OperationResult:
         """
         Delete PostGIS datastore from GeoServer
 
@@ -1030,20 +1022,17 @@ class GeoServerClient:
             store: Store name
 
         Returns:
-            Dict with success status and details
+            OperationResult with success status and details
         """
         logger.info(f"Deleting store '{store}' from workspace '{workspace}'")
 
-        def _already_deleted_result() -> Dict:
+        def _already_deleted_result() -> OperationResult:
             logger.info(f"Store {store} does not exist in workspace {workspace}, nothing to delete")
-            return {
-                'success': True,
-                'store': store,
-                'workspace': workspace,
-                'message': f"Store '{store}' does not exist",
-                'deleted': False,
-                'already_deleted': True,
-            }
+            return OperationResult(
+                success=True,
+                message=f"Store '{store}' does not exist",
+                data={'store': store, 'workspace': workspace, 'deleted': False, 'already_deleted': True},
+            )
 
         def _perform_delete() -> Optional[Dict]:
             # delete_featurestore() returns a plain string on success and
@@ -1051,16 +1040,18 @@ class GeoServerClient:
             self._client.delete_featurestore(featurestore_name=store, workspace=workspace)
             return None
 
-        def _success_result(validated: Optional[Dict], verification: Dict) -> Dict:
+        def _success_result(validated: Optional[Dict], verification: Dict) -> OperationResult:
             logger.info(f"Store deleted successfully: {store} from workspace {workspace}")
-            return {
-                'success': True,
-                'store': store,
-                'workspace': workspace,
-                'message': f"Store '{store}' deleted successfully",
-                'deleted': True,
-                'verified': verification.get('verified', False),
-            }
+            return OperationResult(
+                success=True,
+                message=f"Store '{store}' deleted successfully",
+                data={
+                    'store': store,
+                    'workspace': workspace,
+                    'deleted': True,
+                    'verified': verification.get('verified', False),
+                },
+            )
 
         return self._delete_resource(
             exists_check=lambda: self.pre_check_store(workspace, store).get('exists', False),
@@ -1071,14 +1062,12 @@ class GeoServerClient:
             perform_verify=lambda: self.post_verify_store(workspace, store, expected_exists=False),
             verify_failure_message=f"Store '{store}' could not be verified as deleted in GeoServer.",
             success_result=_success_result,
-            error_result=lambda e: {
-                'success': False,
-                'store': store,
-                'workspace': workspace,
-                'error': str(e),
-                'message': f"Failed to delete store '{store}': {e}",
-                'deleted': False,
-            },
+            error_result=lambda e: OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to delete store '{store}': {e}",
+                data={'store': store, 'workspace': workspace, 'deleted': False},
+            ),
             error_log_message=lambda e: f"Failed to delete store '{store}' from workspace '{workspace}': {e}",
         )
 

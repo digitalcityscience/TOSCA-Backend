@@ -67,6 +67,9 @@ class StyleSyncer(BaseSyncer):
                 str(e),
             )
             raise
+        # Genuinely-unexpected fallback below the known GeoServerConnectionError
+        # case above — kept broad so a bug here still reports a sync error
+        # instead of crashing the admin action that called this.
         except Exception as e:
             scope = workspace.name if workspace else 'global'
             error = f"Failed to sync styles for {scope}: {e}"
@@ -133,6 +136,8 @@ class StyleSyncer(BaseSyncer):
                 else:
                     results['synced'] += 1
                     logger.info("✅ Synced style: %s", style.qualified_name)
+            # Per-item isolation: one bad remote style must not abort
+            # the whole sync loop — record it and keep going.
             except Exception as e:
                 error_msg = f"Failed to sync style {style_data.get('name')}: {e}"
                 results['errors'].append(error_msg)
@@ -154,6 +159,7 @@ class StyleSyncer(BaseSyncer):
                 style.delete()
                 results['deleted'] += 1
                 logger.info("🗑️ Deleted style: %s", style_name)
+            # Per-item isolation: same as above, for the delete pass.
             except Exception as e:
                 error_msg = f"Failed to delete style {style_name}: {e}"
                 results['errors'].append(error_msg)
