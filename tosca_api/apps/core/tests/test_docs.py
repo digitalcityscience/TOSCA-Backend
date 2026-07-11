@@ -27,6 +27,19 @@ def test_phase_image_schema_surfaces_are_documented(client):
     assert "/api/v1/media/derivative/" in schema
 
 
+def test_schema_includes_bearer_auth_scheme(client):
+    """Regression test for issue 19: collapsing the duplicate
+    SPECTACULAR_SETTINGS assignment in base.py must not drop the bearerAuth
+    security scheme or the add_common_responses postprocessing hook.
+    """
+    response = client.get(reverse("schema"))
+    assert response.status_code == 200
+
+    schema = response.content.decode()
+    assert "bearerAuth" in schema
+    assert "bearerFormat: JWT" in schema
+
+
 def test_phase_image_decisions_are_recorded():
     decisions = open("docs/features-to-add_local/decisions.md", encoding="utf-8").read()
     for header in (
