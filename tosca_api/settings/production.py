@@ -1,33 +1,11 @@
-"""Settings for production deployment.
-
-Production settings should prioritize security and performance. we should check below settings for  production environment.
-# Django internally does this:
-class CachedLoader:
-    def __init__(self):
-        self.template_cache = {}
-    
-    def get_template(self, template_name):
-        # First check: Already loaded?
-        if template_name in self.template_cache:
-            return self.template_cache[template_name]  # ← Instant!
-        
-        # Only on first request:
-        for app in INSTALLED_APPS:
-            # Check file system once
-            # Cache the result
-        
-        self.template_cache[template_name] = template
-        return template
-"""
-from .base import *  # noqa: F401,F403
+"""Settings for production deployment."""
 from pathlib import Path
 
-# development.py (DEBUG=True)
-TEMPLATES = [{
-    'APP_DIRS': True,  # Her request'te kontrol eder (hot reload için)
-}]
+from .base import *  # noqa: F401,F403
 
-# production.py (DEBUG=False)
+# Fail fast: never boot production with the insecure development default.
+SECRET_KEY = env("DJANGO_SECRET_KEY")  # noqa: F405
+
 TEMPLATES = [{
     'BACKEND': 'django.template.backends.django.DjangoTemplates',
     'DIRS': [Path(__file__).resolve().parent.parent.parent / 'templates'],
@@ -57,78 +35,56 @@ SECURE_HSTS_SECONDS = 60 * 60 * 24 * 30
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
 
-# Production logging configuration
-# Ensure logs directory exists
-LOGS_DIR = Path("/app/logs")
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
-
-# Override base logging for production
+# Production logging: stdout/stderr JSON only, so the container runtime
+# (Docker/Kubernetes) owns log collection/rotation instead of the app
+# writing to /app/logs files that may not persist or get shipped anywhere.
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
     'formatters': {
-        'verbose': {
-            'format': '{levelname} {asctime} {name} {process:d} {thread:d} {message}',
-            'style': '{',
-        },
-        'security': {
-            'format': '{levelname} {asctime} SECURITY {name} {message}',
-            'style': '{',
-        },
         'json': {
             '()': 'pythonjsonlogger.jsonlogger.JsonFormatter',
             'format': '%(levelname)s %(asctime)s %(name)s %(message)s'
         },
     },
     'handlers': {
-        'file': {
+        'stdout': {
             'level': 'INFO',
-            'class': 'logging.FileHandler',
-            'filename': LOGS_DIR / 'tosca_api.log',
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stdout',
             'formatter': 'json',
         },
-        'security_file': {
+        'stderr': {
             'level': 'WARNING',
-            'class': 'logging.FileHandler',
-            'filename': LOGS_DIR / 'security.log',
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stderr',
             'formatter': 'json',
-        },
-        'error_file': {
-            'level': 'ERROR',
-            'class': 'logging.FileHandler',
-            'filename': LOGS_DIR / 'errors.log',
-            'formatter': 'verbose',
-        },
-        'null': {
-            'class': 'logging.NullHandler',
         },
     },
     'root': {
-        'handlers': ['file', 'error_file'],
+        'handlers': ['stdout'],
         'level': 'WARNING',
     },
     'loggers': {
         'tosca_api': {
-            'handlers': ['file'],
+            'handlers': ['stdout'],
             'level': 'INFO',
             'propagate': False,
         },
         'tosca_api.apps.authentication': {
-            'handlers': ['security_file', 'file'],
+            'handlers': ['stderr'],
             'level': 'INFO',
             'propagate': False,
         },
         'django.security': {
-            'handlers': ['security_file'],
+            'handlers': ['stderr'],
             'level': 'INFO',
             'propagate': False,
         },
         'django.request': {
-            'handlers': ['error_file'],
+            'handlers': ['stderr'],
             'level': 'ERROR',
             'propagate': False,
         },
     },
 }
-
-

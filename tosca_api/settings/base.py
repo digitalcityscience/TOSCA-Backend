@@ -184,7 +184,9 @@ GIS_SCHEMA = env("PG_SCHEMA_GIS", default="public")
 
 # Fernet key for encrypting GeoServer credentials in the DB.
 # Generate once:  uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-# NEVER leave this unset in production — changing it invalidates all stored credentials.
+# Required in every environment, including local dev — there is no default
+# and this deliberately fails fast at startup if unset. Changing an existing
+# key invalidates all stored credentials, so treat it like any other secret.
 FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY")
 
 REST_FRAMEWORK = {
@@ -201,8 +203,8 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "TOSCA API",
-    "DESCRIPTION": "Backend API for TOSCA Geospatial Platform",
-    "VERSION": "0.1.0",
+    "DESCRIPTION": "Swagger/OpenAPI documentation for TOSCA Django REST endpoints.",
+    "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     # Add common error responses to all endpoints
     "APPEND_COMPONENTS": {
@@ -219,13 +221,6 @@ SPECTACULAR_SETTINGS = {
     "POSTPROCESSING_HOOKS": [
         "tosca_api.apps.core.schema.add_common_responses",
     ],
-}
-
-SPECTACULAR_SETTINGS = {
-    "TITLE": "TOSCA API",
-    "DESCRIPTION": "Swagger/OpenAPI documentation for TOSCA Django REST endpoints.",
-    "VERSION": "1.0.0",
-    "SERVE_INCLUDE_SCHEMA": False,
 }
 
 AUTHENTICATION_BACKENDS = [
