@@ -5,9 +5,9 @@ Admin views for Workspace.
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST
 
+from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeodataEngineError
 from ..models import Workspace
-from ..sync_service import GeoServerSyncService
 
 
 @require_POST
@@ -35,10 +35,11 @@ def workspace_sync_view(request, workspace_id):
         return JsonResponse({'error': 'Workspace has no engine attached.'}, status=400)
 
     try:
-        service = GeoServerSyncService(engine)
-        store_result = service.sync_stores_for_workspace(workspace, created_by=request.user)
-        style_result = service.sync_styles_for_scope(workspace, created_by=request.user)
-        layer_result = service.sync_layers_for_workspace(workspace, created_by=request.user)
+        service = EngineClientFactory.create_sync_service(engine)
+        results = service.sync_workspace_resources(workspace, created_by=request.user)
+        store_result = results['stores']
+        style_result = results['styles']
+        layer_result = results['layers']
     except GeoServerConnectionError as e:
         return JsonResponse({'success': False, 'error': f'Provider unreachable: {e}'}, status=502)
     except GeodataEngineError as e:

@@ -24,7 +24,6 @@ from rest_framework.response import Response
 
 from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeodataEngineError
-from ..geoserver.client import GeoServerClient
 from ..models import GeodataEngine, Layer, Store, Workspace
 from ..postgis_inspector import PostGISInspectorError, get_geometry_tables, get_table_bbox
 from ..services.commands.geodata_engine_service import GeodataEngineService
@@ -191,9 +190,7 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
         Does NOT modify Django state.
         """
         engine = get_object_or_404(GeodataEngine, pk=pk)
-        from ..sync_service import GeoServerSyncService
-
-        sync_service = GeoServerSyncService(engine)
+        sync_service = EngineClientFactory.create_sync_service(engine)
         result = sync_service.push_all_workspaces(created_by=request.user)
         code = status.HTTP_200_OK if result.get('success', False) else status.HTTP_400_BAD_REQUEST
         return Response(result, status=code)

@@ -12,7 +12,6 @@ from django.contrib import admin, messages
 from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeodataEngineError
 from ..services.commands.geodata_engine_service import GeodataEngineService
-from ..sync_service import GeoServerSyncService
 
 
 @admin.action(description="Sync selected providers into the local catalog")
@@ -20,7 +19,7 @@ def sync_engines(modeladmin, request, queryset):
     """Pull provider state into the local catalog for every selected engine."""
     for engine in queryset:
         try:
-            service = GeoServerSyncService(engine)
+            service = EngineClientFactory.create_sync_service(engine)
             result = service.sync_all_resources(created_by=request.user)
         except GeoServerConnectionError as e:
             modeladmin.message_user(

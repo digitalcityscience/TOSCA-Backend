@@ -186,9 +186,10 @@ def _run_workspace_sync(modeladmin, request, workspace):
 
     try:
         service = EngineClientFactory.create_sync_service(engine)
-        store_result = service.sync_stores_for_workspace(workspace, created_by=request.user)
-        style_result = service.sync_styles_for_scope(workspace, created_by=request.user)
-        layer_result = service.sync_layers_for_workspace(workspace, created_by=request.user)
+        results = service.sync_workspace_resources(workspace, created_by=request.user)
+        store_result = results['stores']
+        style_result = results['styles']
+        layer_result = results['layers']
     except (GeoServerConnectionError, GeodataEngineError) as exc:
         modeladmin.message_user(
             request,

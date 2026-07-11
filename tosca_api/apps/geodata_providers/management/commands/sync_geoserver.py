@@ -4,8 +4,8 @@ Ensures Django DB stays synchronized with GeoServer resources
 """
 from django.core.management.base import BaseCommand
 from django.contrib.auth.models import User
+from tosca_api.apps.geodata_providers.engine_factory import EngineClientFactory
 from tosca_api.apps.geodata_providers.models import GeodataEngine
-from tosca_api.apps.geodata_providers.sync_service import GeoServerSyncService
 
 
 class Command(BaseCommand):
@@ -81,7 +81,7 @@ class Command(BaseCommand):
                 continue
             
             try:
-                sync_service = GeoServerSyncService(engine)
+                sync_service = EngineClientFactory.create_sync_service(engine)
                 results = sync_service.sync_all_resources(created_by=sync_user)
                 
                 if results.get('success'):

@@ -158,6 +158,23 @@ class GeoServerSyncService:
     def sync_layers_for_workspace(self, workspace: Workspace, created_by: User) -> Dict:
         return self._layer_syncer.sync_layers_for_workspace(workspace, created_by)
 
+    def sync_workspace_resources(self, workspace: Workspace, created_by: User) -> Dict:
+        """
+        Sync stores, styles, and layers for a single workspace (in that
+        order, matching sync_all_resources' resource ordering).
+
+        This is "sync a workspace" as a single call — previously the admin
+        action, the admin sync view, and the post-save sync hook each
+        repeated this same three-call sequence independently. Callers that
+        need individual error/count breakdowns can read result['stores'],
+        result['styles'], result['layers'].
+        """
+        return {
+            'stores': self.sync_stores_for_workspace(workspace, created_by),
+            'styles': self.sync_styles_for_scope(workspace, created_by),
+            'layers': self.sync_layers_for_workspace(workspace, created_by),
+        }
+
     def push_workspace(self, workspace: Workspace) -> Dict:
         return self._workspace_syncer.push_workspace(workspace)
 

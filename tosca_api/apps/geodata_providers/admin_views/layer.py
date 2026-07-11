@@ -18,7 +18,6 @@ from ..exceptions import GeoServerConnectionError, GeoServerPublishError
 from ..models import Layer, Store, Workspace
 from ..postgis_inspector import PostGISInspectorError, get_geometry_tables, get_table_bbox
 from ..services.commands.layer_service import LayerService
-from ..sync_service import GeoServerSyncService
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +80,7 @@ def publish_postgis_view(request):
                         f"in workspace '{workspace.name}'.",
                     )
                     try:
-                        service = GeoServerSyncService(workspace.geodata_engine)
+                        service = EngineClientFactory.create_sync_service(workspace.geodata_engine)
                         service.sync_styles_for_scope(workspace, created_by=request.user)
                         sync_result = service.sync_layers_for_workspace(workspace, created_by=request.user)
                         if sync_result.get('errors'):

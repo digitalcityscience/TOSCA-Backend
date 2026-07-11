@@ -19,7 +19,6 @@ from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeodataEngineError
 from ..models import GeodataEngine
 from ..services.commands.geodata_engine_service import GeodataEngineService
-from ..sync_service import GeoServerSyncService
 
 
 @require_POST
@@ -69,7 +68,7 @@ def engine_sync_view(request, engine_id):
         return JsonResponse({'error': 'Engine not found.'}, status=404)
 
     try:
-        service = GeoServerSyncService(engine)
+        service = EngineClientFactory.create_sync_service(engine)
         result = service.sync_all_resources(created_by=request.user)
     except GeoServerConnectionError as e:
         return JsonResponse({'success': False, 'error': f'Provider unreachable: {e}'}, status=502)
