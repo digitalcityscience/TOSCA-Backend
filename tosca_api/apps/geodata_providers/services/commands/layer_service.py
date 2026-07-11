@@ -1,3 +1,5 @@
+import logging
+
 from django.db import transaction
 from django.utils import timezone
 
@@ -5,6 +7,8 @@ from ...engine_factory import EngineClientFactory
 from ...exceptions import GeodataEngineError
 from ...models import Layer, Store, Workspace
 from ...postgis_inspector import PostGISInspectorError, get_table_bbox
+
+logger = logging.getLogger(__name__)
 
 
 class LayerService:
@@ -404,3 +408,56 @@ class LayerService:
             )
         except (PostGISInspectorError, Exception):
             return None
+
+
+class LayerUpdateService:
+    """
+    Applies a PATCH/PUT to a Layer for LayerViewSet.update.
+
+    Allowed editable fields:
+        title, description  — synced to GeoServer (if PUBLISHED) then Django
+        srid                — Django-only
+
+    All other fields (name, table_name, workspace, store, geometry_*) are
+    silently ignored — they cannot be changed via this endpoint.
+    """
+
+    ALLOWED_FIELDS = {'title', 'description', 'srid'}
+
+    @classmethod
+    def apply(cls, *, layer: Layer, fields: dict, serializer_class) -> dict:
+        incoming = {k: v for k, v in fields.items() if k in cls.ALLOWED_FIELDS}
+
+        if not incoming:
+            return {
+                'success': False,
+                'status_code': 400,
+                'body': {'detail': 'No editable fields provided. Allowed: title, description, srid.'},
+            }
+
+        if layer.publishing_state == 'PUBLISHED' and {'title', 'description'} & set(incoming):
+            try:
+                LayerService.update_published_metadata(
+                    layer=layer,
+                    title=incoming.get('title', layer.title),
+                    description=incoming.get('description', layer.description),
+                )
+            except Exception as exc:
+                logger.error(
+                    'LayerUpdateService.apply: featuretype update failed for %s/%s: %s',
+                    layer.workspace.name, layer.name, exc,
+                )
+                return {
+                    'success': False,
+                    'status_code': 400,
+                    'body': {'success': False, 'error': f'GeoServer featuretype update failed: {exc}'},
+                }
+            incoming = {key: value for key, value in incoming.items() if key not in {'title', 'description'}}
+            layer.refresh_from_db()
+
+        if incoming:
+            serializer = serializer_class(layer, data=incoming, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+
+        return {'success': True, 'layer': layer}
