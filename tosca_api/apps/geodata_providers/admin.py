@@ -243,6 +243,17 @@ class GeodataEngineForm(forms.ModelForm):
             'description': forms.Textarea(attrs={'rows': 3}),
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # MARTIN/PG_TILESERV have no working client implementation — hide them
+        # from selection, but keep a pre-existing row's own type selectable so
+        # editing it doesn't fail on a field the user isn't even changing.
+        current = getattr(self.instance, 'engine_type', None)
+        allowed = {GeodataEngine.EngineType.GEOSERVER, current} if current else {GeodataEngine.EngineType.GEOSERVER}
+        self.fields['engine_type'].choices = [
+            choice for choice in GeodataEngine.EngineType.choices if choice[0] in allowed
+        ]
+
     def clean(self):
         cleaned_data = super().clean()
         if self.errors:

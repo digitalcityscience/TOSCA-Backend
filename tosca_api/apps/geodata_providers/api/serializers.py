@@ -109,7 +109,18 @@ class GeodataEngineSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'engine_url', 'geoserver_url']
-    
+
+    def validate_engine_type(self, value):
+        # MARTIN/PG_TILESERV have no working client implementation — block
+        # selecting them, but allow a pre-existing row to keep its own value
+        # unchanged so unrelated field updates on it don't get rejected.
+        current = getattr(self.instance, 'engine_type', None)
+        if value != GeodataEngine.EngineType.GEOSERVER and value != current:
+            raise serializers.ValidationError(
+                f"Engine type '{value}' is not currently supported. Only 'geoserver' can be selected."
+            )
+        return value
+
     def update(self, instance, validated_data):
         password = validated_data.pop('admin_password', None)
         # Only update the password if it's provided
