@@ -530,6 +530,9 @@ class StoreService:
                 'errors': store_result.get('errors', []) + layer_result.get('errors', []),
             }
         except Exception as exc:
+            # Post-create hook: a sync failure here must not block the admin
+            # save that triggered it, so it's reported as a failed-sync
+            # result instead of propagating.
             return {'success': False, 'skipped': False, 'error': str(exc)}
 
     @classmethod
@@ -541,7 +544,7 @@ class StoreService:
         try:
             service = EngineClientFactory.create_sync_service(engine)
             return service.sync_layers_for_workspace(workspace, created_by=user)
-        except Exception as exc:
+        except Exception as exc:  # Post-update hook — same rationale as above.
             return {'success': False, 'skipped': False, 'error': str(exc)}
 
     @classmethod
@@ -644,6 +647,8 @@ class StoreService:
                     errors=result['errors'],
                 )
             except Exception as exc:
+                # Per-item isolation: one bad source layer must not abort
+                # cloning the rest of the store's layers.
                 result['errors'].append(f"Layer '{source_layer.name}' could not be cloned: {exc}")
 
         result['success'] = not result['errors']

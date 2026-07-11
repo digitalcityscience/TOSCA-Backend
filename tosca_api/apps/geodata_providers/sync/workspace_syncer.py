@@ -55,6 +55,9 @@ class WorkspaceSyncer(BaseSyncer):
             )
             raise
         except Exception as e:
+            # Genuinely-unexpected fallback below the known GeoServerConnectionError
+            # case above — kept broad so a bug here still reports a sync error
+            # instead of crashing the admin action that called this.
             error = f"Failed to sync workspaces: {e}"
             results['errors'].append(error)
             self._mark_queryset_sync_failed(
@@ -97,6 +100,8 @@ class WorkspaceSyncer(BaseSyncer):
                     logger.info(f"✅ Synced workspace: {ws_name}")
 
             except Exception as e:
+                # Per-item isolation: one bad remote workspace must not abort
+                # the whole sync loop — record it and keep going.
                 error_msg = f"Failed to sync workspace {ws_name}: {e}"
                 results['errors'].append(error_msg)
                 logger.error(error_msg)
@@ -121,6 +126,7 @@ class WorkspaceSyncer(BaseSyncer):
                 results['deleted'] += 1
                 logger.info(f"🗑️ Deleted workspace: {ws_name}")
             except Exception as e:
+                # Per-item isolation: same as above, for the delete pass.
                 error_msg = f"Failed to delete workspace {ws_name}: {e}"
                 results['errors'].append(error_msg)
                 logger.error(error_msg)
@@ -157,8 +163,8 @@ class WorkspaceSyncer(BaseSyncer):
 
             # 2. Create in GeoServer
             create_result = self.client.create_workspace(workspace.name)
-            if not create_result.get('success', False):
-                error = create_result.get('error', create_result.get('message', 'Unknown error'))
+            if not create_result.success:
+                error = create_result.error or create_result.message or 'Unknown error'
                 logger.error(f"Push workspace '{workspace.name}' create failed: {error}")
                 self._mark_sync_failed(workspace, error)
                 result['error'] = error
@@ -179,6 +185,8 @@ class WorkspaceSyncer(BaseSyncer):
             return result
 
         except Exception as e:
+            # Genuinely-unexpected fallback for a single-workspace push — the
+            # caller (push_all_workspaces) isolates this per workspace already.
             logger.error(f"Push workspace '{workspace.name}' unexpected error: {e}")
             self._mark_sync_failed(workspace, str(e))
             result['error'] = str(e)
@@ -241,14 +249,14 @@ class WorkspaceSyncer(BaseSyncer):
 
         # 1. Delete from engine FIRST
         delete_result = self.client.delete_workspace(workspace.name)
-        if not delete_result.get('success', False):
-            error = delete_result.get('error', delete_result.get('message', 'Engine delete failed'))
+        if not delete_result.success:
+            error = delete_result.error or delete_result.message or 'Engine delete failed'
             logger.error(f"delete_workspace_safe '{workspace.name}': engine delete failed — {error}")
             result['error'] = error
             result['detail'] = 'Django object NOT deleted — engine deletion must succeed first.'
             return result
 
-        was_already_deleted = bool(delete_result.get('already_deleted'))
+        was_already_deleted = bool(delete_result.data.get('already_deleted'))
 
         # 2. Verify: workspace is actually gone from engine
         try:

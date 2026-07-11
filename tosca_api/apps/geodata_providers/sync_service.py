@@ -77,6 +77,10 @@ class GeoServerSyncService:
             return results
 
         except Exception as e:
+            # Final safety net for the whole multi-resource sync — each
+            # sync_* call above already isolates its own per-item errors
+            # into its results dict, so reaching here means something
+            # genuinely unexpected broke the orchestration itself.
             logger.error(f"Sync failed: {e}")
             results['success'] = False
             results['error'] = str(e)

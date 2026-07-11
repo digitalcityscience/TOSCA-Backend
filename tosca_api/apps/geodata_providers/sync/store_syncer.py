@@ -65,6 +65,9 @@ class StoreSyncer(BaseSyncer):
                 str(e),
             )
             raise
+        # Genuinely-unexpected fallback below the known GeoServerConnectionError
+        # case above — kept broad so a bug here still reports a sync error
+        # instead of crashing the admin action that called this.
         except Exception as e:
             error = f"Failed to get stores for workspace {workspace.name}: {e}"
             results['errors'].append(error)
@@ -140,6 +143,8 @@ class StoreSyncer(BaseSyncer):
                     results['synced'] += 1
                     logger.info(f"✅ Synced store: {workspace.name}/{store_name}")
 
+            # Per-item isolation: one bad remote store must not abort
+            # the whole sync loop — record it and keep going.
             except Exception as e:
                 error_msg = f"Failed to sync store {store_data.get('name')}: {e}"
                 results['errors'].append(error_msg)
@@ -164,6 +169,7 @@ class StoreSyncer(BaseSyncer):
                 store.delete()
                 results['deleted'] += 1
                 logger.info(f"🗑️ Deleted store: {workspace.name}/{store_name}")
+            # Per-item isolation: same as above, for the delete pass.
             except Exception as e:
                 error_msg = f"Failed to delete store {store_name}: {e}"
                 results['errors'].append(error_msg)

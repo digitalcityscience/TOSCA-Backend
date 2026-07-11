@@ -45,22 +45,24 @@ class WorkspaceService:
                 'resource': existing,
             }
 
-        remote_result = {'success': True, 'message': 'Created in DB', 'verified': True}
+        remote_verified = True
+        remote_result = None
         if engine:
             client = EngineClientFactory.create_client(engine)
             remote_result = client.create_workspace(normalized_name)
-            if not remote_result.get('success', False):
+            if not remote_result.success:
                 return {
                     'success': False,
                     'already_exists': False,
                     'already_deleted': False,
                     'blocked': False,
-                    'message': remote_result.get('message', 'Workspace create failed.'),
-                    'error': remote_result.get('error', remote_result.get('message', 'Workspace create failed.')),
-                    'verified': remote_result.get('verified', False),
+                    'message': remote_result.message or 'Workspace create failed.',
+                    'error': remote_result.error or remote_result.message or 'Workspace create failed.',
+                    'verified': remote_result.data.get('verified', False),
                     'resource': None,
                     'remote_result': remote_result,
                 }
+            remote_verified = remote_result.data.get('verified', True)
 
         with transaction.atomic():
             workspace = Workspace.objects.create(
@@ -68,7 +70,7 @@ class WorkspaceService:
                 name=normalized_name,
                 description=description,
                 sync_state=(
-                    'SYNCED' if engine and remote_result.get('verified', True)
+                    'SYNCED' if engine and remote_verified
                     else 'STALE' if engine
                     else 'LOCAL_ONLY'
                 ),
@@ -83,7 +85,7 @@ class WorkspaceService:
             'created': True,
             'already_exists': False,
             'already_deleted': False,
-            'verified': remote_result.get('verified'),
+            'verified': remote_verified,
             'message': f"Workspace '{normalized_name}' created successfully.",
             'error': None,
             'resource': workspace,
@@ -107,30 +109,32 @@ class WorkspaceService:
             }
 
         engine = workspace.geodata_engine
-        remote_result = {'success': True, 'message': 'Deleted from DB only.', 'verified': True}
+        already_deleted = False
+        verified = True
+        remote_result = None
         if engine:
             client = EngineClientFactory.create_client(engine)
             remote_result = client.delete_workspace(workspace.name)
-            if not remote_result.get('success', False):
+            if not remote_result.success:
                 cls._mark_failed(
                     workspace,
-                    remote_result.get('error', remote_result.get('message', 'Engine failed to delete the workspace.')),
+                    remote_result.error or remote_result.message or 'Engine failed to delete the workspace.',
                 )
                 return {
                     'success': False,
                     'already_exists': False,
                     'already_deleted': False,
                     'blocked': False,
-                    'message': remote_result.get('message', 'Engine failed to delete the workspace.'),
-                    'error': remote_result.get('error', remote_result.get('message', 'Engine failed to delete the workspace.')),
-                    'verified': remote_result.get('verified', False),
+                    'message': remote_result.message or 'Engine failed to delete the workspace.',
+                    'error': remote_result.error or remote_result.message or 'Engine failed to delete the workspace.',
+                    'verified': remote_result.data.get('verified', False),
                     'resource': workspace,
                     'remote_result': remote_result,
                 }
+            already_deleted = remote_result.data.get('already_deleted', False)
+            verified = remote_result.data.get('verified')
 
         workspace_name = workspace.name
-        already_deleted = remote_result.get('already_deleted', False)
-        verified = remote_result.get('verified')
         workspace.delete()
         return {
             'success': True,

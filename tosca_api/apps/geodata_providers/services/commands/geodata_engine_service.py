@@ -322,4 +322,7 @@ class GeodataEngineService:
         try:
             return cls.sync_engine(engine, user=user)
         except Exception as exc:
+            # Post-save hook: a sync failure here must not block the admin
+            # save that triggered it, so it's reported as a failed-sync
+            # result instead of propagating.
             return {'success': False, 'skipped': False, 'error': str(exc)}

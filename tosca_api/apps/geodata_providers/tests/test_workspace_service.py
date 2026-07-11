@@ -6,6 +6,7 @@ from django.test import RequestFactory, TestCase
 
 from tosca_api.apps.geodata_providers.admin import DeleteAborted, WorkspaceAdmin, WorkspaceAdminForm
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Workspace
+from tosca_api.apps.geodata_providers.results import OperationResult
 from tosca_api.apps.geodata_providers.services.commands.workspace_service import WorkspaceService
 
 
@@ -32,7 +33,9 @@ class WorkspaceServiceTestCase(TestCase):
     @patch('tosca_api.apps.geodata_providers.services.commands.workspace_service.EngineClientFactory.create_client')
     def test_create_workspace_persists_after_remote_create(self, mock_create_client):
         client = mock_create_client.return_value
-        client.create_workspace.return_value = {'success': True, 'verified': True, 'message': 'created'}
+        client.create_workspace.return_value = OperationResult(
+            success=True, message='created', data={'verified': True}
+        )
 
         result = WorkspaceService.create_workspace(
             engine=self.engine,
@@ -105,12 +108,9 @@ class WorkspaceServiceTestCase(TestCase):
 
     @patch('tosca_api.apps.geodata_providers.services.commands.workspace_service.EngineClientFactory.create_client')
     def test_delete_workspace_safe_deletes_after_remote_delete(self, mock_create_client):
-        mock_create_client.return_value.delete_workspace.return_value = {
-            'success': True,
-            'verified': True,
-            'already_deleted': False,
-            'message': 'deleted',
-        }
+        mock_create_client.return_value.delete_workspace.return_value = OperationResult(
+            success=True, message='deleted', data={'verified': True, 'already_deleted': False}
+        )
 
         result = WorkspaceService.delete_workspace_safe(self.workspace)
 
