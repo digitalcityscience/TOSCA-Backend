@@ -27,7 +27,7 @@ from ..exceptions import GeoServerConnectionError, GeodataEngineError
 from ..models import GeodataEngine, Layer, Store, Workspace
 from ..postgis_inspector import PostGISInspectorError, get_geometry_tables, get_table_bbox
 from ..services.commands.geodata_engine_service import GeodataEngineService
-from ..services.commands.layer_service import LayerService
+from ..services.commands.layer_service import LayerService, LayerUpdateService
 from ..services.commands.store_service import StoreService
 from ..services.commands.workspace_service import WorkspaceService
 from .serializers import GeodataEngineSerializer, LayerSerializer, StoreSerializer, WorkspaceSerializer
@@ -456,53 +456,17 @@ class LayerViewSet(viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         """
         PATCH/PUT /api/v1/providers/provider/layers/<id>/
-
-        Allowed editable fields:
-            title, description  — synced to GeoServer (if PUBLISHED) then Django
-            srid                — Django-only
-
-        All other fields (name, table_name, workspace, store, geometry_*)
-        are silently ignored — they cannot be changed via this endpoint.
+        See LayerUpdateService for the allowed-fields contract.
         """
-        partial = kwargs.pop('partial', True)  # always treat as partial
         layer = self.get_object()
-
-        # Extract only the fields we allow to be changed
-        ALLOWED = {'title', 'description', 'srid'}
-        incoming = {k: v for k, v in request.data.items() if k in ALLOWED}
-
-        if not incoming:
-            return Response(
-                {'detail': 'No editable fields provided. Allowed: title, description, srid.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if layer.publishing_state == 'PUBLISHED' and {'title', 'description'} & set(incoming):
-            try:
-                LayerService.update_published_metadata(
-                    layer=layer,
-                    title=incoming.get('title', layer.title),
-                    description=incoming.get('description', layer.description),
-                )
-            except Exception as exc:
-                logger.error(
-                    'LayerViewSet.update: featuretype update failed for %s/%s: %s',
-                    layer.workspace.name, layer.name, exc,
-                )
-                return Response(
-                    {'success': False, 'error': f'GeoServer featuretype update failed: {exc}'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            incoming = {key: value for key, value in incoming.items() if key not in {'title', 'description'}}
-            layer.refresh_from_db()
-
-        if incoming:
-            serializer = self.get_serializer(layer, data=incoming, partial=True)
-            serializer.is_valid(raise_exception=True)
-            self.perform_update(serializer)
-            return Response(serializer.data)
-
-        return Response(self.get_serializer(layer).data)
+        result = LayerUpdateService.apply(
+            layer=layer,
+            fields=request.data,
+            serializer_class=self.get_serializer_class(),
+        )
+        if not result['success']:
+            return Response(result['body'], status=result['status_code'])
+        return Response(self.get_serializer(result['layer']).data)
 
     def destroy(self, request, *args, **kwargs):
         layer = self.get_object()
