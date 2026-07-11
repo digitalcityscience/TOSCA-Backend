@@ -4,8 +4,8 @@ Admin actions for Workspace.
 """
 from django.contrib import admin, messages
 
+from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeodataEngineError
-from ..sync_service import GeoServerSyncService
 
 
 @admin.action(description="Sync selected workspaces into the local catalog")
@@ -32,16 +32,11 @@ def sync_workspaces(modeladmin, request, queryset):
         processed_engines.add(engine.pk)
 
         try:
-            service = GeoServerSyncService(engine)
-            store_result = service.sync_stores_for_workspace(
-                workspace, created_by=request.user
-            )
-            style_result = service.sync_styles_for_scope(
-                workspace, created_by=request.user
-            )
-            layer_result = service.sync_layers_for_workspace(
-                workspace, created_by=request.user
-            )
+            service = EngineClientFactory.create_sync_service(engine)
+            results = service.sync_workspace_resources(workspace, created_by=request.user)
+            store_result = results['stores']
+            style_result = results['styles']
+            layer_result = results['layers']
         except GeoServerConnectionError as e:
             modeladmin.message_user(
                 request,

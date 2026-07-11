@@ -1104,16 +1104,16 @@ class LayerSurfaceRefactorTests(TestCase):
 
     @patch('tosca_api.apps.geodata_providers.admin_views.layer.messages.warning')
     @patch('tosca_api.apps.geodata_providers.admin_views.layer.messages.success')
-    @patch('tosca_api.apps.geodata_providers.admin_views.layer.GeoServerSyncService')
+    @patch('tosca_api.apps.geodata_providers.admin_views.layer.EngineClientFactory.create_sync_service')
     @patch('tosca_api.apps.geodata_providers.admin_views.layer.LayerService.publish_postgis')
-    def test_publish_postgis_view_uses_layer_service(self, mock_publish_postgis, mock_sync_service, mock_success, mock_warning):
+    def test_publish_postgis_view_uses_layer_service(self, mock_publish_postgis, mock_create_sync_service, mock_success, mock_warning):
         mock_publish_postgis.return_value = {
             'success': True,
             'created': True,
             'message': 'published',
             'resource': self.layer,
         }
-        mock_sync_service.return_value.sync_layers_for_workspace.return_value = {'errors': []}
+        mock_create_sync_service.return_value.sync_layers_for_workspace.return_value = {'errors': []}
         request = self.request_factory.post(
             '/admin/geodata_providers/layer/publish-postgis/',
             data={
