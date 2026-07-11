@@ -31,3 +31,8 @@ class GeoServerConnectionError(PublishingError):
 class GeoServerPublishError(PublishingError):
     """Exception raised when GeoServer publishing fails"""
     pass
+
+
+class UnsupportedEngineError(GeodataEngineError):
+    """Exception raised when a GeodataEngine's engine_type has no working client/sync implementation"""
+    pass
