@@ -12,10 +12,14 @@ from drf_spectacular.views import (
 )
 
 from tosca_api.apps.authentication.views import KeycloakLogoutView
-from tosca_api.views import base
+from tosca_api.views import base, healthz, readyz
 
 urlpatterns = [
     path('admin/logout/', KeycloakLogoutView.as_view(), name='admin_logout'),  # Override Django admin logout
+    # Health/readiness (see tosca_api/views.py — healthz is liveness-only,
+    # readyz checks DB connectivity).
+    path('healthz', healthz, name='healthz'),
+    path('readyz', readyz, name='readyz'),
     # API Documentation
     path('api/v1/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/v1/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
