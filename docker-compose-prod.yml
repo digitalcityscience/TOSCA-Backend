@@ -138,7 +138,7 @@ services:
       --timeout ${GUNICORN_TIMEOUT:-120}
       tosca_api.wsgi:application
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -H \"Host: $${DJANGO_HEALTHCHECK_HOST:-localhost}\" http://127.0.0.1:8000/ >/dev/null"]
+      test: ["CMD-SHELL", "curl -fsS -H \"Host: $${DJANGO_HEALTHCHECK_HOST:-localhost}\" http://127.0.0.1:8000/readyz >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 5
