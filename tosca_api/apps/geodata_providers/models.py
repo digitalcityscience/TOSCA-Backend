@@ -344,6 +344,19 @@ class Store(SyncStateMixin, TimeStampedModel, EncryptedCharField):
             return False
 
 
+class LayerQuerySet(models.QuerySet):
+    def public(self):
+        """Layers visible to an anonymous/unauthenticated reader: is_public only.
+
+        Deliberately does NOT also filter publishing_state — that matches
+        LayerViewSet's existing behavior exactly. (catalog_api's
+        CatalogVisibilityService applies a stricter, separate rule for its
+        own GeoServer-compatible surface; not reused here to avoid a
+        behavior change.)
+        """
+        return self.filter(is_public=True)
+
+
 class Layer(SyncStateMixin, TimeStampedModel):
     """
     Logical dataset backed by a PostGIS table or view.
@@ -369,6 +382,9 @@ class Layer(SyncStateMixin, TimeStampedModel):
         UNPUBLISHED = "UNPUBLISHED", "Unpublished"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+
+    objects = LayerQuerySet.as_manager()
+
     name = models.CharField(max_length=100, help_text="Layer name")
     title = models.CharField(max_length=200, blank=True, help_text="Human-readable title")
     description = models.TextField(blank=True)

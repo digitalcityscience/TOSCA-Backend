@@ -25,6 +25,16 @@ def geostory_hero_image_upload_to(instance: "GeoStory", filename: str) -> str:
     return f"geostories/{instance.pk}/hero/{unique_filename}"
 
 
+class GeoStoryQuerySet(models.QuerySet):
+    def published(self):
+        """Stories visible to a reader with no elevated access: published only.
+
+        GeoStory has no separate public/private flag (unlike Event and
+        GeoFeedback) — status is the only visibility axis.
+        """
+        return self.filter(status=GeoStory.Status.PUBLISHED)
+
+
 class GeoStory(TimeStampedModel):
     """
     A specific story or narrative attached to a location/map view.
@@ -46,6 +56,8 @@ class GeoStory(TimeStampedModel):
         ARCHIVED = "archived", "Archived"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+
+    objects = GeoStoryQuerySet.as_manager()
     title = models.CharField(max_length=255)
     summary = models.TextField(blank=True, default="")
     hero_image = models.ImageField(

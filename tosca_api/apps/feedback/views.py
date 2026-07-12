@@ -79,10 +79,7 @@ class GeoFeedbackViewSet(viewsets.ModelViewSet):
 
         user = self.request.user
         if not (user and user.is_staff):
-            qs = qs.filter(
-                status=GeoFeedback.Status.PUBLISHED,
-                visibility=GeoFeedback.Visibility.PUBLIC,
-            )
+            qs = qs.published_public()
 
         campaign_id = self.request.query_params.get("campaign_id")
         if campaign_id:

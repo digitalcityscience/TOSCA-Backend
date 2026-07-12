@@ -100,6 +100,17 @@ def cancelled_event(organizer, campaign):
 
 
 @pytest.mark.django_db
+def test_published_public_queryset_matches_inline_visibility_rule(
+    published_public_event, draft_event, private_event, cancelled_event
+):
+    """Event.objects.published_public() (issue 23) must return exactly the
+    same rows the view's inline status+visibility filter did before it was
+    extracted into a named queryset method.
+    """
+    assert list(Event.objects.published_public()) == [published_public_event]
+
+
+@pytest.mark.django_db
 def test_anon_list_returns_only_published_and_public(
     api_client, published_public_event, draft_event, private_event, cancelled_event
 ):

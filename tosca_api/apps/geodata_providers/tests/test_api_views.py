@@ -4,6 +4,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from tosca_api.apps.geodata_providers.api.views import LayerViewSet
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Workspace
+from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
 # NOTE: tosca_api/apps/geodata_providers/api/urls.py is not currently included
 # in tosca_api/urls.py, so this endpoint has no resolvable URL yet. The view
@@ -123,3 +124,23 @@ class LayerUpdateEndpointTests(TestCase):
         self.assertEqual(self.layer.title, 'New Title')
         self.assertEqual(self.layer.srid, 3857)
         self.assertEqual(self.layer.name, 'roads')
+
+
+class LayerQuerysetVisibilityTests(TestCase):
+    """Regression test for issue 23: Layer.objects.public() must return
+    exactly the same rows LayerViewSet.get_queryset()'s inline is_public
+    filter did before it was extracted into a named queryset method —
+    deliberately not also filtering publishing_state, matching the
+    pre-existing (if inconsistent with catalog_api) behavior.
+    """
+
+    def test_public_matches_inline_is_public_filter(self):
+        public_published = make_layer('ws:public-published', is_public=True, publishing_state=Layer.PublishingState.PUBLISHED)
+        public_draft = make_layer('ws:public-draft', is_public=True, publishing_state=Layer.PublishingState.DRAFT)
+        make_layer('ws:private-published', is_public=False, publishing_state=Layer.PublishingState.PUBLISHED)
+
+        results = set(Layer.objects.public())
+
+        # is_public=True is included regardless of publishing_state — the
+        # DRAFT layer above is NOT filtered out, matching current behavior.
+        self.assertEqual(results, {public_published, public_draft})

@@ -124,10 +124,7 @@ class EventViewSet(viewsets.ModelViewSet):
     def _apply_visibility_scope(self, queryset):
         if self._is_admin_reader():
             return queryset
-        return queryset.filter(
-            status=Event.Status.PUBLISHED,
-            visibility=Event.Visibility.PUBLIC,
-        )
+        return queryset.published_public()
 
     def _coerce_public_filters(self, filters: dict) -> dict:
         if not self._is_admin_reader():
@@ -304,10 +301,7 @@ class EventSeriesViewSet(
         user = self.request.user
         if user and user.is_authenticated and user.is_staff:
             return queryset
-        return queryset.filter(
-            events__status=Event.Status.PUBLISHED,
-            events__visibility=Event.Visibility.PUBLIC,
-        ).distinct()
+        return queryset.filter(events__in=Event.objects.published_public()).distinct()
 
     def get_serializer_class(self):
         if self.action == "retrieve":

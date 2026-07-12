@@ -84,6 +84,15 @@ def test_geostory_list_unauthenticated(api_client):
     assert response.status_code == 200
 
 
+@pytest.mark.django_db
+def test_published_queryset_matches_inline_visibility_rule(geostory, draft_story):
+    """GeoStory.objects.published() (issue 23) must return exactly the same
+    rows the view's inline status filter did before it was extracted into a
+    named queryset method.
+    """
+    assert list(GeoStory.objects.published()) == [geostory]
+
+
 # =============================================================================
 # List View Tests (Task 1.6)
 # =============================================================================
