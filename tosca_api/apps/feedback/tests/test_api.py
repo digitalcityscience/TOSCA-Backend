@@ -118,6 +118,15 @@ class TestGeoFeedbackAPI:
         assert resp.status_code == status.HTTP_200_OK
         assert len(resp.data["results"]) == 2
 
+    def test_published_public_queryset_matches_inline_visibility_rule(
+        self, feedback, feedback_draft_private
+    ):
+        """GeoFeedback.objects.published_public() (issue 23) must return
+        exactly the same rows the view's inline status+visibility filter
+        did before it was extracted into a named queryset method.
+        """
+        assert list(GeoFeedback.objects.published_public()) == [feedback]
+
     def test_retrieve_feedback_includes_slug(self, api_client, feedback):
         """Wait, detail read should return custom_form_slug."""
         url = f"/api/v1/feedback/{feedback.id}/"

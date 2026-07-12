@@ -412,7 +412,7 @@ class LayerViewSet(viewsets.ModelViewSet):
         qs = super().get_queryset()
         user = getattr(self.request, 'user', None)
         if not (user and user.is_authenticated):
-            qs = qs.filter(is_public=True)
+            qs = qs.public()
         engine_id = self.request.query_params.get('geodata_engine')
         workspace_id = self.request.query_params.get('workspace')
         if engine_id:

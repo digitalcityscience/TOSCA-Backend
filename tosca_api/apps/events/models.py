@@ -450,6 +450,12 @@ class EventSeriesDate(TimeStampedModel):
         super().save(*args, **kwargs)
 
 
+class EventQuerySet(models.QuerySet):
+    def published_public(self):
+        """Events visible to an anonymous/non-staff reader: published + public."""
+        return self.filter(status=Event.Status.PUBLISHED, visibility=Event.Visibility.PUBLIC)
+
+
 class Event(TimeStampedModel):
     """
     An event with physical, online, or hybrid delivery modes.
@@ -492,6 +498,8 @@ class Event(TimeStampedModel):
         HOME_VISIT = "home_visit", "Home Visit"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+
+    objects = EventQuerySet.as_manager()
 
     campaign = models.ForeignKey(
         "campaigns.Campaign",

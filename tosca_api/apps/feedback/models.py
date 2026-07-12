@@ -26,6 +26,12 @@ from tosca_api.apps.core.models import TimeStampedModel
 from tosca_api.apps.core.sanitization import sanitize_simple
 
 
+class GeoFeedbackQuerySet(models.QuerySet):
+    def published_public(self):
+        """Feedback visible to an anonymous/non-staff reader: published + public."""
+        return self.filter(status=GeoFeedback.Status.PUBLISHED, visibility=GeoFeedback.Visibility.PUBLIC)
+
+
 class GeoFeedback(TimeStampedModel):
     """
     A feedback collection point within a campaign.
@@ -56,6 +62,8 @@ class GeoFeedback(TimeStampedModel):
         PRIVATE = "private", "Private"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+
+    objects = GeoFeedbackQuerySet.as_manager()
 
     campaign = models.ForeignKey(
         "campaigns.Campaign",

@@ -106,10 +106,10 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if self.action == "list":
             if not (user and user.is_staff):
-                queryset = queryset.filter(status=GeoStory.Status.PUBLISHED)
+                queryset = queryset.published()
         elif self.action == "retrieve":
             if not (user and user.is_authenticated):
-                queryset = queryset.filter(status=GeoStory.Status.PUBLISHED)
+                queryset = queryset.published()
 
         # Filter by campaign_id if provided
         campaign_id = self.request.query_params.get("campaign_id")
