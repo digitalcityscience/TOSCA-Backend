@@ -219,7 +219,11 @@ class Workspace(SyncStateMixin, TimeStampedModel):
         verbose_name = "Workspace"
         verbose_name_plural = "Workspaces"
         ordering = ["name"]
-        unique_together = [["geodata_engine", "name"]]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["geodata_engine", "name"], name="unique_workspace_name_per_engine"
+            ),
+        ]
 
     def __str__(self) -> str:
         if self.geodata_engine:
@@ -294,7 +298,11 @@ class Store(SyncStateMixin, TimeStampedModel, EncryptedCharField):
         verbose_name = "Data Store"
         verbose_name_plural = "Data Stores"
         ordering = ["store_type", "name"]
-        unique_together = [["workspace", "name"]]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "name"], name="unique_store_name_per_workspace"
+            ),
+        ]
 
     def __str__(self) -> str:
         if self.geodata_engine:
@@ -425,13 +433,17 @@ class Layer(SyncStateMixin, TimeStampedModel):
         verbose_name = "Layer"
         verbose_name_plural = "Layers"
         ordering = ["workspace__name", "name"]
-        unique_together = ["workspace", "name"]
         indexes = [
             # Matches CatalogVisibilityService's Exists subquery and direct
             # catalog listing filter (workspace + is_public + publishing_state).
             models.Index(
                 fields=["workspace", "is_public", "publishing_state"],
                 name="geoprov_layer_ws_pub_state_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "name"], name="unique_layer_name_per_workspace"
             ),
         ]
 

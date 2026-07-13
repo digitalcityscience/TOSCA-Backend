@@ -208,7 +208,7 @@ class EventSeries(TimeStampedModel):
     """Grouping and recurrence definition model for batch and recurring events."""
 
     if TYPE_CHECKING:
-        campaign_id: uuid.UUID | None
+        campaign_id: uuid.UUID
         created_by_id: int | None
         default_context_id: uuid.UUID | None
         event_type_id: uuid.UUID | None
@@ -231,8 +231,6 @@ class EventSeries(TimeStampedModel):
         "campaigns.Campaign",
         on_delete=models.CASCADE,
         related_name="event_series",
-        null=True,
-        blank=True,
     )
     event_type = models.ForeignKey(
         EventType,
@@ -753,7 +751,7 @@ class Event(TimeStampedModel):
         super().save(*args, **kwargs)
 
 
-class EventLayer(models.Model):
+class EventLayer(TimeStampedModel):
     """
     Through model for Event <-> geodata_providers.Layer.
 
@@ -773,7 +771,6 @@ class EventLayer(models.Model):
         related_name="event_uses",
     )
     display_order = models.PositiveIntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["display_order", "created_at"]
