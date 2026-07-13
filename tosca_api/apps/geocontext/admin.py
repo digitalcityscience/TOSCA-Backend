@@ -38,6 +38,10 @@ class GeoContextAdmin(admin.ModelAdmin):
     form = GeoContextAdminForm
 
     list_display = ("title_or_excerpt", "content_preview", "created_by", "created_at")
+    # created_by is a FK shown directly in list_display; make the join
+    # explicit rather than relying on Django's implicit changelist
+    # optimization for FK columns (see test_changelist_query_count_does_not_grow_with_row_count).
+    list_select_related = ("created_by",)
     list_filter = ("created_at",)
     search_fields = ("id", "title")
     readonly_fields = ("id", "created_at", "updated_at")

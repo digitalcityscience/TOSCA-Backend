@@ -28,6 +28,9 @@ COPY templates ./templates
 COPY scripts ./scripts
 COPY docker/django ./docker/django
 COPY static ./static
+# geoserver-rest editable dependency (git submodule) — must be present
+# before `uv sync` resolves it.
+COPY vendor ./vendor
 
 RUN uv sync --no-dev
 
