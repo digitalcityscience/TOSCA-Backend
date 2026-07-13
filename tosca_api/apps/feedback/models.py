@@ -193,7 +193,7 @@ class GeoFeedback(TimeStampedModel):
         super().save(*args, **kwargs)
 
 
-class FeedbackLayer(models.Model):
+class FeedbackLayer(TimeStampedModel):
     """
     Through model for GeoFeedback <-> geodata_providers.Layer.
 
@@ -209,11 +209,14 @@ class FeedbackLayer(models.Model):
         related_name="feedback_uses",
     )
     display_order = models.PositiveIntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["display_order", "created_at"]
-        unique_together = ("feedback", "layer")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["feedback", "layer"], name="feedback_feedbacklayer_uniq"
+            ),
+        ]
         verbose_name = "Feedback Layer"
         verbose_name_plural = "Feedback Layers"
 

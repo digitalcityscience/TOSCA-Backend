@@ -151,6 +151,25 @@ def test_geostory_layers(user, campaign):
 
 
 @pytest.mark.django_db
+def test_geostory_layer_has_updated_at_that_changes_on_save(user, campaign):
+    """Regression test: through-tables were missing
+    updated_at (created_at-only via manual field, not TimeStampedModel).
+    """
+    story = GeoStory.objects.create(title="Through Story", campaign=campaign, author=user)
+    layer = make_layer("workspace:through_layer", user=user)
+    ref = GeoStoryLayer.objects.create(geostory=story, layer=layer)
+
+    original_updated_at = ref.updated_at
+    assert original_updated_at is not None
+
+    ref.display_order = 5
+    ref.save()
+    ref.refresh_from_db()
+
+    assert ref.updated_at > original_updated_at
+
+
+@pytest.mark.django_db
 def test_geostory_layer_auto_increment(user, campaign):
     """Test that layer display_order auto-increments."""
     story = GeoStory.objects.create(

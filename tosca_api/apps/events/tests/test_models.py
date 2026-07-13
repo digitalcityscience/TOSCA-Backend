@@ -218,6 +218,31 @@ def test_event_layer_through_model(user, campaign, layer_ref):
 
 
 @pytest.mark.django_db
+def test_event_layer_has_updated_at_that_changes_on_save(user, campaign, layer_ref):
+    """Regression test: through-tables were missing
+    updated_at (created_at-only via manual field, not TimeStampedModel).
+    """
+    now = timezone.now()
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Event with Layers",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+    event_layer = EventLayer.objects.create(event=event, layer=layer_ref)
+    original_updated_at = event_layer.updated_at
+    assert original_updated_at is not None
+
+    event_layer.display_order = 7
+    event_layer.save()
+    event_layer.refresh_from_db()
+
+    assert event_layer.updated_at > original_updated_at
+
+
+@pytest.mark.django_db
 def test_event_layer_auto_increment_order(user, campaign, layer_ref):
     """Test that display_order auto-increments."""
     now = timezone.now()

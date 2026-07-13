@@ -139,7 +139,7 @@ class GeoStory(TimeStampedModel):
         super().save(*args, **kwargs)
 
 
-class GeoStoryLayer(models.Model):
+class GeoStoryLayer(TimeStampedModel):
     """
     Through model for GeoStory <-> geodata_providers.Layer.
 
@@ -155,11 +155,14 @@ class GeoStoryLayer(models.Model):
         related_name="geostory_uses",
     )
     display_order = models.PositiveIntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["display_order", "created_at"]
-        unique_together = ("geostory", "layer")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["geostory", "layer"], name="geostories_geostorylayer_uniq"
+            ),
+        ]
         verbose_name = "GeoStory Layer"
         verbose_name_plural = "GeoStory Layers"
 

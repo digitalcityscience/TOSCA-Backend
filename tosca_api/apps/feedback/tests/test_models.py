@@ -544,6 +544,20 @@ class TestFeedbackLayer:
         assert fl.display_order == 1
         assert feedback_rating_only.layers.count() == 1
 
+    def test_feedback_layer_has_updated_at_that_changes_on_save(self, feedback_rating_only, layer_ref):
+        """Regression test: through-tables were missing
+        updated_at (created_at-only via manual field, not TimeStampedModel).
+        """
+        fl = FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer_ref)
+        original_updated_at = fl.updated_at
+        assert original_updated_at is not None
+
+        fl.display_order = 9
+        fl.save()
+        fl.refresh_from_db()
+
+        assert fl.updated_at > original_updated_at
+
     def test_feedback_layer_str(self, feedback_rating_only, layer_ref):
         """__str__ should show feedback, layer, and order."""
         fl = FeedbackLayer.objects.create(
