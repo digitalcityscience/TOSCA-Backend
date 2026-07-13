@@ -1,17 +1,13 @@
 """
 Thin, controlled wrapper around geoserver-rest
 """
-import sys
-import os
 import logging
 from typing import Callable, Dict, Optional
 import requests
 
-# Add geoserver-rest to Python path
-geoserver_rest_path = os.path.join(os.path.dirname(__file__), 'geoserver-rest')
-if geoserver_rest_path not in sys.path:
-    sys.path.insert(0, geoserver_rest_path)
-
+# geo comes from the vendor/geoserver-rest submodule, installed as a normal
+# editable dependency (see pyproject.toml's [tool.uv.sources]) — no sys.path
+# manipulation needed for this import to resolve.
 from geo.Geoserver import Geoserver as GeoServerRestClient
 from ..exceptions import GeoServerConnectionError, GeoServerPublishError
 from ..results import OperationResult

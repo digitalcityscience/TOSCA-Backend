@@ -56,6 +56,10 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py314"
+# The geoserver-rest submodule lives under vendor/ specifically so it's
+# outside tosca_api/ and doesn't need excluding here — but exclude it
+# explicitly too in case ruff is ever pointed at the repo root.
+exclude = ["vendor"]
 
 [tool.setuptools.packages.find]
 include = ["tosca_api*"]
@@ -66,7 +70,7 @@ exclude = ["docker*"]
 python-preference = "managed"
 
 [tool.uv.sources]
-geoserver-rest = { path = "tosca_api/apps/geodata_providers/geoserver/geoserver-rest", editable = true }
+geoserver-rest = { path = "vendor/geoserver-rest", editable = true }
 
 [dependency-groups]
 dev = [
