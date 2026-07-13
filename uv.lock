@@ -345,7 +345,7 @@ wheels = [
 [[package]]
 name = "geoserver-rest"
 version = "2.10.0"
-source = { editable = "tosca_api/apps/geodata_providers/geoserver/geoserver-rest" }
+source = { editable = "vendor/geoserver-rest" }
 dependencies = [
     { name = "pygments" },
     { name = "requests" },
@@ -1017,7 +1017,7 @@ requires-dist = [
     { name = "djangorestframework", specifier = ">=3.15.0" },
     { name = "djangorestframework-gis", specifier = ">=1.2.0" },
     { name = "drf-spectacular", specifier = ">=0.29.0" },
-    { name = "geoserver-rest", editable = "tosca_api/apps/geodata_providers/geoserver/geoserver-rest" },
+    { name = "geoserver-rest", editable = "vendor/geoserver-rest" },
     { name = "gunicorn", specifier = ">=22.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11.0" },
     { name = "nh3", specifier = ">=0.3.2" },
