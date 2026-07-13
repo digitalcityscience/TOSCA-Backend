@@ -156,6 +156,21 @@ Environment resolution:
 Keep `ENV`, `ENV_TYPE`, `ENV_FILE`, ports, passwords, and public URLs aligned in
 the selected env file.
 
+## Secrets and Env Files
+
+Only `.env.example` is committed, and it holds placeholders only (every
+credential is `CHANGE_ME_...`). `.env`, `.env.dev`, `.env.prod`, and
+`.env.test` are gitignored deliberately — none of them should ever be
+committed, since they carry real (even if dev-only) credentials.
+
+A pre-commit hook enforces this: it blocks committing any `.env*` file other
+than `.env.example`. Set it up once per clone:
+
+```bash
+uv sync --group dev
+uv run pre-commit install
+```
+
 ## Keycloak OIDC Note
 
 When using Keycloak/OIDC, the Keycloak client's valid redirect URIs and the

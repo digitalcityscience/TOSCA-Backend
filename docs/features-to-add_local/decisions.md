@@ -618,3 +618,37 @@ This document tracks key architectural and implementation decisions made during 
 - **Alternatives Considered**: DRF `URLPathVersioning` (deferred, not rejected — see trigger below) and `NamespaceVersioning` (would require app-level URL namespacing, more invasive for the same zero current benefit).
 - **Revisit when**: a real breaking API change is needed, or an external (non-frontend-owned) consumer starts depending on this API. At that point, implement `URLPathVersioning` as scoped above rather than inventing a new scheme.
 - **Raw originals**: Direct `MEDIA_URL` access can expose original uploads, including retained EXIF metadata. Production hardening should lock raw originals behind the intended storage/auth boundary and route public consumption through metadata-clean derivatives.
+
+### [11.2] Typed Result Scope (Issue 43)
+
+- **Decision**: Introduced `OperationResult` only for `GeoServerClient`'s `create_workspace`/`delete_workspace`/`create_store`/`delete_store` and their shared `_create_resource`/`_delete_resource` orchestration helpers — not a full sweep across every dict-returning method in `geodata_providers`.
+- **Rationale**: The full-sweep alternative would touch ~30 methods across `client.py`, `sync_service.py`, `sync/*.py`, and every admin/view/service call site (15-20 files), for a "trivial" priority report finding. Scoping to the methods the report explicitly named ("repeated GeoServer-first orchestration dicts") gets the real duplication fixed at much lower regression risk.
+- **Alternatives Considered**: Full sweep (rejected — disproportionate risk/effort for this priority level).
+- **Compatibility**: `OperationResult` supports `.get()`/`[]`/`in` so untouched call sites keep working unchanged; only the most direct consumers (`WorkspaceSyncer`, `WorkspaceService`) were migrated to real attribute access.
+
+### [11.3] `EventSeries.campaign` Cascade/Nullable Resolution (Issue 36)
+
+- **Decision**: Made `campaign` required (removed `null=True, blank=True`), kept `on_delete=CASCADE`.
+- **Rationale**: `EventSeriesWriteSerializer` already treats `campaign` as effectively required (raises `ValidationError` if missing), and `Event.clean()` already requires `series.campaign_id` to be set for any series actually attached to an event. The nullable FK was a latent trap — a "successfully created but functionally unusable" state — not real optionality. Verified 0 existing rows with null `campaign` in the dev DB before migrating.
+- **Alternatives Considered**: Switch to `on_delete=SET_NULL` (rejected — would leave orphaned series that can never have events per existing validation, and is inconsistent with `Event.campaign`'s own `CASCADE`).
+
+### [11.4] `geocontext` N+1 Audit Outcome (Issue 30)
+
+- **Decision**: No code fix beyond making an existing implicit behavior explicit (`GeoContextAdmin.list_select_related`).
+- **Rationale**: Investigated the report's N+1 claim empirically (query capture, not static reading) and found none — Django's admin changelist already auto-joins FK columns named directly in `list_display`. The `context` FK on Event/GeoStory/GeoFeedback is retrieve-only in every serializer that touches it; list serializers never reference it. Added a calibrated query-count regression test instead of a fix that wasn't needed.
+
+### [11.5] DB Connection Pooling Defaults (Issue 25)
+
+- **Decision**: `CONN_MAX_AGE=60` seconds, `CONN_HEALTH_CHECKS=True`, `statement_timeout=30000` ms — both env-overridable (`DB_CONN_MAX_AGE`, `DB_STATEMENT_TIMEOUT_MS`).
+- **Rationale**: No prior art in this repo for either value; chose conservative, commonly-used defaults rather than tuning against real traffic that doesn't exist yet. `statement_timeout` is applied via the existing `-c` options mechanism already used for `search_path`.
+
+### [11.6] Vendored `geoserver-rest` Location (Issue 24)
+
+- **Decision**: Moved the `geoserver-rest` git submodule from `tosca_api/apps/geodata_providers/geoserver/geoserver-rest` to `vendor/geoserver-rest`, and removed the `sys.path` manipulation in `client.py` entirely (it was dead code — the editable install already provides a proper import finder regardless of path).
+- **Rationale**: Matches the report's suggested fix ("move to `vendor/` ... exclude from app-level lint/test discovery"). Caught a real latent break while verifying: `docker/django/Dockerfile.prod` only `COPY`s specific named directories, so without adding `COPY vendor ./vendor` the production image would have silently lost the dependency. Verified by building the prod image end-to-end, not just running the test suite.
+
+### [11.7] `.env` File Protection (Issue 27)
+
+- **Decision**: `.env.dev`/`.env.prod`/`.env`/`.env.test` were never actually committed (confirmed via `git log --all --full-history`) and are already gitignored; `.env.example` already held placeholders only. The only real gap was enforcement — added a `pre-commit` local hook (`scripts/check_no_env_files.py` + `.pre-commit-config.yaml`) that blocks committing any `.env*` file except `.env.example`.
+- **Rationale**: The report's claim ("`.env.dev` is committed with real-looking credentials") didn't hold for the current repo state — verified before touching anything rather than assuming the report was still accurate. The enforcement gap (no pre-commit check existed) was real, so that's what got fixed.
+- **Setup**: `uv sync --group dev && uv run pre-commit install` (documented in README's new "Secrets and Env Files" section).
