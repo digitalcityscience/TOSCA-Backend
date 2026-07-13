@@ -139,6 +139,17 @@ ASGI_APPLICATION = "tosca_api.asgi.application"
 #   2) PG_* variables (PG_HOST, PG_PORT, PG_DATABASE, PG_API_USER, PG_API_PASSWORD)
 # -------------------------------------------------
 
+# CONN_MAX_AGE: reuse a connection across requests for up to this many
+# seconds instead of opening a fresh Postgres connection per request.
+# CONN_HEALTH_CHECKS pings a reused connection before use so a connection
+# that died server-side (e.g. Postgres restart) doesn't surface as a
+# request-time error.
+DB_CONN_MAX_AGE = env.int("DB_CONN_MAX_AGE", default=60)
+
+# statement_timeout (ms): a stuck/runaway query is killed by Postgres
+# instead of holding a worker (and a DB connection) hostage indefinitely.
+DB_STATEMENT_TIMEOUT_MS = env.int("DB_STATEMENT_TIMEOUT_MS", default=30000)
+
 DATABASES = {
         "default": {
             "ENGINE": "django.contrib.gis.db.backends.postgis",
@@ -147,9 +158,15 @@ DATABASES = {
             "PASSWORD": env("PG_API_PASSWORD"),
             "HOST": env("PG_HOST"),
             "PORT": env("PG_DOCKER_PORT"),
+            "CONN_MAX_AGE": DB_CONN_MAX_AGE,
+            "CONN_HEALTH_CHECKS": True,
             "OPTIONS": {
-                # optional: schema search_path for Django connections
-                "options": f"-c search_path={env('PG_SCHEMA_API', default='public')},public"
+                # schema search_path + a hard statement timeout for every
+                # connection Django opens.
+                "options": (
+                    f"-c search_path={env('PG_SCHEMA_API', default='public')},public "
+                    f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}"
+                )
             },
         }
     }
