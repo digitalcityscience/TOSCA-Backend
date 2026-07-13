@@ -12,6 +12,9 @@ DATABASES = {
         "PASSWORD": env("PG_API_PASSWORD", default="postgres_api"),
         "HOST": env("PG_HOST", default="db"),
         "PORT": "5432",  # Internal Docker port
+        "OPTIONS": {
+            "options": f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",  # noqa: F405
+        },
         "TEST": {
             "NAME": "test_tosca",  # Use the same name (--reuse-db)
         },
