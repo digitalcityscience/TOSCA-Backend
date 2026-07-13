@@ -34,6 +34,27 @@ def admin_client(client, superuser):
     return client
 
 
+@pytest.mark.django_db
+def test_changelist_query_count_does_not_grow_with_row_count(admin_client, superuser, django_assert_max_num_queries):
+    """Regression test for issue 30: GeoContextAdmin.list_display shows
+    created_by, a ForeignKey — without select_related that's one extra
+    query per row (N+1) to render each row's username.
+
+    20 rows makes the gap unambiguous: a handful of fixed queries (session,
+    user, count, permissions, one page of rows with created_by joined) stays
+    well under 10 regardless of row count, whereas N+1 would scale linearly
+    (~25+ queries for 20 rows) and blow past it.
+    """
+    GeoContext.objects.bulk_create(
+        [GeoContext(title=f"Ctx {i}", created_by=superuser) for i in range(20)]
+    )
+
+    with django_assert_max_num_queries(10):
+        response = admin_client.get(reverse("admin:geocontext_geocontext_changelist"))
+
+    assert response.status_code == 200
+
+
 def test_widget_media_includes_vendored_assets():
     media = EditorJsWidget().media
     js = list(media._js)
