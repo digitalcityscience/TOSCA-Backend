@@ -507,31 +507,46 @@ This document tracks key architectural and implementation decisions made during 
 
 ### [9.1] Storage Strategy
 
-- **Decision**: For v1, store GeoStory hero images and EditorJS uploaded images through Django's storage abstraction using `ImageField`/file storage paths, without introducing a dedicated media-asset domain model in this phase.
+- **Decision**: For v1, store GeoStory hero images and EditorJS uploaded images through Django's storage abstraction using `ImageField`/file storage paths. Keep DB fields nullable and enforce alt requirements in `clean()` / serializer validation (not DB constraints).
 - **Rationale**:
-  - This is the fastest path to deliver strict image support with minimal schema complexity.
-  - Django storage remains backend-agnostic, so the same model contract can run on local media storage now and S3-compatible backends later.
-  - Introducing a separate MediaAsset service/model now would increase delivery scope and cross-feature coupling.
+  - Fastest delivery with minimal schema complexity.
+  - Keeps validation intent explicit and field-keyed instead of over-constraining DB schema.
+  - Django storage remains backend-agnostic (local now; S3-compatible later via settings).
 - **Rules**:
-  - Hero images store under a GeoStory namespace (e.g. `geostories/hero/...`).
-  - EditorJS uploads store under a GeoContext namespace (e.g. `geocontext/editorjs/...`).
-  - Storage backend selection is environment-configured via Django settings, not hard-coded in feature logic.
+  - Hero images store under a GeoStory namespace (e.g. `geostories/<uuid>/hero/...`).
+  - EditorJS uploads store under a GeoContext namespace (e.g. `geocontext/editorjs/<uuid>/...`).
+  - `hero_image_alt` is required only when `hero_image` is present.
+  - No S3-specific flow (presigned direct upload, bucket-coupled contracts) in Phase 9.
 
 ### [9.2] Strict Image Policy
 
-- **Decision**: Enforce one strict server-side validation policy for all image ingestion paths in this phase.
+- **Decision**: Enforce a two-tier server-side validation policy with shared MIME/size/decode checks and tier-specific dimension bounds.
 - **Rationale**:
-  - A unified policy avoids drift between hero-image and EditorJS upload behavior.
-  - Strict bounds reduce security risk, bandwidth abuse, and rendering failures.
-  - Required alt text establishes a baseline accessibility contract from day one.
+  - Hero images and inline images have different UX needs.
+  - Header-based validation prevents client header spoofing.
+  - Keeping validation read-only avoids hidden content mutation at ingest.
 - **Rules**:
-  - Allowed MIME types: `image/jpeg`, `image/png`, `image/webp`.
-  - Maximum file size: `8 MB`.
-  - Minimum dimensions: `800x450`.
-  - Maximum dimensions: `6000x6000`.
-  - Alt text is required for both GeoStory hero images and EditorJS image blocks.
+  - Allowed MIME types (both tiers): `image/jpeg`, `image/png`, `image/webp`.
+  - Max file size (both tiers): `8 MB`.
+  - Hero dimensions: min `800x450`, max `6000x6000`.
+  - Inline dimensions: min `200x200`, max `6000x6000`.
+  - MIME is determined from image header bytes (Pillow), not request `Content-Type`.
+  - Validation rejects/accepts only; it does not rewrite uploaded bytes.
 
-### [9.3] EditorJS Image Canonical Contract
+### [9.2b] Original-Byte Preservation and Metadata Posture
+
+- **Decision**: Preserve original upload bytes exactly at ingest. Do not strip EXIF on upload; metadata cleanup occurs when derivatives are re-encoded.
+- **Rationale**:
+  - Preserves forensic fidelity and avoids implicit data mutation.
+  - Keeps ingest path simple and deterministic.
+  - Metadata-clean public delivery can still be achieved via derivative-only consumption.
+- **Rules**:
+  - Stored originals are byte-for-byte identical to upload/downloaded body.
+  - EXIF orientation and other metadata may remain on originals.
+  - Derivative outputs are metadata-clean by re-encode (see [9.4]).
+  - Hardening raw-original public access is explicitly deferred.
+
+### [9.5] EditorJS Image Canonical Contract
 
 - **Decision**: Extend canonical EditorJS storage to accept a strict `image` block shape with deterministic normalization.
 - **Rationale**:
@@ -540,43 +555,66 @@ This document tracks key architectural and implementation decisions made during 
   - Block-level validation keeps content integrity independent of authoring client quirks.
 - **Rules**:
   - `image` block is added to allowed block types in `core/editorjs.py`.
-  - Canonical stored data includes required URL + metadata fields (URL, alt, mime, width, height) and optional sanitized caption/tool flags.
+  - Canonical stored data includes required URL + metadata fields, sanitized caption, and tool flags.
+  - `data.alt` is a project extension, not native to `@editorjs/image`.
+  - Missing `data.alt` falls back to the plain-text caption so the upstream caption input remains the authoring surface.
+  - `data.file.{mime,width,height}` are server-derived on every save.
+  - Inline image block count is not capped at the GeoContext level.
   - Unknown keys are stripped during normalization.
-  - URL schemes outside approved set are rejected.
+  - Off-origin or unsafe URLs are rejected.
 
-### [9.4] Upload Endpoint Contract
+### [9.4] Derivative Strategy and Orientation Handling
 
-- **Decision**: Provide authenticated backend upload endpoint(s) for EditorJS image tool and return EditorJS-compatible response payloads.
+- **Decision**: Generate optimized derivatives on demand (`webp`, `avif` when available), cache them, and keep originals immutable.
 - **Rationale**:
-  - Upload mediation through backend ensures strict validation policy is always enforced.
-  - EditorJS tools expect a specific response shape; honoring it avoids frontend-specific patches.
-  - Authenticated upload routes reduce abuse and keep authoring paths controlled.
+  - Avoids up-front processing cost while improving delivery performance.
+  - Solves camera-orientation rendering by baking EXIF orientation into pixels.
+  - Produces metadata-clean public assets without mutating originals.
 - **Rules**:
-  - Upload endpoint requires authenticated/authorized caller.
-  - Server validates mime/size/dimensions/alt before persistence.
-  - Response payload includes stored URL and metadata needed to persist canonical image block data.
-  - Contract and error payloads are documented in OpenAPI/docs.
+  - Apply `ImageOps.exif_transpose()` before derivative encoding.
+  - Re-encoded derivatives must not include EXIF.
+  - Original bytes must remain unchanged.
+  - AVIF unavailability returns a clear non-success response path (documented by API behavior).
 
-### [9.5] Security Posture
+### [9.6] Upload-by-URL Rehost and Safety Rules
 
-- **Decision**: Treat image support as a security-sensitive content path and enforce defensive validation at all trust boundaries.
+- **Decision**: Support both `byFile` and `byUrl` upload flows required by `@editorjs/image`, with rehost-and-validate behavior for URL uploads and deferred throttling tuning.
 - **Rationale**:
-  - File uploads are a common attack vector; server-side checks cannot be delegated to client tools.
-  - EditorJS JSON can be malformed or hostile; block schema validation must remain strict.
-  - URL scheme restrictions prevent scriptable/unsafe link injection.
+  - Matches official EditorJS image-tool integration shape.
+  - Rehosting centralizes validation and origin control.
+  - Defers premature ops tuning while keeping a throttle hook in place.
 - **Rules**:
-  - Reject unsupported MIME types and malformed image payloads.
-  - Reject unsupported or unsafe URL schemes in image block URLs.
-  - Require canonical metadata (alt/dimensions/mime) and fail closed on missing required fields.
-  - Keep regression tests for security-negative paths as mandatory coverage.
+  - `byUrl` accepts HTTP(S) only, with strict size/timeout/redirect limits.
+  - Same-origin URLs are rejected to avoid self-rehost loops.
+  - Upload responses follow `{"success": 1|0, ...}` contract expected by `@editorjs/image`.
+  - Throttle class lands as a placeholder; real rates/scopes are deferred.
 
-### [9.6] S3 Deferral Decision
+### [9.7] Vendored EditorJS Image and List Version Pins
 
-- **Decision**: Do not implement S3-specific flows (presigned direct upload, S3-only metadata contracts, bucket coupling) in Phase 9; keep feature logic storage-backend-agnostic.
+- **Decision**: Vendor pinned `@editorjs/image@2.10.3` and `@editorjs/list@2.0.9` builds and record exact versions/licenses in-repo.
 - **Rationale**:
-  - Phase 9 focus is feature delivery (hero image + EditorJS image) with strict validation and clear contracts.
-  - S3-specific implementation adds deployment and infra complexity that is not required to validate product behavior.
-  - Django storage abstraction already enables later S3 adoption without changing model/API contracts.
+  - Ensures deterministic admin behavior and avoids CDN/runtime drift.
+  - Maintains license traceability alongside vendored assets.
+  - Uses the list build that preserves nested canonical list data during admin round-trips.
 - **Rules**:
-  - No S3-only assumptions in serializers, validators, or EditorJS block schema.
-  - Any future S3-first rollout is a separate phase and may layer presigned-upload optimization without breaking Phase 9 contracts.
+  - No CDN fallback.
+  - Exact versions and license files must be recorded with the vendored bundle.
+  - Image alt text is supplied through the canonical caption fallback instead of a custom tune.
+  - Future upgrades require explicit re-vendor + doc update.
+
+### Phase 9 Deferred Media Work
+
+- **Orphan cleanup**: Replaced or deleted hero and inline images may leave files in storage. Cleanup is deferred to a future media-management pass.
+- **Throttle tuning**: Upload and media-listing views use a standard user throttle hook. Route-specific scopes and rates are deferred until operational limits are known.
+
+## Report Fixes & Hardening (Epic 11)
+
+### [11.1] API Versioning Strategy
+
+- **Decision**: Keep `/api/v1/` as a plain URL-prefix convention. No DRF versioning mechanism (`URLPathVersioning`, `NamespaceVersioning`, etc.) is wired up.
+- **Rationale**:
+  - No `v2` need exists today, and no external consumers depend on this API yet — there's nothing to version against.
+  - The alternative (DRF `URLPathVersioning`) would require consolidating the ~6 scattered `path('api/v1/', include(...))` registrations across `tosca_api/urls.py` into a single `path('api/<version>/', include(...))` wrapper, plus `REST_FRAMEWORK` settings (`DEFAULT_VERSIONING_CLASS`, `ALLOWED_VERSIONS`, `DEFAULT_VERSION`). Visible URLs would stay identical to today, so the only real gain right now is `request.version` becoming available in views — not worth a routing-wide refactor with no consumer to serve.
+- **Alternatives Considered**: DRF `URLPathVersioning` (deferred, not rejected — see trigger below) and `NamespaceVersioning` (would require app-level URL namespacing, more invasive for the same zero current benefit).
+- **Revisit when**: a real breaking API change is needed, or an external (non-frontend-owned) consumer starts depending on this API. At that point, implement `URLPathVersioning` as scoped above rather than inventing a new scheme.
+- **Raw originals**: Direct `MEDIA_URL` access can expose original uploads, including retained EXIF metadata. Production hardening should lock raw originals behind the intended storage/auth boundary and route public consumption through metadata-clean derivatives.
