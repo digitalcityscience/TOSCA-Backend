@@ -681,6 +681,39 @@ class TestFeedbackSubmissionValidation:
             )
         assert "geometry" in exc_info.value.message_dict
 
+    def test_self_intersecting_polygon_rejected(self, feedback_with_drawings, user):
+        """A self-intersecting ("bowtie") polygon must be rejected even
+        though allow_drawings is enabled — geometry can be permitted but
+        still structurally invalid.
+        """
+        bowtie = GEOSGeometry(
+            "POLYGON((0 0, 10 10, 10 0, 0 10, 0 0))", srid=4326
+        )
+        assert not bowtie.valid
+        with pytest.raises(ValidationError) as exc_info:
+            FeedbackSubmission.objects.create(
+                feedback=feedback_with_drawings,
+                submitted_by=user,
+                rating=5,
+                geometry=bowtie,
+            )
+        assert "geometry" in exc_info.value.message_dict
+
+    def test_valid_polygon_accepted_unchanged(self, feedback_with_drawings, user):
+        """A well-formed polygon passes through clean() unchanged."""
+        polygon = Polygon(
+            ((9.99, 53.55), (10.01, 53.55), (10.01, 53.57), (9.99, 53.57), (9.99, 53.55)),
+            srid=4326,
+        )
+        assert polygon.valid
+        sub = FeedbackSubmission.objects.create(
+            feedback=feedback_with_drawings,
+            submitted_by=user,
+            rating=5,
+            geometry=polygon,
+        )
+        assert sub.geometry.valid
+
 
 # =============================================================================
 # __str__ Tests

@@ -333,6 +333,11 @@ class FeedbackSubmission(TimeStampedModel):
             except GeoFeedback.DoesNotExist:
                 pass  # FK will be validated by Django
 
+        # Reject malformed geometry (e.g. self-intersecting polygons) from
+        # public submissions before it ever reaches GeoServer.
+        if self.geometry and "geometry" not in errors and not self.geometry.valid:
+            errors["geometry"] = f"Geometry is not valid: {self.geometry.valid_reason}"
+
         if errors:
             raise ValidationError(errors)
 
