@@ -97,6 +97,24 @@ def test_editorjs_admin_assets_do_not_reference_cdn():
                 assert needle not in text
 
 
+def test_editorjs_styles_keep_image_controls_readable():
+    from pathlib import Path
+
+    css_path = (
+        Path(__file__).resolve().parents[1]
+        / "static"
+        / "geocontext"
+        / "editorjs"
+        / "editor.css"
+    )
+    css = css_path.read_text()
+
+    assert ".geocontext-editorjs-library-button" in css
+    assert "color: #202020 !important;" in css
+    assert ".image-tool--caption .image-tool__caption" in css
+    assert "position: static;" in css
+
+
 @pytest.mark.django_db
 def test_admin_change_form_renders_json_textarea(admin_client, superuser):
     ctx = GeoContext.objects.create(
