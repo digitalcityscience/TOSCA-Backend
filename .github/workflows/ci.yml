@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COMPOSE_FILE: docker-compose-dev.yml
+  COMPOSE_ENV_FILE: .env.dev
+
+jobs:
+  lint-and-test:
+    name: Ruff + pytest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Reuses the project's own dev compose stack (db + django) instead of
+      # reimplementing service wiring in the workflow, so CI matches local
+      # dev exactly. GeoServer is intentionally not started: non-integration
+      # tests don't need it (see the `integration` pytest marker), and
+      # setup_default_engine() degrades gracefully without it.
+      - name: Start db and django containers
+        run: docker compose -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" up -d db django
+
+      - name: Wait for Django container startup (image build, uv sync, migrate)
+        run: |
+          for i in $(seq 1 60); do
+            if docker compose -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" logs django 2>&1 \
+                | grep -q "Starting development server"; then
+              echo "Django is ready."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::Django did not finish starting up in time."
+          docker compose -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" logs django
+          exit 1
+
+      # test_tosca is expected to pre-exist per tosca_api/settings/test.py
+      # and pytest.ini's `--reuse-db`; on a fresh CI runner it never does, so
+      # create it every run. The `|| true` on CREATE DATABASE makes this
+      # idempotent for local/manual re-runs against a persisted db volume.
+      - name: Create PostGIS test database
+        run: |
+          docker compose -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" exec -T db \
+            psql -U postgres -d tosca -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE test_tosca OWNER tosca_api;" || true
+          docker compose -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" exec -T db \
+            psql -U postgres -d test_tosca -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+
+      # Non-blocking for now: bringing CI up surfaced 44 pre-existing ruff
+      # violations across the repo (matches application-review-report.md's
+      # count). Several are already scoped to later epic-11 issues (urls.py
+      # duplicate imports -> issue 20, templatetags duplication -> issue 22,
+      # vendored geoserver-rest -> issue 24); the rest are untracked hygiene.
+      # Flip this to blocking (remove continue-on-error) once that backlog
+      # is cleared, so this doesn't silently stay report-only forever.
+      - name: Ruff check (report only until pre-existing violations are cleared)
+        continue-on-error: true
+        run: docker compose -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" exec -T django \
+          uv run ruff check tosca_api
+
+      - name: pytest, excluding live-GeoServer integration tests (blocking)
+        run: docker compose -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" exec -T django \
+          uv run pytest -m "not integration"
+
+      # Non-blocking: the project currently has known, un-triaged
+      # vulnerabilities in transitive dependencies. Report them on every PR
+      # without failing the build until they've been reviewed and a policy
+      # (block on high/critical, ignore accepted ones, etc.) is decided.
+      - name: pip-audit (report only, not a merge gate yet)
+        continue-on-error: true
+        run: docker compose -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" exec -T django \
+          sh -c "uv export --frozen --no-hashes -o /tmp/requirements-audit.txt && uv tool run pip-audit -r /tmp/requirements-audit.txt"
+
+      # Non-blocking: no django-stubs yet, so plain mypy reports ~100+
+      # Django-pattern false positives (e.g. admin display decorators).
+      # Keep this visible in CI output; tighten once django-stubs is added
+      # and the signal-to-noise ratio is worth gating on.
+      - name: mypy (non-blocking baseline)
+        continue-on-error: true
+        run: docker compose -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" exec -T django \
+          uv run mypy tosca_api
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" down -v
