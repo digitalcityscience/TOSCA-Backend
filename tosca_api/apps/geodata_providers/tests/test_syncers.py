@@ -134,6 +134,11 @@ class LayerSyncerTests(SyncerTestBase):
             username='pg',
             created_by=self.user,
         )
+        self.mock_client.get_featuretype_detail.return_value = {
+            'geometry_type': 'Point',
+            'geometry_column': 'geom',
+            'srid': 4326,
+        }
 
     def test_sync_layers_for_workspace_skips_layer_with_unknown_store(self):
         self.mock_client.get_layers.return_value = [
@@ -170,3 +175,39 @@ class LayerSyncerTests(SyncerTestBase):
         self.assertEqual(result['created'], 1)
         layer = Layer.objects.get(workspace=self.workspace, name='roads')
         self.assertTrue(layer.style_assignments.filter(style__name='roads_default', role='default').exists())
+
+    def test_missing_summary_geometry_is_resolved_from_featuretype_detail(self):
+        self.mock_client.get_layers.return_value = [
+            {'name': 'districts', 'store_name': 'gis', 'title': 'Districts'}
+        ]
+        self.mock_client.get_featuretype_detail.return_value = {
+            'geometry_type': 'org.locationtech.jts.geom.MultiPolygon',
+            'geometry_column': 'shape',
+            'srid': 25832,
+        }
+
+        result = LayerSyncer(self.engine, self.mock_client).sync_layers_for_workspace(
+            self.workspace,
+            created_by=self.user,
+        )
+
+        self.assertEqual(result['created'], 1)
+        layer = Layer.objects.get(workspace=self.workspace, name='districts')
+        self.assertEqual(layer.geometry_type, 'MultiPolygon')
+        self.assertEqual(layer.geometry_column, 'shape')
+        self.assertEqual(layer.srid, 25832)
+
+    def test_unknown_vector_geometry_is_rejected_instead_of_defaulting_to_point(self):
+        self.mock_client.get_layers.return_value = [
+            {'name': 'unknown', 'store_name': 'gis'}
+        ]
+        self.mock_client.get_featuretype_detail.return_value = {}
+
+        result = LayerSyncer(self.engine, self.mock_client).sync_layers_for_workspace(
+            self.workspace,
+            created_by=self.user,
+        )
+
+        self.assertEqual(result['created'], 0)
+        self.assertIn('did not report a supported geometry type', result['errors'][0])
+        self.assertFalse(Layer.objects.filter(workspace=self.workspace, name='unknown').exists())
