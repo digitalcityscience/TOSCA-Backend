@@ -22,6 +22,7 @@ schemes (anything outside ``http``, ``https``, ``mailto``) are rejected.
 
 from __future__ import annotations
 
+import html
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -52,6 +53,8 @@ _INLINE_ATTRS = {"a": {"href", "title"}}
 _INLINE_URL_SCHEMES = {"http", "https", "mailto"}
 
 _HEADER_LEVELS = {1, 2, 3, 4}
+_DESCRIPTION_HEADER_LEVELS = {2, 3, 4}
+_DESCRIPTION_BLOCK_TYPES = {"paragraph", "header", "list"}
 _LIST_STYLES = {"ordered", "unordered"}
 _ORDERED_LIST_COUNTER_TYPES = {
     "numeric",
@@ -100,6 +103,80 @@ def validate_and_normalize(value: Any) -> dict:
 
     normalized_blocks = [_normalize_block(b, idx) for idx, b in enumerate(blocks)]
     return {"blocks": normalized_blocks}
+
+
+def validate_description_document(value: Any) -> dict:
+    """Validate the deliberately small Editor.js profile used for descriptions."""
+    document = validate_and_normalize(value)
+    for index, block in enumerate(document["blocks"]):
+        block_type = block["type"]
+        if block_type not in _DESCRIPTION_BLOCK_TYPES:
+            raise ValidationError(
+                f"Description block at index {index} has unsupported type '{block_type}'. "
+                "Use paragraphs, headings, or lists."
+            )
+        if block_type == "header" and block["data"]["level"] not in _DESCRIPTION_HEADER_LEVELS:
+            raise ValidationError("Description headings must use levels 2, 3, or 4.")
+    return document
+
+
+def description_document_from_text(value: str | None) -> dict:
+    """Convert legacy plain text into safe paragraph blocks without losing line breaks."""
+    text = (value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return empty_document()
+    paragraphs = re.split(r"\n\s*\n+", text)
+    return {
+        "blocks": [
+            {
+                "type": "paragraph",
+                "data": {
+                    "text": "<br>".join(
+                        html.escape(line, quote=False)
+                        for line in paragraph.split("\n")
+                    ),
+                },
+            }
+            for paragraph in paragraphs
+            if paragraph.strip()
+        ],
+    }
+
+
+def description_document_to_text(value: Any) -> str:
+    """Return a deterministic plain-text projection for search and provider metadata."""
+    document = validate_description_document(value)
+    chunks: list[str] = []
+    for block in document["blocks"]:
+        block_type = block["type"]
+        data = block["data"]
+        if block_type in {"paragraph", "header"}:
+            chunks.append(_inline_to_plain_text(data.get("text", "")))
+        elif block_type == "list":
+            chunks.append(_list_to_plain_text(data))
+    return "\n\n".join(chunk for chunk in chunks if chunk).strip()
+
+
+def _inline_to_plain_text(value: str) -> str:
+    with_breaks = re.sub(r"<br\s*/?>", "\n", value or "", flags=re.IGNORECASE)
+    return html.unescape(nh3.clean(with_breaks, tags=set(), attributes={})).strip()
+
+
+def _list_to_plain_text(data: dict) -> str:
+    ordered = data.get("style") == "ordered"
+    lines: list[str] = []
+
+    def append_items(items: list, depth: int = 0) -> None:
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            marker = f"{index + 1}." if ordered and depth == 0 else "-"
+            content = _inline_to_plain_text(str(item.get("content") or ""))
+            lines.append(f"{'  ' * depth}{marker} {content}".rstrip())
+            append_items(item.get("items") or [], depth + 1)
+
+    append_items(data.get("items") or [])
+    return "\n".join(lines)
 
 
 def _normalize_block(block: Any, idx: int) -> dict:

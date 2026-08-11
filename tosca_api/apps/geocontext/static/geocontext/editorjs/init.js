@@ -44,6 +44,71 @@
         return match ? decodeURIComponent(match[1]) : "";
     }
 
+    function submitNativelyPreservingAction(form, submitter) {
+        if (submitter && submitter.name) {
+            const actionInput = document.createElement("input");
+            actionInput.type = "hidden";
+            actionInput.name = submitter.name;
+            actionInput.value = submitter.value || "";
+            form.appendChild(actionInput);
+        }
+        HTMLFormElement.prototype.submit.call(form);
+    }
+
+    function registerFormEditor(form, editor, textarea) {
+        let state = form._editorJsSubmitState;
+        if (!state) {
+            state = { fields: [], submitting: false };
+            form._editorJsSubmitState = state;
+            form.saveEditorJsFields = function () {
+                state.submitting = true;
+                return Promise.all(state.fields.map(function (field) {
+                    const revision = ++field.saveRevision;
+                    return field.editor.isReady.then(function () {
+                        return field.editor.save();
+                    }).then(function (output) {
+                        // Only the newest save may update the submitted field.
+                        // Older onChange saves can resolve after this final save.
+                        if (revision === field.saveRevision) {
+                            field.textarea.value = JSON.stringify(sanitizeForStorage(output));
+                        }
+                    });
+                }));
+            };
+            form.releaseEditorJsSubmit = function () {
+                state.submitting = false;
+            };
+
+            form.addEventListener("submit", function (event) {
+                // Forms with another asynchronous pre-save check own the full
+                // sequence and call saveEditorJsFields before they continue.
+                if (form.dataset.editorjsSubmitManaged === "true") return;
+                event.preventDefault();
+                if (state.submitting) return;
+                const submitter = event.submitter;
+                form.saveEditorJsFields().then(function () {
+                    // The original submit event has already passed native form
+                    // validation. Submit exactly once with the finalized JSON,
+                    // without dispatching another competing submit event.
+                    submitNativelyPreservingAction(form, submitter);
+                }).catch(function () {
+                    form.releaseEditorJsSubmit();
+                    window.alert(
+                        "The rich-text content could not be prepared for saving. " +
+                        "Your changes remain on this page; please try again."
+                    );
+                });
+            });
+        }
+        const field = {
+            editor: editor,
+            textarea: textarea,
+            saveRevision: 0,
+        };
+        state.fields.push(field);
+        return field;
+    }
+
     function buildLibraryButton(editor) {
         const button = document.createElement("button");
         button.type = "button";
@@ -126,6 +191,10 @@
     function mount(textarea) {
         if (typeof EditorJS === "undefined") return;
 
+        const profile = textarea.dataset.editorjsProfile || "full";
+        const isDescription = profile === "description";
+        const form = textarea.closest("form");
+
         const holder = document.createElement("div");
         holder.className = "geocontext-editorjs-holder";
         textarea.parentNode.insertBefore(holder, textarea);
@@ -136,14 +205,18 @@
             tools.header = {
                 class: Header,
                 config: {
-                    levels: [1, 2, 3, 4],
+                    levels: isDescription ? [2, 3, 4] : [1, 2, 3, 4],
                     defaultLevel: 2,
-                    toolbox: [
+                    toolbox: (isDescription ? [
+                        { icon: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 4v16M20 4v16M4 12h16"/></svg>', title: "Heading 2", data: { level: 2 } },
+                        { icon: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v16M20 4v16M4 12h16"/></svg>', title: "Heading 3", data: { level: 3 } },
+                        { icon: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4v16M20 4v16M4 12h16"/></svg>', title: "Heading 4", data: { level: 4 } },
+                    ] : [
                         { icon: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 4v16M20 4v16M4 12h16"/></svg>', title: "Heading 1", data: { level: 1 } },
                         { icon: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 4v16M20 4v16M4 12h16"/></svg>', title: "Heading 2", data: { level: 2 } },
                         { icon: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v16M20 4v16M4 12h16"/></svg>', title: "Heading 3", data: { level: 3 } },
                         { icon: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4v16M20 4v16M4 12h16"/></svg>', title: "Heading 4", data: { level: 4 } },
-                    ],
+                    ]),
                 },
             };
         }
@@ -151,10 +224,10 @@
             : (typeof List !== "undefined") ? List
             : null;
         if (ListClass) tools.list = { class: ListClass, inlineToolbar: true };
-        if (typeof Quote !== "undefined") tools.quote = { class: Quote, inlineToolbar: true };
-        if (typeof Delimiter !== "undefined") tools.delimiter = Delimiter;
-        if (typeof CodeTool !== "undefined") tools.code = CodeTool;
-        if (typeof ImageTool !== "undefined") {
+        if (!isDescription && typeof Quote !== "undefined") tools.quote = { class: Quote, inlineToolbar: true };
+        if (!isDescription && typeof Delimiter !== "undefined") tools.delimiter = Delimiter;
+        if (!isDescription && typeof CodeTool !== "undefined") tools.code = CodeTool;
+        if (!isDescription && typeof ImageTool !== "undefined") {
             tools.image = {
                 class: ImageTool,
                 config: {
@@ -170,19 +243,28 @@
             };
         }
 
+        let registeredField;
         const editor = new EditorJS({
             holder: holder,
             data: parseInitial(textarea),
             tools: tools,
-            placeholder: "Write content…",
+            placeholder: isDescription ? "Write a clear public description…" : "Write content…",
             onChange: function () {
+                const state = form && form._editorJsSubmitState;
+                if (!registeredField || (state && state.submitting)) return;
+                const revision = ++registeredField.saveRevision;
                 editor.save().then(function (output) {
-                    textarea.value = JSON.stringify(sanitizeForStorage(output));
+                    if (
+                        revision === registeredField.saveRevision
+                        && !(state && state.submitting)
+                    ) {
+                        textarea.value = JSON.stringify(sanitizeForStorage(output));
+                    }
                 }).catch(function () { /* leave previous textarea value */ });
             },
         });
 
-        if (typeof ImageTool !== "undefined") {
+        if (!isDescription && typeof ImageTool !== "undefined") {
             holder.parentNode.insertBefore(buildLibraryButton(editor), holder);
         }
 
@@ -229,8 +311,17 @@
             selection.addRange(range);
             if (typeof prev.focus === "function") prev.focus();
 
+            if (!registeredField) return;
+            const state = form && form._editorJsSubmitState;
+            if (state && state.submitting) return;
+            const revision = ++registeredField.saveRevision;
             editor.save().then(function (output) {
-                textarea.value = JSON.stringify(sanitizeForStorage(output));
+                if (
+                    revision === registeredField.saveRevision
+                    && !(state && state.submitting)
+                ) {
+                    textarea.value = JSON.stringify(sanitizeForStorage(output));
+                }
             }).catch(function () {});
         }, true);
 
@@ -252,18 +343,7 @@
             if (typeof sibling.focus === "function") sibling.focus();
         }, true);
 
-        const form = textarea.closest("form");
-        if (form) {
-            form.addEventListener("submit", function (event) {
-                event.preventDefault();
-                editor.save().then(function (output) {
-                    textarea.value = JSON.stringify(sanitizeForStorage(output));
-                    form.submit();
-                }).catch(function () {
-                    form.submit();
-                });
-            }, { once: true });
-        }
+        if (form) registeredField = registerFormEditor(form, editor, textarea);
     }
 
     function init() {

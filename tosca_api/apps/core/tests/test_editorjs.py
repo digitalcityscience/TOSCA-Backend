@@ -13,8 +13,11 @@ from django.test import override_settings
 from PIL import Image
 
 from tosca_api.apps.core.editorjs import (
+    description_document_from_text,
+    description_document_to_text,
     empty_document,
     validate_and_normalize,
+    validate_description_document,
 )
 
 
@@ -257,6 +260,59 @@ def test_list_string_items_are_upgraded_to_content_dicts():
         {"content": "a", "items": []},
         {"content": "b", "items": []},
     ]
+
+
+def test_description_profile_projects_supported_rich_content_to_plain_text():
+    document = {
+        "blocks": [
+            {"type": "header", "data": {"text": "<strong>Overview</strong>", "level": 2}},
+            {"type": "paragraph", "data": {"text": "First<br>second"}},
+            {
+                "type": "list",
+                "data": {
+                    "style": "ordered",
+                    "items": [
+                        {
+                            "content": '<a href="https://example.test">Linked item</a>',
+                            "items": [{"content": "Nested item", "items": []}],
+                        }
+                    ],
+                    "meta": {},
+                },
+            },
+        ]
+    }
+
+    normalized = validate_description_document(document)
+
+    assert description_document_to_text(normalized) == (
+        "Overview\n\nFirst\nsecond\n\n1. Linked item\n  - Nested item"
+    )
+
+
+def test_description_profile_rejects_full_editor_only_blocks_and_h1():
+    with pytest.raises(ValidationError):
+        validate_description_document(
+            {"blocks": [{"type": "quote", "data": {"text": "No", "caption": ""}}]}
+        )
+    with pytest.raises(ValidationError):
+        validate_description_document(
+            {"blocks": [{"type": "header", "data": {"text": "No", "level": 1}}]}
+        )
+
+
+def test_plain_text_description_is_preserved_as_paragraph_blocks():
+    document = description_document_from_text("First line\nsecond line\n\nAnother paragraph")
+
+    assert document == {
+        "blocks": [
+            {"type": "paragraph", "data": {"text": "First line<br>second line"}},
+            {"type": "paragraph", "data": {"text": "Another paragraph"}},
+        ]
+    }
+    assert description_document_to_text(document) == (
+        "First line\nsecond line\n\nAnother paragraph"
+    )
 
 
 def test_invalid_block_shape_rejected():

@@ -81,6 +81,7 @@ class StyleQueryService:
         queryset = Style.objects.select_related(
             "geodata_engine",
             "workspace",
+            "sprite_asset",
         ).order_by("geodata_engine__name", "workspace__name", "name")
         if not include_inactive:
             queryset = queryset.filter(geodata_engine__is_active=True)
@@ -118,4 +119,5 @@ class StyleQueryService:
             "validation_state": style.validation_state,
             "remote_state": style.remote_state,
             "content_hash": style.content_hash,
+            "sprite_asset_id": None if style.sprite_asset_id is None else str(style.sprite_asset_id),
         }

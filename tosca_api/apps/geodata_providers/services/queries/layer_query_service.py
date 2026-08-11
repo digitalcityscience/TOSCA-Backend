@@ -38,6 +38,8 @@ class LayerQueryService:
             "name": layer.name,
             "title": layer.title,
             "description": layer.description,
+            "description_content": layer.description_content,
+            "provider_description": layer.provider_description,
             "table_name": layer.table_name,
             "geometry_column": layer.geometry_column,
             "geometry_type": layer.geometry_type,
@@ -90,11 +92,13 @@ class LayerQueryService:
     def _serialize_style_assignment(cls, assignment) -> dict:
         style = assignment.style
         return {
-            "id": str(style.id),
+            "id": str(assignment.id),
+            "style_id": str(style.id),
             "name": style.name,
             "qualified_name": style.qualified_name,
             "role": assignment.role,
             "format": style.format,
+            "style_layer_ids": assignment.style_layer_ids,
             "remote_state": style.remote_state,
         }
 

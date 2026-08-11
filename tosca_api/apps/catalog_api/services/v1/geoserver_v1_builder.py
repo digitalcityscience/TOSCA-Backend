@@ -68,18 +68,11 @@ class GeoServerV1Builder:
             "layer": {
                 "name": layer.name,
                 "type": layer_type,
-                "defaultStyle": {
-                    "name": default_style["name"],
-                    "href": request.build_absolute_uri(
-                        reverse(
-                            "catalog-v1-provider-style-detail",
-                            kwargs=cls._route_kwargs(
-                                {"style_ref": default_style["href_ref"]},
-                                provider_id=provider_id,
-                            ),
-                        )
-                    ),
-                },
+                "defaultStyle": cls._build_default_style_payload(
+                    request=request,
+                    default_style=default_style,
+                    provider_id=provider_id,
+                ),
                 "resource": {
                     "@class": resource_class,
                     "name": layer.name,
@@ -113,18 +106,11 @@ class GeoServerV1Builder:
                     if key in {"defaultStyle", "styles", "attribution", "type"}
                 }
             )
-            payload["layer"]["defaultStyle"] = {
-                "name": default_style["name"],
-                "href": request.build_absolute_uri(
-                    reverse(
-                        "catalog-v1-provider-style-detail",
-                        kwargs=cls._route_kwargs(
-                            {"style_ref": default_style["href_ref"]},
-                            provider_id=provider_id,
-                        ),
-                    )
-                ),
-            }
+            payload["layer"]["defaultStyle"] = cls._build_default_style_payload(
+                request=request,
+                default_style=default_style,
+                provider_id=provider_id,
+            )
             payload["layer"]["resource"] = {
                 "@class": resource_class,
                 "name": layer.name,
@@ -200,7 +186,8 @@ class GeoServerV1Builder:
             "href": "",
         }
         payload["featureType"]["title"] = payload["featureType"].get("title") or layer.title or layer.name
-        payload["featureType"]["abstract"] = payload["featureType"].get("abstract") or layer.description or ""
+        payload["featureType"]["abstract"] = layer.description or ""
+        payload["featureType"]["description_content"] = layer.description_content
         payload["featureType"]["nativeCRS"] = payload["featureType"].get("nativeCRS") or f"EPSG:{layer.srid}"
         payload["featureType"]["srs"] = payload["featureType"].get("srs") or f"EPSG:{layer.srid}"
         payload["featureType"]["nativeBoundingBox"] = payload["featureType"].get("nativeBoundingBox") or cls._empty_bbox(layer.srid)
@@ -278,7 +265,8 @@ class GeoServerV1Builder:
             "href": "",
         }
         payload["coverage"]["title"] = payload["coverage"].get("title") or layer.title or layer.name
-        payload["coverage"]["description"] = payload["coverage"].get("description") or layer.description or ""
+        payload["coverage"]["description"] = layer.description or ""
+        payload["coverage"]["description_content"] = layer.description_content
         payload["coverage"]["nativeCRS"] = payload["coverage"].get("nativeCRS") or f"EPSG:{layer.srid}"
         payload["coverage"]["srs"] = payload["coverage"].get("srs") or f"EPSG:{layer.srid}"
         payload["coverage"]["nativeBoundingBox"] = payload["coverage"].get("nativeBoundingBox") or cls._empty_bbox(layer.srid)
@@ -343,11 +331,35 @@ class GeoServerV1Builder:
             return {
                 "name": active_default.style.name,
                 "href_ref": str(active_default.style.id),
+                "assignment_id": str(active_default.id),
+                "style_layer_ids": active_default.style_layer_ids,
+                "format": active_default.style.format,
             }
         style_name = cls._get_style_name(remote_layer)
         return {
             "name": style_name,
             "href_ref": style_name,
+            "assignment_id": None,
+            "style_layer_ids": [],
+            "format": None,
+        }
+
+    @classmethod
+    def _build_default_style_payload(cls, *, request, default_style, provider_id) -> dict:
+        return {
+            "name": default_style["name"],
+            "href": request.build_absolute_uri(
+                reverse(
+                    "catalog-v1-provider-style-detail",
+                    kwargs=cls._route_kwargs(
+                        {"style_ref": default_style["href_ref"]},
+                        provider_id=provider_id,
+                    ),
+                )
+            ),
+            "assignmentId": default_style["assignment_id"],
+            "styleLayerIds": default_style["style_layer_ids"],
+            "format": default_style["format"],
         }
 
     @staticmethod

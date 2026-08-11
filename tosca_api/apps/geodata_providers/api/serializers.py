@@ -215,6 +215,8 @@ class LayerSerializer(serializers.ModelSerializer):
             'name',
             'title',
             'description',
+            'description_content',
+            'provider_description',
             'table_name',
             'geometry_column',
             'geometry_type',
@@ -236,5 +238,5 @@ class LayerSerializer(serializers.ModelSerializer):
             'id', 'workspace_name', 'store_name', 'sync_state',
             'last_sync_at', 'last_sync_error', 'remote_identifier',
             'remote_hash', 'publishing_error', 'published_url',
-            'published_at', 'created_at', 'updated_at',
+            'published_at', 'provider_description', 'created_at', 'updated_at',
         ]

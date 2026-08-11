@@ -805,6 +805,9 @@ class CatalogV1ApiTestCase(TestCase):
                     "store_name": "synced_store",
                     "title": "Synced Layer",
                     "table_name": "native_synced_table",
+                    "geometry_column": "geom",
+                    "geometry_type": "MultiPolygon",
+                    "srid": 4326,
                     "advertised": True,
                     "default_style_name": "synced_style",
                 }
@@ -871,6 +874,14 @@ class CatalogV1ApiTestCase(TestCase):
         self.assertEqual(payload["namespace"]["name"], "mobility")
         self.assertEqual(payload["title"], "Tram Lines")
         self.assertEqual(payload["abstract"], "Transit layer")
+        self.assertEqual(
+            payload["description_content"],
+            {
+                "blocks": [
+                    {"type": "paragraph", "data": {"text": "Transit layer"}},
+                ]
+            },
+        )
         self.assertEqual(payload["store"]["name"], "mobility_store")
         self.assertEqual(payload["attributes"], {"attribute": []})
 
@@ -1014,7 +1025,13 @@ class CatalogV1ApiTestCase(TestCase):
         self.assertEqual(payload["nativeName"], "remote_native_name")
         self.assertEqual(payload["namespace"]["name"], "mobility")
         self.assertEqual(payload["title"], "Remote Title")
-        self.assertEqual(payload["abstract"], "Remote abstract")
+        # Remote structural metadata is merged, but the public description is
+        # curated in TOSCA and must not be replaced by GeoServer's abstract.
+        self.assertEqual(payload["abstract"], "Transit layer")
+        self.assertEqual(
+            payload["description_content"],
+            self.layer.description_content,
+        )
         self.assertEqual(payload["store"]["name"], "mobility_store")
         self.assertEqual(payload["attributes"], {"attribute": [{"name": "route_id"}]})
 

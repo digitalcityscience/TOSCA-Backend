@@ -18,6 +18,11 @@ class EditorJsWidget(forms.Textarea):
 
     template_name = "geocontext/widgets/editorjs.html"
 
+    def __init__(self, attrs=None, *, profile: str = "full"):
+        attrs = dict(attrs or {})
+        attrs["data-editorjs-profile"] = profile
+        super().__init__(attrs=attrs)
+
     class Media:
         css = {"all": ("geocontext/editorjs/editor.css",)}
         js = (

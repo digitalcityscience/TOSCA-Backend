@@ -125,25 +125,29 @@ class LayerSyncer(BaseSyncer):
                     layer_data=layer_data,
                 )
 
+                provider_description = layer_data.get('abstract')
+                layer_defaults = {
+                    'store': store,
+                    'title': layer_data.get('title', layer_name),
+                    'table_name': layer_data.get('table_name', layer_name),
+                    **spatial_metadata,
+                    'is_public': layer_data.get('advertised', True),  # read from GeoServer
+                    'queryable': layer_data.get('queryable', True),
+                    'opaque': layer_data.get('opaque', False),
+                    'publishing_state': 'PUBLISHED',
+                    'created_by': created_by,
+                    **self._sync_success_defaults(
+                        remote_identifier=f"{workspace.name}:{layer_name}",
+                        remote_hash=layer_data.get('remote_hash', ''),
+                    ),
+                }
+                if provider_description is not None:
+                    layer_defaults['provider_description'] = provider_description or ''
+
                 layer, created = Layer.objects.update_or_create(
                     workspace=workspace,
                     name=layer_name,
-                    defaults={
-                        'store': store,
-                        'title': layer_data.get('title', layer_name),
-                        'description': f'Synced from GeoServer: {layer_name}',
-                        'table_name': layer_data.get('table_name', layer_name),
-                        **spatial_metadata,
-                        'is_public': layer_data.get('advertised', True),  # read from GeoServer
-                        'queryable': layer_data.get('queryable', True),
-                        'opaque': layer_data.get('opaque', False),
-                        'publishing_state': 'PUBLISHED',
-                        'created_by': created_by,
-                        **self._sync_success_defaults(
-                            remote_identifier=f"{workspace.name}:{layer_name}",
-                            remote_hash=layer_data.get('remote_hash', ''),
-                        ),
-                    }
+                    defaults=layer_defaults,
                 )
                 self._sync_layer_style_assignments(
                     layer=layer,
@@ -269,7 +273,18 @@ class LayerSyncer(BaseSyncer):
     ) -> None:
         active_assignment_ids = []
 
-        if default_style_name:
+        # MBStyle assignments are curated by TOSCA for client-side vector
+        # rendering. GeoServer commonly reports a generic SLD such as
+        # ``polygon`` as its vector default; that remote value must not replace
+        # a locally selected MBStyle default during a pull sync.
+        has_local_mbstyle_default = LayerStyleAssignment.objects.filter(
+            layer=layer,
+            role=LayerStyleAssignment.Role.DEFAULT,
+            is_active=True,
+            style__format=Style.StyleFormat.MBSTYLE,
+        ).exists()
+
+        if default_style_name and not has_local_mbstyle_default:
             assignment = self._upsert_layer_style_assignment(
                 layer=layer,
                 style_name=default_style_name,
@@ -289,9 +304,13 @@ class LayerSyncer(BaseSyncer):
             if assignment:
                 active_assignment_ids.append(assignment.id)
 
+        # Reconcile provider-side styles without deactivating locally curated
+        # MBStyle alternates. When an MBStyle owns the active default, this also
+        # retires any stale provider default that is no longer reported as an
+        # active assignment in TOSCA.
         LayerStyleAssignment.objects.filter(layer=layer).exclude(
-            id__in=active_assignment_ids,
-        ).update(is_active=False)
+            style__format=Style.StyleFormat.MBSTYLE,
+        ).exclude(id__in=active_assignment_ids).update(is_active=False)
 
     def _upsert_layer_style_assignment(
         self,
