@@ -200,6 +200,10 @@ class Workspace(SyncStateMixin, TimeStampedModel):
     every store and layer published under it.
     """
 
+    class Visibility(models.TextChoices):
+        PRIVATE = "private", "Private"
+        PUBLIC = "public", "Public"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     geodata_engine = models.ForeignKey(
         GeodataEngine,
@@ -208,11 +212,24 @@ class Workspace(SyncStateMixin, TimeStampedModel):
         null=True,
         blank=True,
     )
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.PROTECT,
+        related_name="workspaces",
+        help_text="Owning organization; derives GeoServer ACL roles from its slug.",
+    )
     name = models.CharField(
         max_length=100,
         help_text="Workspace name (e.g., 'mobility', 'environment')",
     )
     description = models.TextField(blank=True, help_text="Description of this workspace")
+    visibility = models.CharField(
+        max_length=20,
+        choices=Visibility.choices,
+        default=Visibility.PRIVATE,
+        db_index=True,
+        help_text="PRIVATE: owner org only. PUBLIC: anonymous read + owner-org write.",
+    )
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
     class Meta:
@@ -231,8 +248,12 @@ class Workspace(SyncStateMixin, TimeStampedModel):
         return self.name
 
     def save(self, *args, **kwargs) -> None:
+        """Save wrapped in `atomic()` so a failed ACL push (see `signals.py`,
+        epic-11 ticket 09) rolls back the row too -- a Workspace must never
+        exist in Django without a matching enforced GeoServer ACL."""
         self.full_clean()
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            super().save(*args, **kwargs)
 
 
 class Store(SyncStateMixin, TimeStampedModel, EncryptedCharField):

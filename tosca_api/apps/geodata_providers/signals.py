@@ -1,10 +1,15 @@
 """
-Workspace `post_save` -> GeoServer ACL sync (epic-11 ticket 08, canonical §5c/§11).
+Workspace `post_save` -> GeoServer ACL sync (epic-11 ticket 08/09, canonical §5c/§11).
 
 Fires synchronously on create, and on update only when a field the ACL rules
 actually depend on (`organization`, `visibility`) changed -- an unrelated
 Workspace edit (e.g. `description`) must not trigger a GeoServer round-trip.
 Wired up in `GeodataProvidersConfig.ready()`.
+
+`GeoServerSecuritySyncService.sync()` raises `GeoServerACLSyncError` on any
+push failure (ticket 09); this signal does not catch it. `Workspace.save()`
+wraps its write in `transaction.atomic()`, so the exception rolls back the
+Workspace row -- a Workspace never persists without a matching ACL.
 """
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver

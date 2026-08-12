@@ -1,13 +1,17 @@
 """
 Admin views for Workspace.
-    workspace_sync_view  — POST …/<id>/sync/  → JSON
+    workspace_sync_view              — POST …/<id>/sync/               → JSON
+    workspace_visibility_toggle_view — POST …/<id>/toggle-visibility/  → JSON
 """
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST
 
+from tosca_api.apps.organizations.permissions import has_org_write_access
+
 from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeodataEngineError
 from ..models import Workspace
+from ..security_sync import GeoServerACLSyncError
 
 
 @require_POST
@@ -68,4 +72,45 @@ def workspace_sync_view(request, workspace_id):
             'deleted': style_result.get('deleted', 0),
         },
         'errors': st_errors + sy_errors + ly_errors,
+    })
+
+
+@require_POST
+def workspace_visibility_toggle_view(request, workspace_id):
+    """
+    POST /admin/geodata_providers/workspace/<id>/toggle-visibility/
+    Wrapped by admin_site.admin_view() in get_urls() — auth handled there.
+
+    Flips PRIVATE <-> PUBLIC and saves. `Workspace.save()` fires the
+    `post_save` ACL sync signal (signals.py) whenever `visibility` changed,
+    so this immediately re-pushes the GeoServer `.r`/`.w` rules -- same
+    "Public" checkbox rule the create/edit form uses (§5c): PUBLIC opens
+    `.r` to `*`, `.w` always stays the owning org's WRITER role.
+    """
+    if not request.user.is_staff:
+        return JsonResponse({'error': 'Forbidden'}, status=403)
+
+    try:
+        workspace = Workspace.objects.select_related('organization').get(pk=workspace_id)
+    except Workspace.DoesNotExist:
+        return JsonResponse({'error': 'Workspace not found.'}, status=404)
+
+    if not has_org_write_access(request, workspace):
+        return JsonResponse({'error': 'Forbidden'}, status=403)
+
+    new_visibility = (
+        Workspace.Visibility.PRIVATE
+        if workspace.visibility == Workspace.Visibility.PUBLIC
+        else Workspace.Visibility.PUBLIC
+    )
+    workspace.visibility = new_visibility
+    try:
+        workspace.save()
+    except GeoServerACLSyncError as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=502)
+
+    return JsonResponse({
+        'success': True,
+        'visibility': workspace.visibility,
+        'is_public': workspace.visibility == Workspace.Visibility.PUBLIC,
     })

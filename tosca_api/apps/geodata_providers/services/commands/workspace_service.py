@@ -14,7 +14,9 @@ class WorkspaceService:
         *,
         engine,
         name: str,
+        organization,
         description: str = '',
+        visibility: str = Workspace.Visibility.PRIVATE,
         user,
     ) -> dict:
         normalized_name = (name or '').strip()
@@ -67,8 +69,10 @@ class WorkspaceService:
         with transaction.atomic():
             workspace = Workspace.objects.create(
                 geodata_engine=engine,
+                organization=organization,
                 name=normalized_name,
                 description=description,
+                visibility=visibility,
                 sync_state=(
                     'SYNCED' if engine and remote_verified
                     else 'STALE' if engine

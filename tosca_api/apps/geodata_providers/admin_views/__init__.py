@@ -12,7 +12,7 @@ from .engine import (
     engine_sync_view,
     engine_test_connection_view,
 )
-from .workspace import workspace_sync_view
+from .workspace import workspace_sync_view, workspace_visibility_toggle_view
 from .store import store_postgis_tables_view, store_clone_view
 from .layer import publish_postgis_view, stores_for_workspace_view, tables_for_store_view
 
@@ -25,6 +25,7 @@ __all__ = [
     'engine_force_delete_view',
     # Workspace (Phase 2)
     'workspace_sync_view',
+    'workspace_visibility_toggle_view',
     # Store (Phase 3)
     'store_postgis_tables_view',
     'store_clone_view',

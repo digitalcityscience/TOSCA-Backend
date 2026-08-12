@@ -22,6 +22,12 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from tosca_api.apps.organizations.permissions import (
+    OrgScopedPermission,
+    org_scoped_queryset,
+    resolve_write_organization,
+)
+
 from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeodataEngineError
 from ..models import GeodataEngine, Layer, Store, Workspace
@@ -199,21 +205,28 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
 class WorkspaceViewSet(viewsets.ModelViewSet):
     queryset = Workspace.objects.select_related('geodata_engine')
     serializer_class = WorkspaceSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, OrgScopedPermission]
 
     def get_queryset(self):
         qs = Workspace.objects.select_related('geodata_engine')
         engine_id = self.request.query_params.get('geodata_engine')
         if engine_id:
             qs = qs.filter(geodata_engine__id=engine_id)
-        return qs
+        return org_scoped_queryset(self.request, qs)
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        organization = resolve_write_organization(request)
+        if organization is None:
+            return Response(
+                {'error': 'Could not determine an organization for this workspace.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         result = WorkspaceService.create_workspace(
             engine=data.get('geodata_engine'),
+            organization=organization,
             name=data['name'],
             description=data.get('description', ''),
             user=request.user,

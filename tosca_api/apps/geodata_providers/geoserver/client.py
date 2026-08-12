@@ -3,6 +3,7 @@ Thin, controlled wrapper around geoserver-rest
 """
 import logging
 from typing import Callable, Dict, Optional
+from urllib.parse import quote
 import requests
 
 # geo comes from the vendor/geoserver-rest submodule, installed as a normal
@@ -467,6 +468,134 @@ class GeoServerClient:
                 'error': str(e),
                 'message': 'Post-verification error',
             }
+
+    # ACL / Data Security operations (canonical §5c, §8)
+    #
+    # geoserver-rest does not wrap the Data Security ACL endpoint, so these
+    # go through `_request` directly. Endpoint contract was verified live
+    # against a running GeoServer (see ticket 07):
+    #   key = "<workspace>.<layer>.<access>", access in {r, w, a}, layer="*"
+    #   for a workspace-wide rule. value = comma-separated role string.
+    #   POSTing an existing key is a GeoServer error -- PUT updates it.
+    #
+    # "*_layer_rule" is GeoServer's own name for this endpoint
+    # (`/rest/security/acl/layers`), not a Django design decision to write
+    # per-layer rules. Epic-11 phase 1 (ticket 08) only ever calls these
+    # with a workspace-wide key (layer="*") -- the ACL role always comes
+    # from the Workspace's `organization` + `visibility` convention
+    # (canonical §5c: PRIVATE -> ROLE_<SLUG>_READER/WRITER, PUBLIC read ->
+    # "*"), never from the requesting user's own token role. Real per-layer
+    # keys are a v2 concern (canonical §6), not used yet.
+
+    def get_layer_rules(self) -> Dict[str, str]:
+        """Return the full ACL layers rule map (``{key: roles}``) from GeoServer."""
+        response = self._request("get", "/rest/security/acl/layers")
+        if response.status_code != 200:
+            raise GeoServerPublishError(
+                f"Failed to fetch ACL layer rules: HTTP {response.status_code}"
+            )
+        try:
+            return response.json()
+        except ValueError:
+            return {}
+
+    def add_layer_rule(self, key: str, roles: str) -> OperationResult:
+        """Create a new ACL layer rule. POST fails if ``key`` already exists."""
+        try:
+            response = self._request(
+                "post", "/rest/security/acl/layers", json={key: roles}
+            )
+            if response.status_code not in (200, 201):
+                return OperationResult(
+                    success=False,
+                    error=response.text.strip() or f"HTTP {response.status_code}",
+                    message=f"Failed to add ACL layer rule '{key}': HTTP {response.status_code}",
+                    data={'key': key, 'roles': roles, 'status_code': response.status_code},
+                )
+            return OperationResult(
+                success=True,
+                message=f"ACL layer rule '{key}' added",
+                data={'key': key, 'roles': roles, 'status_code': response.status_code},
+            )
+        except Exception as e:
+            logger.error(f"Failed to add ACL layer rule {key}: {e}")
+            return OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to add ACL layer rule '{key}': {e}",
+                data={'key': key, 'roles': roles},
+            )
+
+    def update_layer_rule(self, key: str, roles: str) -> OperationResult:
+        """Update an existing ACL layer rule."""
+        try:
+            response = self._request(
+                "put", "/rest/security/acl/layers", json={key: roles}
+            )
+            if response.status_code not in (200, 201):
+                return OperationResult(
+                    success=False,
+                    error=response.text.strip() or f"HTTP {response.status_code}",
+                    message=f"Failed to update ACL layer rule '{key}': HTTP {response.status_code}",
+                    data={'key': key, 'roles': roles, 'status_code': response.status_code},
+                )
+            return OperationResult(
+                success=True,
+                message=f"ACL layer rule '{key}' updated",
+                data={'key': key, 'roles': roles, 'status_code': response.status_code},
+            )
+        except Exception as e:
+            logger.error(f"Failed to update ACL layer rule {key}: {e}")
+            return OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to update ACL layer rule '{key}': {e}",
+                data={'key': key, 'roles': roles},
+            )
+
+    def delete_layer_rule(self, key: str) -> OperationResult:
+        """Delete an ACL layer rule. Missing key (404) is treated as already-deleted."""
+        try:
+            encoded_key = quote(key, safe='')
+            response = self._request("delete", f"/rest/security/acl/layers/{encoded_key}")
+            if response.status_code == 404:
+                return OperationResult(
+                    success=True,
+                    message=f"ACL layer rule '{key}' already absent",
+                    data={'key': key, 'already_deleted': True},
+                )
+            if response.status_code not in (200, 204):
+                return OperationResult(
+                    success=False,
+                    error=response.text.strip() or f"HTTP {response.status_code}",
+                    message=f"Failed to delete ACL layer rule '{key}': HTTP {response.status_code}",
+                    data={'key': key, 'status_code': response.status_code},
+                )
+            return OperationResult(
+                success=True,
+                message=f"ACL layer rule '{key}' deleted",
+                data={'key': key},
+            )
+        except Exception as e:
+            logger.error(f"Failed to delete ACL layer rule {key}: {e}")
+            return OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to delete ACL layer rule '{key}': {e}",
+                data={'key': key},
+            )
+
+    def set_layer_rule(self, key: str, roles: str) -> OperationResult:
+        """Idempotent create-or-update: POST if ``key`` is new, PUT if it already exists."""
+        try:
+            existing = self.get_layer_rules()
+        except Exception as e:
+            logger.warning(f"Could not pre-check existing ACL layer rules for '{key}': {e}")
+            existing = {}
+
+        if key in existing:
+            return self.update_layer_rule(key, roles)
+        return self.add_layer_rule(key, roles)
 
     # Store operations
 

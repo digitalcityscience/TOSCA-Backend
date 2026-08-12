@@ -1,7 +1,9 @@
-"""Tests for GeoServerSecuritySyncService (epic-11 ticket 08, canonical §5c).
+"""Tests for GeoServerSecuritySyncService (epic-11 ticket 08/09, canonical §5c).
 
 GeoServerClient is mocked -- no real GeoServer. Covers PRIVATE/PUBLIC rule
-computation and the PUBLIC<->PRIVATE transition.
+computation, the PUBLIC<->PRIVATE transition, and the ticket 09 hard-fail
+contract: any push failure raises `GeoServerACLSyncError` instead of being
+logged and swallowed.
 """
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +12,10 @@ from django.test import TestCase
 
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Workspace
 from tosca_api.apps.geodata_providers.results import OperationResult
-from tosca_api.apps.geodata_providers.security_sync import GeoServerSecuritySyncService
+from tosca_api.apps.geodata_providers.security_sync import (
+    GeoServerACLSyncError,
+    GeoServerSecuritySyncService,
+)
 from tosca_api.apps.organizations.models import Organization
 
 
@@ -27,6 +32,8 @@ class GeoServerSecuritySyncServiceTestCase(TestCase):
             admin_password='secret',
             created_by=self.user,
         )
+        # conftest.py's default GeodataEngine.get_client patch makes this creation's
+        # ACL push succeed; individual tests below override it per-call.
         self.workspace = Workspace.objects.create(
             geodata_engine=self.engine,
             organization=self.org,
@@ -44,21 +51,31 @@ class GeoServerSecuritySyncServiceTestCase(TestCase):
         client = self._mock_client()
 
         with patch.object(GeodataEngine, 'get_client', return_value=client):
-            success = GeoServerSecuritySyncService(self.workspace).sync()
+            GeoServerSecuritySyncService(self.workspace).sync()
 
-        self.assertTrue(success)
         client.set_layer_rule.assert_any_call('hamburg.*.r', 'ROLE_DCS_READER')
         client.set_layer_rule.assert_any_call('hamburg.*.w', 'ROLE_DCS_WRITER')
         self.assertEqual(client.set_layer_rule.call_count, 2)
+
+    def test_read_rule_is_pushed_before_write_rule(self):
+        client = self._mock_client()
+        calls_in_order = []
+        client.set_layer_rule.side_effect = lambda key, roles: (
+            calls_in_order.append(key) or OperationResult(success=True, message='ok')
+        )
+
+        with patch.object(GeodataEngine, 'get_client', return_value=client):
+            GeoServerSecuritySyncService(self.workspace).sync()
+
+        self.assertEqual(calls_in_order, ['hamburg.*.r', 'hamburg.*.w'])
 
     def test_public_workspace_opens_read_to_anonymous_but_not_write(self):
         self.workspace.visibility = Workspace.Visibility.PUBLIC
         client = self._mock_client()
 
         with patch.object(GeodataEngine, 'get_client', return_value=client):
-            success = GeoServerSecuritySyncService(self.workspace).sync()
+            GeoServerSecuritySyncService(self.workspace).sync()
 
-        self.assertTrue(success)
         client.set_layer_rule.assert_any_call('hamburg.*.r', '*')
         client.set_layer_rule.assert_any_call('hamburg.*.w', 'ROLE_DCS_WRITER')
 
@@ -83,38 +100,49 @@ class GeoServerSecuritySyncServiceTestCase(TestCase):
         client = self._mock_client()
 
         with patch.object(GeodataEngine, 'get_client', return_value=client):
-            first = GeoServerSecuritySyncService(self.workspace).sync()
-            second = GeoServerSecuritySyncService(self.workspace).sync()
+            GeoServerSecuritySyncService(self.workspace).sync()
+            GeoServerSecuritySyncService(self.workspace).sync()
 
-        self.assertTrue(first)
-        self.assertTrue(second)
         self.assertEqual(client.set_layer_rule.call_count, 4)
 
-    def test_rule_failure_is_logged_and_returns_false_without_raising(self):
+    def test_rule_failure_raises_acl_sync_error_and_does_not_persist_partial_state(self):
         client = self._mock_client()
         client.set_layer_rule.return_value = OperationResult(
             success=False, error='HTTP 500', message='boom'
         )
 
         with patch.object(GeodataEngine, 'get_client', return_value=client):
-            success = GeoServerSecuritySyncService(self.workspace).sync()
+            with self.assertRaises(GeoServerACLSyncError):
+                GeoServerSecuritySyncService(self.workspace).sync()
 
-        self.assertFalse(success)
-
-    def test_no_engine_is_a_noop(self):
+    def test_no_engine_is_a_silent_noop(self):
         self.workspace.geodata_engine = None
 
-        success = GeoServerSecuritySyncService(self.workspace).sync()
+        GeoServerSecuritySyncService(self.workspace).sync()  # must not raise
 
-        self.assertFalse(success)
-
-    def test_inactive_engine_is_skipped(self):
+    def test_inactive_engine_is_a_silent_noop_without_calling_client(self):
         self.engine.is_active = False
         self.engine.save()
         client = self._mock_client()
 
         with patch.object(GeodataEngine, 'get_client', return_value=client):
-            success = GeoServerSecuritySyncService(self.workspace).sync()
+            GeoServerSecuritySyncService(self.workspace).sync()  # must not raise
 
-        self.assertFalse(success)
         client.set_layer_rule.assert_not_called()
+
+    def test_workspace_create_rolls_back_when_acl_push_fails(self):
+        client = self._mock_client()
+        client.set_layer_rule.return_value = OperationResult(
+            success=False, error='HTTP 500', message='boom'
+        )
+
+        with patch.object(GeodataEngine, 'get_client', return_value=client):
+            with self.assertRaises(GeoServerACLSyncError):
+                Workspace.objects.create(
+                    geodata_engine=self.engine,
+                    organization=self.org,
+                    name='bremen',
+                    created_by=self.user,
+                )
+
+        self.assertFalse(Workspace.objects.filter(name='bremen').exists())
