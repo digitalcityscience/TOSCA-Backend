@@ -217,3 +217,27 @@ def test_admin_delete_permission_denied_across_orgs(django_user_model, orgs, cam
     request = _request(dcs_admin_user, auth=_token("ROLE_DCS_ADMIN", default_organization="dcs"))
 
     assert campaign_admin.has_delete_permission(request, gq_campaign) is False
+
+
+@pytest.mark.django_db
+def test_admin_add_permission_granted_to_org_writer(django_user_model, orgs, campaign_admin):
+    # Regression: has_change_permission/has_delete_permission are overridden
+    # to bypass Django's default has_perm() check (always False here, since
+    # this app never syncs Permission/Group objects from Keycloak -- see
+    # OrgScopedAdminMixin._is_active_staff), but has_add_permission was left
+    # to that same broken default, making "+ Add" unreachable for every
+    # org-scoped WRITER/ADMIN even though they're allowed to create rows.
+    dcs, _gq = orgs
+    writer_user = django_user_model.objects.create_user(username="dcs-writer-add", is_staff=True)
+    request = _request(writer_user, auth=_token("ROLE_DCS_WRITER", default_organization="dcs"))
+
+    assert campaign_admin.has_add_permission(request) is True
+
+
+@pytest.mark.django_db
+def test_admin_add_permission_denied_below_writer(django_user_model, orgs, campaign_admin):
+    dcs, _gq = orgs
+    reader_user = django_user_model.objects.create_user(username="dcs-reader-add", is_staff=True)
+    request = _request(reader_user, auth=_token("ROLE_DCS_READER", default_organization="dcs"))
+
+    assert campaign_admin.has_add_permission(request) is False

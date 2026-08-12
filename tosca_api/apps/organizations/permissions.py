@@ -133,6 +133,28 @@ def resolve_write_organization(request):
     return None
 
 
+def has_org_write_access(request, obj, required="WRITER"):
+    """Standalone version of ``OrgScopedAdminMixin``'s change-permission rule.
+
+    For plain admin AJAX views (e.g. a change-form action button) that sit
+    outside a ``ModelAdmin`` and so can't call ``self.has_change_permission``.
+    ``obj`` must have an ``organization`` FK.
+    """
+    if request.user.is_superuser:
+        return True
+    if not (request.user and request.user.is_active and request.user.is_staff):
+        return False
+    roles, org_slug, exempt = get_request_org_context(request)
+    if exempt:
+        return True
+    organization = getattr(obj, "organization", None)
+    obj_slug = organization.slug if organization is not None else None
+    if obj_slug != org_slug:
+        return False
+    level = org_role_level(roles, org_slug)
+    return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[required]
+
+
 class OrgScopedAdminMixin:
     """Restrict a ``ModelAdmin`` to the caller's org (canonical §5b).
 
@@ -176,6 +198,12 @@ class OrgScopedAdminMixin:
         # separate authorization DB), so that check would always be False
         # for a non-superuser and make org-scoped staff access unreachable.
         return bool(request.user and request.user.is_active and request.user.is_staff)
+
+    def has_add_permission(self, request):
+        # No `obj` yet to check org ownership against -- WRITER+ in *some*
+        # org (or exempt) is enough; the actual owning org is resolved at
+        # save time (see `resolve_write_organization`).
+        return self._is_active_staff(request) and self._has_org_level(request, None, "WRITER")
 
     def has_change_permission(self, request, obj=None):
         return self._is_active_staff(request) and self._has_org_level(request, obj, "WRITER")
