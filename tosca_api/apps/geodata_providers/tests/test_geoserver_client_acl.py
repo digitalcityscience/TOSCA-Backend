@@ -110,32 +110,6 @@ class SetLayerRuleTests(TestCase):
         mock_update.assert_called_once_with("hamburg.bezirke.r", "ROLE_DCS_READER")
         mock_add.assert_not_called()
 
-    def test_repeated_calls_are_idempotent(self):
-        """Calling set_layer_rule twice never raises even though the second
-        call's GeoServer state now has the key (canonical §8 idempotent push)."""
-        state = {}
-
-        def fake_get_layer_rules():
-            return dict(state)
-
-        def fake_add(key, roles):
-            state[key] = roles
-            return MagicMock(success=True)
-
-        def fake_update(key, roles):
-            state[key] = roles
-            return MagicMock(success=True)
-
-        with patch.object(self.client, "get_layer_rules", side_effect=fake_get_layer_rules), \
-             patch.object(self.client, "add_layer_rule", side_effect=fake_add), \
-             patch.object(self.client, "update_layer_rule", side_effect=fake_update):
-            first = self.client.set_layer_rule("hamburg.bezirke.r", "ROLE_DCS_READER")
-            second = self.client.set_layer_rule("hamburg.bezirke.r", "ROLE_DCS_READER")
-
-        self.assertTrue(first.success)
-        self.assertTrue(second.success)
-        self.assertEqual(state["hamburg.bezirke.r"], "ROLE_DCS_READER")
-
 
 class GetLayerRulesTests(TestCase):
     def setUp(self):

@@ -133,6 +133,31 @@ def resolve_write_organization(request):
     return None
 
 
+def _org_slug_of(obj):
+    organization = getattr(obj, "organization", None)
+    return organization.slug if organization is not None else None
+
+
+def check_org_level(request, obj, required):
+    """Shared org-ownership + role-level gate (used by the admin mixin and the
+    standalone ``has_org_write_access`` helper, so the rule lives in one place).
+
+    Superusers and exempt platform roles pass unconditionally. Otherwise the
+    object (when given) must belong to the caller's org *and* the caller must
+    hold at least ``required`` for it. Does **not** check ``is_staff``/
+    ``is_active`` -- callers that need that gate on it separately.
+    """
+    if request.user.is_superuser:
+        return True
+    roles, org_slug, exempt = get_request_org_context(request)
+    if exempt:
+        return True
+    if obj is not None and _org_slug_of(obj) != org_slug:
+        return False
+    level = org_role_level(roles, org_slug)
+    return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[required]
+
+
 def has_org_write_access(request, obj, required="WRITER"):
     """Standalone version of ``OrgScopedAdminMixin``'s change-permission rule.
 
@@ -144,15 +169,7 @@ def has_org_write_access(request, obj, required="WRITER"):
         return True
     if not (request.user and request.user.is_active and request.user.is_staff):
         return False
-    roles, org_slug, exempt = get_request_org_context(request)
-    if exempt:
-        return True
-    organization = getattr(obj, "organization", None)
-    obj_slug = organization.slug if organization is not None else None
-    if obj_slug != org_slug:
-        return False
-    level = org_role_level(roles, org_slug)
-    return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[required]
+    return check_org_level(request, obj, required)
 
 
 class OrgScopedAdminMixin:
@@ -176,21 +193,6 @@ class OrgScopedAdminMixin:
             return qs.none()
         return qs.filter(**{self.org_lookup: org_slug})
 
-    def _org_slug_of(self, obj):
-        organization = getattr(obj, "organization", None)
-        return organization.slug if organization is not None else None
-
-    def _has_org_level(self, request, obj, required):
-        if request.user.is_superuser:
-            return True
-        roles, org_slug, exempt = get_request_org_context(request)
-        if exempt:
-            return True
-        if obj is not None and self._org_slug_of(obj) != org_slug:
-            return False
-        level = org_role_level(roles, org_slug)
-        return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[required]
-
     def _is_active_staff(self, request):
         # Deliberately not `super().has_*_permission()` (Django's default
         # `user.has_perm(...)` check): this app never syncs Django
@@ -203,10 +205,10 @@ class OrgScopedAdminMixin:
         # No `obj` yet to check org ownership against -- WRITER+ in *some*
         # org (or exempt) is enough; the actual owning org is resolved at
         # save time (see `resolve_write_organization`).
-        return self._is_active_staff(request) and self._has_org_level(request, None, "WRITER")
+        return self._is_active_staff(request) and check_org_level(request, None, "WRITER")
 
     def has_change_permission(self, request, obj=None):
-        return self._is_active_staff(request) and self._has_org_level(request, obj, "WRITER")
+        return self._is_active_staff(request) and check_org_level(request, obj, "WRITER")
 
     def has_delete_permission(self, request, obj=None):
-        return self._is_active_staff(request) and self._has_org_level(request, obj, "ADMIN")
+        return self._is_active_staff(request) and check_org_level(request, obj, "ADMIN")

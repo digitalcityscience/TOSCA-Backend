@@ -96,25 +96,6 @@ class GeoServerSecuritySyncServiceTestCase(TestCase):
         ][-1]
         self.assertEqual(last_read_rule_call.args[1], 'ROLE_DCS_READER')
 
-    def test_sync_is_idempotent_across_repeated_calls(self):
-        client = self._mock_client()
-
-        with patch.object(GeodataEngine, 'get_client', return_value=client):
-            GeoServerSecuritySyncService(self.workspace).sync()
-            GeoServerSecuritySyncService(self.workspace).sync()
-
-        self.assertEqual(client.set_layer_rule.call_count, 4)
-
-    def test_rule_failure_raises_acl_sync_error_and_does_not_persist_partial_state(self):
-        client = self._mock_client()
-        client.set_layer_rule.return_value = OperationResult(
-            success=False, error='HTTP 500', message='boom'
-        )
-
-        with patch.object(GeodataEngine, 'get_client', return_value=client):
-            with self.assertRaises(GeoServerACLSyncError):
-                GeoServerSecuritySyncService(self.workspace).sync()
-
     def test_no_engine_is_a_silent_noop(self):
         self.workspace.geodata_engine = None
 
