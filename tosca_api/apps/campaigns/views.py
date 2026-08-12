@@ -1,5 +1,12 @@
 from rest_framework import permissions, viewsets
+from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import CursorPagination
+
+from tosca_api.apps.organizations.permissions import (
+    OrgScopedPermission,
+    org_scoped_queryset,
+    resolve_write_organization,
+)
 
 from .models import Campaign
 from .serializers import (
@@ -23,8 +30,11 @@ class CampaignViewSet(viewsets.ModelViewSet):
     """
     queryset = Campaign.objects.all()
     serializer_class = CampaignDetailSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, OrgScopedPermission]
     pagination_class = StandardCursorPagination
+
+    def get_queryset(self):
+        return org_scoped_queryset(self.request, Campaign.objects.all())
 
     def get_serializer_class(self):
         if self.action == "list":
@@ -34,5 +44,8 @@ class CampaignViewSet(viewsets.ModelViewSet):
         return CampaignDetailSerializer
 
     def perform_create(self, serializer):
-        """Set the creator to the current user."""
-        serializer.save(created_by=self.request.user)
+        """Set the creator and owning organization to the current user's."""
+        organization = resolve_write_organization(self.request)
+        if organization is None:
+            raise ValidationError({"organization": "Could not determine an organization for this campaign."})
+        serializer.save(created_by=self.request.user, organization=organization)
