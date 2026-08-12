@@ -60,8 +60,32 @@ def welcome_view(request):
     """
     if not request.user.is_authenticated:
         return redirect('account_login')
-    
+
     return render(request, 'authentication/account/welcome.html')
+
+
+# Keycloak provider login URL (allauth openid_connect). Sending users here
+# starts the SSO flow; process=login keeps allauth on the login (not connect)
+# path. Matches the callback flow already exercised in pre_social_login.
+KEYCLOAK_LOGIN_URL = "/accounts/oidc/keycloak/login/?process=login"
+
+
+def admin_login_redirect(request):
+    """SSO-only admin login: never render Django's local username/password form.
+
+    Django's default ``/admin/login/`` accepts local passwords, which is a
+    parallel authentication path that bypasses Keycloak entirely (e.g. a
+    ``createsuperuser`` account). We shadow it so the *only* way into /admin/
+    is Keycloak:
+
+    * authenticated but not staff -> the welcome page (no admin, no form, and
+      we don't disclose the admin login);
+    * everyone else -> the Keycloak login flow.
+    """
+    user = request.user
+    if user.is_authenticated and not user.is_staff:
+        return redirect('/welcome/')
+    return redirect(KEYCLOAK_LOGIN_URL)
 
 
 class AutoSignupView(View):
