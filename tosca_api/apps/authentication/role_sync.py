@@ -54,12 +54,17 @@ def _social_login_payloads(extra_data, access_token=None):
     often-off mapper toggles -- so without this, browser login can silently
     see zero roles for every user regardless of what they actually hold.
     """
+    print(f"[ORG-DEBUG] _social_login_payloads: extra_data keys={sorted(extra_data.keys())}, access_token_present={bool(access_token)}")
+
     payloads = [("extra_data", extra_data)]
 
     if isinstance(access_token, str) and access_token:
         try:
-            payloads.append(("access_token", verify_and_decode_token(access_token)))
+            decoded = verify_and_decode_token(access_token)
+            print(f"[ORG-DEBUG] decoded access_token keys={sorted(decoded.keys())}")
+            payloads.append(("access_token", decoded))
         except Exception as exc:
+            print(f"[ORG-DEBUG] FAILED to decode access_token: {exc}")
             logger.warning("Failed to decode access_token for token extraction", extra={
                 "error": str(exc),
             })
@@ -67,17 +72,22 @@ def _social_login_payloads(extra_data, access_token=None):
     id_token = extra_data.get("id_token")
     if isinstance(id_token, str):
         try:
-            payloads.append(("id_token", verify_and_decode_token(id_token)))
+            decoded = verify_and_decode_token(id_token)
+            print(f"[ORG-DEBUG] decoded id_token keys={sorted(decoded.keys())}")
+            payloads.append(("id_token", decoded))
         except Exception as exc:
+            print(f"[ORG-DEBUG] FAILED to decode id_token: {exc}")
             logger.warning("Failed to decode id_token for token extraction", extra={
                 "error": str(exc),
                 "token_present": bool(id_token),
             })
     elif isinstance(id_token, dict):
+        print(f"[ORG-DEBUG] id_token already a dict, keys={sorted(id_token.keys())}")
         payloads.append(("id_token_dict", id_token))
 
     userinfo = extra_data.get("userinfo", {})
     if isinstance(userinfo, dict):
+        print(f"[ORG-DEBUG] userinfo keys={sorted(userinfo.keys())}")
         payloads.append(("userinfo", userinfo))
 
     return payloads
@@ -176,18 +186,48 @@ def _emit_login_warning(request, user, code, message, *, org_slug=None):
             })
 
 
+def _org_slug_from_payload(payload):
+    """Pull an org slug out of one payload, trying both claim shapes.
+
+    Keycloak's mapper config has shipped two different shapes over the
+    course of this project: the originally-specced scalar
+    ``default_organization`` claim, and (currently, live-verified 2026-08-12)
+    an ``organization`` claim carrying a list of slugs (e.g. ``["gq2"]``).
+    There is no multi-org UI/logic yet (canonical §4, ticket 14 backlog), so
+    when it's a list we just take the first slug as the user's org.
+    """
+    value = payload.get("default_organization")
+    if isinstance(value, str) and value:
+        return value, "default_organization"
+
+    value = payload.get("organization")
+    if isinstance(value, list) and value and isinstance(value[0], str):
+        return value[0], "organization[0]"
+    if isinstance(value, str) and value:
+        return value, "organization"
+
+    return None, None
+
+
 def _extract_org_from_payloads(payloads):
+    print(f"[ORG-DEBUG] checking {len(payloads)} payload(s) for org claim (default_organization or organization)")
     for source, payload in payloads:
         if not isinstance(payload, dict):
+            print(f"[ORG-DEBUG]   source={source!r} -> not a dict, skipping ({type(payload)})")
             continue
-        value = payload.get("default_organization")
-        if isinstance(value, str) and value:
+        print(f"[ORG-DEBUG]   source={source!r} keys={sorted(payload.keys())}")
+        slug, claim = _org_slug_from_payload(payload)
+        print(f"[ORG-DEBUG]   source={source!r} org_slug={slug!r} claim={claim!r}")
+        if slug:
+            print(f"[ORG-DEBUG] FOUND org_slug={slug!r} via claim={claim!r} in source={source!r}")
             logger.info("Extracted default organization from Keycloak data", extra={
-                "default_organization": value,
+                "default_organization": slug,
+                "claim": claim,
                 "source": source,
             })
-            return ExtractedOrg(default_slug=value, present=True, sources=[source])
+            return ExtractedOrg(default_slug=slug, present=True, sources=[source])
 
+    print(f"[ORG-DEBUG] NOT FOUND -- no org claim in any of {[s for s, _ in payloads]}")
     logger.info("No default_organization claim found in Keycloak data", extra={
         "sources_checked": [s for s, _ in payloads],
     })

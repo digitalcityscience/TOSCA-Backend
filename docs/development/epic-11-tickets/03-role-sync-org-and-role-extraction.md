@@ -33,6 +33,17 @@
 
 - Çoklu-org üyelik listesi token'da **YOK** — sadece scalar `default_organization`. Çoklu-org gelince ticket 14.
 
+## Güncelleme (2026-08-12): claim şekli canonical'da yazılandan farklı çıktı, düzeltildi
+
+Gerçek Keycloak login'i (`kose`, realm `tosca-dev`) canlı izlendiğinde token'da **`default_organization` scalar claim'i hiç gelmiyor**; onun yerine:
+```
+"organization": ["gq2"],
+"map-org-membership": {"gq2": {"id": ..., "groups": [...], "realm_access": {"roles": [...]}}}
+```
+— yani `organization` **liste** claim'i (Keycloak-tarafında mapper değişmiş/eklenmiş). `_extract_org_from_payloads` (`role_sync.py`) artık ikisini de destekliyor: önce eski `default_organization` scalar'ı, yoksa `organization` array'inin **ilk elemanını** default org olarak okuyor (`_org_slug_from_payload` helper'ı). Çoklu-org UI/mantığı hâlâ yok (tek eleman alınıyor) — canonical §4/ticket 14 kapsamı bu noktada değişmedi, sadece **claim'in okunma şekli** genişledi.
+
+`epic-11-canonical.md:122`'deki "canlı doğrulandı, `default_organization: dcs` geliyor" notu **artık güncel değil** — o tarihten sonra Keycloak mapper config'i değişmiş görünüyor.
+
 ## Doğrulama
 
 ```

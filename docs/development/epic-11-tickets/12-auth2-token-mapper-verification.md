@@ -6,7 +6,23 @@
 
 **Blocked by:** 11.
 
-**Status:** blocked (11 bekliyor)
+**Status:** ✅ canlı doğrulandı (2026-08-12, `kose` + `geo-client`, auth2/`tosca-dev`) — bulgular aşağıda. Geçici log kalıcı hale getirildi (bkz. not), o adım açık kaldı.
+
+---
+
+## Sonuç (2026-08-12 canlı doğrulama — `kose` ve `geo-client`, auth2/`tosca-dev`)
+
+`backends.py::KeycloakAdapter.pre_social_login`'e konan geçici loglarla (+ `role_sync.py` içindeki extraction logları) gerçek token'lar incelendi:
+
+- ❌ **`default_organization` (scalar) claim'i GELMİYOR** — ne `kose` ne `geo-client` için. §4'teki eski "canlı doğrulandı, `dcs` geliyor" notu **artık geçersiz**; auth2/`tosca-dev` mapper config'i o doğrulamadan sonra değişmiş.
+- ✅ **`organization` claim'i geliyor ama LİSTE olarak**: `"organization": ["gq2"]` (`kose` için). Beklenenin (§4: "yok, gerekince eklenir") tam tersi — zaten eklenmiş.
+- ✅ Ek olarak `map-org-membership` claim'i de geliyor: `{"gq2": {"id": ..., "groups": ["/kose-org-group"], "realm_access": {"roles": ["kose-rol-test", "ADMIN"]}}}` — org-scoped grup/rol bilgisini token içinde taşıyor. **Bu claim şu an kullanılmıyor**, ileride çoklu-org/grup mantığı gerekirse girdi olabilir.
+- ✅ `realm_access.roles` içinde platform rolleri geliyor (`DJANGO_SUPERADMIN` `kose` için — ayrıca bkz. commit `b71c4a0`).
+- ✅ Hem `userinfo`/`id_token` (allauth `extra_data`) hem decode edilmiş `access_token`'da aynı claim'ler mevcut.
+
+**Yapılan kod düzeltmesi:** `role_sync.py::_extract_org_from_payloads` artık iki şekli de destekliyor — önce `default_organization` scalar'a bakıyor, yoksa `organization` array'inin ilk elemanını org slug olarak alıyor (`_org_slug_from_payload`). Bkz. ticket 03 "Güncelleme" notu.
+
+**Açık kalan iş:** Adım 2'deki "doğrulama sonrası logu kaldır" talimatı **bilinçli olarak uygulanmadı** — `[ORG-DEBUG]` print'leri şu an canlı debugging için kodda duruyor (`role_sync.py`, `backends.py`). Bu ticket'ın kapanması için son adım: prod'a gitmeden önce bu debug print'lerinin kaldırılması/loglama seviyesine indirilmesi gerekiyor.
 
 ---
 
@@ -16,10 +32,10 @@ Canonical §4'teki canlı doğrulama **eski** Keycloak (`geo-client` login, 2026
 
 ## Doğrulanacaklar (canonical §12 + §4)
 
-- [ ] `default_organization` scalar claim token'a düşüyor mu? (`userinfo` **ve/veya** `id_token`).
-- [ ] `realm_access.roles` içinde `ROLE_<SLUG>_*` org rolleri geliyor mu?
-- [ ] Platform rolleri (`DJANGO_SUPERADMIN`, `DJANGO_STAFF`, `ADMIN`) `realm_access.roles`'ta geliyor mu?
-- [ ] `organization` (çoklu-üyelik listesi) hâlâ **YOK** mu? (beklenen: yok — §4; varsa ticket 14/çoklu-org planı güncellenir.)
+- [x] `default_organization` scalar claim token'a düşüyor mu? → **HAYIR**, gelmiyor (bkz. Sonuç).
+- [x] `realm_access.roles` içinde `ROLE_<SLUG>_*` / platform org rolleri geliyor mu? → evet (`kose`: `DJANGO_SUPERADMIN`; test verisinde ayrıca `kose-rol-test`, `ADMIN`).
+- [x] Platform rolleri (`DJANGO_SUPERADMIN`, `DJANGO_STAFF`, `ADMIN`) `realm_access.roles`'ta geliyor mu? → evet.
+- [x] `organization` (çoklu-üyelik listesi) hâlâ **YOK** mu? → **VAR** (beklenenin tersi), liste olarak (`["gq2"]`); kod buna göre güncellendi.
 
 ## Adımlar
 
@@ -30,10 +46,10 @@ Canonical §4'teki canlı doğrulama **eski** Keycloak (`geo-client` login, 2026
 
 ## Acceptance criteria
 
-- [ ] Canlı token incelendi; `default_organization` + `ROLE_<SLUG>_*` + `realm_access.roles`'un gelip gelmediği **kanıtla** (log çıktısı özeti ticket'a eklenir, token'ın kendisi değil).
-- [ ] Geçici log **kaldırıldı** (token içeriği kalıcı loglanmıyor).
-- [ ] Eksik claim varsa Keycloak mapper eksikliği net tarif edildi (hangi mapper, hangi realm).
-- [ ] `organization` array'inin varlık/yokluğu netleşti (çoklu-org planı için girdi).
+- [x] Canlı token incelendi; bulgular yukarıda (Sonuç bölümü).
+- [ ] Geçici log **kaldırılmadı** — bilinçli olarak açık bırakıldı, prod öncesi temizlenmeli (bkz. Sonuç → "Açık kalan iş").
+- [x] Eksik claim (`default_organization`) net: mapper artık bu adı basmıyor, onun yerine `organization` (liste) + `map-org-membership` basıyor. Keycloak tarafında bunun kasıtlı bir mapper değişikliği mi yoksa yanlışlıkla mı olduğu **doğrulanmadı** — takip gerekebilir.
+- [x] `organization` array'i **var** (beklenenin tersi) — ticket 03'e işlendi, kod bunu okuyor.
 
 ## Doğrulama
 

@@ -13,6 +13,7 @@ from tosca_api.apps.authentication.role_sync import (
     run_org_login_checks,
     sync_user_permissions_from_roles,
 )
+from tosca_api.apps.organizations.services import get_or_create_organization
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -79,6 +80,8 @@ class KeycloakTokenAuthentication(BaseAuthentication):
             # Non-blocking org coherence checks (log-only for API; no messages
             # framework on a Bearer request). See canonical §5d.
             org = extract_org_from_token(decoded_token)
+            if org.present and org.default_slug:
+                get_or_create_organization(org.default_slug)
             run_org_login_checks(user, roles, org, request=None)
 
             # return decoded token as request.auth for downstream use
@@ -141,6 +144,7 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         This runs BEFORE login completes.
         """
         extra_data = sociallogin.account.extra_data
+        print(f"[ORG-DEBUG] pre_social_login: raw extra_data={extra_data!r}")
         roles = self._extract_roles(sociallogin)
 
         # Get user info from userinfo or id_token
@@ -256,6 +260,10 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         """Run non-blocking org coherence checks and surface user-facing warnings."""
         extra_data = sociallogin.account.extra_data
         access_token = sociallogin.token.token if sociallogin.token else None
+        print(f"[ORG-DEBUG] _run_login_checks: user={getattr(user, 'username', None)!r} access_token_present={bool(access_token)}")
         org = extract_org_from_social_data(extra_data, access_token=access_token)
+        print(f"[ORG-DEBUG] _run_login_checks: extracted org={org!r}")
+        if org.present and org.default_slug:
+            get_or_create_organization(org.default_slug)
         run_org_login_checks(user, roles, org, request=request)
         

@@ -37,7 +37,7 @@
 | 09 | ACL hata yolu: `sync_status=dirty` + `sync_acl` retry command | C | 🔲 blocked | 08 |
 | 10 | GeoServer ACL integration test (gerçek GeoServer) | C | 🔲 blocked | 08, 09 |
 | 11 | auth2 config switch: `.env.dev` / `base.py` / `.env.example` | B | ✅ done | — |
-| 12 | auth2/`tosca-dev` token mapper canlı doğrulama | B | 🔲 ready-for-agent (gerçek Keycloak login gerektirir, agent kapsamı dışı) | 11 |
+| 12 | auth2/`tosca-dev` token mapper canlı doğrulama | B | ✅ canlı doğrulandı (2026-08-12) — `default_organization` yerine `organization` liste claim'i geldiği tespit edildi + kod düzeltildi (ticket 03); debug log temizliği açık kaldı | 11 |
 | 13 | GeoServer OIDC auth filter config commit + provision + auth2 repoint | B | 🔲 ready-for-agent | 11 |
 | 14 | (Backlog) Django Keycloak service account (Admin API / reconcile) | — | 🔲 backlog (POC dışı) | 11 |
 
