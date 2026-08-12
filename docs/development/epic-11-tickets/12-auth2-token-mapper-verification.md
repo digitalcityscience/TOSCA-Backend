@@ -6,7 +6,7 @@
 
 **Blocked by:** 11.
 
-**Status:** ✅ canlı doğrulandı (2026-08-12, `kose` + `geo-client`, auth2/`tosca-dev`) — bulgular aşağıda. Geçici log kalıcı hale getirildi (bkz. not), o adım açık kaldı.
+**Status:** ✅ done (2026-08-12, `kose` + `geo-client`, auth2/`tosca-dev`) — bulgular aşağıda. `[ORG-DEBUG]` print'leri kaldırıldı (`role_sync.py`, `backends.py`, `organizations/services.py`); mevcut `logger.info`/`logger.warning` çağrıları zaten aynı bilgiyi (claim adı, kaynak, org slug) token içeriğini loglamadan taşıyor.
 
 ---
 
@@ -22,7 +22,7 @@
 
 **Yapılan kod düzeltmesi:** `role_sync.py::_extract_org_from_payloads` artık iki şekli de destekliyor — önce `default_organization` scalar'a bakıyor, yoksa `organization` array'inin ilk elemanını org slug olarak alıyor (`_org_slug_from_payload`). Bkz. ticket 03 "Güncelleme" notu.
 
-**Açık kalan iş:** Adım 2'deki "doğrulama sonrası logu kaldır" talimatı **bilinçli olarak uygulanmadı** — `[ORG-DEBUG]` print'leri şu an canlı debugging için kodda duruyor (`role_sync.py`, `backends.py`). Bu ticket'ın kapanması için son adım: prod'a gitmeden önce bu debug print'lerinin kaldırılması/loglama seviyesine indirilmesi gerekiyor.
+**Kapanış notu (2026-08-12):** `[ORG-DEBUG]` print'leri kaldırıldı (`role_sync.py::_social_login_payloads`/`_extract_org_from_payloads`, `backends.py::pre_social_login`/`_run_login_checks`, `organizations/services.py::get_or_create_organization`). `backends.py:147`'deki `raw extra_data={extra_data!r}` print'i özellikle önemliydi — tüm token payload'ını loglama riski taşıyordu. Kalan `logger.info`/`logger.warning` çağrıları claim adı/kaynağı/org slug'ı yapılandırılmış şekilde loglamaya devam ediyor, token içeriğini değil.
 
 ---
 
@@ -47,7 +47,7 @@ Canonical §4'teki canlı doğrulama **eski** Keycloak (`geo-client` login, 2026
 ## Acceptance criteria
 
 - [x] Canlı token incelendi; bulgular yukarıda (Sonuç bölümü).
-- [ ] Geçici log **kaldırılmadı** — bilinçli olarak açık bırakıldı, prod öncesi temizlenmeli (bkz. Sonuç → "Açık kalan iş").
+- [x] Geçici log **kaldırıldı** (bkz. Sonuç → "Kapanış notu").
 - [x] Eksik claim (`default_organization`) net: mapper artık bu adı basmıyor, onun yerine `organization` (liste) + `map-org-membership` basıyor. Keycloak tarafında bunun kasıtlı bir mapper değişikliği mi yoksa yanlışlıkla mı olduğu **doğrulanmadı** — takip gerekebilir.
 - [x] `organization` array'i **var** (beklenenin tersi) — ticket 03'e işlendi, kod bunu okuyor.
 

@@ -42,5 +42,4 @@ def get_or_create_organization(slug: str) -> Organization:
         logger.info("Auto-provisioned organization from Keycloak login", extra={
             "org_slug": slug,
         })
-    print(f"[ORG-DEBUG] get_or_create_organization: slug={slug!r} created={created}")
     return org

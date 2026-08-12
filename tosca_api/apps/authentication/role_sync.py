@@ -54,17 +54,13 @@ def _social_login_payloads(extra_data, access_token=None):
     often-off mapper toggles -- so without this, browser login can silently
     see zero roles for every user regardless of what they actually hold.
     """
-    print(f"[ORG-DEBUG] _social_login_payloads: extra_data keys={sorted(extra_data.keys())}, access_token_present={bool(access_token)}")
-
     payloads = [("extra_data", extra_data)]
 
     if isinstance(access_token, str) and access_token:
         try:
             decoded = verify_and_decode_token(access_token)
-            print(f"[ORG-DEBUG] decoded access_token keys={sorted(decoded.keys())}")
             payloads.append(("access_token", decoded))
         except Exception as exc:
-            print(f"[ORG-DEBUG] FAILED to decode access_token: {exc}")
             logger.warning("Failed to decode access_token for token extraction", extra={
                 "error": str(exc),
             })
@@ -73,21 +69,17 @@ def _social_login_payloads(extra_data, access_token=None):
     if isinstance(id_token, str):
         try:
             decoded = verify_and_decode_token(id_token)
-            print(f"[ORG-DEBUG] decoded id_token keys={sorted(decoded.keys())}")
             payloads.append(("id_token", decoded))
         except Exception as exc:
-            print(f"[ORG-DEBUG] FAILED to decode id_token: {exc}")
             logger.warning("Failed to decode id_token for token extraction", extra={
                 "error": str(exc),
                 "token_present": bool(id_token),
             })
     elif isinstance(id_token, dict):
-        print(f"[ORG-DEBUG] id_token already a dict, keys={sorted(id_token.keys())}")
         payloads.append(("id_token_dict", id_token))
 
     userinfo = extra_data.get("userinfo", {})
     if isinstance(userinfo, dict):
-        print(f"[ORG-DEBUG] userinfo keys={sorted(userinfo.keys())}")
         payloads.append(("userinfo", userinfo))
 
     return payloads
@@ -210,16 +202,11 @@ def _org_slug_from_payload(payload):
 
 
 def _extract_org_from_payloads(payloads):
-    print(f"[ORG-DEBUG] checking {len(payloads)} payload(s) for org claim (default_organization or organization)")
     for source, payload in payloads:
         if not isinstance(payload, dict):
-            print(f"[ORG-DEBUG]   source={source!r} -> not a dict, skipping ({type(payload)})")
             continue
-        print(f"[ORG-DEBUG]   source={source!r} keys={sorted(payload.keys())}")
         slug, claim = _org_slug_from_payload(payload)
-        print(f"[ORG-DEBUG]   source={source!r} org_slug={slug!r} claim={claim!r}")
         if slug:
-            print(f"[ORG-DEBUG] FOUND org_slug={slug!r} via claim={claim!r} in source={source!r}")
             logger.info("Extracted default organization from Keycloak data", extra={
                 "default_organization": slug,
                 "claim": claim,
@@ -227,7 +214,6 @@ def _extract_org_from_payloads(payloads):
             })
             return ExtractedOrg(default_slug=slug, present=True, sources=[source])
 
-    print(f"[ORG-DEBUG] NOT FOUND -- no org claim in any of {[s for s, _ in payloads]}")
     logger.info("No default_organization claim found in Keycloak data", extra={
         "sources_checked": [s for s, _ in payloads],
     })
