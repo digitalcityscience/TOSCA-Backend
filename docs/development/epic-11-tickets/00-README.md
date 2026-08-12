@@ -33,9 +33,9 @@
 | 05 | Org-scoped DRF permission class + Django admin scoping | A | ✅ done | 01, 02, 03 |
 | 06 | A-track unit testleri (token fixture, infra'sız) | A | ✅ done | 03, 04, 05 |
 | 07 | `GeoServerClient` ACL layer-rule metodları (`add/update/delete`) | C | ✅ done | — |
-| 08 | `GeoServerSecuritySyncService` + Workspace `post_save` signal | C | 🔲 ready-for-agent | 01, 02, 07 |
-| 09 | ACL hata yolu: `sync_status=dirty` + `sync_acl` retry command | C | 🔲 blocked | 08 |
-| 10 | GeoServer ACL integration test (gerçek GeoServer) | C | 🔲 blocked | 08, 09 |
+| 08 | `GeoServerSecuritySyncService` + Workspace `post_save` signal | C | ✅ done | 01, 02, 07 |
+| 09 | ACL hata yolu: push başarısızsa Workspace hard-fail (dirty+retry **değil** — ürün kararıyla değişti) | C | ✅ done | 08 |
+| 10 | GeoServer ACL integration test (gerçek GeoServer) | C | ✅ done | 08, 09 |
 | 11 | auth2 config switch: `.env.dev` / `base.py` / `.env.example` | B | ✅ done | — |
 | 12 | auth2/`tosca-dev` token mapper canlı doğrulama | B | ✅ canlı doğrulandı (2026-08-12) — `default_organization` yerine `organization` liste claim'i geldiği tespit edildi + kod düzeltildi (ticket 03); debug log temizliği açık kaldı | 11 |
 | 13 | GeoServer OIDC auth filter config commit + provision + auth2 repoint | B | 🔲 ready-for-agent | 11 |
@@ -61,7 +61,7 @@ graph TD
     T07[07 GeoServerClient ACL metodları] --> T08[08 SecuritySyncService + signal]
     T01 --> T08
     T02 --> T08
-    T08 --> T09[09 sync_status dirty + retry command]
+    T08 --> T09[09 ACL hard-fail on push failure]
     T08 --> T10[10 ACL integration test]
     T09 --> T10
     T11[11 auth2 config switch] --> T12[12 token mapper doğrulama]
@@ -69,12 +69,12 @@ graph TD
     T11 --> T14[14 Keycloak service account - backlog]
 
     classDef done fill:#1f7a1f,stroke:#0d3,color:#fff;
-    class T01,T02,T03,T04,T05,T06,T07,T11 done;
+    class T01,T02,T03,T04,T05,T06,T07,T08,T09,T10,T11 done;
 ```
 
 **Paralel çalışılabilecek üç frontier** (birbirinden bağımsız):
 - **A-track:** ✅ tamamlandı (01-06).
-- **C-track:** 07 ✅ done → **08 şimdi ready-for-agent** → 09 → 10.
+- **C-track:** ✅ tamamlandı (07-10).
 - **B-track:** 11 ✅ done → **12 ve 13 şimdi ready-for-agent** (12 gerçek Keycloak login gerektirdiğinden ajan kapsamı dışı kalabilir).
 
 Üç track paralel yürüyebilir; hepsi bittiğinde Epic 11'in **auth + org-scope + ACL** kapsamı tamam olur.
@@ -88,7 +88,7 @@ graph TD
 - **Level yetenekleri (§2b):** READER=oku · WRITER=oluştur+düzenle (Django'da silme YOK) · ADMIN=+sil. GeoServer'da `.w` create/edit/delete'i ayıramaz → GeoServer planında writer=admin=`.w` (bilinçli trade-off, §7).
 - **Platform rolleri** (`ADMIN`, `GROUP_ADMIN`, `DJANGO_SUPERADMIN`) **org-gruplarına ASLA map edilmez** (§2 🔒 yetki-yükseltme kuralı). `DJANGO_STAFF` → `is_staff`, `DJANGO_SUPERADMIN` → `is_superuser`.
 - **ACL kural formatı (canlı doğrulandı §5c):** key = `<workspace>.<layer>.<access>`, access ∈ `{r, w, a}`, `<layer>=*` workspace-geneli. Değer = virgülle ayrılmış roller. Yeni key → `POST`, güncelle → `PUT`, sil → `DELETE /rest/security/acl/layers/{key}`.
-- **Cross-org erişim → 404** (403 değil, §10a). **Token TTL = 30 dk.** ACL push hatası → `sync_status=dirty` + retry command (outbox/framework YOK).
+- **Cross-org erişim → 404** (403 değil, §10a). **Token TTL = 30 dk.** ACL push hatası → **hard-fail** (ticket 09, ürün kararıyla §10a'nın dirty+retry tasarımı yerine): Workspace save'i tamamen başarısız olur, `dirty` durumu/retry command YOK. Engine yok/inaktif ise bu bir hata değildir, sessiz no-op'tur.
 - **default_org:** token'daki **scalar** `default_organization` claim'inden okunur (canlı doğrulandı). Çoklu-org üyelik listesi token'da **YOK** — gerekince mapper'a `organization` array eklenir ya da Admin API'den okunur (backlog, ticket 14).
 
 ---

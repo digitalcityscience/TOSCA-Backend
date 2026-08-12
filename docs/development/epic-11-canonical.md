@@ -242,7 +242,7 @@ token.realm_access.roles = [ROLE_DCS_WRITER, ...]   +  default_organization=dcs
 
 - **Token TTL = 30 dk** (ACL doc ≤5dk önerisini supersede eder). Revoke edilen üyelik en fazla 30 dk GeoServer'da açık kalabilir — bilinçli. Anında revocation gerekirse: Keycloak back-channel logout / token revocation.
 - **Cross-org erişim → 404** (403 değil).
-- **ACL push başarısızlığı → basit `sync_status=dirty` + retry management command** (v1'de dağıtık framework/outbox YOK; idempotent push yeterli).
+- **ACL push başarısızlığı → basit `sync_status=dirty` + retry management command** (v1'de dağıtık framework/outbox YOK; idempotent push yeterli). ⚠️ **Override (2026-08-12, ticket 09):** ürün kararıyla bu terk edildi — push başarısız olursa Workspace save'i **hard-fail** eder (rollback), `dirty`/retry command yok. Detay ve gerekçe: `epic-11-tickets/09-acl-failure-path-dirty-and-retry-command.md`.
 - **Realm-group ile rol yönetimi** (org-scoped group değil) — kullanıcı oluştururken grup seçimi, roller token'a düşer.
 - **default_org**: token'ın `default_organization` (scalar) claim'inden okunur — canlı doğrulandı, çalışıyor (§4). Çoklu-org üyelik listesi token'da henüz yok; gerekince mapper'a `organization` array'i eklenir ya da Admin API'den okunur. Login'i bloklamaz.
 - **İki login-check** (org-presence, org-role coherence) — bkz. §5(d).
@@ -268,7 +268,7 @@ token.realm_access.roles = [ROLE_DCS_WRITER, ...]   +  default_organization=dcs
 - Org modeli → yeni app `tosca_api/apps/organizations`.
 - Kullanıcı → **tek org** (`default_organization` scalar claim). Çoklu-org sonraya.
 - Seed "default" org **slug = `dcs`**; mevcut Workspace/Campaign satırları backfill ile buna bağlanır.
-- ACL push = model save (post_save signal) senkron; hata → `sync_status=dirty` + retry command.
+- ACL push = model save (post_save signal) senkron; hata → hard-fail (§10a override, ticket 09) — `sync_status=dirty` + retry command **değil**.
 - Cross-org erişim → 404. Token TTL 30 dk (§10a).
 - GeoServer OIDC login zaten çalışıyor → B = commit/provision + auth2 repoint (bkz. §12).
 
@@ -286,7 +286,7 @@ token.realm_access.roles = [ROLE_DCS_WRITER, ...]   +  default_organization=dcs
 **C — GeoServer ACL yazma (çok kritik)**
 - [ ] C1. `GeoServerClient`'a `add/update/delete_layer_rule` (raw REST, basic-auth; POST=yeni, PUT=güncelle, DELETE=sil — §5c doğrulandı).
 - [ ] C2. `GeoServerSecuritySyncService`: Workspace save/visibility → post_save signal → senkron push. PRIVATE: `<ws>.*.r=ROLE_<SLUG>_READER`, `<ws>.*.w=ROLE_<SLUG>_WRITER`. PUBLIC: `<ws>.*.r=*`, `<ws>.*.w=ROLE_<SLUG>_WRITER`.
-- [ ] C3. Hata yolu: `Workspace.sync_status` alanı + `dirty` işaretleme + `sync_acl` retry management command (idempotent).
+- [x] C3. Hata yolu: ~~`Workspace.sync_status` alanı + `dirty` işaretleme + `sync_acl` retry management command~~ → **hard-fail** (ürün kararı, ticket 09): push başarısızsa Workspace save'i rollback olur, `dirty`/retry command yok.
 - [ ] C4. Integration test (gerçek GeoServer, `make django-test-integration`).
 
 **B — GeoServer OIDC (hafif kalıntı)**
