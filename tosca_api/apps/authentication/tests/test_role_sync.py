@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 
 from tosca_api.apps.authentication.role_sync import (
@@ -94,3 +96,34 @@ def test_social_data_extracts_roles_from_userinfo():
 
     assert roles.authoritative is True
     assert roles.roles == {"DJANGO_STAFF"}
+
+
+def test_social_data_falls_back_to_access_token_when_userinfo_and_id_token_lack_roles():
+    """Regression: allauth's openid_connect provider never puts the access
+    token in extra_data -- only ID token + userinfo. Keycloak's default
+    "roles" client scope adds realm_access.roles to the access token, but
+    "add to ID token"/"add to userinfo" mapper toggles are separate and are
+    often off -- so without checking the access token too, browser login
+    silently sees zero roles for everyone."""
+    with patch(
+        "tosca_api.apps.authentication.role_sync.verify_and_decode_token",
+        return_value={"realm_access": {"roles": ["DJANGO_SUPERADMIN"]}},
+    ) as mock_decode:
+        roles = extract_roles_from_social_data(
+            {
+                "userinfo": {"sub": "abc123"},  # no realm_access
+                "id_token": {"sub": "abc123"},  # no realm_access
+            },
+            access_token="fake.jwt.token",
+        )
+
+    mock_decode.assert_called_once_with("fake.jwt.token")
+    assert roles.authoritative is True
+    assert roles.roles == {"DJANGO_SUPERADMIN"}
+
+
+def test_social_data_without_access_token_is_unaffected():
+    roles = extract_roles_from_social_data({"userinfo": {"sub": "abc123"}})
+
+    assert roles.authoritative is False
+    assert roles.roles == set()

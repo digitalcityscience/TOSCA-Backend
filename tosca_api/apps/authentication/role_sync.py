@@ -39,13 +39,30 @@ class ExtractedOrg:
     sources: list[str]
 
 
-def _social_login_payloads(extra_data):
+def _social_login_payloads(extra_data, access_token=None):
     """Assemble the (source, dict) payloads carried by an allauth OIDC login.
 
     Shared by role and org extraction so both look in exactly the same places:
-    the raw extra_data, the (verified) id_token, and userinfo.
+    the raw extra_data, the (verified) id_token, userinfo, and -- if the
+    caller has it -- the actual OAuth access token.
+
+    ``access_token`` matters because allauth's generic openid_connect
+    provider (``complete_login``) only ever stores the ID token + userinfo
+    response in ``extra_data``; it never puts the access token there. Keycloak's
+    default "roles" client scope adds ``realm_access.roles`` to the access
+    token by default, but "add to ID token"/"add to userinfo" are separate,
+    often-off mapper toggles -- so without this, browser login can silently
+    see zero roles for every user regardless of what they actually hold.
     """
     payloads = [("extra_data", extra_data)]
+
+    if isinstance(access_token, str) and access_token:
+        try:
+            payloads.append(("access_token", verify_and_decode_token(access_token)))
+        except Exception as exc:
+            logger.warning("Failed to decode access_token for token extraction", extra={
+                "error": str(exc),
+            })
 
     id_token = extra_data.get("id_token")
     if isinstance(id_token, str):
@@ -71,9 +88,9 @@ def extract_roles_from_token(decoded_token):
     return _extract_roles_from_payloads([("access_token", decoded_token)])
 
 
-def extract_roles_from_social_data(extra_data):
+def extract_roles_from_social_data(extra_data, access_token=None):
     """Extract Keycloak realm roles from allauth OIDC data."""
-    return _extract_roles_from_payloads(_social_login_payloads(extra_data))
+    return _extract_roles_from_payloads(_social_login_payloads(extra_data, access_token))
 
 
 def extract_org_from_token(decoded_token):
@@ -81,9 +98,9 @@ def extract_org_from_token(decoded_token):
     return _extract_org_from_payloads([("access_token", decoded_token)])
 
 
-def extract_org_from_social_data(extra_data):
+def extract_org_from_social_data(extra_data, access_token=None):
     """Extract the default_organization slug from allauth OIDC data."""
-    return _extract_org_from_payloads(_social_login_payloads(extra_data))
+    return _extract_org_from_payloads(_social_login_payloads(extra_data, access_token))
 
 
 def org_role_level(roles, org_slug):

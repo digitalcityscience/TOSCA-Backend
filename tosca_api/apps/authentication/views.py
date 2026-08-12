@@ -149,7 +149,7 @@ class AutoSignupView(View):
             user.save(update_fields=["email", "first_name", "last_name"])
         
         # Extract and apply roles
-        roles = self._extract_roles(extra_data)
+        roles = self._extract_roles(sociallogin)
         self._apply_permissions(user, roles)
         
         # Connect social account to user
@@ -175,9 +175,12 @@ class AutoSignupView(View):
             return redirect('/admin/')
         return redirect('welcome')
     
-    def _extract_roles(self, extra_data):
-        """Extract roles from Keycloak token."""
-        return extract_roles_from_social_data(extra_data)
+    def _extract_roles(self, sociallogin):
+        """Extract roles from the Keycloak login (access token first -- see
+        KeycloakAdapter._extract_roles in backends.py for why)."""
+        extra_data = sociallogin.account.extra_data
+        access_token = sociallogin.token.token if sociallogin.token else None
+        return extract_roles_from_social_data(extra_data, access_token=access_token)
     
     def _apply_permissions(self, user, roles):
         """Apply roles to Django user permissions."""
