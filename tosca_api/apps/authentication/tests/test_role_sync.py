@@ -26,7 +26,7 @@ def test_django_staff_role_grants_staff(django_user_model):
 def test_superadmin_role_grants_staff_and_superuser(django_user_model):
     user = django_user_model.objects.create_user(username="super-user")
     roles = extract_roles_from_token({
-        "realm_access": {"roles": ["SUPERADMIN"]},
+        "realm_access": {"roles": ["DJANGO_SUPERADMIN"]},
     })
 
     sync_user_permissions_from_roles(user, roles)
@@ -64,6 +64,23 @@ def test_empty_authoritative_role_claim_demotes_staff_user(django_user_model):
 
     user.refresh_from_db()
     assert changed is True
+    assert user.is_staff is False
+    assert user.is_superuser is False
+
+
+@pytest.mark.django_db
+def test_admin_platform_role_alone_does_not_grant_staff(django_user_model):
+    """ADMIN is the GeoServer console escape valve, not a Django role
+    (canonical §2 "Çakışma çözümü") -- only DJANGO_STAFF/DJANGO_SUPERADMIN do."""
+    user = django_user_model.objects.create_user(username="admin-role-user")
+    roles = extract_roles_from_token({
+        "realm_access": {"roles": ["ADMIN"]},
+    })
+
+    changed = sync_user_permissions_from_roles(user, roles)
+
+    user.refresh_from_db()
+    assert changed is False
     assert user.is_staff is False
     assert user.is_superuser is False
 
