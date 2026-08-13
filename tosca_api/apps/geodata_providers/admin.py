@@ -47,6 +47,7 @@ from .models import (
     Workspace,
 )
 from .services.commands.geodata_engine_service import GeodataEngineService
+from .services.commands.layer_group_service import LayerGroupService
 from .services.commands.layer_service import LayerService
 from .services.commands.store_service import StoreService
 from .services.commands.style_validation_service import StyleValidationService
@@ -2461,34 +2462,21 @@ class LayerGroupAdmin(admin.ModelAdmin):
         super().save_related(request, form, formsets, change)
         group = form.instance
         group._prefetched_objects_cache = {}
-        if (
+        refresh_legend = (
             'legend_image' in form.changed_data
             or form.cleaned_data.get('confirm_legend_current')
-        ):
-            group.refresh_legend_composition_hash()
-        try:
-            group.validate_members()
-        except ValidationError as exc:
-            message = ' | '.join(exc.messages)
-            LayerGroup.objects.filter(pk=group.pk).update(
-                publishing_state=LayerGroup.PublishingState.FAILED,
-                publishing_error=message,
-                sync_state=LayerGroup.SyncState.FAILED,
-                last_sync_error=message,
-                last_sync_at=timezone.now(),
-            )
+        )
+        result = LayerGroupService.reconcile_publication(
+            group=group,
+            refresh_legend=refresh_legend,
+        )
+        if not result.ok:
             self.message_user(
                 request,
-                f'Layer group saved but not published: {message}',
+                f'Layer group saved but not published: {result.error}',
                 messages.ERROR,
             )
             return
-        LayerGroup.objects.filter(pk=group.pk).update(
-            publishing_error='',
-            last_sync_error='',
-            sync_state=LayerGroup.SyncState.SYNCED,
-            last_sync_at=timezone.now(),
-        )
         if group.legend_is_stale:
             self.message_user(
                 request,

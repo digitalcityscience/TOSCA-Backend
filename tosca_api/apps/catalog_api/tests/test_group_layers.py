@@ -5,7 +5,9 @@ import tempfile
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.test import Client, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.forms.models import inlineformset_factory
 from django.urls import reverse
 from PIL import Image
@@ -180,6 +182,48 @@ class LayerGroupCatalogTests(TestCase):
             self.group.description_content,
         )
         self.assertFalse(payload["groups"]["group"][0]["has_legend"])
+
+    def test_group_list_query_count_is_constant_as_groups_grow(self):
+        """The visible-group list must not fan out per group (no N+1).
+
+        ``publication_warnings`` and legend staleness reuse the prefetched
+        members, so adding a second published group adds no queries.
+        """
+        list_url = reverse(
+            "catalog-v1-provider-workspace-layer-list",
+            kwargs={
+                "provider_id": self.provider.id,
+                "workspace_name": self.workspace.name,
+            },
+        )
+
+        with CaptureQueriesContext(connection) as one_group:
+            self.assertEqual(self.client.get(list_url).status_code, 200)
+
+        second_group = LayerGroup.objects.create(
+            workspace=self.workspace,
+            name="public-transport-2",
+            title="Public transport 2",
+            publishing_state="PUBLISHED",
+            is_public=True,
+            created_by=self.user,
+        )
+        for order, (layer, assignment) in enumerate(
+            zip(self.layers, self.assignments, strict=True)
+        ):
+            LayerGroupMember.objects.create(
+                group=second_group,
+                layer=layer,
+                style_assignment=assignment,
+                order=order,
+                source_alias=layer.name,
+            )
+
+        with CaptureQueriesContext(connection) as two_groups:
+            response = self.client.get(list_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["groups"]["group"]), 2)
+        self.assertEqual(len(two_groups), len(one_group))
 
     def test_group_manifest_exposes_canonical_sources_and_complete_style(self):
         response = self.client.get(

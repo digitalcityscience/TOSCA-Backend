@@ -1298,10 +1298,17 @@ class LayerGroup(SyncStateMixin, TimeStampedModel):
         """Fingerprint every rendered or labelled input represented by a legend."""
         if not self.pk:
             return ""
-        members = self.members.select_related(
-            "layer",
-            "style_assignment__style__sprite_asset",
-        ).order_by("order", "id")
+        # Reuse a prefetched ``members`` cache (the visible-group list prefetches
+        # ``layer`` / ``style_assignment__style__sprite_asset``) to keep the
+        # listing a single query; fall back to an explicit join off the save
+        # path, where no prefetch exists.
+        if "members" in getattr(self, "_prefetched_objects_cache", {}):
+            members = self.members.all()
+        else:
+            members = self.members.select_related(
+                "layer",
+                "style_assignment__style__sprite_asset",
+            ).order_by("order", "id")
         payload = []
         for member in members:
             assignment = member.style_assignment
@@ -1421,9 +1428,11 @@ class LayerGroup(SyncStateMixin, TimeStampedModel):
 
     def publication_warnings(self) -> list[str]:
         """Return non-blocking warnings for visually risky member ordering."""
-        members = self.members.select_related("layer__store").order_by("order", "id")
+        # ``members.all()`` reuses a ``prefetch_related("members__layer__store")``
+        # cache when present (the visible-group list relies on this to stay a
+        # single query) and is already ordered by ``Meta.ordering``.
         return self.publication_warnings_for_layers(
-            [(member.layer, member.order) for member in members]
+            [(member.layer, member.order) for member in self.members.all()]
         )
 
     @staticmethod
