@@ -2,8 +2,9 @@
 Tests for GeoContext Django admin Editor.js authoring.
 """
 
-import json
 import io
+import json
+from pathlib import Path
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -69,6 +70,27 @@ def test_widget_media_includes_vendored_assets():
     assert "geocontext/editorjs/editor.css" in media._css["all"]
 
 
+def test_editorjs_browser_round_trip_preserves_semantic_inline_markup():
+    """The editor must accept canonical tags and restore them on every save."""
+    init_path = (
+        Path(__file__).resolve().parents[1]
+        / "static"
+        / "geocontext"
+        / "editorjs"
+        / "init.js"
+    )
+    init_source = init_path.read_text(encoding="utf-8")
+
+    assert "prepareInlineMarkupForEditor" in init_source
+    assert 'openWith: "<b>"' in init_source
+    assert 'openWith: "<i>"' in init_source
+    assert "canonicalizeInlineMarkup" in init_source
+    assert 'openWith: "<strong>"' in init_source
+    assert 'openWith: "<em>"' in init_source
+    assert "strong: true" in init_source
+    assert "em: true" in init_source
+
+
 def test_widget_media_does_not_reference_any_cdn():
     media = EditorJsWidget().media
     rendered = str(media)
@@ -77,8 +99,6 @@ def test_widget_media_does_not_reference_any_cdn():
 
 
 def test_vendor_license_files_present():
-    from pathlib import Path
-
     base = Path(__file__).resolve().parents[1] / "static" / "geocontext" / "editorjs" / "vendor"
     for name in ("editorjs", "header", "list", "quote", "delimiter", "code", "image"):
         path = base / f"LICENSE.{name}"
@@ -87,8 +107,6 @@ def test_vendor_license_files_present():
 
 
 def test_editorjs_admin_assets_do_not_reference_cdn():
-    from pathlib import Path
-
     static_root = Path(__file__).resolve().parents[1] / "static" / "geocontext" / "editorjs"
     for path in static_root.rglob("*"):
         if path.is_file():
@@ -98,8 +116,6 @@ def test_editorjs_admin_assets_do_not_reference_cdn():
 
 
 def test_editorjs_styles_keep_image_controls_readable():
-    from pathlib import Path
-
     css_path = (
         Path(__file__).resolve().parents[1]
         / "static"

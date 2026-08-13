@@ -13,14 +13,85 @@
 (function () {
     "use strict";
 
+    function replaceInlineTags(value, replacements) {
+        if (typeof value !== "string" || value === "") return value;
+        return replacements.reduce(function (result, replacement) {
+            return result
+                .replace(replacement.open, replacement.openWith)
+                .replace(replacement.close, replacement.closeWith);
+        }, value);
+    }
+
+    function transformListItems(items, transformInline) {
+        if (!Array.isArray(items)) return items;
+        return items.map(function (item) {
+            if (typeof item === "string") return transformInline(item);
+            if (!item || typeof item !== "object") return item;
+            return Object.assign({}, item, {
+                content: transformInline(item.content || ""),
+                items: transformListItems(item.items || [], transformInline),
+            });
+        });
+    }
+
+    function transformBlockInlineMarkup(block, transformInline) {
+        var data = block && block.data ? Object.assign({}, block.data) : {};
+        if (block.type === "paragraph" || block.type === "header") {
+            data.text = transformInline(data.text || "");
+        } else if (block.type === "list") {
+            data.items = transformListItems(data.items || [], transformInline);
+        } else if (block.type === "quote") {
+            data.text = transformInline(data.text || "");
+            data.caption = transformInline(data.caption || "");
+        } else if (block.type === "image") {
+            data.caption = transformInline(data.caption || "");
+        }
+        return { type: block.type, data: data };
+    }
+
+    function canonicalizeInlineMarkup(value) {
+        return replaceInlineTags(value, [
+            {
+                open: /<b\b[^>]*>/gi,
+                close: /<\/b\s*>/gi,
+                openWith: "<strong>",
+                closeWith: "</strong>",
+            },
+            {
+                open: /<i\b[^>]*>/gi,
+                close: /<\/i\s*>/gi,
+                openWith: "<em>",
+                closeWith: "</em>",
+            },
+        ]);
+    }
+
+    function prepareInlineMarkupForEditor(value) {
+        return replaceInlineTags(value, [
+            {
+                open: /<strong\b[^>]*>/gi,
+                close: /<\/strong\s*>/gi,
+                openWith: "<b>",
+                closeWith: "</b>",
+            },
+            {
+                open: /<em\b[^>]*>/gi,
+                close: /<\/em\s*>/gi,
+                openWith: "<i>",
+                closeWith: "</i>",
+            },
+        ]);
+    }
+
     function sanitizeForStorage(output) {
         var blocks = (output && Array.isArray(output.blocks)) ? output.blocks : [];
         var cleaned = blocks.map(function (block) {
-            var data = block && block.data ? Object.assign({}, block.data) : {};
+            var cleanedBlock = transformBlockInlineMarkup(block, canonicalizeInlineMarkup);
+            var data = cleanedBlock.data;
             if (block.type === "quote") {
                 delete data.alignment;
             }
-            return { type: block.type, data: data };
+            return cleanedBlock;
         });
         return { blocks: cleaned };
     }
@@ -30,7 +101,16 @@
         if (!raw) return { blocks: [] };
         try {
             const parsed = JSON.parse(raw);
-            if (parsed && Array.isArray(parsed.blocks)) return parsed;
+            if (parsed && Array.isArray(parsed.blocks)) {
+                return {
+                    blocks: parsed.blocks.map(function (block) {
+                        return transformBlockInlineMarkup(
+                            block,
+                            prepareInlineMarkupForEditor
+                        );
+                    }),
+                };
+            }
         } catch (e) {
             // Fall through to empty doc — user can still edit the textarea.
         }
@@ -248,6 +328,19 @@
             holder: holder,
             data: parseInitial(textarea),
             tools: tools,
+            // Editor.js' built-in bold and italic tools author <b>/<i>, while
+            // the backend stores the semantic <strong>/<em> equivalents.
+            // Permit both representations so a saved document can be loaded,
+            // edited, and saved again without losing inline formatting.
+            sanitizer: {
+                a: { href: true, title: true },
+                b: true,
+                strong: true,
+                i: true,
+                em: true,
+                code: true,
+                br: true,
+            },
             placeholder: isDescription ? "Write a clear public description…" : "Write content…",
             onChange: function () {
                 const state = form && form._editorJsSubmitState;
