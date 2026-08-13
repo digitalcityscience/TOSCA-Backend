@@ -50,10 +50,14 @@ class GeoServerAclIntegrationTestCase(TestCase):
         self.ws_name = f"inttest_acl_{_random_suffix()}"
         self.read_key = f"{self.ws_name}.*.r"
         self.write_key = f"{self.ws_name}.*.w"
+        self.admin_key = f"{self.ws_name}.*.a"
+        # PRIVATE read grant = writer + reader (writer also reads); see security_sync.
+        self.private_read_roles = f"{self.org.writer_role},{self.org.reader_role}"
 
     def tearDown(self):
         self.gs_client.delete_layer_rule(self.read_key)
         self.gs_client.delete_layer_rule(self.write_key)
+        self.gs_client.delete_layer_rule(self.admin_key)
 
     def _create_workspace(self, visibility):
         return Workspace.objects.create(
@@ -64,25 +68,27 @@ class GeoServerAclIntegrationTestCase(TestCase):
             created_by=self.user,
         )
 
-    def test_private_workspace_writes_reader_and_writer_rules(self):
+    def test_private_workspace_writes_reader_writer_and_admin_rules(self):
         self._create_workspace(Workspace.Visibility.PRIVATE)
 
         rules = self.gs_client.get_layer_rules()
 
-        self.assertEqual(rules[self.read_key], self.org.reader_role)
+        self.assertEqual(rules[self.read_key], self.private_read_roles)
         self.assertEqual(rules[self.write_key], self.org.writer_role)
+        self.assertEqual(rules[self.admin_key], self.org.writer_role)
 
-    def test_public_workspace_opens_read_to_anonymous_but_not_write(self):
+    def test_public_workspace_opens_read_to_anonymous_but_not_write_or_admin(self):
         self._create_workspace(Workspace.Visibility.PUBLIC)
 
         rules = self.gs_client.get_layer_rules()
 
         self.assertEqual(rules[self.read_key], "*")
         self.assertEqual(rules[self.write_key], self.org.writer_role)
+        self.assertEqual(rules[self.admin_key], self.org.writer_role)
 
     def test_private_to_public_transition_updates_read_rule_in_place(self):
         workspace = self._create_workspace(Workspace.Visibility.PRIVATE)
-        self.assertEqual(self.gs_client.get_layer_rules()[self.read_key], self.org.reader_role)
+        self.assertEqual(self.gs_client.get_layer_rules()[self.read_key], self.private_read_roles)
 
         workspace.visibility = Workspace.Visibility.PUBLIC
         workspace.save()
@@ -90,6 +96,7 @@ class GeoServerAclIntegrationTestCase(TestCase):
         rules = self.gs_client.get_layer_rules()
         self.assertEqual(rules[self.read_key], "*")
         self.assertEqual(rules[self.write_key], self.org.writer_role)
+        self.assertEqual(rules[self.admin_key], self.org.writer_role)
 
     def test_repeated_sync_is_idempotent(self):
         workspace = self._create_workspace(Workspace.Visibility.PRIVATE)
@@ -101,8 +108,9 @@ class GeoServerAclIntegrationTestCase(TestCase):
         GeoServerSecuritySyncService(workspace).sync()
 
         rules = self.gs_client.get_layer_rules()
-        self.assertEqual(rules[self.read_key], self.org.reader_role)
+        self.assertEqual(rules[self.read_key], self.private_read_roles)
         self.assertEqual(rules[self.write_key], self.org.writer_role)
+        self.assertEqual(rules[self.admin_key], self.org.writer_role)
 
     def test_break_glass_global_admin_rule_is_untouched(self):
         before = self.gs_client.get_layer_rules().get("*.*.w")

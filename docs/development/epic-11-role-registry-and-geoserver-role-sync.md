@@ -13,8 +13,13 @@
 > delete mirrors its reader/writer role deletion to GeoServer **first** and is
 > **blocking** (aborts + warns the operator if GeoServer is unreachable, so
 > Django rows are never dropped while the GeoServer roles still exist). See
-> §4 "✅ Completed this round". Still open: active-role-service telemetry,
-> `roles.parent` hierarchy, org `name` casing.
+> §4 "✅ Completed this round".
+> **Round-2 (2026-08-13):** workspace-admin is now delivered by a third ACL rule
+> `<ws>.*.a → ROLE_<ORG>_WRITER` (writer = workspace editor/admin), so GeoServer
+> needs **only** reader+writer roles — the earlier `GROUP_ADMIN`/role-parent
+> detour was **abandoned & reverted** (REST has no parent endpoint; SQL-only
+> broke external-GeoServer integration). Org `name` casing: **decided — keep
+> `upper()`**. Nothing material left open.
 > **Date:** 2026-08-13
 > **Branch context:** `epic-11-keycloak-role-registry`
 > **Audience:** the implementing agent/developer. This document is the single
@@ -80,12 +85,18 @@ registry, so it is not selectable/visible in the Role Service UI. This is a
   (`tosca_api/apps/geodata_providers/security_sync.py`) runs on `Workspace`
   save (signals in `geodata_providers/signals.py`, wrapped in
   `transaction.atomic()` so a failed ACL push rolls back the workspace).
-  `_rule_map()` produces **only two** rules and references **only**
-  `reader_role` + `writer_role`:
+  `_rule_map()` produces **three** rules referencing **only** `reader_role` +
+  `writer_role`:
   ```
-  f"{ws}.*.r" → "*" if PUBLIC else org.reader_role
+  f"{ws}.*.r" → "*" if PUBLIC else f"{org.writer_role},{org.reader_role}"
   f"{ws}.*.w" → org.writer_role
+  f"{ws}.*.a" → org.writer_role
   ```
+  > **⟳ Revised (2026-08-13):** was two rules with `.r → reader_role` only.
+  > The `.a` (workspace-admin) rule was added and `.r` now includes the writer,
+  > so `ROLE_*_WRITER` = **workspace editor/admin** (write + GeoServer config for
+  > its own workspace) purely via ACL — **no `GROUP_ADMIN`/role-parent needed**.
+  > See §4 "✅ Completed this round (ACL admin rule)".
 - **GeoServer REST client:** `GeoServerClient`
   (`tosca_api/apps/geodata_providers/geoserver/client.py`) wraps workspaces,
   stores, layers and the ACL endpoint `/rest/security/acl/layers`. It has
@@ -356,21 +367,47 @@ service, so ACL "selected roles" render and roles are UI-selectable.
    4 reader/writer roles, admin excluded.
 
 ### Still-open (round-2) follow-ups — post-Phase-2
-- **Active-role-service resolution.** *Observable* via the GeoServer Resource REST
-  API (`GET /rest/resource/security/config.xml` → `<roleServiceName>`; then
-  `.../role/<name>/config.xml` → `<className>`). Dev is `jdbc_role` /
-  `JDBCRoleService` (verified). Reconciliation deliberately stays
-  **service-agnostic** (REST writes to whichever is active); still open: explicit
-  fallback/telemetry when neither `jdbc_role` nor `default` is reachable, and
-  whether to surface the active service name in the sync output.
 - **Organization `name` casing.** `get_or_create_organization` derives
   `name = slug.upper()` (e.g. `dcs` → `DCS`). Pre-existing; `name` is a cosmetic
-  label only (`slug` stays lowercase and drives `ROLE_<SLUG>_*`). Decide: keep
-  `upper()`, use the raw slug, or title-case. *(No code change made yet.)*
-- Whether to populate the `roles.parent` hierarchy column (e.g. writer→reader).
+  label only (`slug` stays lowercase and drives `ROLE_<SLUG>_*`). **Decided: keep
+  `upper()`** (2026-08-13) — no change.
+
+### ❌ Abandoned this round (2026-08-13) — GROUP_ADMIN / role-parent
+A detour built a writer→`ROLE_GROUP_ADMIN` role **parent** (active-role-service
+resolution + direct JDBC SQL, since GeoServer's REST role API exposes **no**
+parent endpoint — confirmed against its `roles.yaml`). **Reverted in full**: it
+only worked when we controlled the role DB (breaks external-GeoServer
+integration) and was unnecessary. Workspace-admin is delivered by the ACL `.a`
+rule instead (below). No trace remains (no `GEOSERVER_ROLE_DB`, no
+`get_active_role_service`, no SQL parent writes).
 
 ### ✅ Completed this round (2026-08-13)
 
+- **Workspace-admin via the ACL `.a` rule (the correct, REST-only model)** — ✅
+  **implemented** (`geodata_providers/security_sync.py`). `_rule_map()` now emits
+  **three** rules per workspace:
+  ```
+  <ws>.*.r = "*" (public) | ROLE_<ORG>_WRITER,ROLE_<ORG>_READER  # writer also reads
+  <ws>.*.w = ROLE_<ORG>_WRITER
+  <ws>.*.a = ROLE_<ORG>_WRITER                                   # workspace admin/config
+  ```
+  Consequence: **only two GeoServer roles per org are needed** (`READER`,
+  `WRITER`); `ROLE_*_ADMIN` / `GROUP_ADMIN` are **not** required on the GeoServer
+  side. `ROLE_*_WRITER` now means **workspace editor/admin** (data write +
+  GeoServer config for its own workspace); Django `ADMIN` stays platform/org/user
+  management only. Pure REST (`/rest/security/acl/layers`, `{key: roles}`), so it
+  works against any GeoServer incl. external ones. Tests updated:
+  `test_security_sync_service.py` (3-rule map, order `.r`→`.w`→`.a`, public vs
+  private, transition) + `test_geoserver_acl_integration.py` (`.a` key + writer
+  read grant, live GeoServer). *Naming caveat:* `WRITER` is now a slight misnomer
+  (it also admins the workspace) — kept as-is; documented here rather than renamed.
+
+- **Org rename/delete role lifecycle** (org slug change, org deletion) — ✅
+  **implemented** (`organizations/signals.py`, wired in `OrganizationsConfig.ready()`;
+  commit `e2c2cd9`):
+  - **Slug rename** (`post_save`, slug changed): the org's old-slug `KeycloakRole`
+    rows are **deactivated** (`is_active=False`) — a pure Django write, no GeoServer
+    round-trip — so the operator's next "Sync with Keycloak" reconcile deletes the
 - **Org rename/delete role lifecycle** (org slug change, org deletion) — ✅
   **implemented** (`organizations/signals.py`, wired in `OrganizationsConfig.ready()`;
   commit `e2c2cd9`):

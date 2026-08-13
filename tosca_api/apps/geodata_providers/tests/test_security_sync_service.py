@@ -46,18 +46,20 @@ class GeoServerSecuritySyncServiceTestCase(TestCase):
         client.set_layer_rule.return_value = OperationResult(success=True, message='ok')
         return client
 
-    def test_private_workspace_pushes_org_reader_and_writer_roles(self):
+    def test_private_workspace_pushes_reader_writer_and_admin_rules(self):
         self.workspace.visibility = Workspace.Visibility.PRIVATE
         client = self._mock_client()
 
         with patch.object(GeodataEngine, 'get_client', return_value=client):
             GeoServerSecuritySyncService(self.workspace).sync()
 
-        client.set_layer_rule.assert_any_call('hamburg.*.r', 'ROLE_DCS_READER')
+        # read = writer + reader (writer also reads); write & workspace-admin = writer.
+        client.set_layer_rule.assert_any_call('hamburg.*.r', 'ROLE_DCS_WRITER,ROLE_DCS_READER')
         client.set_layer_rule.assert_any_call('hamburg.*.w', 'ROLE_DCS_WRITER')
-        self.assertEqual(client.set_layer_rule.call_count, 2)
+        client.set_layer_rule.assert_any_call('hamburg.*.a', 'ROLE_DCS_WRITER')
+        self.assertEqual(client.set_layer_rule.call_count, 3)
 
-    def test_read_rule_is_pushed_before_write_rule(self):
+    def test_rules_are_pushed_read_then_write_then_admin(self):
         client = self._mock_client()
         calls_in_order = []
         client.set_layer_rule.side_effect = lambda key, roles: (
@@ -67,9 +69,9 @@ class GeoServerSecuritySyncServiceTestCase(TestCase):
         with patch.object(GeodataEngine, 'get_client', return_value=client):
             GeoServerSecuritySyncService(self.workspace).sync()
 
-        self.assertEqual(calls_in_order, ['hamburg.*.r', 'hamburg.*.w'])
+        self.assertEqual(calls_in_order, ['hamburg.*.r', 'hamburg.*.w', 'hamburg.*.a'])
 
-    def test_public_workspace_opens_read_to_anonymous_but_not_write(self):
+    def test_public_workspace_opens_read_to_anonymous_but_not_write_or_admin(self):
         self.workspace.visibility = Workspace.Visibility.PUBLIC
         client = self._mock_client()
 
@@ -78,8 +80,9 @@ class GeoServerSecuritySyncServiceTestCase(TestCase):
 
         client.set_layer_rule.assert_any_call('hamburg.*.r', '*')
         client.set_layer_rule.assert_any_call('hamburg.*.w', 'ROLE_DCS_WRITER')
+        client.set_layer_rule.assert_any_call('hamburg.*.a', 'ROLE_DCS_WRITER')
 
-    def test_public_to_private_transition_reverts_read_rule_to_org_role(self):
+    def test_public_to_private_transition_reverts_read_rule_to_org_roles(self):
         client = self._mock_client()
 
         with patch.object(GeodataEngine, 'get_client', return_value=client):
@@ -90,11 +93,11 @@ class GeoServerSecuritySyncServiceTestCase(TestCase):
             self.workspace.visibility = Workspace.Visibility.PRIVATE
             GeoServerSecuritySyncService(self.workspace).sync()
 
-        # same key, PUT-via-set_layer_rule now carries the org reader role instead of "*"
+        # same key, PUT-via-set_layer_rule now carries writer+reader instead of "*"
         last_read_rule_call = [
             call for call in client.set_layer_rule.call_args_list if call.args[0] == 'hamburg.*.r'
         ][-1]
-        self.assertEqual(last_read_rule_call.args[1], 'ROLE_DCS_READER')
+        self.assertEqual(last_read_rule_call.args[1], 'ROLE_DCS_WRITER,ROLE_DCS_READER')
 
     def test_no_engine_is_a_silent_noop(self):
         self.workspace.geodata_engine = None

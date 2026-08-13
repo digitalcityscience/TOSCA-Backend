@@ -2,9 +2,22 @@
 GeoServerSecuritySyncService (epic-11 ticket 08, canonical §5c).
 
 Pushes a Workspace's owner-org + visibility onto GeoServer's Data Security
-ACL as two workspace-wide rules (`<ws>.*.r`, `<ws>.*.w`). Django -> GeoServer,
-one direction, synchronous on Workspace save. Never writes to Keycloak
-(canonical §9 -- the KeycloakSyncService half of the old design is gone).
+ACL as three workspace-wide rules (`<ws>.*.r`, `<ws>.*.w`, `<ws>.*.a`). Django
+-> GeoServer, one direction, synchronous on Workspace save. Never writes to
+Keycloak (canonical §9 -- the KeycloakSyncService half of the old design is gone).
+
+Role model (2026-08-13, supersedes the GROUP_ADMIN/role-hierarchy detour):
+GeoServer only needs **two** org roles, and workspace-admin comes from the ACL
+`.a` rule -- *not* from a role parent/inheritance. Per workspace:
+
+    <ws>.*.r = <writer>,<reader>   # read: writer + reader (writer also reads)
+    <ws>.*.w = <writer>            # write: writer
+    <ws>.*.a = <writer>            # workspace admin/config: writer
+
+So ``ROLE_*_READER`` = read-only data consumer, and ``ROLE_*_WRITER`` =
+**workspace editor/admin** (data write + GeoServer config for its own
+workspace). No ``ROLE_*_ADMIN`` / ``GROUP_ADMIN`` role is needed on the GeoServer
+side; Django ``ADMIN`` remains platform/org/user management only.
 
 Ticket 09 revision (2026-08-12, product decision -- supersedes the
 dirty/retry design canonical §10a originally sketched): a Workspace must
@@ -19,9 +32,8 @@ Workspace that has nothing to push to yet (e.g. metadata staged before an
 engine is provisioned, or an engine intentionally deactivated). That stays
 a silent no-op, same as ticket 08's original behavior.
 
-The `.r` rule is pushed before the `.w` rule in `_rule_map()`: read is the
-broader, "more encompassing" grant and GeoServer should see it applied
-first.
+The rules are pushed `.r` then `.w` then `.a` in `_rule_map()`: read is the
+broader, "more encompassing" grant and GeoServer should see it applied first.
 """
 from __future__ import annotations
 
@@ -81,14 +93,21 @@ class GeoServerSecuritySyncService:
             raise GeoServerACLSyncError(message)
 
     def _rule_map(self) -> dict[str, str]:
-        """The §5c rule pair for this workspace's current organization + visibility.
+        """The §5c ACL rules for this workspace's current organization + visibility.
 
-        Insertion order matters: `.r` (broader) before `.w`.
+        Three rules (insertion order matters: `.r` broader, then `.w`, then `.a`):
+        - `.r` read  -> `"*"` if public, else `writer,reader` (writer also reads)
+        - `.w` write -> writer
+        - `.a` admin -> writer (workspace admin/config; replaces any GROUP_ADMIN
+          role -- see module docstring)
         """
         org = self.workspace.organization
         ws_name = self.workspace.name
         is_public = self.workspace.visibility == Workspace.Visibility.PUBLIC
+        writer = org.writer_role
+        read_roles = "*" if is_public else f"{writer},{org.reader_role}"
         return {
-            f"{ws_name}.*.r": "*" if is_public else org.reader_role,
-            f"{ws_name}.*.w": org.writer_role,
+            f"{ws_name}.*.r": read_roles,
+            f"{ws_name}.*.w": writer,
+            f"{ws_name}.*.a": writer,
         }
