@@ -1,29 +1,57 @@
 # Epic-11 — Keycloak Role Registry & GeoServer Role-Service Sync
 
-> **Status:** Phase 1 complete (registry model + population: login upsert,
-> Admin-API client, `sync_keycloak_roles` command, tests). **Phase 2 complete**
-> (GeoServer role-service methods on `GeoServerClient`; catalog-driven
-> **reader/writer-only** reconciliation with **deletion mirroring** in
-> `role_sync`; one-click **"Sync with Keycloak"** admin button doing both hops;
-> `sync_geoserver_roles` CLI for hop-2; tests; verified live against jdbc_role).
-> Admin roles are cataloged but never pushed; no automatic push (operator-
-> triggered only); the `KeycloakRole` admin is a **read-only** Keycloak mirror.
-> **Round-2 follow-up done** (2026-08-13): **org rename/delete role lifecycle**
-> — a slug rename deactivates the org's stale catalog roles (Django-only); an org
-> delete mirrors its reader/writer role deletion to GeoServer **first** and is
-> **blocking** (aborts + warns the operator if GeoServer is unreachable, so
-> Django rows are never dropped while the GeoServer roles still exist). See
-> §4 "✅ Completed this round".
-> **Round-2 (2026-08-13):** workspace-admin is now delivered by a third ACL rule
-> `<ws>.*.a → ROLE_<ORG>_WRITER` (writer = workspace editor/admin), so GeoServer
-> needs **only** reader+writer roles — the earlier `GROUP_ADMIN`/role-parent
-> detour was **abandoned & reverted** (REST has no parent endpoint; SQL-only
-> broke external-GeoServer integration). Org `name` casing: **decided — keep
-> `upper()`**. Nothing material left open.
-> **Date:** 2026-08-13
-> **Branch context:** `epic-11-keycloak-role-registry`
-> **Audience:** the implementing agent/developer. This document is the single
-> source of truth for *why* and *what*. Read it fully before writing code.
+> ## ✅ Epic-11 — COMPLETE (2026-08-13)
+>
+> **Everything below is done and verified.** What shipped, in one place:
+>
+> - **Phase 1 — `KeycloakRole` registry + population.** Registry model; login
+>   upsert; Keycloak Admin-API client; `sync_keycloak_roles` command; tests. The
+>   `KeycloakRole` admin is a **read-only** Keycloak mirror (no add/change/delete).
+> - **Phase 2 — GeoServer role-service sync.** Role-service methods on
+>   `GeoServerClient`; catalog-driven **reader/writer-only** reconciliation with
+>   **deletion mirroring** (`role_sync`); one-click **"Sync with Keycloak"** admin
+>   button (both hops); `sync_geoserver_roles` CLI (hop-2). Verified live against
+>   `jdbc_role`.
+> - **Org rename/delete role lifecycle.** Slug rename deactivates the org's stale
+>   catalog roles (Django-only); org delete mirrors reader/writer deletion to
+>   GeoServer **first** and is **blocking** (aborts + warns if GeoServer is
+>   unreachable — Django rows never drop while GeoServer roles still exist).
+> - **Workspace-admin via ACL (final model).** `GeoServerSecuritySyncService`
+>   pushes **three** per-workspace data-security rules:
+>   ```
+>   <ws>.*.r = "*" (public) | ROLE_<ORG>_WRITER,ROLE_<ORG>_READER   (writer also reads)
+>   <ws>.*.w = ROLE_<ORG>_WRITER
+>   <ws>.*.a = ROLE_<ORG>_WRITER                                     (workspace admin/config)
+>   ```
+>
+> **Final role model (the important takeaway):**
+> | Role | Where | Means |
+> |---|---|---|
+> | `ADMIN` (Django) | Django | platform / org / user management only |
+> | `ROLE_<ORG>_READER` | GeoServer | read-only data consumer |
+> | `ROLE_<ORG>_WRITER` | GeoServer | **workspace editor/admin** — data write **+** GeoServer config for its own workspace (via the `.a` rule) |
+>
+> So GeoServer needs **only reader + writer** per org. **No** `ROLE_*_ADMIN`,
+> **no** `GROUP_ADMIN`, **no** role-parent hierarchy. *(Naming caveat: `WRITER`
+> also admins the workspace — kept as-is, documented here rather than renamed.)*
+>
+> **Abandoned detour (do not resurrect):** a writer→`ROLE_GROUP_ADMIN` role
+> **parent** was built and then **fully reverted** — GeoServer's REST role API has
+> **no** parent endpoint (confirmed against its `roles.yaml`), and the SQL-only
+> fallback only worked when we controlled the role DB, breaking external-GeoServer
+> integration. The `.a` ACL rule above delivers the same capability over pure REST.
+> (Stale `ROLE_*_WRITER` parents left in the dev `gs_auth_role_schema.roles` table
+> were cleaned back to `NULL`.)
+>
+> **Decisions closed:** org `name` casing → **keep `upper()`**; `Project` entity →
+> **deferred** (stays a denormalized string on `KeycloakRole`); separate
+> "Push to GeoServer" admin button → **not doing it** (one button + CLI suffice).
+> Nothing material left open.
+>
+> **Date:** 2026-08-13 · **Branch:** `epic-11-keycloak-role-registry` ·
+> **Audience:** implementing agent/developer — this doc is the single source of
+> truth for *why* and *what*. The sections below keep the full history and
+> reasoning; this header is the current end-state.
 
 > **Revision (2026-08-13, during implementation):** the registry model design
 > was tightened while building it. Two concepts that used to be conflated in the
@@ -366,11 +394,16 @@ service, so ACL "selected roles" render and roles are UI-selectable.
    against the dev GeoServer (jdbc_role active): full pipeline pushes exactly the
    4 reader/writer roles, admin excluded.
 
-### Still-open (round-2) follow-ups — post-Phase-2
+### Closed decisions (round-2) — nothing left open
 - **Organization `name` casing.** `get_or_create_organization` derives
   `name = slug.upper()` (e.g. `dcs` → `DCS`). Pre-existing; `name` is a cosmetic
   label only (`slug` stays lowercase and drives `ROLE_<SLUG>_*`). **Decided: keep
   `upper()`** (2026-08-13) — no change.
+- **`Project` entity** — **deferred** (see §3.2 dec. 12): `project` stays a
+  denormalized string on `KeycloakRole` until Workspace/Layer scoping needs
+  referential integrity.
+- **Separate "Push to GeoServer" (hop-2-only) admin button** — **not doing it**
+  (the one "Sync with Keycloak" button + the `sync_geoserver_roles` CLI suffice).
 
 ### ❌ Abandoned this round (2026-08-13) — GROUP_ADMIN / role-parent
 A detour built a writer→`ROLE_GROUP_ADMIN` role **parent** (active-role-service
