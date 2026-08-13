@@ -9,35 +9,62 @@ from tosca_api.apps.organizations.models import Organization
 pytestmark = pytest.mark.django_db
 
 
-def test_defaults_active_and_timestamps():
+@pytest.fixture
+def dcs():
+    # 'dcs' is seeded by an organizations migration; reuse it.
+    return Organization.objects.get(slug="dcs")
+
+
+def test_defaults_active_and_timestamps(dcs):
     role = KeycloakRole.objects.create(
-        name="ROLE_DCS_READER", source=KeycloakRole.Source.LOGIN
+        name="ROLE_DCS_READER",
+        organization=dcs,
+        level=KeycloakRole.Level.READER,
+        source=KeycloakRole.Source.LOGIN,
     )
     assert role.is_active is True
+    assert role.project == ""  # org-level role has no project sub-scope
     assert role.first_seen_at is not None
     assert role.last_seen_at is not None
     assert str(role) == "ROLE_DCS_READER"
 
 
-def test_name_is_unique():
+def test_project_scoped_role(dcs):
+    role = KeycloakRole.objects.create(
+        name="ROLE_DCS_TOSCA_WRITER",
+        organization=dcs,
+        project="tosca",
+        level=KeycloakRole.Level.WRITER,
+        source=KeycloakRole.Source.KEYCLOAK_ADMIN,
+    )
+    assert role.organization == dcs
+    assert role.project == "tosca"
+    assert role in dcs.keycloak_roles.all()
+
+
+def test_name_is_unique(dcs):
     KeycloakRole.objects.create(
-        name="ROLE_DCS_WRITER", source=KeycloakRole.Source.KEYCLOAK_ADMIN
+        name="ROLE_DCS_WRITER",
+        organization=dcs,
+        level=KeycloakRole.Level.WRITER,
+        source=KeycloakRole.Source.KEYCLOAK_ADMIN,
     )
     with pytest.raises(IntegrityError):
         KeycloakRole.objects.create(
-            name="ROLE_DCS_WRITER", source=KeycloakRole.Source.LOGIN
+            name="ROLE_DCS_WRITER",
+            organization=dcs,
+            level=KeycloakRole.Level.WRITER,
+            source=KeycloakRole.Source.LOGIN,
         )
 
 
-def test_organization_link_is_optional_and_nullable_on_delete():
+def test_deleting_org_cascades_to_its_roles():
     org = Organization.objects.create(name="GQ2", slug="gq2")
-    role = KeycloakRole.objects.create(
+    KeycloakRole.objects.create(
         name="ROLE_GQ2_ADMIN",
-        source=KeycloakRole.Source.KEYCLOAK_ADMIN,
         organization=org,
+        level=KeycloakRole.Level.ADMIN,
+        source=KeycloakRole.Source.KEYCLOAK_ADMIN,
     )
-    assert role in org.keycloak_roles.all()
-
     org.delete()
-    role.refresh_from_db()
-    assert role.organization is None  # SET_NULL keeps the catalog row
+    assert not KeycloakRole.objects.filter(name="ROLE_GQ2_ADMIN").exists()

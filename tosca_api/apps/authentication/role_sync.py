@@ -17,6 +17,54 @@ ORG_CHECK_EXEMPT_ROLES = frozenset({"DJANGO_SUPERADMIN", "DJANGO_STAFF"})
 # level is the highest one present in the token. See canonical §2/§2b.
 ORG_ROLE_LEVELS = ("READER", "WRITER", "ADMIN")
 
+# Prefix that marks a role as part of *our* system. Only these enter the
+# KeycloakRole registry -- everything else (offline_access, DJANGO_*, ADMIN,
+# free test roles) is Keycloak/platform noise we deliberately ignore.
+ROLE_PREFIX = "ROLE_"
+
+
+@dataclass(frozen=True)
+class ParsedRole:
+    """The structured identity carried by a conforming role name.
+
+    Grammar: ``ROLE_<ORG>[_<PROJECT>]_<LEVEL>`` (canonical §2, Epic-11 project
+    scoping). ``org_slug`` and ``project`` are lowercased to match
+    ``Organization.slug``; ``project`` is ``""`` for org-level roles.
+    """
+
+    org_slug: str
+    project: str
+    level: str
+
+
+def parse_role_name(name):
+    """Parse a ``ROLE_<ORG>[_<PROJECT>]_<LEVEL>`` name into its parts.
+
+    Returns a :class:`ParsedRole`, or ``None`` when the name does not conform:
+    not ``ROLE_``-prefixed, an unknown trailing level, or more than one project
+    segment (org/project slugs are single-segment -- underscores are the
+    delimiter, so ``ROLE_DCS_X_READER`` is org ``dcs`` + project ``x``, never
+    an atomic ``dcs_x``).
+    """
+    if not name or not name.startswith(ROLE_PREFIX):
+        return None
+
+    segments = name[len(ROLE_PREFIX):].split("_")
+    # Need at least <ORG> + <LEVEL>; at most <ORG> + <PROJECT> + <LEVEL>.
+    if not 2 <= len(segments) <= 3:
+        return None
+
+    level = segments[-1]
+    if level not in ORG_ROLE_LEVELS:
+        return None
+
+    org_slug = segments[0].lower()
+    project = segments[1].lower() if len(segments) == 3 else ""
+    if not org_slug:
+        return None
+
+    return ParsedRole(org_slug=org_slug, project=project, level=level)
+
 
 @dataclass(frozen=True)
 class ExtractedRoles:

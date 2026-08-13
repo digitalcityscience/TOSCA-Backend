@@ -7,17 +7,30 @@ table is only an ownership label that Workspace/Campaign rows FK onto; it never
 stores users or role assignments (those live in Keycloak).
 
 The ``slug`` is authoritative: it *derives* the Keycloak role names via the
-convention ``ROLE_<SLUG>_<READER|WRITER|ADMIN>`` (see canonical §2). Django never
-parses a role name back into org parts -- ``dcs_x`` is an atomic slug.
+convention ``ROLE_<SLUG>[_<PROJECT>]_<READER|WRITER|ADMIN>`` (see canonical §2).
+The slug is the **first** role segment, so it must be a single segment -- no
+underscores. The underscore is the role-name delimiter: ``ROLE_DCS_TOSCA_WRITER``
+is org ``dcs`` + project ``tosca``, never an atomic ``dcs_tosca``. This lets the
+registry parse a role name back into (org, project, level) unambiguously
+(see ``authentication.role_sync.parse_role_name``).
 """
 
 from __future__ import annotations
 
 import uuid
 
+from django.core.validators import RegexValidator
 from django.db import models
 
 from tosca_api.apps.core.models import TimeStampedModel
+
+# Single-segment slug: lowercase letters, digits, hyphens -- but no underscore,
+# which is reserved as the role-name segment delimiter (see module docstring).
+SINGLE_SEGMENT_SLUG_VALIDATOR = RegexValidator(
+    regex=r"^[a-z0-9-]+$",
+    message="Slug must be a single segment: lowercase letters, digits and "
+    "hyphens only (no underscore -- it delimits role-name segments).",
+)
 
 
 class Organization(TimeStampedModel):
@@ -27,8 +40,10 @@ class Organization(TimeStampedModel):
     name = models.CharField(max_length=255)
     slug = models.SlugField(
         unique=True,
-        help_text="Derives Keycloak role names: ROLE_<SLUG>_READER/WRITER/ADMIN. "
-        "Stable identifier -- renaming means renaming Keycloak roles + GeoServer ACL too.",
+        validators=[SINGLE_SEGMENT_SLUG_VALIDATOR],
+        help_text="Single segment (no underscore). Derives Keycloak role names: "
+        "ROLE_<SLUG>_READER/WRITER/ADMIN. Stable identifier -- renaming means "
+        "renaming Keycloak roles + GeoServer ACL too.",
     )
     keycloak_org_id = models.CharField(
         max_length=255,

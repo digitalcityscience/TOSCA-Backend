@@ -5,9 +5,17 @@ from tosca_api.apps.authentication.models import KeycloakRole
 
 @admin.register(KeycloakRole)
 class KeycloakRoleAdmin(admin.ModelAdmin):
-    list_display = ("name", "organization", "source", "is_active", "last_seen_at")
-    search_fields = ("name",)
-    list_filter = ("source", "is_active", "organization")
+    list_display = (
+        "name",
+        "organization",
+        "project",
+        "level",
+        "source",
+        "is_active",
+        "last_seen_at",
+    )
+    search_fields = ("name", "project")
+    list_filter = ("source", "is_active", "level", "organization")
     readonly_fields = ("first_seen_at", "last_seen_at")
 
     # KeycloakRole is a catalog populated from Keycloak (login upsert + Admin API
