@@ -13,6 +13,7 @@ from tosca_api.apps.authentication.role_sync import (
     run_org_login_checks,
     sync_user_permissions_from_roles,
 )
+from tosca_api.apps.authentication.role_registry import register_login_roles
 from tosca_api.apps.organizations.services import get_or_create_organization
 
 logger = logging.getLogger(__name__)
@@ -262,5 +263,9 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         org = extract_org_from_social_data(extra_data, access_token=access_token)
         if org.present and org.default_slug:
             get_or_create_organization(org.default_slug)
+        # Opportunistically grow the KeycloakRole catalog from this login's roles
+        # (best-effort; never blocks login). Runs after get_or_create_organization
+        # so the login's own org is resolvable. See role_registry (Epic 11 §4).
+        register_login_roles(roles)
         run_org_login_checks(user, roles, org, request=request)
         
