@@ -597,6 +597,120 @@ class GeoServerClient:
             return self.update_layer_rule(key, roles)
         return self.add_layer_rule(key, roles)
 
+    # Role service operations (epic-11 Phase 2)
+    #
+    # These talk to GeoServer's *active* role service via REST, so writes land
+    # in whichever service is configured (jdbc_role if activated, else the
+    # built-in default) and GeoServer refreshes its own cache -- Django never
+    # needs to know the schema or which service is active (canonical §3 dec. 6).
+
+    def get_roles(self) -> list:
+        """Return every role name declared in the active GeoServer role service."""
+        # `/rest/security/roles` defaults to XML; force JSON or `.json()` below
+        # raises and we'd silently return [] (breaks idempotency detection).
+        response = self._request(
+            "get", "/rest/security/roles", headers={"Accept": "application/json"}
+        )
+        if response.status_code != 200:
+            raise GeoServerPublishError(
+                f"Failed to fetch GeoServer roles: HTTP {response.status_code}"
+            )
+        try:
+            payload = response.json()
+        except ValueError:
+            return []
+        if isinstance(payload, dict):
+            # GeoServer wraps the list under "roles" (sometimes "roleNames").
+            for candidate in ("roles", "roleNames"):
+                value = payload.get(candidate)
+                if isinstance(value, list):
+                    return value
+            return []
+        if isinstance(payload, list):
+            return payload
+        return []
+
+    def role_exists(self, name: str) -> bool:
+        """Whether ``name`` is already declared in the active role service."""
+        try:
+            return name in self.get_roles()
+        except Exception as e:
+            logger.warning(f"Could not pre-check GeoServer role '{name}': {e}")
+            return False
+
+    def create_role(self, name: str) -> OperationResult:
+        """Declare a role in the active role service. POST is idempotent-friendly:
+        a re-declared role is not an error here."""
+        try:
+            encoded_name = quote(name, safe='')
+            response = self._request(
+                "post", f"/rest/security/roles/role/{encoded_name}"
+            )
+            if response.status_code not in (200, 201):
+                return OperationResult(
+                    success=False,
+                    error=response.text.strip() or f"HTTP {response.status_code}",
+                    message=f"Failed to create GeoServer role '{name}': HTTP {response.status_code}",
+                    data={'name': name, 'status_code': response.status_code},
+                )
+            return OperationResult(
+                success=True,
+                message=f"GeoServer role '{name}' created",
+                data={'name': name, 'status_code': response.status_code},
+            )
+        except Exception as e:
+            logger.error(f"Failed to create GeoServer role {name}: {e}")
+            return OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to create GeoServer role '{name}': {e}",
+                data={'name': name},
+            )
+
+    def set_role(self, name: str) -> OperationResult:
+        """Idempotent ensure: no-op if ``name`` already exists, else create it."""
+        if self.role_exists(name):
+            return OperationResult(
+                success=True,
+                message=f"GeoServer role '{name}' already exists",
+                data={'name': name, 'already_exists': True},
+            )
+        return self.create_role(name)
+
+    def delete_role(self, name: str) -> OperationResult:
+        """Remove a role from the active role service. Missing (404) is a no-op."""
+        try:
+            encoded_name = quote(name, safe='')
+            response = self._request(
+                "delete", f"/rest/security/roles/role/{encoded_name}"
+            )
+            if response.status_code == 404:
+                return OperationResult(
+                    success=True,
+                    message=f"GeoServer role '{name}' already absent",
+                    data={'name': name, 'already_deleted': True},
+                )
+            if response.status_code not in (200, 204):
+                return OperationResult(
+                    success=False,
+                    error=response.text.strip() or f"HTTP {response.status_code}",
+                    message=f"Failed to delete GeoServer role '{name}': HTTP {response.status_code}",
+                    data={'name': name, 'status_code': response.status_code},
+                )
+            return OperationResult(
+                success=True,
+                message=f"GeoServer role '{name}' deleted",
+                data={'name': name},
+            )
+        except Exception as e:
+            logger.error(f"Failed to delete GeoServer role {name}: {e}")
+            return OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to delete GeoServer role '{name}': {e}",
+                data={'name': name},
+            )
+
     # Store operations
 
     def create_postgis_store(
