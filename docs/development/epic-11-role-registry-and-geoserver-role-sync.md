@@ -1,10 +1,20 @@
 # Epic-11 — Keycloak Role Registry & GeoServer Role-Service Sync
 
-> **Status:** Design agreed, ready for implementation.
+> **Status:** Phase 1 first structure (registry model) implemented; rest of
+> Phase 1 pending.
 > **Date:** 2026-08-13
-> **Branch context:** `epic-11-org-scoping-and-workspace-visibility`
+> **Branch context:** `epic-11-keycloak-role-registry`
 > **Audience:** the implementing agent/developer. This document is the single
 > source of truth for *why* and *what*. Read it fully before writing code.
+
+> **Revision (2026-08-13, during implementation):** the registry model design
+> was tightened while building it. Two concepts that used to be conflated in the
+> `Organization.slug` convention are now **separate**: an **organization** (the
+> owner) and an optional **project** (a named sub-scope *within* an org). The
+> role grammar is now `ROLE_<ORG>[_<PROJECT>]_<LEVEL>`, the registry only holds
+> *conforming* roles, and `organization` is **mandatory** (no free-role rows).
+> See the callouts marked **⟳ Revised** below (§2.1, §3 decision 5, §3.2, §4
+> Phase 1 step 1, §5). Earlier prose is kept for history; the ⟳ note wins.
 
 ---
 
@@ -42,6 +52,14 @@ registry, so it is not selectable/visible in the Role Service UI. This is a
   admin_role   → f"{role_prefix}_ADMIN"        # ROLE_DCS_ADMIN
   ```
   The only stored field is `Organization.slug` (`dcs`, `gq2`, ...).
+  > **⟳ Revised:** `Organization.slug` is now constrained to a **single segment
+  > (no underscore)** -- the underscore is the role-name delimiter. This
+  > *reverses* the old "`dcs_x` is an atomic slug, Django never parses role names
+  > back" note (it was in the `Organization` docstring): role names now parse
+  > **back** into `(org, project, level)` via
+  > `authentication.role_sync.parse_role_name`. Grammar:
+  > `ROLE_<ORG>[_<PROJECT>]_<LEVEL>` (e.g. `ROLE_DCS_TOSCA_WRITER` -> org `dcs`,
+  > project `tosca`, level `WRITER`).
 - Keycloak→Django role mapping lives in
   `tosca_api/apps/authentication/role_sync.py`
   (`extract_roles_from_token`, `org_role_level`, `sync_user_permissions_from_roles`).
@@ -125,6 +143,13 @@ registry, so it is not selectable/visible in the Role Service UI. This is a
    This naturally excludes Keycloak system roles (`offline_access`,
    `uma_authorization`, `default-roles-*`) and platform roles
    (`DJANGO_STAFF`, `DJANGO_SUPERADMIN`, `ADMIN`).
+   > **⟳ Revised:** the filter is now stricter than "just `ROLE_`". Only roles
+   > that **conform to the grammar** `ROLE_<ORG>[_<PROJECT>]_<LEVEL>` **and whose
+   > first segment resolves to a known `Organization`** are cataloged. Free /
+   > non-conventional `ROLE_` roles that don't resolve to an org (e.g.
+   > `kose-rol-test`) are **no longer cataloged** -- we only care about *our*
+   > system's roles. Consequence: the "free roles justify the Admin-API sync"
+   > argument (§5) weakens -- see the ⟳ note there for the sync's revised value.
 
 6. **GeoServer write mechanism (for the later sync phase):** use the GeoServer
    **REST endpoint** `POST /rest/security/roles/role/{roleName}` via the
@@ -152,6 +177,36 @@ registry, so it is not selectable/visible in the Role Service UI. This is a
 > **Phase 2 next: GeoServer `default`/`jdbc_role` matching (push registry roles
 > into the active GeoServer role service).**
 
+### 3.2 Revision (2026-08-13) — organization vs project, mandatory org ⟳
+
+Taken while implementing the registry model:
+
+9. **Separate `organization` from `project`.** The old convention conflated them
+   (`Organization.slug` *was* the role scope). We now distinguish:
+   - **Organization** — the owner (`dcs`, `gq2`). First role segment.
+   - **Project** — an optional named sub-scope *within* an org (`tosca`). Middle
+     segment. An org owns many projects.
+   - **Level** — `READER|WRITER|ADMIN`. Trailing segment.
+
+   Grammar: **`ROLE_<ORG>[_<PROJECT>]_<LEVEL>`**. Org-level roles
+   (`ROLE_DCS_WRITER`) are just the 2-segment case and stay backward-compatible.
+
+10. **Every registry row has an organization (mandatory FK).** A `ROLE_` role
+    whose first segment resolves to no known `Organization` is **skipped, not
+    stored null** (log it; never manufacture an org from a role name -- same
+    footgun `OrganizationAdmin.has_add_permission=False` guards against). This
+    supersedes the earlier "nullable FK, null for free roles" plan.
+
+11. **Single-segment slugs.** Org (and project) slugs must contain **no
+    underscore**, so `parse_role_name` splits unambiguously. Enforced by a
+    validator on `Organization.slug`. Deeper nesting (4+ segments) is rejected.
+
+12. **`project`/`level` are stored on `KeycloakRole` as denormalized parse
+    output** (catalog-level separation). A first-class `Project` **entity** is
+    *deferred* until Workspace/Layer scoping needs referential integrity -- for
+    now `project` is a plain string segment. (Chosen over building the full
+    entity now: reversible, keeps Phase 1 narrow.)
+
 ---
 
 ## 4. Implementation plan
@@ -161,8 +216,25 @@ registry, so it is not selectable/visible in the Role Service UI. This is a
 **Goal:** a persisted, self-growing catalog of Keycloak roles that later UIs
 (event/workspace/layer role pickers) and Phase 2 can consume.
 
-1. **Model `KeycloakRole`** (suggested app: `authentication`, or a small new
-   `roles` app — implementer's call, keep it near `role_sync.py`):
+1. **Model `KeycloakRole`** — ✅ **implemented** in the `authentication` app
+   (`tosca_api/apps/authentication/models.py`), next to `role_sync.py`.
+   > **⟳ Revised — as built (supersedes the bullet list below):**
+   > - `name` — `CharField(unique=True)` (e.g. `ROLE_DCS_TOSCA_WRITER`)
+   > - `organization` — **mandatory** FK to `Organization`
+   >   (`on_delete=CASCADE`). First role segment, resolved to a known org;
+   >   non-resolving roles are **not cataloged** (no null rows).
+   > - `project` — `CharField(blank=True, default="")` — optional sub-scope
+   >   (middle segment); empty for org-level roles.
+   > - `level` — `CharField(choices=READER|WRITER|ADMIN)` — trailing segment.
+   > - `source` — `login` | `keycloak_admin` (how it was first seen).
+   > - `is_active` — `BooleanField(default=True)` (soft-deactivation).
+   > - `first_seen_at`, `last_seen_at` — timestamps.
+   > - Django admin registered (`list`, search by name/project, filter by
+   >   source/is_active/level/org, `has_add_permission=False`).
+   > - Helper `role_sync.parse_role_name(name) -> ParsedRole | None` does the
+   >   grammar parse; `Organization.slug` gained a single-segment validator.
+   >
+   > *Original (nullable-org) sketch, kept for history:*
    - `name` — `CharField(unique=True)` (e.g. `ROLE_DCS_READER`)
    - `organization` — nullable FK to `Organization` (link when the slug segment
      matches a known org; leave null for free roles like `kose-rol-test`)
@@ -183,8 +255,11 @@ registry, so it is not selectable/visible in the Role Service UI. This is a
    - `list_realm_roles()` → `GET /admin/realms/{realm}/roles?briefRepresentation=true&max=1000`.
    - Reuse the exact endpoints proven in §5.
 4. **`sync_keycloak_roles` management command:**
-   - Pull full realm role list, filter to `ROLE_` prefix, upsert into
-     `KeycloakRole`, link `organization` where the slug segment resolves.
+   - Pull full realm role list, keep only names that **conform** (`ROLE_` +
+     `parse_role_name` returns a `ParsedRole`) **and resolve to a known
+     `Organization`**; upsert into `KeycloakRole` with `organization`/`project`/
+     `level` from the parse. Non-conforming or non-resolving roles are **skipped
+     and logged** (⟳ §3.2 decision 10 — no null rows).
    - Deactivate (`is_active=False`) roles no longer present (don't hard-delete —
      ACL history may reference them).
    - Support `--dry-run`.
@@ -301,6 +376,12 @@ diğer roller (8): ADMIN, DJANGO_STAFF, DJANGO_SUPERADMIN, db-data-test-rol,
 - Free/non-conventional roles exist in Keycloak (`kose-rol-test`,
   `db-data-test-rol`) that a login-only pool would miss — justifying the
   Admin-API sync command.
+  > **⟳ Revised:** these free roles are **no longer cataloged** (they don't
+  > resolve to an org — §3 decision 5 / §3.2). So the Admin-API sync's value is
+  > *not* "capture free roles" anymore; it is **capturing conforming org/project
+  > roles that nobody has logged in with yet** (e.g. `ROLE_GQ2_*` before any GQ2
+  > user logs in). The login-only pool still misses those, so the sync is still
+  > justified — just for a narrower, sharper reason.
 
 ---
 
