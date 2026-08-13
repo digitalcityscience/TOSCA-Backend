@@ -1,7 +1,7 @@
 # Epic-11 — Keycloak Role Registry & GeoServer Role-Service Sync
 
-> **Status:** Phase 1 first structure (registry model) implemented; rest of
-> Phase 1 pending.
+> **Status:** Phase 1 complete (registry model + population: login upsert,
+> Admin-API client, `sync_keycloak_roles` command, tests). Phase 2 pending.
 > **Date:** 2026-08-13
 > **Branch context:** `epic-11-keycloak-role-registry`
 > **Audience:** the implementing agent/developer. This document is the single
@@ -243,29 +243,29 @@ Taken while implementing the registry model:
      role disappears from Keycloak)
    - `first_seen_at`, `last_seen_at` — timestamps
    - Register in Django admin (list, search by name, filter by org/source).
-2. **Login-triggered upsert:** in `role_sync.py` where token roles are already
-   extracted, upsert each `ROLE_`-prefixed role
-   (`update_or_create(name=..., defaults={last_seen_at: now, ...})`). Must be
-   non-blocking / best-effort — never fail a login because the registry write
-   failed (wrap in try/except + log).
-3. **Keycloak Admin API client** (small helper, e.g.
-   `authentication/keycloak_admin.py`):
+2. **Login-triggered upsert:** — ✅ **implemented.** `role_registry.register_login_roles`
+   upserts the login's conforming roles; hooked in `backends.KeycloakAdapter`
+   (`_run_login_checks`, after the login's own org is materialized). Best-effort:
+   wrapped in try/except so a registry write can never break a login.
+3. **Keycloak Admin API client** — ✅ **implemented** (`authentication/keycloak_admin.py`):
    - `get_admin_token()` → `client_credentials` grant using
      `KEYCLOAK_CLIENT_ID` + `KEYCLOAK_CLIENT_SECRET`.
    - `list_realm_roles()` → `GET /admin/realms/{realm}/roles?briefRepresentation=true&max=1000`.
-   - Reuse the exact endpoints proven in §5.
-4. **`sync_keycloak_roles` management command:**
-   - Pull full realm role list, keep only names that **conform** (`ROLE_` +
-     `parse_role_name` returns a `ParsedRole`) **and resolve to a known
-     `Organization`**; upsert into `KeycloakRole` with `organization`/`project`/
-     `level` from the parse. Non-conforming or non-resolving roles are **skipped
-     and logged** (⟳ §3.2 decision 10 — no null rows).
+   - Endpoints match the §5 probe; HTTP failures wrapped in `KeycloakAdminError`.
+4. **`sync_keycloak_roles` management command:** — ✅ **implemented.** Fetches the
+   full realm role list, delegates to `role_registry.sync_realm_roles`:
+   - keep only names that **conform** (`ROLE_` + `parse_role_name`) **and resolve
+     to a known `Organization`**; upsert `organization`/`project`/`level` from
+     the parse. Non-conforming / non-resolving roles are **skipped + logged**
+     (⟳ §3.2 decision 10 — no null rows).
    - Deactivate (`is_active=False`) roles no longer present (don't hard-delete —
      ACL history may reference them).
-   - Support `--dry-run`.
-   - Optionally surface as an admin-panel button that triggers the same code.
-5. **Tests:** upsert idempotency; login path best-effort behavior;
-   Admin-API client with mocked HTTP; command dry-run vs apply; org linking.
+   - Flags: `--dry-run`, `--no-deactivate`.
+   - *(Not done: optional admin-panel button that triggers the same code.)*
+5. **Tests:** — ✅ **implemented.** upsert idempotency + first-seen source +
+   reactivation; skip non-conforming / unresolved; login path best-effort (never
+   raises); Admin-API client with mocked HTTP; command dry-run vs apply vs error;
+   sync counts + deactivation.
 
 ### Phase 2 — GeoServer role-service matching (after Phase 1)
 
