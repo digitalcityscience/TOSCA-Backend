@@ -8,6 +8,13 @@
 > `sync_geoserver_roles` CLI for hop-2; tests; verified live against jdbc_role).
 > Admin roles are cataloged but never pushed; no automatic push (operator-
 > triggered only); the `KeycloakRole` admin is a **read-only** Keycloak mirror.
+> **Round-2 follow-up done** (2026-08-13): **org rename/delete role lifecycle**
+> — a slug rename deactivates the org's stale catalog roles (Django-only); an org
+> delete mirrors its reader/writer role deletion to GeoServer **first** and is
+> **blocking** (aborts + warns the operator if GeoServer is unreachable, so
+> Django rows are never dropped while the GeoServer roles still exist). See
+> §4 "✅ Completed this round". Still open: active-role-service telemetry,
+> `roles.parent` hierarchy, org `name` casing.
 > **Date:** 2026-08-13
 > **Branch context:** `epic-11-keycloak-role-registry`
 > **Audience:** the implementing agent/developer. This document is the single
@@ -361,8 +368,12 @@ service, so ACL "selected roles" render and roles are UI-selectable.
   label only (`slug` stays lowercase and drives `ROLE_<SLUG>_*`). Decide: keep
   `upper()`, use the raw slug, or title-case. *(No code change made yet.)*
 - Whether to populate the `roles.parent` hierarchy column (e.g. writer→reader).
-- Role **rename/delete lifecycle** (org slug change, org deletion) — ✅
-  **implemented** (`organizations/signals.py`, wired in `OrganizationsConfig.ready()`):
+
+### ✅ Completed this round (2026-08-13)
+
+- **Org rename/delete role lifecycle** (org slug change, org deletion) — ✅
+  **implemented** (`organizations/signals.py`, wired in `OrganizationsConfig.ready()`;
+  commit `e2c2cd9`):
   - **Slug rename** (`post_save`, slug changed): the org's old-slug `KeycloakRole`
     rows are **deactivated** (`is_active=False`) — a pure Django write, no GeoServer
     round-trip — so the operator's next "Sync with Keycloak" reconcile deletes the
