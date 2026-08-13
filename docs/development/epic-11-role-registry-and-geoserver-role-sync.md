@@ -1,7 +1,13 @@
 # Epic-11 — Keycloak Role Registry & GeoServer Role-Service Sync
 
 > **Status:** Phase 1 complete (registry model + population: login upsert,
-> Admin-API client, `sync_keycloak_roles` command, tests). Phase 2 pending.
+> Admin-API client, `sync_keycloak_roles` command, tests). **Phase 2 complete**
+> (GeoServer role-service methods on `GeoServerClient`; catalog-driven
+> **reader/writer-only** reconciliation with **deletion mirroring** in
+> `role_sync`; one-click **"Sync with Keycloak"** admin button doing both hops;
+> `sync_geoserver_roles` CLI for hop-2; tests; verified live against jdbc_role).
+> Admin roles are cataloged but never pushed; no automatic push (operator-
+> triggered only); the `KeycloakRole` admin is a **read-only** Keycloak mirror.
 > **Date:** 2026-08-13
 > **Branch context:** `epic-11-keycloak-role-registry`
 > **Audience:** the implementing agent/developer. This document is the single
@@ -267,40 +273,123 @@ Taken while implementing the registry model:
    raises); Admin-API client with mocked HTTP; command dry-run vs apply vs error;
    sync counts + deactivation.
 
-### Phase 2 — GeoServer role-service matching (after Phase 1)
+### Phase 2 — GeoServer role-service matching (after Phase 1) ✅
 
-**Goal:** every role in the registry (at minimum the org reader/writer/admin
-triad) is declared in the *active* GeoServer role service, so ACL "selected
-roles" render and roles are UI-selectable.
+**Goal:** the roles Django knows about are declared in the *active* GeoServer role
+service, so ACL "selected roles" render and roles are UI-selectable.
 
-1. **Extend `GeoServerClient`** with role-service methods (raw `_request`):
-   - `get_roles()` → `GET /rest/security/roles`
-   - `role_exists(name)` / `create_role(name)` →
-     `POST /rest/security/roles/role/{name}` (idempotent: treat "already
-     exists" as success)
-   - (optional) `delete_role(name)` for lifecycle.
-2. **Role reconciliation service / hook:**
-   - Ensure an org's `reader/writer/admin` roles exist in GeoServer. Hook where
-     orgs are materialized (`get_or_create_organization` in
-     `organizations/services.py`) so roles exist **before** any workspace/ACL
-     save.
-   - Keep it **decoupled** from `GeoServerSecuritySyncService.sync()` — the ACL
-     push flow is unchanged.
-3. **`sync_geoserver_roles` management command:** backfill/reconcile — push all
-   active `KeycloakRole`s (or all org triads) into GeoServer. `--dry-run`,
-   `--engine`.
-4. **Failure handling (decide in round 2):** whether a failed role push blocks
-   the operation or just warns. Default recommendation: **warn + log**, don't
-   block org/workspace creation (roles are a manageability nicety; ACL
-   enforcement already works by string match).
+> **⟳ Revised (2026-08-13, product decisions during Phase 2 — supersede the
+> triad/org-hook sketch below):**
+> - **reader + writer only.** Admin roles are cataloged but **never pushed** to
+>   GeoServer — ACLs reference only reader+writer, so GeoServer's role list stays
+>   minimal. (`org_triad`/admin push removed.)
+> - **Catalog is the single source of truth for GeoServer.** What gets
+>   ensured/deleted is driven entirely by `KeycloakRole` rows, so a role Django
+>   never cataloged is never touched — system roles (`ADMIN`, `GROUP_ADMIN`,
+>   `db-data-test-rol`) can't be deleted by us.
+> - **Deletion is mirrored.** A reader/writer role deactivated in the catalog
+>   (`is_active=False`, i.e. gone from Keycloak) is **deleted** from GeoServer
+>   too (idempotent + reversible; a stale ACL referencing it still string-matches).
+> - **No automatic push.** The org-materialization hook (canonical §4 Phase 2
+>   step 2) was **removed** — the login/org path never touches GeoServer.
+>   Everything runs **operator-triggered** via one admin button (below) or the
+>   CLI command; both share `role_sync.reconcile_all_engines`.
+> - **`get_roles()` bug fix:** `/rest/security/roles` defaults to XML, so the
+>   client sends `Accept: application/json` — otherwise `.json()` raised and the
+>   idempotency check silently saw an empty role list (caught in live testing).
 
-### Still-open (round-2) design questions — resolve before/within Phase 2
-- Active-role-service resolution & explicit fallback behavior when neither
-  `jdbc_role` nor `default` is reachable.
+1. **`GeoServerClient` role-service methods** — ✅ **implemented**
+   (`geodata_providers/geoserver/client.py`, "Role service operations"):
+   `get_roles()` (JSON-forced, unwraps `roles`/`roleNames`), `create_role(name)`,
+   `role_exists(name)`, `set_role(name)` (idempotent), `delete_role(name)`
+   (404 = already absent). Names URL-encoded via `quote`.
+2. **Reconciliation service** — ✅ **implemented** (`geodata_providers/role_sync.py`):
+   - `reader_writer_reconcile_names()` → `(ensure, delete)` sets from the catalog
+     (active vs inactive reader/writer rows).
+   - `GeoServerRoleSyncService.reconcile(ensure, delete, dry_run=)` — one
+     `get_roles()`, creates missing / deletes present; returns
+     `created/existed/deleted/absent/failed`.
+   - `reconcile_all_engines(dry_run=, engines=)` — per-engine isolation (one
+     unreachable engine is reported, never aborts the rest).
+   - **Decoupled** from `GeoServerSecuritySyncService.sync()`.
+3. **"Sync with Keycloak" admin button** — ✅ **implemented** on the
+   `KeycloakRole` changelist (`authentication/admin.py` + `change_list.html`
+   template). One click, two hops: **hop 1** pull realm roles → `sync_realm_roles`
+   (catalog upsert/deactivate); **hop 2** `reconcile_all_engines` (reader/writer
+   ensure + delete). Hop-2 failures surface as warnings, never abort. This is the
+   deferred Phase-1 "admin-panel button", now the primary entry point.
+   - **Placement:** rendered as a prominent bar **directly above the results
+     table** (not the top-right object-tools). The POST form is kept out of the
+     changelist `<form>` and the visible button binds to it via the HTML5 `form=`
+     attribute (avoids an invalid nested form). *Dev-env gotcha:* adding a **new**
+     app `templates/` dir needs a Django process restart (`get_app_template_dirs`
+     is `lru_cache`d); and multi-line template comments must use
+     `{% comment %}…{% endcomment %}`, not `{# … #}` (single-line only).
+4. **Catalog admin is read-only (view-only mirror)** — ✅ **implemented.** The
+   `KeycloakRole` admin has **no add / change / delete** (`has_*_permission`
+   return `False`); rows are *visible* and open in Django's read-only detail, but
+   no field (organization, level, source, `is_active`, name…) is hand-editable.
+   Rationale: the table is a Keycloak mirror — every value derives from the role
+   name and `is_active` is sync-driven, so manual edits would only ever drift from
+   the source of truth. The sync button (a custom admin view) is unaffected.
+5. **`sync_geoserver_roles` management command** — ✅ **implemented.** CLI/cron
+   parity for **hop 2 only** (`reconcile_all_engines`); `--dry-run`, `--engine`.
+   (Hop 1 remains the separate `sync_keycloak_roles` command.)
+6. **Failure handling** — ✅ **warn + log, non-blocking** (unchanged intent):
+   per-engine errors are reported and skipped; ACL enforcement already works by
+   string match, so roles are a manageability nicety, not a correctness gate.
+7. **Tests** — ✅ **implemented.** client role methods incl. the JSON-header
+   regression (`test_geoserver_client_roles.py`); reconcile ensure+delete +
+   dry-run + failure-recording + catalog split + per-engine isolation
+   (`test_role_sync_service.py`); command reporting/flags/engine-error
+   (`test_sync_geoserver_roles_command.py`); admin button both-hops / hop-1-failure
+   / auth + read-only (no add/change/delete) + changelist viewable
+   (`authentication/tests/test_keycloakrole_admin.py`). **Verified live**
+   against the dev GeoServer (jdbc_role active): full pipeline pushes exactly the
+   4 reader/writer roles, admin excluded.
+
+### Still-open (round-2) follow-ups — post-Phase-2
+- **Active-role-service resolution.** *Observable* via the GeoServer Resource REST
+  API (`GET /rest/resource/security/config.xml` → `<roleServiceName>`; then
+  `.../role/<name>/config.xml` → `<className>`). Dev is `jdbc_role` /
+  `JDBCRoleService` (verified). Reconciliation deliberately stays
+  **service-agnostic** (REST writes to whichever is active); still open: explicit
+  fallback/telemetry when neither `jdbc_role` nor `default` is reachable, and
+  whether to surface the active service name in the sync output.
+- **Organization `name` casing.** `get_or_create_organization` derives
+  `name = slug.upper()` (e.g. `dcs` → `DCS`). Pre-existing; `name` is a cosmetic
+  label only (`slug` stays lowercase and drives `ROLE_<SLUG>_*`). Decide: keep
+  `upper()`, use the raw slug, or title-case. *(No code change made yet.)*
 - Whether to populate the `roles.parent` hierarchy column (e.g. writer→reader).
-- Role **rename/delete lifecycle** (org slug change, org deletion): what
-  happens to registry rows and GeoServer roles.
-- Backfill command scope (all engines vs one; all roles vs org triads only).
+- Role **rename/delete lifecycle** (org slug change, org deletion) — ✅
+  **implemented** (`organizations/signals.py`, wired in `OrganizationsConfig.ready()`):
+  - **Slug rename** (`post_save`, slug changed): the org's old-slug `KeycloakRole`
+    rows are **deactivated** (`is_active=False`) — a pure Django write, no GeoServer
+    round-trip — so the operator's next "Sync with Keycloak" reconcile deletes the
+    old roles from GeoServer and the new-slug roles are cataloged on the next
+    Keycloak sync. Keeps the org save path GeoServer-free (Phase-2 "operator-
+    triggered only"); logs a warning to also rename the Keycloak roles + ACLs.
+  - **Org delete** (`pre_delete`): the FK is `CASCADE`, so the role rows are about
+    to be hard-deleted and the catalog can no longer drive their removal. So the
+    org's active reader/writer role names are captured *before* the cascade and
+    their deletion is mirrored to every engine (`mirror_org_role_deletion` →
+    `reconcile_all_engines(ensure=∅, delete=names)`). **Blocking, not best-effort:**
+    if GeoServer is unreachable or a role delete fails, it raises
+    `GeoServerRoleCleanupError` and the whole delete is **aborted** (transaction
+    rolls back) — we never drop the Django rows while the GeoServer roles still
+    exist (or while we can't confirm), and an outage is exactly when the operator
+    should be *warned*. `OrganizationAdmin.delete_view` runs the same cleanup
+    *before* the delete transaction, turning the block into a friendly
+    "Silme iptal edildi" message (not a 500); the bulk "delete selected" action is
+    removed so the single guarded path is the only one.
+    (`role_sync.org_reader_writer_names` / `mirror_org_role_deletion`;
+    `reconcile_all_engines` now accepts explicit `ensure`/`delete` overrides.)
+  - Tests: `organizations/tests/test_role_lifecycle.py` (rename deactivation,
+    already-matching roles untouched, non-slug/create no-ops, delete mirroring,
+    no-roles skip, GeoServer-failure/role-failure **blocks** delete, admin
+    friendly-message cancel).
+- A separate **"Push to GeoServer" (hop-2 only) admin button** — considered,
+  deferred (one button + CLI deemed enough).
 
 ---
 
