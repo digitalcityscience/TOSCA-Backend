@@ -385,3 +385,37 @@ M  docker/geoserver_docker
 ```
 
 Bu değişiklikler Epic 11 S3 commit'lerine dahil edilmemiştir.
+
+## 10. Son doğrulama ve requirement traceability
+
+Bu bölüm, dokümanda yazan her ana gereksinimi doğrudan bir kontrol ve gözlenen sonuçla eşleştirir. Toplam test sayısı tek başına yeterli kabul edilmemiştir.
+
+| Gereksinim / değişen çıktı | Doğrudan kontrol | Gözlenen sonuç |
+|---|---|---|
+| Local development filesystem backend kullanabilmeli | `test_storage_settings.py::test_filesystem_is_the_default_shape_for_local_development` | Filesystem backend ve local staticfiles backend doğru seçildi. Passed. |
+| S3/Garage backend settings ile seçilebilmeli | Container içinde `DJANGO_STORAGE_BACKEND=s3` ile Django startup smoke testi | `storages.backends.s3.S3Storage`, Garage endpoint, bucket, path-style ve S3v4 options yüklendi. Passed. |
+| S3 bucket olmadan unsafe startup engellenmeli | `test_storage_settings.py::test_s3_requires_a_bucket_name` | `ImproperlyConfigured` üretildi. Passed. |
+| Packaging dependency'leri lockfile'a dahil olmalı | Container içinde `uv sync --frozen` | `boto3`, `botocore`, `django-storages`, `s3transfer` kuruldu. Passed. |
+| Production Compose S3 environment değerlerini iletmeli | `ENV_FILE=.env.example docker compose -f docker-compose-prod.yml config --quiet` | Compose config başarıyla oluşturuldu. Passed. |
+| EditorJS file upload public response contract'ını korumalı | Gerçek PostGIS-backed `test_upload_by_file_stores_original_bytes_and_returns_editorjs_contract` | HTTP 200, `success=1`, URL/mime/width/height ve original bytes doğrulandı. Passed. |
+| Upload metadata DB'ye yazılmalı | Aynı public upload testi içinde `MediaAsset.objects.get(...)` | `storage_path`, `original_name`, `mime`, width, height ve byte size doğrulandı. Passed. |
+| EditorJS URL upload çalışmalı | Gerçek `test_upload_by_url_downloads_rehosts_and_preserves_bytes` | HTTP 200, EditorJS contract ve rehost edilen bytes doğrulandı. Passed. |
+| Invalid image ve büyük remote download reddedilmeli | `test_upload_by_file_rejects_invalid_image`, `test_upload_by_url_rejects_oversized_download` | HTTP 400 ve failure contract doğrulandı. Passed. |
+| Upload endpoint'leri authentication istemeli | `test_upload_endpoints_require_authentication` | Yetkisiz istekler 401/403 döndürdü. Passed. |
+| Media library storage scan yapmamalı | `test_media_library_lists_previous_editorjs_uploads` içinde `default_storage.listdir/open` fail-fast monkeypatch'leri | Library response DB'den döndü; storage scan veya object open çağrılmadı. Passed. |
+| Media library response contract'ı korunmalı | Aynı public GET testi | `results`, name, mime, dimensions ve URL doğrulandı. Passed. |
+| Derivative workflow bozulmamalı | `test_image_derivatives.py` ve EditorJS/core testleri | Derivative generation, cache, EXIF orientation ve normalization geçti. Passed. |
+| Migration model ile uyumlu olmalı | `manage.py makemigrations core --check --dry-run` | `No changes detected in app 'core'`. Passed. |
+| Applied migration state eksiksiz olmalı | `manage.py migrate --check` | Pending migration bulunmadı. Passed. |
+| Changed Python code lint edilebilir olmalı | Container içinde Ruff | `All checks passed!`. Passed. |
+| Public API schema güncel kalmalı | `test_openapi_schema_documents_editorjs_image_endpoints` | Upload-by-file, upload-by-url ve media route'ları schema içinde bulundu. Passed. |
+| Implementation documentation takip edilebilir olmalı | Dosya existence, line count, opening metadata ve commit doğrulaması | İstenen dosya mevcut, 421+ satır, branch/commit/test/limitation bölümleri içeriyor ve `d6ec700` ile commit edildi. Passed. |
+
+### Kapsam dışı veya dış bağımlılığa bağlı kontrol
+
+Live Garage/S3 upload testi bu aşamada çalıştırılmadı. Repository'de çalışan bir Garage endpoint'i ve gerçek S3 credentials bulunmuyor. Bunun yerine iki ayrı integration boundary doğrulandı:
+
+1. Django gerçek `storages.backends.s3.S3Storage` ile başlatıldı ve Garage-compatible options üretildi.
+2. Gerçek public upload/media-library endpoint'leri PostGIS-backed test database ve filesystem storage ile çalıştırıldı.
+
+Bu nedenle mevcut sonuç **S3 configuration and application-boundary verified** seviyesindedir; **live Garage object I/O verified** iddiasında bulunulmamaktadır.

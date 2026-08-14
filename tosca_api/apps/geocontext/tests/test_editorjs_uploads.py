@@ -57,6 +57,12 @@ def test_upload_by_file_stores_original_bytes_and_returns_editorjs_contract(
 
         storage_path = file_info["url"].split("/media/", 1)[1]
         assert storage_path.startswith("geocontext/editorjs/")
+        asset = MediaAsset.objects.get(storage_path=storage_path)
+        assert asset.original_name == "inline.png"
+        assert asset.mime == "image/png"
+        assert asset.width == 240
+        assert asset.height == 240
+        assert asset.size == len(data)
         with default_storage.open(storage_path, "rb") as stored:
             assert stored.read() == data
 
@@ -186,7 +192,7 @@ def test_upload_by_url_rejects_oversized_download(api_client, monkeypatch, tmp_p
 
 
 @pytest.mark.django_db
-def test_media_library_lists_previous_editorjs_uploads(api_client, tmp_path):
+def test_media_library_lists_previous_editorjs_uploads(api_client, tmp_path, monkeypatch):
     data = _image_bytes()
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         storage_path = default_storage.save(
@@ -200,6 +206,20 @@ def test_media_library_lists_previous_editorjs_uploads(api_client, tmp_path):
             width=240,
             height=240,
             size=len(data),
+        )
+        monkeypatch.setattr(
+            default_storage,
+            "listdir",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("media library must not scan storage")
+            ),
+        )
+        monkeypatch.setattr(
+            default_storage,
+            "open",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("media library must not open storage objects")
+            ),
         )
 
         response = api_client.get("/api/v1/geocontext/editorjs/media/")
