@@ -99,6 +99,57 @@ class LayerServiceTestCase(TestCase):
         layer.refresh_from_db()
         self.assertEqual(layer.title, 'New Title')
         self.assertEqual(layer.description, 'new')
+        self.assertEqual(
+            layer.description_content,
+            {'blocks': [{'type': 'paragraph', 'data': {'text': 'new'}}]},
+        )
+        self.assertEqual(layer.provider_description, 'new')
+
+    @patch('tosca_api.apps.geodata_providers.services.commands.layer_service.EngineClientFactory.create_client')
+    def test_update_published_metadata_preserves_rich_content(self, mock_create_client):
+        layer = Layer.objects.create(
+            workspace=self.workspace,
+            store=self.store,
+            name='districts',
+            title='Districts',
+            table_name='districts',
+            geometry_column='geom',
+            geometry_type='Polygon',
+            srid=4326,
+            publishing_state='PUBLISHED',
+            created_by=self.user,
+        )
+        client = mock_create_client.return_value
+        client.update_featuretype.return_value = {'success': True}
+        client.verify_featuretype_metadata.return_value = {
+            'verified': True,
+            'mismatches': {},
+            'actual': {},
+        }
+        content = {
+            'blocks': [
+                {'type': 'header', 'data': {'text': 'Public overview', 'level': 2}},
+                {'type': 'paragraph', 'data': {'text': '<strong>Useful</strong> details'}},
+            ]
+        }
+
+        LayerService.update_published_metadata(
+            layer=layer,
+            title='Districts',
+            description='',
+            description_content=content,
+        )
+
+        layer.refresh_from_db()
+        self.assertEqual(layer.description_content, content)
+        self.assertEqual(layer.description, 'Public overview\n\nUseful details')
+        client.update_featuretype.assert_called_once_with(
+            workspace='demo_ws',
+            store_name='demo_store',
+            featuretype_name='districts',
+            title='Districts',
+            abstract='Public overview\n\nUseful details',
+        )
 
     @patch('tosca_api.apps.geodata_providers.services.commands.layer_service.EngineClientFactory.create_client')
     def test_delete_layer_safe_deletes_local_record_after_remote_unpublish(self, mock_create_client):
@@ -233,4 +284,3 @@ class LayerUpdateServiceTestCase(TestCase):
         self.assertIn('error', result['body'])
         self.layer.refresh_from_db()
         self.assertEqual(self.layer.title, 'Old Title')
-

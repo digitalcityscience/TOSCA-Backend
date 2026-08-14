@@ -26,6 +26,36 @@ def make_client():
     return client
 
 
+class FeatureTypeDetailTests(TestCase):
+    def setUp(self):
+        self.client = make_client()
+
+    def test_extracts_geometry_column_type_and_srid(self):
+        self.client._client.get_featuretype.return_value = {
+            "name": "districts",
+            "nativeName": "districts_native",
+            "title": "Districts",
+            "srs": "EPSG:25832",
+            "advertised": "true",
+            "attributes": {
+                "attribute": [
+                    {
+                        "name": "shape",
+                        "binding": "org.locationtech.jts.geom.MultiPolygon",
+                    },
+                    {"name": "name", "binding": "java.lang.String"},
+                ]
+            },
+        }
+
+        detail = self.client.get_featuretype_detail("mobility", "gis", "districts")
+
+        self.assertEqual(detail["geometry_type"], "MultiPolygon")
+        self.assertEqual(detail["geometry_column"], "shape")
+        self.assertEqual(detail["srid"], 25832)
+        self.assertTrue(detail["advertised"])
+
+
 class CreateResourceHelperTests(TestCase):
     """Direct tests of _create_resource — the five-step cycle, tested once."""
 

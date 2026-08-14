@@ -22,6 +22,16 @@ class GeoServerClient:
     Provides normalized responses and error handling
     """
 
+    GEOMETRY_TYPES = {
+        'Point',
+        'LineString',
+        'Polygon',
+        'MultiPoint',
+        'MultiLineString',
+        'MultiPolygon',
+        'GeometryCollection',
+    }
+
     def __init__(self, url: str, username: str, password: str):
         """
         Initialize GeoServer client
@@ -1885,6 +1895,11 @@ class GeoServerClient:
                                     workspace, store_name, clean
                                 )
                                 layer_settings = self.get_layer_settings(workspace, clean)
+                                spatial_metadata = {
+                                    key: featuretype_detail[key]
+                                    for key in ('geometry_type', 'geometry_column', 'srid')
+                                    if key in featuretype_detail
+                                }
                                 result.append({
                                     'name': clean,
                                     'store_name': store_name,
@@ -1895,6 +1910,7 @@ class GeoServerClient:
                                     'opaque': layer_settings.get('opaque', False),
                                     'default_style_name': layer_settings.get('default_style_name', ''),
                                     'additional_style_names': layer_settings.get('additional_style_names', []),
+                                    **spatial_metadata,
                                 })
                                 logger.debug(
                                     f"Layer discovered: {workspace}/{store_name}/{clean} "
@@ -2210,32 +2226,35 @@ class GeoServerClient:
         Returns normalized detail dict.
         Defaults advertised=True and native_name=name on any error.
         """
-        url = "{}/rest/workspaces/{}/datastores/{}/featuretypes/{}.json".format(
-            self.url.rstrip('/'), workspace, store_name, ft_name
-        )
         try:
-            r = self._client._requests('get', url)
-            if r.status_code != 200:
-                logger.warning(
-                    'get_featuretype_detail: HTTP %s for %s/%s/%s — using fallback values',
-                    r.status_code, workspace, store_name, ft_name,
+            get_featuretype = getattr(self._client, 'get_featuretype', None)
+            if callable(get_featuretype):
+                featuretype = get_featuretype(
+                    feature_type_name=ft_name,
+                    workspace=workspace,
+                    store_name=store_name,
                 )
-                return {
-                    'name': ft_name,
-                    'title': ft_name,
-                    'native_name': ft_name,
-                    'abstract': '',
-                    'advertised': True,
-                }
-            data = r.json()
-            featuretype = data.get('featureType', {}) if isinstance(data, dict) else {}
-            return {
+            else:
+                url = "{}/rest/workspaces/{}/datastores/{}/featuretypes/{}.json".format(
+                    self.url.rstrip('/'), workspace, store_name, ft_name
+                )
+                response = self._client._requests('get', url)
+                if response.status_code != 200:
+                    raise GeoServerConnectionError(
+                        f"Feature-type detail returned HTTP {response.status_code}."
+                    )
+                data = response.json()
+                featuretype = data.get('featureType', {}) if isinstance(data, dict) else {}
+
+            detail = {
                 'name': featuretype.get('name', ft_name),
                 'title': featuretype.get('title', featuretype.get('name', ft_name)),
                 'native_name': featuretype.get('nativeName', featuretype.get('name', ft_name)),
                 'abstract': featuretype.get('abstract', '') or '',
-                'advertised': bool(featuretype.get('advertised', True)),
+                'advertised': self._as_bool(featuretype.get('advertised'), default=True),
             }
+            detail.update(self._featuretype_spatial_metadata(featuretype))
+            return detail
         except Exception as exc:
             logger.warning(
                 'get_featuretype_detail: error for %s/%s/%s: %s — using fallback values',
@@ -2248,6 +2267,33 @@ class GeoServerClient:
                 'abstract': '',
                 'advertised': True,
             }
+
+    @classmethod
+    def _featuretype_spatial_metadata(cls, featuretype: dict) -> dict:
+        attributes = featuretype.get('attributes', {}).get('attribute', [])
+        if isinstance(attributes, dict):
+            attributes = [attributes]
+        if not isinstance(attributes, list):
+            attributes = []
+
+        metadata = {'attributes': attributes}
+        for attribute in attributes:
+            if not isinstance(attribute, dict):
+                continue
+            binding = attribute.get('binding')
+            geometry_type = binding.rsplit('.', 1)[-1] if isinstance(binding, str) else None
+            if geometry_type in cls.GEOMETRY_TYPES:
+                metadata['geometry_type'] = geometry_type
+                metadata['geometry_column'] = attribute.get('name', 'geom')
+                break
+
+        srs = featuretype.get('srs')
+        if isinstance(srs, str) and ':' in srs:
+            try:
+                metadata['srid'] = int(srs.rsplit(':', 1)[-1])
+            except ValueError:
+                pass
+        return metadata
 
     def verify_featuretype_metadata(
         self,

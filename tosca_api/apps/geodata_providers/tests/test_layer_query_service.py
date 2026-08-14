@@ -144,6 +144,8 @@ class LayerQueryServiceTestCase(TestCase):
                 "name",
                 "title",
                 "description",
+                "description_content",
+                "provider_description",
                 "table_name",
                 "geometry_column",
                 "geometry_type",
@@ -160,6 +162,10 @@ class LayerQueryServiceTestCase(TestCase):
         )
         self.assertEqual(result["id"], str(self.layer.id))
         self.assertEqual(result["name"], "tram_lines")
+        self.assertEqual(
+            result["description_content"],
+            {"blocks": [{"type": "paragraph", "data": {"text": "Transit layer"}}]},
+        )
         self.assertEqual(result["geometry_column"], "geom")
         self.assertEqual(result["geometry_type"], "LineString")
         self.assertEqual(result["srid"], 4326)

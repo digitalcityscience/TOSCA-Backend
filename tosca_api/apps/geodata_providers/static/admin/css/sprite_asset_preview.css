@@ -1,0 +1,114 @@
+.sprite-asset-preview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.25rem;
+  max-width: 1200px;
+}
+
+.sprite-preview-panel {
+  padding: 1rem;
+  border: 1px solid var(--border-color, #ccc);
+  border-radius: 6px;
+  background: var(--body-bg, #fff);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  min-width: 0;
+}
+
+.sprite-preview-title {
+  display: inline-block;
+  margin: 0 0 0.85rem;
+  padding: 0.3rem 0.55rem;
+  border-radius: 3px;
+  background: var(--primary, #417690);
+  color: var(--primary-fg, #fff);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.sprite-preview-panel:nth-child(2) .sprite-preview-title {
+  background: #2e7d32;
+}
+
+.sprite-preview-sheet-frame,
+.sprite-preview-icon-viewport {
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #ddd 25%, transparent 25%),
+    linear-gradient(-45deg, #ddd 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #ddd 75%),
+    linear-gradient(-45deg, transparent 75%, #ddd 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+
+.sprite-preview-sheet-frame {
+  box-sizing: border-box;
+  max-height: 360px;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color, #ccc);
+  overflow: auto;
+}
+
+.sprite-preview-sheet {
+  display: block;
+  max-width: none;
+}
+
+.sprite-preview-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.sprite-preview-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.65rem;
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: 4px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.sprite-preview-card:hover {
+  border-color: var(--primary, #417690);
+  box-shadow: 0 2px 5px rgb(0 0 0 / 10%);
+}
+
+.sprite-preview-icon-viewport {
+  display: grid;
+  min-height: 64px;
+  place-items: center;
+  overflow: auto;
+}
+
+.sprite-preview-icon {
+  display: block;
+  flex: none;
+  background-repeat: no-repeat;
+}
+
+.sprite-preview-name {
+  overflow-wrap: anywhere;
+}
+
+.sprite-preview-meta,
+.sprite-preview-message {
+  color: var(--body-quiet-color, #666);
+  font-size: 0.8rem;
+}
+
+.sprite-preview-error {
+  color: var(--error-fg, #ba2121);
+  font-weight: 600;
+}
+
+@media (max-width: 767px) {
+  .sprite-asset-preview {
+    grid-template-columns: 1fr;
+  }
+}

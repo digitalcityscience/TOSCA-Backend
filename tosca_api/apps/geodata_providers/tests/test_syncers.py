@@ -15,6 +15,7 @@ from django.test import TestCase
 from tosca_api.apps.geodata_providers.models import (
     GeodataEngine,
     Layer,
+    LayerStyleAssignment,
     Store,
     Style,
     Workspace,
@@ -134,6 +135,11 @@ class LayerSyncerTests(SyncerTestBase):
             username='pg',
             created_by=self.user,
         )
+        self.mock_client.get_featuretype_detail.return_value = {
+            'geometry_type': 'Point',
+            'geometry_column': 'geom',
+            'srid': 4326,
+        }
 
     def test_sync_layers_for_workspace_skips_layer_with_unknown_store(self):
         self.mock_client.get_layers.return_value = [
@@ -170,3 +176,160 @@ class LayerSyncerTests(SyncerTestBase):
         self.assertEqual(result['created'], 1)
         layer = Layer.objects.get(workspace=self.workspace, name='roads')
         self.assertTrue(layer.style_assignments.filter(style__name='roads_default', role='default').exists())
+
+    def test_sync_keeps_authored_description_and_records_provider_abstract(self):
+        authored = {
+            'blocks': [
+                {'type': 'header', 'data': {'text': 'Curated overview', 'level': 2}},
+                {'type': 'paragraph', 'data': {'text': 'Written in TOSCA'}},
+            ]
+        }
+        layer = Layer.objects.create(
+            workspace=self.workspace,
+            store=self.store,
+            name='districts',
+            title='Districts',
+            description_content=authored,
+            table_name='districts',
+            geometry_type='Polygon',
+            created_by=self.user,
+        )
+        self.mock_client.get_layers.return_value = [
+            {
+                'name': 'districts',
+                'store_name': 'gis',
+                'title': 'Provider title',
+                'abstract': 'Provider-maintained abstract',
+            }
+        ]
+
+        result = LayerSyncer(self.engine, self.mock_client).sync_layers_for_workspace(
+            self.workspace,
+            created_by=self.user,
+        )
+
+        self.assertEqual(result['synced'], 1)
+        layer.refresh_from_db()
+        self.assertEqual(layer.description_content, authored)
+        self.assertEqual(layer.description, 'Curated overview\n\nWritten in TOSCA')
+        self.assertEqual(layer.provider_description, 'Provider-maintained abstract')
+
+    def test_sync_preserves_curated_mbstyle_default_for_existing_vector_layer(self):
+        layer = Layer.objects.create(
+            workspace=self.workspace,
+            store=self.store,
+            name='districts',
+            title='Districts',
+            table_name='districts',
+            geometry_column='geom',
+            geometry_type='Polygon',
+            srid=4326,
+            created_by=self.user,
+        )
+        local_style = Style.objects.create(
+            geodata_engine=self.engine,
+            workspace=self.workspace,
+            name='district-colors',
+            format='mbstyle',
+            file_content=(
+                '{"version":8,"sources":{},"layers":['
+                '{"id":"district-fill","type":"fill",'
+                '"source":"districts","source-layer":"districts"}]}'
+            ),
+            validation_state='VALID',
+            created_by=self.user,
+        )
+        assignment = LayerStyleAssignment.objects.create(
+            layer=layer,
+            style=local_style,
+            role=LayerStyleAssignment.Role.DEFAULT,
+            is_active=True,
+            created_by=self.user,
+        )
+        alternate_style = Style.objects.create(
+            geodata_engine=self.engine,
+            workspace=self.workspace,
+            name='district-outline',
+            format='mbstyle',
+            file_content=(
+                '{"version":8,"sources":{},"layers":['
+                '{"id":"district-outline","type":"line",'
+                '"source":"districts","source-layer":"districts"}]}'
+            ),
+            validation_state='VALID',
+            created_by=self.user,
+        )
+        alternate_assignment = LayerStyleAssignment.objects.create(
+            layer=layer,
+            style=alternate_style,
+            role=LayerStyleAssignment.Role.ALTERNATE,
+            is_active=True,
+            created_by=self.user,
+        )
+        Style.objects.create(
+            geodata_engine=self.engine,
+            name='polygon',
+            format='sld',
+            created_by=self.user,
+        )
+        self.mock_client.get_layers.return_value = [
+            {
+                'name': 'districts',
+                'store_name': 'gis',
+                'title': 'Districts',
+                'default_style_name': 'polygon',
+            }
+        ]
+
+        result = LayerSyncer(self.engine, self.mock_client).sync_layers_for_workspace(
+            self.workspace,
+            created_by=self.user,
+        )
+
+        self.assertEqual(result['synced'], 1)
+        assignment.refresh_from_db()
+        alternate_assignment.refresh_from_db()
+        self.assertTrue(assignment.is_active)
+        self.assertEqual(assignment.role, LayerStyleAssignment.Role.DEFAULT)
+        self.assertEqual(assignment.style_layer_ids, ['district-fill'])
+        self.assertTrue(alternate_assignment.is_active)
+        self.assertEqual(alternate_assignment.style_layer_ids, ['district-outline'])
+        self.assertFalse(
+            layer.style_assignments.filter(style__name='polygon').exists()
+        )
+
+    def test_missing_summary_geometry_is_resolved_from_featuretype_detail(self):
+        self.mock_client.get_layers.return_value = [
+            {'name': 'districts', 'store_name': 'gis', 'title': 'Districts'}
+        ]
+        self.mock_client.get_featuretype_detail.return_value = {
+            'geometry_type': 'org.locationtech.jts.geom.MultiPolygon',
+            'geometry_column': 'shape',
+            'srid': 25832,
+        }
+
+        result = LayerSyncer(self.engine, self.mock_client).sync_layers_for_workspace(
+            self.workspace,
+            created_by=self.user,
+        )
+
+        self.assertEqual(result['created'], 1)
+        layer = Layer.objects.get(workspace=self.workspace, name='districts')
+        self.assertEqual(layer.geometry_type, 'MultiPolygon')
+        self.assertEqual(layer.geometry_column, 'shape')
+        self.assertEqual(layer.srid, 25832)
+
+    def test_unknown_vector_geometry_is_rejected_instead_of_defaulting_to_point(self):
+        self.mock_client.get_layers.return_value = [
+            {'name': 'unknown', 'store_name': 'gis'}
+        ]
+        self.mock_client.get_featuretype_detail.return_value = {}
+
+        result = LayerSyncer(self.engine, self.mock_client).sync_layers_for_workspace(
+            self.workspace,
+            created_by=self.user,
+        )
+
+        self.assertEqual(result['created'], 0)
+        self.assertIn('did not report a supported geometry type', result['errors'][0])
+        self.assertFalse(Layer.objects.filter(workspace=self.workspace, name='unknown').exists())

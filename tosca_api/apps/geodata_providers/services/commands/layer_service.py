@@ -3,6 +3,12 @@ import logging
 from django.db import transaction
 from django.utils import timezone
 
+from tosca_api.apps.core.editorjs import (
+    description_document_from_text,
+    description_document_to_text,
+    validate_description_document,
+)
+
 from ...engine_factory import EngineClientFactory
 from ...exceptions import GeodataEngineError
 from ...models import Layer, Store, Workspace
@@ -92,6 +98,7 @@ class LayerService:
             geometry_column=geometry_column,
         )
 
+        description_content = description_document_from_text(description)
         with transaction.atomic():
             layer, created = Layer.objects.get_or_create(
                 workspace=workspace,
@@ -100,6 +107,7 @@ class LayerService:
                     'store': store,
                     'title': title,
                     'description': description,
+                    'description_content': description_content,
                     'table_name': table_name,
                     'geometry_column': geometry_column,
                     'geometry_type': geometry_type,
@@ -120,6 +128,7 @@ class LayerService:
                     store=store,
                     title=title,
                     description=description,
+                    description_content=description_content,
                     table_name=table_name,
                     geometry_column=geometry_column,
                     geometry_type=geometry_type,
@@ -242,10 +251,24 @@ class LayerService:
         }
 
     @classmethod
-    def update_published_metadata(cls, *, layer: Layer, title: str, description: str) -> dict:
+    def update_published_metadata(
+        cls,
+        *,
+        layer: Layer,
+        title: str,
+        description: str,
+        description_content: dict | None = None,
+    ) -> dict:
         engine = layer.workspace.geodata_engine if layer.workspace else None
         if not engine:
             raise GeodataEngineError(f"Layer '{layer.name}' has no engine.")
+
+        authored_content = validate_description_document(
+            description_document_from_text(description)
+            if description_content is None
+            else description_content
+        )
+        plain_description = description_document_to_text(authored_content)
 
         client = EngineClientFactory.create_client(engine)
         remote_result = client.update_featuretype(
@@ -253,14 +276,14 @@ class LayerService:
             store_name=layer.store.name,
             featuretype_name=layer.name,
             title=title or layer.name,
-            abstract=description or None,
+            abstract=plain_description or None,
         )
         verification = client.verify_featuretype_metadata(
             workspace=layer.workspace.name,
             store_name=layer.store.name,
             featuretype_name=layer.name,
             expected_title=title or layer.name,
-            expected_abstract=description or '',
+            expected_abstract=plain_description,
         )
         if not verification.get('verified'):
             error = f"GeoServer metadata verify failed: {verification.get('mismatches', {})}"
@@ -275,7 +298,9 @@ class LayerService:
 
         Layer.objects.filter(pk=layer.pk).update(
             title=title,
-            description=description,
+            description=plain_description,
+            description_content=authored_content,
+            provider_description=plain_description,
             sync_state='SYNCED',
             last_sync_at=timezone.now(),
             last_sync_error='',
@@ -415,14 +440,14 @@ class LayerUpdateService:
     Applies a PATCH/PUT to a Layer for LayerViewSet.update.
 
     Allowed editable fields:
-        title, description  — synced to GeoServer (if PUBLISHED) then Django
+        title, description / description_content — synced to GeoServer (if PUBLISHED) then Django
         srid                — Django-only
 
     All other fields (name, table_name, workspace, store, geometry_*) are
     silently ignored — they cannot be changed via this endpoint.
     """
 
-    ALLOWED_FIELDS = {'title', 'description', 'srid'}
+    ALLOWED_FIELDS = {'title', 'description', 'description_content', 'srid'}
 
     @classmethod
     def apply(cls, *, layer: Layer, fields: dict, serializer_class) -> dict:
@@ -432,15 +457,31 @@ class LayerUpdateService:
             return {
                 'success': False,
                 'status_code': 400,
-                'body': {'detail': 'No editable fields provided. Allowed: title, description, srid.'},
+                'body': {
+                    'detail': (
+                        'No editable fields provided. Allowed: title, description, '
+                        'description_content, srid.'
+                    ),
+                },
             }
 
-        if layer.publishing_state == 'PUBLISHED' and {'title', 'description'} & set(incoming):
+        if 'description' in incoming and 'description_content' not in incoming:
+            incoming['description_content'] = description_document_from_text(
+                incoming['description']
+            )
+
+        metadata_fields = {'title', 'description', 'description_content'}
+        if layer.publishing_state == 'PUBLISHED' and metadata_fields & set(incoming):
             try:
+                description_content = incoming.get(
+                    'description_content',
+                    layer.description_content,
+                )
                 LayerService.update_published_metadata(
                     layer=layer,
                     title=incoming.get('title', layer.title),
-                    description=incoming.get('description', layer.description),
+                    description=description_document_to_text(description_content),
+                    description_content=description_content,
                 )
             except Exception as exc:
                 logger.error(
@@ -452,7 +493,10 @@ class LayerUpdateService:
                     'status_code': 400,
                     'body': {'success': False, 'error': f'GeoServer featuretype update failed: {exc}'},
                 }
-            incoming = {key: value for key, value in incoming.items() if key not in {'title', 'description'}}
+            incoming = {
+                key: value for key, value in incoming.items()
+                if key not in metadata_fields
+            }
             layer.refresh_from_db()
 
         if incoming:

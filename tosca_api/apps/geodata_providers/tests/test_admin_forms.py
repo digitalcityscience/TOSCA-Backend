@@ -1,18 +1,24 @@
 import json
+from io import BytesIO
 from unittest.mock import MagicMock, patch
 
+from PIL import Image
 from django.contrib.auth.models import User
 from django.contrib.admin.sites import AdminSite
-from django.core.exceptions import PermissionDenied
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.http import QueryDict
 from django.test import RequestFactory
 from django.test import TestCase
+from django.urls import reverse
 
 from tosca_api.apps.geodata_providers.admin import (
     DeleteAborted,
     LayerAdmin,
+    LayerStyleInline,
     StoreAdmin,
     StoreAdminForm,
+    SpriteAssetAdmin,
+    SpriteAssetAdminForm,
     StyleAdmin,
     WorkspaceAdmin,
     WorkspaceAdminForm,
@@ -23,7 +29,484 @@ from tosca_api.apps.geodata_providers.admin_views.layer import publish_postgis_v
 from tosca_api.apps.geodata_providers.admin_views.store import store_clone_view
 from tosca_api.apps.geodata_providers.geoserver.client import GeoServerClient
 from tosca_api.apps.geodata_providers.admin_views.layer import tables_for_store_view
-from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Style, Workspace
+from tosca_api.apps.geodata_providers.models import (
+    GeodataEngine,
+    Layer,
+    LayerStyleAssignment,
+    SpriteAsset,
+    Store,
+    Style,
+    Workspace,
+)
+
+
+class SpriteAssetAdminFormTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='sprite-admin')
+        self.engine = GeodataEngine.objects.create(
+            name='Sprite Engine',
+            description='sprite test engine',
+            base_url='http://example.com/geoserver',
+            public_url='http://example.com/geoserver',
+            admin_username='admin',
+            admin_password='secret',
+            created_by=self.user,
+        )
+
+    @staticmethod
+    def _png_upload(*, size=(2, 2), name='sprite.png'):
+        image_bytes = BytesIO()
+        Image.new('RGBA', size, (255, 255, 0, 255)).save(image_bytes, format='PNG')
+        return SimpleUploadedFile(name, image_bytes.getvalue(), content_type='image/png')
+
+    def test_index_file_populates_optional_index_content(self):
+        index = {
+            'test-pattern': {
+                'x': 0,
+                'y': 0,
+                'width': 2,
+                'height': 2,
+                'pixelRatio': 1,
+            },
+        }
+        form = SpriteAssetAdminForm(
+            data={
+                'geodata_engine': str(self.engine.pk),
+                'workspace': '',
+                'name': 'test-patterns',
+            },
+            files={
+                'image': self._png_upload(),
+                'index_file': SimpleUploadedFile(
+                    'sprite.json',
+                    json.dumps(index).encode('utf-8'),
+                    content_type='application/json',
+                ),
+            },
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data['index_content'], index)
+
+    def test_high_dpi_files_populate_and_validate_as_a_pair(self):
+        index = {
+            'test-pattern': {
+                'x': 0,
+                'y': 0,
+                'width': 2,
+                'height': 2,
+                'pixelRatio': 1,
+            },
+        }
+        index_2x = {
+            'test-pattern': {
+                'x': 0,
+                'y': 0,
+                'width': 4,
+                'height': 4,
+                'pixelRatio': 2,
+            },
+        }
+        form = SpriteAssetAdminForm(
+            data={
+                'geodata_engine': str(self.engine.pk),
+                'workspace': '',
+                'name': 'retina-patterns',
+            },
+            files={
+                'image': self._png_upload(),
+                'index_file': SimpleUploadedFile(
+                    'sprite.json',
+                    json.dumps(index).encode('utf-8'),
+                    content_type='application/json',
+                ),
+                'image_2x': self._png_upload(size=(4, 4), name='sprite@2x.png'),
+                'index_file_2x': SimpleUploadedFile(
+                    'sprite@2x.json',
+                    json.dumps(index_2x).encode('utf-8'),
+                    content_type='application/json',
+                ),
+            },
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data['index_content_2x'], index_2x)
+
+    def test_high_dpi_png_requires_matching_index(self):
+        index = {
+            'test-pattern': {
+                'x': 0,
+                'y': 0,
+                'width': 2,
+                'height': 2,
+                'pixelRatio': 1,
+            },
+        }
+        form = SpriteAssetAdminForm(
+            data={
+                'geodata_engine': str(self.engine.pk),
+                'workspace': '',
+                'name': 'incomplete-retina-patterns',
+                'index_content': json.dumps(index),
+            },
+            files={
+                'image': self._png_upload(),
+                'image_2x': self._png_upload(size=(4, 4), name='sprite@2x.png'),
+            },
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn('index_content_2x', form.errors)
+
+    def test_admin_preview_registers_live_assets_and_saved_sprite_data(self):
+        sprite = SpriteAsset(
+            geodata_engine=self.engine,
+            name='preview-patterns',
+            image=self._png_upload(),
+            index_content={
+                'test-pattern': {
+                    'x': 0,
+                    'y': 0,
+                    'width': 2,
+                    'height': 2,
+                    'pixelRatio': 1,
+                },
+            },
+            created_by=self.user,
+        )
+        model_admin = SpriteAssetAdmin(SpriteAsset, AdminSite())
+
+        preview = str(model_admin.sprite_preview(sprite))
+        media = str(model_admin.media)
+
+        self.assertIn('data-sprite-preview', preview)
+        self.assertIn('test-pattern', preview)
+        self.assertIn('admin/js/sprite_asset_preview.js', media)
+        self.assertIn('admin/css/sprite_asset_preview.css', media)
+
+    def test_index_content_is_required_without_index_file(self):
+        form = SpriteAssetAdminForm(
+            data={
+                'geodata_engine': str(self.engine.pk),
+                'workspace': '',
+                'name': 'test-patterns',
+            },
+            files={'image': self._png_upload()},
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn('index_content', form.errors)
+
+
+class LayerStyleAssignmentInlineTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='layer-style-admin',
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.engine = GeodataEngine.objects.create(
+            name='Layer Style Engine',
+            description='inline test engine',
+            base_url='http://example.com/geoserver',
+            public_url='http://example.com/geoserver',
+            admin_username='admin',
+            admin_password='secret',
+            created_by=self.user,
+        )
+        self.workspace = Workspace.objects.create(
+            geodata_engine=self.engine,
+            name='style_inline_ws',
+            description='inline test workspace',
+            created_by=self.user,
+        )
+        self.store = Store.objects.create(
+            workspace=self.workspace,
+            geodata_engine=self.engine,
+            name='style_inline_store',
+            store_type='postgis',
+            host='db',
+            port=5432,
+            database='gis',
+            username='postgres',
+            password='secret',
+            schema='public',
+            description='inline test store',
+            created_by=self.user,
+        )
+        self.layer = Layer.objects.create(
+            workspace=self.workspace,
+            store=self.store,
+            name='style_inline_layer',
+            title='Style inline layer',
+            table_name='style_inline_layer',
+            geometry_column='geom',
+            geometry_type='Polygon',
+            srid=4326,
+            created_by=self.user,
+        )
+        self.first_style = self._style('first-inline-style')
+        self.second_style = self._style('second-inline-style')
+        self.default_assignment = LayerStyleAssignment.objects.create(
+            layer=self.layer,
+            style=self.first_style,
+            role=LayerStyleAssignment.Role.DEFAULT,
+            is_active=True,
+            created_by=self.user,
+        )
+        self.request = RequestFactory().post('/admin/geodata_providers/layer/change/')
+        self.request.user = self.user
+        self.site = AdminSite()
+
+    def _style(self, name):
+        return Style.objects.create(
+            geodata_engine=self.engine,
+            workspace=self.workspace,
+            name=name,
+            format='mbstyle',
+            file_name=f'{name}.mbstyle',
+            file_content='{"version":8,"sources":{},"layers":[]}',
+            validation_state='VALID',
+            created_by=self.user,
+        )
+
+    def _formset(self, rows, initial_forms):
+        inline = LayerStyleInline(Layer, self.site)
+        formset_class = inline.get_formset(self.request, self.layer)
+        prefix = formset_class.get_default_prefix()
+        data = {
+            f'{prefix}-TOTAL_FORMS': str(len(rows)),
+            f'{prefix}-INITIAL_FORMS': str(initial_forms),
+            f'{prefix}-MIN_NUM_FORMS': '0',
+            f'{prefix}-MAX_NUM_FORMS': '1000',
+        }
+        for index, row in enumerate(rows):
+            for field, value in row.items():
+                data[f'{prefix}-{index}-{field}'] = value
+        return formset_class(data=data, instance=self.layer, prefix=prefix)
+
+    @staticmethod
+    def _row(assignment, *, style, role, is_active=True):
+        row = {
+            'id': '' if assignment is None else str(assignment.pk),
+            'style': str(style.pk),
+            'role': role,
+            'style_layer_ids': '[]',
+        }
+        if is_active:
+            row['is_active'] = 'on'
+        return row
+
+    def test_duplicate_defaults_are_reported_as_formset_error(self):
+        formset = self._formset(
+            [
+                self._row(
+                    self.default_assignment,
+                    style=self.first_style,
+                    role=LayerStyleAssignment.Role.DEFAULT,
+                ),
+                self._row(
+                    None,
+                    style=self.second_style,
+                    role=LayerStyleAssignment.Role.DEFAULT,
+                ),
+            ],
+            initial_forms=1,
+        )
+
+        self.assertFalse(formset.is_valid())
+        self.assertIn(
+            'Only one active default style is allowed per layer.',
+            formset.non_form_errors(),
+        )
+
+    def test_new_uuid_assignment_receives_created_by(self):
+        formset = self._formset(
+            [
+                self._row(
+                    self.default_assignment,
+                    style=self.first_style,
+                    role=LayerStyleAssignment.Role.DEFAULT,
+                ),
+                self._row(
+                    None,
+                    style=self.second_style,
+                    role=LayerStyleAssignment.Role.ALTERNATE,
+                ),
+            ],
+            initial_forms=1,
+        )
+
+        self.assertTrue(formset.is_valid(), formset.errors)
+        LayerAdmin(Layer, self.site).save_formset(
+            self.request,
+            form=None,
+            formset=formset,
+            change=True,
+        )
+
+        created = LayerStyleAssignment.objects.get(style=self.second_style)
+        self.assertEqual(created.created_by, self.user)
+
+    def test_blank_mbstyle_layer_selection_is_inferred_from_assigned_layer(self):
+        inferred_style = Style.objects.create(
+            geodata_engine=self.engine,
+            workspace=self.workspace,
+            name='inferred-inline-style',
+            format='mbstyle',
+            file_name='inferred-inline-style.mbstyle',
+            file_content=json.dumps({
+                'version': 8,
+                'sources': {},
+                'layers': [
+                    {
+                        'id': 'inferred-fill',
+                        'type': 'fill',
+                        'source': self.layer.name,
+                        'source-layer': self.layer.name,
+                    },
+                    {
+                        'id': 'inferred-outline',
+                        'type': 'line',
+                        'source': self.layer.name,
+                        'source-layer': self.layer.name,
+                    },
+                ],
+            }),
+            validation_state='VALID',
+            created_by=self.user,
+        )
+        formset = self._formset(
+            [
+                self._row(
+                    self.default_assignment,
+                    style=self.first_style,
+                    role=LayerStyleAssignment.Role.DEFAULT,
+                ),
+                self._row(
+                    None,
+                    style=inferred_style,
+                    role=LayerStyleAssignment.Role.ALTERNATE,
+                ),
+            ],
+            initial_forms=1,
+        )
+
+        self.assertTrue(formset.is_valid(), formset.errors)
+        LayerAdmin(Layer, self.site).save_formset(
+            self.request,
+            form=None,
+            formset=formset,
+            change=True,
+        )
+
+        assignment = LayerStyleAssignment.objects.get(style=inferred_style)
+        self.assertEqual(
+            assignment.style_layer_ids,
+            ['inferred-fill', 'inferred-outline'],
+        )
+
+    def test_default_assignment_can_be_swapped_in_one_save(self):
+        alternate = LayerStyleAssignment.objects.create(
+            layer=self.layer,
+            style=self.second_style,
+            role=LayerStyleAssignment.Role.ALTERNATE,
+            is_active=True,
+            created_by=self.user,
+        )
+        formset = self._formset(
+            [
+                self._row(
+                    self.default_assignment,
+                    style=self.first_style,
+                    role=LayerStyleAssignment.Role.ALTERNATE,
+                ),
+                self._row(
+                    alternate,
+                    style=self.second_style,
+                    role=LayerStyleAssignment.Role.DEFAULT,
+                ),
+            ],
+            initial_forms=2,
+        )
+
+        self.assertTrue(formset.is_valid(), formset.errors)
+        LayerAdmin(Layer, self.site).save_formset(
+            self.request,
+            form=None,
+            formset=formset,
+            change=True,
+        )
+
+        self.default_assignment.refresh_from_db()
+        alternate.refresh_from_db()
+        self.assertEqual(self.default_assignment.role, LayerStyleAssignment.Role.ALTERNATE)
+        self.assertEqual(alternate.role, LayerStyleAssignment.Role.DEFAULT)
+
+    def test_admin_post_persists_bold_description_and_default_style_swap(self):
+        alternate = LayerStyleAssignment.objects.create(
+            layer=self.layer,
+            style=self.second_style,
+            role=LayerStyleAssignment.Role.ALTERNATE,
+            is_active=True,
+            created_by=self.user,
+        )
+        description_content = {
+            'blocks': [
+                {
+                    'type': 'paragraph',
+                    'data': {'text': '<strong>Bold metadata</strong> survives style changes.'},
+                },
+            ],
+        }
+        self.client.force_login(self.user)
+        change_url = reverse(
+            'admin:geodata_providers_layer_change',
+            args=[self.layer.id],
+        )
+        payload = {
+            'title': self.layer.title,
+            'description_content': json.dumps(description_content),
+            'srid': str(self.layer.srid),
+            'queryable': 'on',
+            'style_assignments-TOTAL_FORMS': '2',
+            'style_assignments-INITIAL_FORMS': '2',
+            'style_assignments-MIN_NUM_FORMS': '0',
+            'style_assignments-MAX_NUM_FORMS': '1000',
+            'style_assignments-0-id': str(self.default_assignment.id),
+            'style_assignments-0-style': str(self.first_style.id),
+            'style_assignments-0-role': LayerStyleAssignment.Role.ALTERNATE,
+            'style_assignments-0-style_layer_ids': '[]',
+            'style_assignments-0-is_active': 'on',
+            'style_assignments-1-id': str(alternate.id),
+            'style_assignments-1-style': str(self.second_style.id),
+            'style_assignments-1-role': LayerStyleAssignment.Role.DEFAULT,
+            'style_assignments-1-style_layer_ids': '[]',
+            'style_assignments-1-is_active': 'on',
+            '_save': 'Save',
+        }
+
+        response = self.client.post(change_url, payload)
+
+        self.assertEqual(response.status_code, 302)
+        self.layer.refresh_from_db()
+        self.default_assignment.refresh_from_db()
+        alternate.refresh_from_db()
+        self.assertEqual(self.layer.description_content, description_content)
+        self.assertEqual(
+            self.layer.description,
+            'Bold metadata survives style changes.',
+        )
+        self.assertEqual(
+            self.default_assignment.role,
+            LayerStyleAssignment.Role.ALTERNATE,
+        )
+        self.assertEqual(alternate.role, LayerStyleAssignment.Role.DEFAULT)
+
+        reload_response = self.client.get(change_url)
+        self.assertEqual(reload_response.status_code, 200)
+        reloaded_layer = reload_response.context['adminform'].form.instance
+        self.assertEqual(reloaded_layer.description_content, description_content)
 
 
 class InactiveProviderAdminVisibilityTests(TestCase):
@@ -1003,7 +1486,7 @@ class LayerDeleteBehaviorTests(TestCase):
 
     @patch('tosca_api.apps.geodata_providers.admin._run_workspace_sync')
     @patch('tosca_api.apps.geodata_providers.admin.LayerService.update_published_metadata')
-    def test_layer_save_model_uses_service_for_published_metadata_only_changes(self, mock_update_metadata, mock_run_workspace_sync):
+    def test_layer_save_model_does_not_pull_sync_before_inline_assignments(self, mock_update_metadata, mock_run_workspace_sync):
         request = self.request_factory.post(f'/admin/geodata_providers/layer/{self.layer.pk}/change/')
         request.user = self.user
         model_admin = LayerAdmin(Layer, self.site)
@@ -1017,8 +1500,9 @@ class LayerDeleteBehaviorTests(TestCase):
             layer=self.layer,
             title='Updated Apotheken',
             description=self.layer.description,
+            description_content=self.layer.description_content,
         )
-        mock_run_workspace_sync.assert_called_once()
+        mock_run_workspace_sync.assert_not_called()
 
 
 class LayerSurfaceRefactorTests(TestCase):

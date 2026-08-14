@@ -5,14 +5,15 @@ import os
 from django.contrib import admin
 from django.contrib.admin import SimpleListFilter
 from django import forms
-from django.http import HttpResponseRedirect
+from django.forms.models import BaseInlineFormSet, ModelChoiceIteratorValue
+from django.http import HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect
 from django.utils.html import format_html
 from django.utils import timezone
 from django.contrib import messages
 from django.db import transaction
-from django.db.models import Count, Q
-from django.core.exceptions import PermissionDenied, ValidationError
+from django.db.models import Count, F, Max, Q
+from django.core.exceptions import ValidationError
 from django.urls import path, reverse
 from .admin_actions import (
     clone_store,
@@ -36,12 +37,25 @@ from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin, resolv
 
 from .engine_factory import EngineClientFactory
 from .exceptions import GeoServerConnectionError, GeodataEngineError
-from .models import GeodataEngine, Workspace, Store, Layer, Style, LayerStyleAssignment
+from .models import (
+    GeodataEngine,
+    Layer,
+    LayerGroup,
+    LayerGroupMember,
+    LayerStyleAssignment,
+    SpriteAsset,
+    Store,
+    Style,
+    Workspace,
+)
 from .services.commands.geodata_engine_service import GeodataEngineService
+from .services.commands.layer_group_service import LayerGroupService
 from .services.commands.layer_service import LayerService
 from .services.commands.store_service import StoreService
 from .services.commands.style_validation_service import StyleValidationService
 from .services.commands.workspace_service import WorkspaceService
+from tosca_api.apps.core.editorjs import validate_description_document
+from tosca_api.apps.geocontext.widgets import EditorJsWidget
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +64,9 @@ _GEODATA_PROVIDER_ADMIN_ORDER = {
     'Workspace': 1,
     'Store': 2,
     'Layer': 3,
-    'Style': 4,
+    'LayerGroup': 4,
+    'Style': 5,
+    'SpriteAsset': 6,
 }
 
 _GEODATA_PROVIDER_ADMIN_LABELS = {
@@ -58,7 +74,9 @@ _GEODATA_PROVIDER_ADMIN_LABELS = {
     'Workspace': 'Workspace',
     'Store': 'Store',
     'Layer': 'Layer',
+    'LayerGroup': 'Layer Group',
     'Style': 'Style',
+    'SpriteAsset': 'Sprite Asset',
 }
 
 _ADMIN_APP_ORDER = {
@@ -850,7 +868,7 @@ class StyleAdminForm(forms.ModelForm):
         model = Style
         fields = (
             'geodata_engine', 'workspace', 'name', 'title', 'description',
-            'format', 'upload_file', 'file_name', 'file_content',
+            'format', 'upload_file', 'file_name', 'file_content', 'sprite_asset',
         )
         widgets = {
             'description': forms.Textarea(attrs={'rows': 3}),
@@ -913,10 +931,33 @@ class StyleAdminForm(forms.ModelForm):
         return ''
 
 
+class LayerAdminForm(forms.ModelForm):
+    """Layer metadata form with the constrained public-description editor."""
+
+    class Meta:
+        model = Layer
+        fields = '__all__'
+        widgets = {
+            'description_content': EditorJsWidget(profile='description'),
+        }
+
+    def clean_description_content(self):
+        try:
+            return validate_description_document(self.cleaned_data.get('description_content'))
+        except ValidationError as exc:
+            raise forms.ValidationError(exc.messages)
+
+
 class LayerStyleAssignmentAdminForm(forms.ModelForm):
     class Meta:
         model = LayerStyleAssignment
         fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Inline rows must be validated as one final state. A row-level query
+        # sees the old database values and incorrectly rejects default swaps.
+        self.instance._defer_active_default_validation = True
 
     def clean(self):
         cleaned_data = super().clean()
@@ -930,6 +971,26 @@ class LayerStyleAssignmentAdminForm(forms.ModelForm):
         if style.validation_state == 'INVALID':
             raise ValidationError('Invalid styles cannot be assigned to layers.')
         return cleaned_data
+
+
+class LayerStyleAssignmentInlineFormSet(BaseInlineFormSet):
+    """Validate the final inline state instead of each row in isolation."""
+
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+
+        active_defaults = [
+            form
+            for form in self.forms
+            if form.cleaned_data
+            and not form.cleaned_data.get('DELETE')
+            and form.cleaned_data.get('role') == LayerStyleAssignment.Role.DEFAULT
+            and form.cleaned_data.get('is_active')
+        ]
+        if len(active_defaults) > 1:
+            raise ValidationError('Only one active default style is allowed per layer.')
 
 
 class StoreCloneForm(forms.Form):
@@ -1252,7 +1313,8 @@ class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
 class LayerStyleInline(admin.TabularInline):
     model = LayerStyleAssignment
     form = LayerStyleAssignmentAdminForm
-    fields = ('style', 'role', 'is_active', 'created_at')
+    formset = LayerStyleAssignmentInlineFormSet
+    fields = ('style', 'role', 'style_layer_ids', 'is_active', 'created_at')
     readonly_fields = ('created_at',)
     extra = 0
     show_change_link = True
@@ -1260,6 +1322,7 @@ class LayerStyleInline(admin.TabularInline):
 
 @admin.register(Layer)
 class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
+    form = LayerAdminForm
     actions = [publish_layer, unpublish_layer]
     change_form_template = 'admin/geodata_providers/layer/change_form.html'
     list_display = [
@@ -1277,13 +1340,14 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier',
         'remote_hash', 'published_url', 'publishing_error', 'default_style_display',
         'additional_styles_display', 'available_styles_display', 'selected_styles_display',
+        'description', 'provider_description',
     ]
     inlines = [LayerStyleInline]
     list_per_page = 25
 
     fieldsets = (
         ('Identity', {
-            'fields': ('id', 'name', 'provider_link', 'title', 'description'),
+            'fields': ('id', 'name', 'provider_link', 'title', 'description_content'),
         }),
         ('Geometry & CRS', {
             'fields': ('table_name', 'geometry_column', 'geometry_type', 'srid'),
@@ -1305,7 +1369,7 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
             ),
         }),
         ('Metadata', {
-            'fields': ('created_at', 'updated_at'),
+            'fields': ('description', 'provider_description', 'created_at', 'updated_at'),
             'classes': ('collapse',),
         }),
     )
@@ -1463,12 +1527,13 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
             obj.created_by = request.user
 
         handled_metadata = False
-        if change and obj.publishing_state == 'PUBLISHED' and {'title', 'description'} & set(form.changed_data):
+        if change and obj.publishing_state == 'PUBLISHED' and {'title', 'description_content'} & set(form.changed_data):
             try:
                 LayerService.update_published_metadata(
                     layer=obj,
                     title=obj.title,
                     description=obj.description,
+                    description_content=obj.description_content,
                 )
                 handled_metadata = True
             except Exception as exc:
@@ -1479,10 +1544,14 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
                 )
                 return
 
-        if not handled_metadata or set(form.changed_data) - {'title', 'description'}:
+        if not handled_metadata or set(form.changed_data) - {'title', 'description_content'}:
             with transaction.atomic():
                 super().save_model(request, obj, form, change)
-        _run_workspace_sync(self, request, obj.workspace)
+        # Do not pull-sync the workspace here. Django saves inline style
+        # assignments after save_model(), and a pull at this point lets the
+        # provider's generic SLD defaults overwrite the submitted MBStyle
+        # state before the formset is persisted. Explicit sync actions remain
+        # available when provider metadata needs to be refreshed.
 
     def save_formset(self, request, form, formset, change):
         # Pure Django ORM work (no remote calls) — safe and necessary to
@@ -1490,12 +1559,28 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         # style-assignment saves/deletes can't leave the formset half-applied.
         with transaction.atomic():
             instances = formset.save(commit=False)
-            for obj in instances:
-                if isinstance(obj, LayerStyleAssignment) and not obj.pk:
-                    obj.created_by = request.user
-                obj.save()
             for obj in formset.deleted_objects:
                 obj.delete()
+
+            # Release the existing default before activating its replacement.
+            # The partial database constraint is immediate, so saving in the
+            # visual inline order can otherwise create a transient duplicate.
+            non_defaults = []
+            active_defaults = []
+            for obj in instances:
+                if isinstance(obj, LayerStyleAssignment) and obj._state.adding:
+                    obj.created_by = request.user
+                if (
+                    isinstance(obj, LayerStyleAssignment)
+                    and obj.role == LayerStyleAssignment.Role.DEFAULT
+                    and obj.is_active
+                ):
+                    active_defaults.append(obj)
+                else:
+                    non_defaults.append(obj)
+
+            for obj in [*non_defaults, *active_defaults]:
+                obj.save()
             formset.save_m2m()
 
     # ------------------------------------------------------------------
@@ -1582,7 +1667,7 @@ class StyleAdmin(admin.ModelAdmin):
             'fields': ('geodata_engine', 'workspace', 'name', 'title', 'description'),
         }),
         ('Content', {
-            'fields': ('format', 'upload_file', 'file_name', 'file_content', 'content_hash'),
+            'fields': ('format', 'upload_file', 'file_name', 'file_content', 'sprite_asset', 'content_hash'),
         }),
         ('Validation Result', {
             'fields': ('validation_state_badge', 'validation_errors_display'),
@@ -1811,9 +1896,13 @@ class StyleAdmin(admin.ModelAdmin):
 
     def _ensure_style_can_be_deleted(self, obj):
         assignment_count = obj.layer_assignments.filter(is_active=True).count()
-        if assignment_count:
+        pinned_group_count = LayerGroupMember.objects.filter(
+            style_assignment__style=obj,
+        ).count()
+        if assignment_count or pinned_group_count:
             raise DeleteAborted(
-                f"Cannot delete style '{obj.name}': active layer assignments exist ({assignment_count})."
+                f"Cannot delete style '{obj.name}': active layer assignments exist "
+                f"({assignment_count} layers, {pinned_group_count} group members)."
             )
 
     def _delete_style_remote_first(self, obj):
@@ -1827,5 +1916,625 @@ class StyleAdmin(admin.ModelAdmin):
             name=obj.name,
             workspace=obj.workspace.name if obj.workspace else None,
         )
+
+
+class SpriteAssetAdminForm(forms.ModelForm):
+    index_file = forms.FileField(
+        required=False,
+        label='Sprite JSON file',
+        help_text='Upload the .json index paired with the sprite PNG.',
+    )
+    index_content = forms.JSONField(
+        required=False,
+        label='Index content',
+        help_text='Populated automatically from the uploaded sprite JSON file, or paste JSON here.',
+        widget=forms.Textarea(attrs={'rows': 14, 'style': 'font-family:monospace;'}),
+    )
+    index_file_2x = forms.FileField(
+        required=False,
+        label='Sprite @2x JSON file',
+        help_text='Upload the @2x .json index paired with the high-DPI sprite PNG.',
+    )
+    index_content_2x = forms.JSONField(
+        required=False,
+        label='@2x index content',
+        help_text='Populated automatically from the uploaded @2x sprite JSON file.',
+        widget=forms.Textarea(attrs={'rows': 14, 'style': 'font-family:monospace;'}),
+    )
+
+    class Meta:
+        model = SpriteAsset
+        fields = (
+            'geodata_engine', 'workspace', 'name', 'image',
+            'index_file', 'index_content',
+            'image_2x', 'index_file_2x', 'index_content_2x',
+        )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        index_file = cleaned_data.get('index_file')
+        if index_file:
+            try:
+                cleaned_data['index_content'] = json.loads(index_file.read().decode('utf-8'))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                self.add_error('index_file', f'Invalid sprite JSON: {exc}')
+        elif not cleaned_data.get('index_content'):
+            self.add_error(
+                'index_content',
+                'Upload a sprite JSON file or paste its index content.',
+            )
+
+        index_file_2x = cleaned_data.get('index_file_2x')
+        if index_file_2x:
+            try:
+                cleaned_data['index_content_2x'] = json.loads(
+                    index_file_2x.read().decode('utf-8')
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                self.add_error('index_file_2x', f'Invalid @2x sprite JSON: {exc}')
+        return cleaned_data
+
+
+@admin.register(SpriteAsset)
+class SpriteAssetAdmin(admin.ModelAdmin):
+    form = SpriteAssetAdminForm
+    list_display = ('name', 'geodata_engine', 'workspace', 'validation_state', 'updated_at')
+    list_filter = ('geodata_engine', 'workspace', 'validation_state')
+    search_fields = ('name',)
+    readonly_fields = (
+        'id', 'sprite_preview', 'content_hash', 'validation_state', 'validation_errors',
+        'created_at', 'updated_at',
+    )
+    fieldsets = (
+        ('Identity', {'fields': ('id', 'geodata_engine', 'workspace', 'name')}),
+        ('Sprite 1x files', {'fields': ('image', 'index_file', 'index_content')}),
+        ('Sprite @2x files', {
+            'fields': ('image_2x', 'index_file_2x', 'index_content_2x'),
+            'description': (
+                'Optional high-DPI pair. MapLibre requests these files automatically on '
+                'high-resolution displays.'
+            ),
+        }),
+        ('Preview', {'fields': ('sprite_preview',)}),
+        ('Validation', {'fields': ('validation_state', 'validation_errors', 'content_hash')}),
+        ('Metadata', {'fields': ('created_at', 'updated_at'), 'classes': ('collapse',)}),
+    )
+
+    class Media:
+        css = {'all': ('admin/css/sprite_asset_preview.css',)}
+        js = ('admin/js/sprite_asset_preview.js',)
+
+    @admin.display(description='Sprite preview')
+    def sprite_preview(self, obj):
+        image_url = obj.image.url if obj and obj.image else ''
+        image_url_2x = obj.image_2x.url if obj and obj.image_2x else ''
+        index = obj.index_content if obj else {}
+        index_2x = obj.index_content_2x if obj else {}
+        return format_html(
+            '<div class="sprite-asset-preview" data-sprite-preview '
+            'data-image-url="{}" data-image-url-2x="{}" '
+            'data-index="{}" data-index-2x="{}">'
+            '<p class="sprite-preview-empty">Upload a PNG and JSON index to preview '
+            'the sheet and its individual images.</p>'
+            '</div>',
+            image_url,
+            image_url_2x,
+            json.dumps(index, separators=(',', ':')),
+            json.dumps(index_2x, separators=(',', ':')),
+        )
+
+    def get_exclude(self, request, obj=None):
+        return ['created_by']
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+class LayerStyleAssignmentSelect(forms.Select):
+    """Expose assignment metadata to the inline without showing relation labels."""
+
+    def create_option(self, name, value, label, selected, index, subindex=None, attrs=None):
+        option = super().create_option(
+            name,
+            value,
+            label,
+            selected,
+            index,
+            subindex=subindex,
+            attrs=attrs,
+        )
+        if isinstance(value, ModelChoiceIteratorValue):
+            assignment = value.instance
+            option['attrs']['data-layer-id'] = str(assignment.layer_id)
+            option['attrs']['data-role'] = assignment.role
+        return option
+
+
+class LayerStyleAssignmentChoiceField(forms.ModelChoiceField):
+    def label_from_instance(self, assignment):
+        style = assignment.style
+        label = style.title or style.name
+        return label if assignment.is_active else f"{label} (inactive)"
+
+
+class LayerGroupAdminForm(forms.ModelForm):
+    confirm_legend_current = forms.BooleanField(
+        required=False,
+        label='The existing uploaded legend is still accurate',
+        help_text=(
+            'Select this when the current legend still represents the members, order, '
+            'and styles. Saving will mark it as current without another upload.'
+        ),
+    )
+
+    class Meta:
+        model = LayerGroup
+        fields = '__all__'
+        widgets = {
+            'description_content': EditorJsWidget(profile='description'),
+        }
+
+    def clean_description_content(self):
+        try:
+            return validate_description_document(self.cleaned_data.get('description_content'))
+        except ValidationError as exc:
+            raise forms.ValidationError(exc.messages)
+
+    def clean_confirm_legend_current(self):
+        confirmed = self.cleaned_data['confirm_legend_current']
+        if confirmed and not self.cleaned_data.get('legend_image'):
+            raise ValidationError('Upload or retain a group legend before confirming it.')
+        return confirmed
+
+
+class LayerGroupMemberInlineForm(forms.ModelForm):
+    style_assignment = LayerStyleAssignmentChoiceField(
+        queryset=LayerStyleAssignment.objects.none(),
+        required=False,
+        label='Style',
+        empty_label="Select a layer to use its default style",
+        widget=LayerStyleAssignmentSelect,
+    )
+
+    class Meta:
+        model = LayerGroupMember
+        exclude = ('source_alias',)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assignment_field = self.fields.get('style_assignment')
+        if assignment_field is not None:
+            visible_assignments = Q(is_active=True)
+            # Keep a pinned assignment visible even if a provider sync marked
+            # it inactive. Otherwise the browser submits an empty value and the
+            # form silently replaces it with the current default assignment.
+            if self.instance.style_assignment_id:
+                visible_assignments |= Q(pk=self.instance.style_assignment_id)
+            assignment_field.queryset = (
+                LayerStyleAssignment.objects.filter(visible_assignments)
+                .select_related('style', 'layer')
+                .order_by('layer__name', 'style__title', 'style__name')
+            )
+        if 'order' in self.fields:
+            self.fields['order'].label = 'Order (0 = bottom)'
+        if (
+            self.instance.layer_id
+            and self.instance.style_assignment_id is None
+            and assignment_field is not None
+        ):
+            assignment_field.initial = self.instance.layer.style_assignments.filter(
+                role=LayerStyleAssignment.Role.DEFAULT,
+                is_active=True,
+            ).first()
+
+    def clean(self):
+        cleaned_data = super().clean()
+        layer = cleaned_data.get('layer')
+        assignment = cleaned_data.get('style_assignment')
+        if layer and assignment is None:
+            assignment = layer.style_assignments.filter(
+                role=LayerStyleAssignment.Role.DEFAULT,
+                is_active=True,
+            ).first()
+            cleaned_data['style_assignment'] = assignment
+            self.instance.style_assignment = assignment
+        if layer and assignment and assignment.layer_id != layer.id:
+            self.add_error(
+                'style_assignment',
+                'Select an assignment belonging to this layer.',
+            )
+        return cleaned_data
+
+
+class LayerGroupMemberInlineFormSet(BaseInlineFormSet):
+    """Assign derived values before Django evaluates uniqueness constraints."""
+
+    def __init__(
+        self,
+        data=None,
+        files=None,
+        instance=None,
+        save_as_new=False,
+        prefix=None,
+        queryset=None,
+        **kwargs,
+    ):
+        resolved_prefix = prefix or self.get_default_prefix()
+        if data is not None:
+            data = data.copy()
+            self._prepare_new_rows(data, resolved_prefix)
+        super().__init__(
+            data=data,
+            files=files,
+            instance=instance,
+            save_as_new=save_as_new,
+            prefix=prefix,
+            queryset=queryset,
+            **kwargs,
+        )
+        if not self.is_bound:
+            current_max = (
+                None
+                if self.instance.pk is None
+                else self.instance.members.aggregate(Max('order'))['order__max']
+            )
+            next_order = 0 if current_max is None else current_max + 1
+            for offset, form in enumerate(self.extra_forms):
+                form.initial['order'] = next_order + offset
+
+    @staticmethod
+    def _prepare_new_rows(data, prefix):
+        try:
+            total_forms = int(data.get(f'{prefix}-TOTAL_FORMS', 0))
+            initial_forms = int(data.get(f'{prefix}-INITIAL_FORMS', 0))
+        except (TypeError, ValueError):
+            return
+
+        retained_orders = []
+        for index in range(initial_forms):
+            if data.get(f'{prefix}-{index}-DELETE'):
+                continue
+            try:
+                retained_orders.append(int(data.get(f'{prefix}-{index}-order', 0)))
+            except (TypeError, ValueError):
+                continue
+        next_order = max(retained_orders, default=-1) + 1
+
+        for index in range(initial_forms, total_forms):
+            if data.get(f'{prefix}-{index}-DELETE'):
+                continue
+            layer_id = data.get(f'{prefix}-{index}-layer')
+            if not layer_id:
+                # A visible order hint must not make an otherwise empty extra form
+                # count as changed and trigger a required-layer validation error.
+                data[f'{prefix}-{index}-order'] = '0'
+                continue
+            data[f'{prefix}-{index}-order'] = str(next_order)
+            next_order += 1
+            assignment_key = f'{prefix}-{index}-style_assignment'
+            if data.get(assignment_key):
+                continue
+            default_assignment = LayerStyleAssignment.objects.filter(
+                layer_id=layer_id,
+                role=LayerStyleAssignment.Role.DEFAULT,
+                is_active=True,
+            ).first()
+            if default_assignment is not None:
+                data[assignment_key] = str(default_assignment.id)
+
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+        used_orders = set()
+        for form in self.forms:
+            if self._should_delete_form(form) or not form.cleaned_data.get('layer'):
+                continue
+            order = form.cleaned_data.get('order')
+            if order in used_orders:
+                raise ValidationError(
+                    'Each member must have a unique order. Change an order to move that '
+                    'member; the remaining members will be renumbered automatically.'
+                )
+            used_orders.add(order)
+
+    def get_unique_error_message(self, unique_check):
+        if 'order' in unique_check:
+            return (
+                'Each member must have a unique order. Change an order to move that '
+                'member; the remaining members will be renumbered automatically.'
+            )
+        return super().get_unique_error_message(unique_check)
+
+    def save(self, commit=True):
+        """Save final member orders without transient uniqueness collisions."""
+        if not commit or not self.instance.pk or not self._has_existing_order_changes():
+            return super().save(commit=commit)
+
+        with transaction.atomic():
+            member_ids = list(
+                LayerGroupMember.objects.select_for_update()
+                .filter(group=self.instance)
+                .values_list('pk', flat=True)
+            )
+            if member_ids:
+                current_max = (
+                    LayerGroupMember.objects.filter(pk__in=member_ids)
+                    .aggregate(Max('order'))['order__max']
+                    or 0
+                )
+                temporary_offset = current_max + len(member_ids) + len(self.forms) + 1
+                LayerGroupMember.objects.filter(pk__in=member_ids).update(
+                    order=F('order') + temporary_offset
+                )
+
+            saved_instances = super().save(commit=True)
+
+            # Django skips unchanged forms. Restore those members from their
+            # temporary order after all changed members have claimed final orders.
+            for form in self.initial_forms:
+                if self._should_delete_form(form) or form.has_changed():
+                    continue
+                form.instance.save(update_fields=['order', 'updated_at'])
+            return saved_instances
+
+    def _has_existing_order_changes(self):
+        return any(
+            not self._should_delete_form(form)
+            and 'order' in form.changed_data
+            for form in self.initial_forms
+        )
+
+
+class LayerGroupMemberInline(admin.TabularInline):
+    model = LayerGroupMember
+    form = LayerGroupMemberInlineForm
+    formset = LayerGroupMemberInlineFormSet
+    fields = (
+        'title', 'layer', 'style_assignment', 'render_layer_ids',
+        'order', 'source_alias_display',
+    )
+    readonly_fields = ('source_alias_display',)
+    extra = 2
+    autocomplete_fields = ('layer',)
+
+    @admin.display(description='Source key (automatic)')
+    def source_alias_display(self, obj):
+        if obj is None or obj.pk is None or not obj.source_alias:
+            return format_html(
+                '<span>Generated when saved</span><br>'
+                '<small style="color:var(--body-quiet-color);">'
+                'Member key derived from the layer name; repeated vector data shares one source.</small>'
+            )
+        return format_html(
+            '<code>{}</code><br><small style="color:var(--body-quiet-color);">'
+            'Member key; repeated vector data shares one runtime source automatically.</small>',
+            obj.source_alias,
+        )
+
+    class Media:
+        js = ('admin/js/layer_group_members.js',)
+
+
+@admin.register(LayerGroup)
+class LayerGroupAdmin(admin.ModelAdmin):
+    form = LayerGroupAdminForm
+    list_display = (
+        'name', 'title', 'workspace', 'composition_display', 'member_count',
+        'publishing_state', 'is_public', 'updated_at',
+    )
+    list_filter = (
+        'workspace__geodata_engine', 'workspace', 'publishing_state', 'is_public',
+    )
+    search_fields = ('name', 'title', 'description', 'workspace__name')
+    readonly_fields = (
+        'id', 'composition_display', 'publication_warnings_display',
+        'legend_preview', 'legend_status_display', 'legend_content_hash',
+        'legend_composition_hash',
+        'publishing_error', 'sync_state', 'last_sync_at',
+        'last_sync_error', 'description', 'created_at', 'updated_at',
+    )
+    inlines = (LayerGroupMemberInline,)
+    fieldsets = (
+        ('Identity', {'fields': ('id', 'workspace', 'name', 'title', 'description_content')}),
+        ('Composition', {
+            'fields': ('composition_display', 'publication_warnings_display'),
+            'description': (
+                'Members render from bottom to top: order 0 is the bottom and the highest '
+                'order is the top. New orders, source keys, and default styles are assigned '
+                'automatically.'
+            ),
+        }),
+        ('Group legend', {
+            'fields': (
+                'legend_image', 'legend_preview', 'legend_status_display',
+                'confirm_legend_current',
+                'legend_content_hash', 'legend_composition_hash',
+            ),
+            'description': (
+                'Upload one curated legend for the complete group. It replaces generated '
+                'member legends in the map UI. Upload a new image after changing members, '
+                'order, or pinned styles, or confirm that the existing legend is still accurate.'
+            ),
+        }),
+        ('Publication', {'fields': ('publishing_state', 'is_public', 'publishing_error')}),
+        ('Diagnostics', {
+            'fields': ('sync_state', 'last_sync_at', 'last_sync_error'),
+            'classes': ('collapse',),
+        }),
+        ('Metadata', {
+            'fields': ('description', 'created_at', 'updated_at'),
+            'classes': ('collapse',),
+        }),
+    )
+
+    def get_urls(self):
+        custom = [
+            path(
+                'composition-warnings/',
+                self.admin_site.admin_view(self.composition_warnings_view),
+                name='geodata_providers_layergroup_composition_warnings',
+            ),
+        ]
+        return custom + super().get_urls()
+
+    def composition_warnings_view(self, request):
+        """Evaluate the submitted member order before the admin saves it."""
+        if request.method != 'POST':
+            return JsonResponse({'error': 'POST required.'}, status=405)
+        if not (
+            self.has_change_permission(request)
+            or self.has_add_permission(request)
+        ):
+            return JsonResponse({'error': 'Permission denied.'}, status=403)
+        try:
+            payload = json.loads(request.body)
+            submitted_members = payload['members']
+            if not isinstance(submitted_members, list) or len(submitted_members) > 1000:
+                raise ValueError
+            layer_ids = [member['layer_id'] for member in submitted_members]
+            layers = {
+                str(layer_id): layer
+                for layer_id, layer in Layer.objects.select_related('store').in_bulk(
+                    layer_ids
+                ).items()
+            }
+            layer_orders = [
+                (layers[member['layer_id']], int(member['order']))
+                for member in submitted_members
+                if member['layer_id'] in layers
+            ]
+            group_id = payload.get('group_id')
+            group = None if not group_id else LayerGroup.objects.filter(pk=group_id).first()
+        except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
+            return JsonResponse({'error': 'Invalid member data.'}, status=400)
+        warnings = LayerGroup.publication_warnings_for_layers(layer_orders)
+        legend_will_refresh = bool(payload.get('legend_will_refresh'))
+        legend_will_be_removed = bool(payload.get('legend_will_be_removed'))
+        legend_is_confirmed = bool(payload.get('legend_is_confirmed'))
+        if (
+            group is not None
+            and group.legend_image
+            and not legend_will_refresh
+            and not legend_will_be_removed
+            and not legend_is_confirmed
+        ):
+            current_members = [
+                {
+                    'id': str(member.id),
+                    'layer_id': str(member.layer_id),
+                    'style_assignment_id': str(member.style_assignment_id or ''),
+                    'title': member.title,
+                    'render_layer_ids': member.render_layer_ids,
+                    'order': member.order,
+                }
+                for member in group.members.order_by('order', 'id')
+            ]
+            normalized_submitted = sorted(
+                [
+                    {
+                        'id': str(member.get('id') or ''),
+                        'layer_id': str(member['layer_id']),
+                        'style_assignment_id': str(member.get('style_assignment_id') or ''),
+                        'title': str(member.get('title') or ''),
+                        'render_layer_ids': member.get('render_layer_ids') or [],
+                        'order': int(member['order']),
+                    }
+                    for member in submitted_members
+                ],
+                key=lambda member: (member['order'], member['id']),
+            )
+            if group.legend_is_stale or normalized_submitted != current_members:
+                warnings.append(
+                    'The uploaded group legend will be outdated after these member, order, '
+                    'or style changes. Upload a new legend or confirm that the existing '
+                    'legend is still accurate.'
+                )
+        return JsonResponse({'warnings': warnings})
+
+    def get_exclude(self, request, obj=None):
+        return ['created_by']
+
+    def get_queryset(self, request):
+        return (
+            super().get_queryset(request)
+            .select_related('workspace__geodata_engine')
+            .prefetch_related('members__layer__store')
+        )
+
+    def member_count(self, obj):
+        return len(obj.members.all())
+    member_count.short_description = 'Members'
+
+    def composition_display(self, obj):
+        if obj is None or obj.pk is None:
+            return 'Determined by members'
+        return obj.composition.title()
+    composition_display.short_description = 'Composition'
+
+    def publication_warnings_display(self, obj):
+        if obj is None or obj.pk is None:
+            return '—'
+        warnings = obj.publication_warnings()
+        return '—' if not warnings else ' | '.join(warnings)
+    publication_warnings_display.short_description = 'Publication warnings'
+
+    @admin.display(description='Legend preview')
+    def legend_preview(self, obj):
+        if obj is None or obj.pk is None or not obj.legend_image:
+            return '—'
+        return format_html(
+            '<img src="{}" alt="Group legend preview" '
+            'style="max-width:100%;max-height:240px;object-fit:contain;">',
+            obj.legend_image.url,
+        )
+
+    @admin.display(description='Legend status')
+    def legend_status_display(self, obj):
+        if obj is None or obj.pk is None or not obj.legend_image:
+            return 'No group legend uploaded'
+        if obj.legend_is_stale:
+            return format_html(
+                '<strong style="color:var(--error-fg);">{}</strong>',
+                'Outdated — upload a new legend or confirm that the existing legend is still accurate.',
+            )
+        return format_html(
+            '<strong style="color:#2e7d32;">{}</strong>',
+            'Current',
+        )
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+    def save_related(self, request, form, formsets, change):
+        super().save_related(request, form, formsets, change)
+        group = form.instance
+        group._prefetched_objects_cache = {}
+        refresh_legend = (
+            'legend_image' in form.changed_data
+            or form.cleaned_data.get('confirm_legend_current')
+        )
+        result = LayerGroupService.reconcile_publication(
+            group=group,
+            refresh_legend=refresh_legend,
+        )
+        if not result.ok:
+            self.message_user(
+                request,
+                f'Layer group saved but not published: {result.error}',
+                messages.ERROR,
+            )
+            return
+        if group.legend_is_stale:
+            self.message_user(
+                request,
+                'The uploaded group legend is outdated. Upload a new legend or confirm '
+                'that the existing legend still matches the current group.',
+                messages.WARNING,
+            )
 
 _patch_geodata_providers_admin_app_list()
