@@ -12,6 +12,8 @@ import uuid
 from django.conf import settings
 from django.contrib.contenttypes.fields import GenericRelation
 from django.core.exceptions import ValidationError
+from django.core.files.storage import storages
+from django.db.models.fields.files import ImageField, ImageFieldFile, ImageFileDescriptor
 from django.db import models
 
 from tosca_api.apps.core.models import TimeStampedModel
@@ -23,6 +25,39 @@ def geostory_hero_image_upload_to(instance: "GeoStory", filename: str) -> str:
     extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
     unique_filename = f"{uuid.uuid4().hex}.{extension}"
     return f"geostories/{instance.pk}/hero/{unique_filename}"
+
+
+class HeroImageFieldFile(ImageFieldFile):
+    """ImageField file whose backend follows GeoStory's storage alias."""
+
+    def refresh_storage(self) -> None:
+        alias = getattr(
+            self.instance,
+            "hero_image_storage_alias",
+            GeoStory.StorageAlias.DEFAULT,
+        ) or GeoStory.StorageAlias.DEFAULT
+        self.storage = storages[alias]
+
+    def __init__(self, instance, field, name):
+        super().__init__(instance, field, name)
+        self.refresh_storage()
+
+
+class HeroImageFileDescriptor(ImageFileDescriptor):
+    """Keep a cached FieldFile aligned after the alias changes."""
+
+    def __get__(self, instance, cls=None):
+        file = super().__get__(instance, cls)
+        if instance is not None and isinstance(file, HeroImageFieldFile):
+            file.refresh_storage()
+        return file
+
+
+class HeroImageField(ImageField):
+    """ImageField backed by the GeoStory-selected Django storage alias."""
+
+    attr_class = HeroImageFieldFile
+    descriptor_class = HeroImageFileDescriptor
 
 
 class GeoStoryQuerySet(models.QuerySet):
@@ -60,7 +95,18 @@ class GeoStory(TimeStampedModel):
     objects = GeoStoryQuerySet.as_manager()
     title = models.CharField(max_length=255)
     summary = models.TextField(blank=True, default="")
-    hero_image = models.ImageField(
+    class StorageAlias(models.TextChoices):
+        DEFAULT = "default", "Private (default)"
+        PUBLIC = "media_public", "Public"
+        ARCHIVE = "media_archive", "Archive"
+
+    hero_image_storage_alias = models.CharField(
+        max_length=20,
+        choices=StorageAlias.choices,
+        default=StorageAlias.DEFAULT,
+        help_text="Storage alias currently holding hero_image; maintained by the media lifecycle.",
+    )
+    hero_image = HeroImageField(
         upload_to=geostory_hero_image_upload_to,
         null=True,
         blank=True,
@@ -136,7 +182,29 @@ class GeoStory(TimeStampedModel):
         self.title = sanitize_simple(self.title)
         self.summary = sanitize_simple(self.summary)
         self.hero_image_alt = sanitize_simple(self.hero_image_alt)
+
+        # New/replaced uploads must be written directly to the bucket dictated
+        # by the current ownership state. Status/visibility-only saves are
+        # intentionally left to MediaLifecycleService, which performs the
+        # copy/update/delete sequence for an already-committed object.
+        hero_file = self.__dict__.get("hero_image")
+        if hero_file and (self._state.adding or not getattr(hero_file, "_committed", True)):
+            self.hero_image_storage_alias = self.desired_hero_image_storage_alias()
         super().save(*args, **kwargs)
+
+    def desired_hero_image_storage_alias(self) -> str:
+        """Return the current lifecycle bucket for a newly saved hero image."""
+        if not self.campaign_id:
+            return self.StorageAlias.DEFAULT
+        campaign = self.campaign
+        if (
+            campaign.status == campaign.Status.ARCHIVED
+            or self.status == self.Status.ARCHIVED
+        ):
+            return self.StorageAlias.ARCHIVE
+        if campaign.visibility == campaign.Visibility.PUBLIC:
+            return self.StorageAlias.PUBLIC
+        return self.StorageAlias.DEFAULT
 
 
 class GeoStoryLayer(TimeStampedModel):

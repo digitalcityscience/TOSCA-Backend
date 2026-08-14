@@ -24,16 +24,10 @@ Events have no archived status of their own (``Event.Status`` has no
 ``ARCHIVED`` member -- only Campaign/GeoStory do per §3.1 of the ticket), so
 an Event-scoped asset only archives when its *Campaign* archives.
 
-Known caveat -- GeoStory hero images: ``GeoStory.hero_image`` is a Django
-``ImageField`` bound to the ``default`` storage at the model-field level
-(``core.models`` / ``geostories.models.geostory_hero_image_upload_to`` does
-not pass a ``storage=`` override). Physically copying that object's bytes to
-another bucket without also rewriting the field's storage backend would
-break ``hero_image.url``. This module therefore leaves hero-image-matched
-assets' bytes and ``storage_alias`` untouched -- they are not currently
-routed through per-alias storage the way EditorJS/misc uploads are. This is
-a known scope boundary, not an oversight; revisit if/when hero images move
-onto the same ``storages[alias]`` routing as everything else.
+GeoStory hero images use a dynamic ImageField storage backend selected by
+``GeoStory.hero_image_storage_alias``. They therefore participate in the
+same copy/update/delete lifecycle as EditorJS and misc media, including
+stories that have no corresponding ``MediaAsset`` row.
 
 This module only performs the *move* (copy -> update DB -> delete old
 object), mirroring ``media_path_migration.MediaPathMigrator``'s
@@ -126,10 +120,11 @@ class MediaLifecycleService:
         path = asset.storage_path
 
         if _is_hero_image_match(asset):
-            return LifecycleEntry(
-                str(asset.id), old_alias, old_alias, ACTION_SKIPPED_HERO_IMAGE, STATUS_OK,
-                "hero_image is pinned to the default storage field -- not moved",
-            )
+            from tosca_api.apps.geostories.models import GeoStory
+
+            story = GeoStory.objects.filter(hero_image=path).first()
+            if story is not None:
+                return self.move_hero_image(story, target_alias)
 
         if old_alias == target_alias:
             return LifecycleEntry(str(asset.id), old_alias, target_alias, ACTION_NO_CHANGE, STATUS_OK)
@@ -177,6 +172,59 @@ class MediaLifecycleService:
                 str(asset.id), old_alias, target_alias, ACTION_FAILED, STATUS_FAILED, repr(exc)
             )
 
+    def move_hero_image(self, story, target_alias: str) -> LifecycleEntry:
+        """Move a GeoStory hero image and persist its active storage alias."""
+        from tosca_api.apps.core.models import MediaAsset
+
+        hero = story.hero_image
+        path = hero.name if hero else ""
+        old_alias = story.hero_image_storage_alias
+        if not path:
+            return LifecycleEntry(
+                f"hero:{story.id}", old_alias, target_alias, ACTION_NO_CHANGE, STATUS_OK,
+                "story has no hero image",
+            )
+        if old_alias == target_alias:
+            return LifecycleEntry(f"hero:{story.id}", old_alias, target_alias, ACTION_NO_CHANGE, STATUS_OK)
+
+        try:
+            source_storage = self._storage_for_alias(old_alias)
+            dest_storage = self._storage_for_alias(target_alias)
+            if not source_storage.exists(path):
+                return LifecycleEntry(
+                    f"hero:{story.id}", old_alias, target_alias, ACTION_FAILED, STATUS_FAILED,
+                    "source hero image missing at old_alias",
+                )
+            source_size = source_storage.size(path)
+
+            if dest_storage.exists(path):
+                dest_size = dest_storage.size(path)
+                if dest_size != source_size:
+                    return LifecycleEntry(
+                        f"hero:{story.id}", old_alias, target_alias, ACTION_FAILED, STATUS_FAILED,
+                        f"destination already exists with mismatched size ({dest_size} != {source_size})",
+                    )
+            else:
+                with source_storage.open(path, "rb") as handle:
+                    dest_storage.save(path, ContentFile(handle.read(), name=path))
+                if dest_storage.size(path) != source_size:
+                    return LifecycleEntry(
+                        f"hero:{story.id}", old_alias, target_alias, ACTION_FAILED, STATUS_FAILED,
+                        "post-copy hero image size does not match source",
+                    )
+
+            with transaction.atomic():
+                story.hero_image_storage_alias = target_alias
+                story.save(update_fields=["hero_image_storage_alias"])
+                MediaAsset.objects.filter(storage_path=path).update(storage_alias=target_alias)
+
+            source_storage.delete(path)
+            return LifecycleEntry(f"hero:{story.id}", old_alias, target_alias, ACTION_MOVED, STATUS_OK)
+        except Exception as exc:
+            return LifecycleEntry(
+                f"hero:{story.id}", old_alias, target_alias, ACTION_FAILED, STATUS_FAILED, repr(exc)
+            )
+
     def _sync_assets(self, assets: Iterable) -> list[LifecycleEntry]:
         entries = []
         for asset in assets:
@@ -188,7 +236,14 @@ class MediaLifecycleService:
 
     def sync_campaign_assets(self, campaign) -> list[LifecycleEntry]:
         """Re-evaluate and move every asset owned by ``campaign``."""
-        return self._sync_assets(campaign.media_assets.select_related("campaign__organization").all())
+        entries = [
+            self.move_hero_image(story, story.desired_hero_image_storage_alias())
+            for story in campaign.geostories.all()
+            if story.hero_image
+        ]
+        return entries + self._sync_assets(
+            campaign.media_assets.select_related("campaign__organization").all()
+        )
 
     def sync_story_assets(self, story) -> list[LifecycleEntry]:
         """Re-evaluate and move only the assets that resolve to ``story``.
@@ -200,8 +255,11 @@ class MediaLifecycleService:
         """
         if story.campaign_id is None:
             return []
-        assets = story.campaign.media_assets.select_related("campaign__organization").all()
         entries = []
+        if story.hero_image:
+            entries.append(self.move_hero_image(story, story.desired_hero_image_storage_alias()))
+
+        assets = story.campaign.media_assets.select_related("campaign__organization").all()
         for asset in assets:
             resolved = resolve_entity(asset)
             if resolved is None or resolved.kind != KIND_STORY or resolved.entity_id != str(story.id):

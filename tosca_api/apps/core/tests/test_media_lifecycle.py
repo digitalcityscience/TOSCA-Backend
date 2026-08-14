@@ -1,9 +1,8 @@
 """Tests for the Campaign/GeoStory archive & restore lifecycle (epic-11 PR3).
 
 Covers ``core.media_lifecycle``: desired-alias resolution (campaign archived,
-story archived, visibility-driven private/public), move_one's
-copy-then-verify-then-delete safety, hero-image skip, and the
-campaign/story sweep entry points.
+story archived, visibility-driven private/public), copy-then-verify-then-delete
+safety for regular and hero media, and the campaign/story sweep entry points.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from tosca_api.apps.core.media_lifecycle import (
     ACTION_FAILED,
     ACTION_MOVED,
     ACTION_NO_CHANGE,
-    ACTION_SKIPPED_HERO_IMAGE,
     MediaLifecycleService,
     desired_alias_for_asset,
 )
@@ -123,8 +121,7 @@ def test_desired_alias_is_archive_when_owning_story_archived_but_campaign_active
         author=author,
         status=GeoStory.Status.ARCHIVED,
     )
-    # This asset resolves to the story via EditorJS content (not hero_image,
-    # so it isn't skipped by the hero-image guard).
+    # This asset resolves to the story via EditorJS content.
     from tosca_api.apps.geocontext.models import GeoContext
 
     from django.core.files.storage import default_storage
@@ -197,7 +194,7 @@ def test_move_one_is_no_change_when_already_in_target_alias(campaign, tmp_path):
     assert entry.action == ACTION_NO_CHANGE
 
 
-def test_move_one_skips_hero_image_matched_asset(campaign, django_user_model, tmp_path):
+def test_move_one_moves_hero_image_matched_asset(campaign, django_user_model, tmp_path):
     author = django_user_model.objects.create_user(username="author4")
     story = GeoStory(
         title="Story", campaign=campaign, author=author, hero_image_alt="alt"
@@ -205,6 +202,9 @@ def test_move_one_skips_hero_image_matched_asset(campaign, django_user_model, tm
     story.hero_image.name = "geostories/x/hero/img.png"
     story.save()
     service, backends, storage_for_alias = _service(tmp_path)
+    storage_for_alias("default").save(
+        "geostories/x/hero/img.png", ContentFile(b"hero-bytes")
+    )
     asset = _make_asset(
         "geostories/x/hero/img.png",
         campaign=campaign,
@@ -214,9 +214,36 @@ def test_move_one_skips_hero_image_matched_asset(campaign, django_user_model, tm
 
     entry = service.move_one(asset, MediaAsset.StorageAlias.ARCHIVE)
 
-    assert entry.action == ACTION_SKIPPED_HERO_IMAGE
+    assert entry.action == ACTION_MOVED
+    assert storage_for_alias("media_archive").exists("geostories/x/hero/img.png")
+    assert not storage_for_alias("default").exists("geostories/x/hero/img.png")
     asset.refresh_from_db()
-    assert asset.storage_alias == MediaAsset.StorageAlias.DEFAULT
+    story.refresh_from_db()
+    assert asset.storage_alias == MediaAsset.StorageAlias.ARCHIVE
+    assert story.hero_image_storage_alias == MediaAsset.StorageAlias.ARCHIVE
+
+
+def test_sync_story_assets_moves_hero_without_media_asset(campaign, django_user_model, tmp_path):
+    author = django_user_model.objects.create_user(username="hero-only-author")
+    story = GeoStory(
+        title="Hero-only story", campaign=campaign, author=author, hero_image_alt="alt"
+    )
+    story.hero_image.name = "geostories/hero-only/hero/image.png"
+    story.save()
+
+    service, backends, storage_for_alias = _service(tmp_path)
+    storage_for_alias("default").save(
+        "geostories/hero-only/hero/image.png", ContentFile(b"hero-only")
+    )
+    story.status = GeoStory.Status.ARCHIVED
+    story.save()
+
+    entries = service.sync_story_assets(story)
+
+    assert entries[0].action == ACTION_MOVED
+    assert storage_for_alias("media_archive").exists("geostories/hero-only/hero/image.png")
+    story.refresh_from_db()
+    assert story.hero_image_storage_alias == MediaAsset.StorageAlias.ARCHIVE
 
 
 def test_move_one_fails_when_source_object_missing(campaign, tmp_path):
