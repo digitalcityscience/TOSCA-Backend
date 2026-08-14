@@ -1,0 +1,8 @@
+ARG GARAGE_IMAGE=dxflrs/garage:v2.3.0
+FROM ${GARAGE_IMAGE} AS garage
+
+FROM busybox:1.36.1
+COPY --from=garage /garage /garage
+COPY bootstrap.sh /bootstrap.sh
+RUN chmod +x /bootstrap.sh
+ENTRYPOINT ["/bin/sh", "/bootstrap.sh"]

@@ -216,6 +216,7 @@ def build_storage_config(
     backend: str,
     *,
     bucket_name: str = "",
+    public_bucket_name: str = "",
     endpoint_url: str = "",
     region_name: str = "us-east-1",
     access_key: str = "",
@@ -238,7 +239,7 @@ def build_storage_config(
         raise ImproperlyConfigured("DJANGO_STORAGE_BACKEND must be either 'filesystem' or 's3'.")
     if not bucket_name:
         raise ImproperlyConfigured("S3_BUCKET_NAME is required when using S3 storage.")
-    return {
+    config = {
         "default": {
             "BACKEND": "storages.backends.s3.S3Storage",
             "OPTIONS": {
@@ -259,11 +260,30 @@ def build_storage_config(
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
         },
     }
+    if public_bucket_name:
+        config["media_public"] = {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": public_bucket_name,
+                "endpoint_url": endpoint_url or None,
+                "region_name": region_name,
+                "access_key": access_key or None,
+                "secret_key": secret_key or None,
+                "addressing_style": addressing_style,
+                "signature_version": signature_version,
+                "default_acl": None,
+                "file_overwrite": False,
+                "querystring_auth": False,
+                "location": "",
+            },
+        }
+    return config
 
 
 STORAGES = build_storage_config(
     DJANGO_STORAGE_BACKEND,
     bucket_name=S3_BUCKET_NAME,
+    public_bucket_name=S3_PUBLIC_BUCKET_NAME,
     endpoint_url=S3_ENDPOINT_URL,
     region_name=S3_REGION_NAME,
     access_key=S3_ACCESS_KEY_ID,

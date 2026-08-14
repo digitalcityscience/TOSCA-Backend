@@ -3,7 +3,7 @@
 **Tarih:** 2026-08-14  
 **Branch:** `epic-11-s3-production-media`  
 **Başlangıç branch'i:** `main`  
-**Durum:** Storage foundation ve MediaAsset entegrasyonu tamamlandı. Private original/public derivative ayrımı henüz sonraki aşamadır.
+**Durum:** Storage foundation, MediaAsset entegrasyonu ve local Garage S3 stack'i tamamlandı. Public derivative üretiminin uygulama akışına bağlanması sonraki aşamadır.
 
 > Bu dosyanın adı, takip kolaylığı için istenen biçimde bırakılmıştır: `epic-11-s3-implemtation-14082026.md`.
 
@@ -297,7 +297,7 @@ Bu iki commit aşağıdaki hedefleri henüz tamamlamıyor:
 
 ### Private originals / public derivatives
 
-Şu anda storage foundation default storage'ı S3'e bağlayabiliyor. Ancak raw originals ve derivatives'ın ayrı public/private politikaları henüz tamamlanmış değildir.
+Şu anda storage foundation default storage'ı S3'e bağlayabiliyor. Local stack raw originals için private bucket ve public derivatives için ayrı bucket ile geliyor. Django `STORAGES["default"]` private bucket'ı, `STORAGES["media_public"]` ise query-string auth kapalı public bucket'ı temsil ediyor. Mevcut derivative üreticinin public alias'ı kullanması ve GeoStory response'larının bu politikaya göre tamamlanması sonraki adımdır.
 
 Sonraki adımda:
 
@@ -342,7 +342,47 @@ Mevcut upload-by-url akışında timeout, redirect limiti ve download size limit
 
 EditorJS view'larında throttle sınıfları mevcut olsa da production rate değerlerinin ve endpoint-specific scope'ların ayrıca tamamlanması gerekiyor.
 
-## 8. Önerilen sonraki uygulama sırası
+## 8. Local Garage stack'i
+
+Local development Compose dosyasına sabit ve multi-arch `dxflrs/garage:v2.3.0` image'ı eklendi. Image üzerinde `platform: linux/amd64` zorlaması yoktur; Docker Desktop Apple Silicon ve Linux host kendi uygun image mimarisini seçer.
+
+Garage metadata ve object data ayrı named volume'larda tutulur:
+
+- `garage_meta:/var/lib/garage/meta`
+- `garage_data:/var/lib/garage/data`
+
+SQLite metadata engine, local single-node development için metadata'nın mimariler arasında taşınabilir ve yeniden başlatma sonrası korunabilir olmasını sağlar. Django static files bu stack'e dahil edilmez ve local `StaticFilesStorage` üzerinde kalır.
+
+`garage-bootstrap` servisi idempotent olarak şunları yapar:
+
+1. Garage single-node layout'unun hazır olmasını bekler.
+2. `tosca-media-private` ve `tosca-media-public` bucket'larını oluşturur veya mevcut olanları kullanır.
+3. Django service access key'e her iki bucket için read/write/owner izni verir.
+
+Service credential Garage içindir. Keycloak veya Django application user hesabı değildir.
+
+Örnek local değişkenler:
+
+```dotenv
+DJANGO_STORAGE_BACKEND=s3
+S3_ENDPOINT_URL=http://garage:3900
+S3_REGION_NAME=garage
+S3_ACCESS_KEY_ID=GKtosca-local-django
+S3_SECRET_ACCESS_KEY=tosca-local-django-secret-change-me
+S3_BUCKET_NAME=tosca-media-private
+S3_PUBLIC_BUCKET_NAME=tosca-media-public
+S3_ADDRESSING_STYLE=path
+```
+
+Gerçek local acceptance akışı:
+
+```sh
+ENV_FILE=.env.dev ./scripts/verify_garage_s3.sh
+```
+
+Bu script Django `default_storage` üzerinden byte upload eder, Garage restart sonrasında aynı object'i okur ve SHA-256 eşleşmesini kontrol eder.
+
+## 9. Önerilen sonraki uygulama sırası
 
 ```text
 10. Storage guardrails
@@ -357,7 +397,7 @@ EditorJS view'larında throttle sınıfları mevcut olsa da production rate değ
 
 Issue 48'in Issue 12'den önce gelmesi önerilir. S3 üzerinde DB tracking olmadan media library ve orphan cleanup operasyonları gereksiz pahalı ve güvenilmez olur.
 
-## 9. Branch'in güncel durumu
+## 10. Branch'in güncel durumu
 
 Son commit:
 
@@ -386,7 +426,7 @@ M  docker/geoserver_docker
 
 Bu değişiklikler Epic 11 S3 commit'lerine dahil edilmemiştir.
 
-## 10. Son doğrulama ve requirement traceability
+## 11. Son doğrulama ve requirement traceability
 
 Bu bölüm, dokümanda yazan her ana gereksinimi doğrudan bir kontrol ve gözlenen sonuçla eşleştirir. Toplam test sayısı tek başına yeterli kabul edilmemiştir.
 
@@ -408,14 +448,16 @@ Bu bölüm, dokümanda yazan her ana gereksinimi doğrudan bir kontrol ve gözle
 | Migration model ile uyumlu olmalı | `manage.py makemigrations core --check --dry-run` | `No changes detected in app 'core'`. Passed. |
 | Applied migration state eksiksiz olmalı | `manage.py migrate --check` | Pending migration bulunmadı. Passed. |
 | Changed Python code lint edilebilir olmalı | Container içinde Ruff | `All checks passed!`. Passed. |
-| Public API schema güncel kalmalı | `test_openapi_schema_documents_editorjs_image_endpoints` | Upload-by-file, upload-by-url ve media route'ları schema içinde bulundu. Passed. |
+| Local Garage Compose stack'i ve persistent volumes | `docker compose -f docker-compose-dev.yml config --quiet` ve `scripts/verify_garage_s3.sh` | `dxflrs/garage:v2.3.0`, `garage_meta`, `garage_data`, bootstrap ve Django S3 wiring doğrulandı. Live sonuç aşağıdaki bölümde raporlanmıştır. |
+| Private ve public Garage bucket alias'ları | `scripts/garage_e2e.py` üzerinden `default_storage` ve `storages["media_public"]` | Her iki bucket'a upload edildi, Garage restart sonrasında her iki object byte-for-byte okundu. Passed. |
 | Implementation documentation takip edilebilir olmalı | Dosya existence, line count, opening metadata ve commit doğrulaması | İstenen dosya mevcut, 421+ satır, branch/commit/test/limitation bölümleri içeriyor ve `d6ec700` ile commit edildi. Passed. |
 
 ### Kapsam dışı veya dış bağımlılığa bağlı kontrol
 
-Live Garage/S3 upload testi bu aşamada çalıştırılmadı. Repository'de çalışan bir Garage endpoint'i ve gerçek S3 credentials bulunmuyor. Bunun yerine iki ayrı integration boundary doğrulandı:
+Production Garage/S3 upload testi production endpoint ve credentials gerektirir. Local acceptance script'i ise gerçek local Garage endpoint'i üzerinde çalıştırılır ve aşağıdaki bölümdeki gözlenen sonuç bu branch'e aittir.
 
 1. Django gerçek `storages.backends.s3.S3Storage` ile başlatıldı ve Garage-compatible options üretildi.
-2. Gerçek public upload/media-library endpoint'leri PostGIS-backed test database ve filesystem storage ile çalıştırıldı.
+2. Gerçek local Garage service'e Django `default_storage` ve `storages["media_public"]` ile object upload edildi, bytes okundu ve SHA-256 doğrulandı.
+3. Garage container restart edildi; named volumes korunurken private ve public object'ler yeniden okunarak persistence doğrulandı.
 
-Bu nedenle mevcut sonuç **S3 configuration and application-boundary verified** seviyesindedir; **live Garage object I/O verified** iddiasında bulunulmamaktadır.
+Bu nedenle mevcut sonuç **local Garage object I/O and restart persistence verified** seviyesindedir. Production Garage cluster replication, TLS, lifecycle ve public CDN davranışı bu local stack'in kapsamı dışındadır.

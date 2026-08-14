@@ -21,6 +21,7 @@ class StorageConfigTests(SimpleTestCase):
         config = build_storage_config(
             "s3",
             bucket_name="tosca-media",
+            public_bucket_name="tosca-media-public",
             endpoint_url="https://garage.example.org",
             region_name="garage",
             access_key="access",
@@ -39,6 +40,9 @@ class StorageConfigTests(SimpleTestCase):
             config["staticfiles"]["BACKEND"],
             "django.contrib.staticfiles.storage.StaticFilesStorage",
         )
+        self.assertEqual(config["media_public"]["BACKEND"], "storages.backends.s3.S3Storage")
+        self.assertEqual(config["media_public"]["OPTIONS"]["bucket_name"], "tosca-media-public")
+        self.assertFalse(config["media_public"]["OPTIONS"]["querystring_auth"])
 
     def test_s3_requires_a_bucket_name(self):
         with self.assertRaisesMessage(ImproperlyConfigured, "S3_BUCKET_NAME is required"):
