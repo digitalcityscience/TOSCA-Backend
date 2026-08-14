@@ -256,6 +256,7 @@ class EventListSerializer(serializers.ModelSerializer):
     total_occurrences = serializers.SerializerMethodField()
     profile_key = serializers.SerializerMethodField()
     taxonomy_assignments = serializers.SerializerMethodField()
+    effective_visibility = serializers.CharField(read_only=True)
 
     class Meta:
         model = Event
@@ -270,6 +271,7 @@ class EventListSerializer(serializers.ModelSerializer):
             "location_mode",
             "status",
             "visibility",
+            "effective_visibility",
             "series_id",
             "series_name",
             "occurrence_index",
@@ -309,6 +311,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
     feature_links = serializers.SerializerMethodField()
     profile_key = serializers.SerializerMethodField()
     profile = serializers.SerializerMethodField()
+    effective_visibility = serializers.CharField(read_only=True)
 
     class Meta:
         model = Event
@@ -340,6 +343,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "series",
             "status",
             "visibility",
+            "effective_visibility",
             "organizer",
             "context",
             "profile_key",
@@ -406,6 +410,7 @@ class EventGeoSerializer(GeoFeatureModelSerializer):
     total_occurrences = serializers.SerializerMethodField()
     profile_key = serializers.SerializerMethodField()
     taxonomy_assignments = serializers.SerializerMethodField()
+    effective_visibility = serializers.CharField(read_only=True)
 
     class Meta:
         model = Event
@@ -421,6 +426,7 @@ class EventGeoSerializer(GeoFeatureModelSerializer):
             "location_mode",
             "status",
             "visibility",
+            "effective_visibility",
             "series_id",
             "series_name",
             "occurrence_index",
@@ -454,6 +460,7 @@ class EventMapOnlineSerializer(serializers.ModelSerializer):
     total_occurrences = serializers.SerializerMethodField()
     profile_key = serializers.SerializerMethodField()
     taxonomy_assignments = serializers.SerializerMethodField()
+    effective_visibility = serializers.CharField(read_only=True)
 
     class Meta:
         model = Event
@@ -470,6 +477,7 @@ class EventMapOnlineSerializer(serializers.ModelSerializer):
             "online_platform",
             "status",
             "visibility",
+            "effective_visibility",
             "series_id",
             "series_name",
             "occurrence_index",
@@ -561,6 +569,13 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
     )
     layers = LayerUUIDListField(required=False, write_only=True)
     profile = serializers.DictField(required=False, write_only=True)
+    # Deprecated (epic-11 §3.2): visibility is no longer writable via the
+    # API -- Campaign.visibility is the sole authority. Declared explicitly
+    # (rather than left to the ModelSerializer default, which would make it
+    # writable) and ignored on write; see effective_visibility for the
+    # value clients should actually use.
+    visibility = serializers.CharField(read_only=True)
+    effective_visibility = serializers.CharField(read_only=True)
 
     class Meta:
         model = Event
@@ -595,6 +610,7 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
             "original_start_datetime",
             "status",
             "visibility",
+            "effective_visibility",
             "organizer",
             "context",
             "taxonomy_assignments",
@@ -605,6 +621,20 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
 
     def validate(self, attrs):
         """Invoke model clean() to ensure DB constraints surface as API 400s."""
+        campaign = attrs.get("campaign")
+        if campaign is None and self.instance is not None:
+            campaign = self.instance.campaign
+        request = self.context.get("request")
+        if request is not None:
+            from tosca_api.apps.organizations.permissions import (
+                validate_campaign_organization,
+            )
+
+            if not validate_campaign_organization(request, campaign):
+                raise serializers.ValidationError(
+                    {"campaign": "Campaign does not belong to your organization."}
+                )
+
         taxonomy_assignments = attrs.pop("taxonomy_assignments", serializers.empty)
         event_type = attrs.get("event_type")
         if event_type is None and self.instance is not None:
@@ -636,7 +666,16 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
         instance = Event()
         if self.instance is not None:
             for field in self.Meta.fields:
-                if field in {"id", "taxonomy_assignments", "layers", "profile"}:
+                # effective_visibility is a read-only derived property (no
+                # setter) -- excluded alongside the other non-model fields
+                # already skipped here.
+                if field in {
+                    "id",
+                    "taxonomy_assignments",
+                    "layers",
+                    "profile",
+                    "effective_visibility",
+                }:
                     continue
                 setattr(instance, field, getattr(self.instance, field))
             instance.pk = self.instance.pk

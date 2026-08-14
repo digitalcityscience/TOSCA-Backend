@@ -26,6 +26,11 @@ def api_client():
     return APIClient()
 
 
+def _org_token(*roles, org="dcs"):
+    """Keycloak-shaped token for org-scoped writes (epic-11 PR1 SS3.3)."""
+    return {"realm_access": {"roles": list(roles)}, "default_organization": org}
+
+
 @pytest.fixture
 def user():
     return User.objects.create_user(username="phase7", password="pw")
@@ -171,7 +176,7 @@ def test_event_detail_exposes_profile_key_on_taxonomy_assignment(
 def test_event_api_rejects_ph_dimension_on_general_event_via_write(
     api_client, user, campaign, general_event_type, ph_scoped_dimension
 ):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     term = ph_scoped_dimension.terms.first()
     payload = {
         "title": "Mismatch",
@@ -197,7 +202,7 @@ def test_event_api_rejects_ph_dimension_on_general_event_via_write(
 def test_event_api_accepts_ph_dimension_on_ph_event_via_write(
     api_client, user, campaign, ph_event_type, ph_scoped_dimension
 ):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     term = ph_scoped_dimension.terms.first()
     payload = {
         "title": "Match",

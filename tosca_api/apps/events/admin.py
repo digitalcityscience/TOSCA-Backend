@@ -2,6 +2,8 @@ from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
 from django.db import transaction
 
+from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin
+
 from .forms import (
     EventAdminForm,
     EventSeriesAdminForm,
@@ -397,8 +399,10 @@ class EventSeriesAdmin(admin.ModelAdmin):
 
 
 @admin.register(Event)
-class EventAdmin(GISModelAdmin):
+class EventAdmin(OrgScopedAdminMixin, GISModelAdmin):
     """Admin interface for Event with map widget for location."""
+
+    org_lookup = "campaign__organization__slug"
 
     form = EventAdminForm
     list_display = [

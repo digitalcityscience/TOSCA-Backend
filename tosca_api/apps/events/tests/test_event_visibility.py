@@ -320,3 +320,96 @@ def test_anon_can_retrieve_series_with_at_least_one_visible_occurrence(
 
     response = api_client.get(f"/api/v1/event-series/{series.id}/")
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# effective_visibility (epic-11 PR1 §3.2): Campaign.visibility is the sole
+# authorization source; Event.visibility is deprecated and read-only via API.
+# ---------------------------------------------------------------------------
+
+
+def _org_token(*roles, org="dcs"):
+    return {"realm_access": {"roles": list(roles)}, "default_organization": org}
+
+
+@pytest.mark.django_db
+def test_effective_visibility_follows_campaign_not_event_field():
+    """Event.effective_visibility must mirror Campaign.visibility even when
+    Event.visibility disagrees -- there is deliberately no AND-gate (§3.2)."""
+    from tosca_api.apps.organizations.models import Organization
+
+    org = Organization.objects.create(slug="ev-vis-org", name="EV Vis Org")
+    organizer = User.objects.create_user(username="ev-vis-organizer")
+    campaign = Campaign.objects.create(
+        title="Private Campaign",
+        created_by=organizer,
+        organization=org,
+        visibility=Campaign.Visibility.PRIVATE,
+    )
+    event = Event.objects.create(
+        campaign=campaign,
+        title="Public-flagged Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        organizer=organizer,
+        status=Event.Status.PUBLISHED,
+        # Deliberately PUBLIC on the deprecated field while the campaign is
+        # PRIVATE -- effective_visibility must follow the campaign.
+        visibility=Event.Visibility.PUBLIC,
+        location_mode=Event.LocationMode.ONLINE,
+        online_url="https://example.test",
+        summary="s",
+        provider_phone="+49 89 12345",
+    )
+
+    assert event.effective_visibility == Campaign.Visibility.PRIVATE
+
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    event.refresh_from_db()
+    assert event.effective_visibility == Campaign.Visibility.PUBLIC
+
+
+@pytest.mark.django_db
+def test_event_detail_serializer_exposes_effective_visibility(
+    api_client, staff_user, published_public_event
+):
+    api_client.force_authenticate(user=staff_user)
+    response = api_client.get(f"/api/v1/events/{published_public_event.id}/")
+    assert response.status_code == 200
+    assert response.data["effective_visibility"] == published_public_event.campaign.visibility
+    assert "visibility" in response.data
+
+
+@pytest.mark.django_db
+def test_event_write_serializer_ignores_visibility_field_on_write(
+    api_client, organizer, campaign
+):
+    """POST/PATCH payloads that set `visibility` must be silently ignored --
+    it's read-only via the API (§3.2)."""
+    from tosca_api.apps.organizations.models import Organization
+
+    Organization.objects.get_or_create(slug="dcs", defaults={"name": "DCS"})
+    campaign.organization = Organization.objects.get(slug="dcs")
+    campaign.save()
+
+    api_client.force_authenticate(
+        user=organizer, token=_org_token("ROLE_DCS_WRITER")
+    )
+    data = {
+        "title": "Ignore visibility on create",
+        "campaign": str(campaign.id),
+        "start_datetime": (timezone.now() + timedelta(days=1)).isoformat(),
+        "end_datetime": (timezone.now() + timedelta(days=1, hours=1)).isoformat(),
+        "location_mode": "online",
+        "online_url": "https://example.test",
+        "status": "draft",
+        # Attempt to write visibility directly -- must be ignored, not
+        # rejected (read-only fields are dropped from validated_data by DRF).
+        "visibility": "private",
+    }
+    response = api_client.post("/api/v1/events/", data, format="json")
+    assert response.status_code == 201
+    created = Event.objects.get(id=response.data["id"])
+    # Model default (PUBLIC) wins -- the payload's "private" was ignored.
+    assert created.visibility == Event.Visibility.PUBLIC

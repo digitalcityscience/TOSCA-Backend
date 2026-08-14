@@ -6,6 +6,8 @@ from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin, UpdateMo
 from rest_framework.pagination import CursorPagination
 from rest_framework.response import Response
 
+from tosca_api.apps.organizations.permissions import CampaignScopedPermission
+
 from .filters import apply_event_filters
 from .models import Event, EventSeries, EventTerm, EventType, TaxonomyDimension, TaxonomyTerm
 from .serializers import (
@@ -109,7 +111,7 @@ class EventViewSet(viewsets.ModelViewSet):
     """
 
     queryset = Event.objects.all()
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly, CampaignScopedPermission]
     pagination_class = EventCursorPagination
 
     def get_permissions(self):

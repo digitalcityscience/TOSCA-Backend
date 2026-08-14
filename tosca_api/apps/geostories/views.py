@@ -3,6 +3,8 @@ from rest_framework import permissions, viewsets
 from rest_framework.pagination import CursorPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 
+from tosca_api.apps.organizations.permissions import CampaignScopedPermission
+
 from .models import GeoStory
 from .serializers import (
     GeoStoryDetailSerializer,
@@ -75,7 +77,7 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
     """
 
     queryset = GeoStory.objects.all()
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly, CampaignScopedPermission]
     pagination_class = GeoStoryCursorPagination
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 

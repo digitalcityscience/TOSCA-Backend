@@ -18,6 +18,11 @@ def api_client():
     return APIClient()
 
 
+def _org_token(*roles, org="dcs"):
+    """Keycloak-shaped token for org-scoped writes (epic-11 PR1 SS3.3)."""
+    return {"realm_access": {"roles": list(roles)}, "default_organization": org}
+
+
 @pytest.fixture
 def user():
     return User.objects.create_user(username="phase2", password="pw")
@@ -44,7 +49,7 @@ def _published_payload(campaign):
 
 @pytest.mark.django_db
 def test_summary_over_100_chars_rejected_via_api(api_client, user, campaign):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     payload = _published_payload(campaign)
     payload["summary"] = "x" * 101
     response = api_client.post("/api/v1/events/", payload, format="json")
@@ -54,7 +59,7 @@ def test_summary_over_100_chars_rejected_via_api(api_client, user, campaign):
 
 @pytest.mark.django_db
 def test_published_event_requires_summary_via_api(api_client, user, campaign):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     payload = _published_payload(campaign)
     payload["summary"] = ""
     response = api_client.post("/api/v1/events/", payload, format="json")
@@ -64,7 +69,7 @@ def test_published_event_requires_summary_via_api(api_client, user, campaign):
 
 @pytest.mark.django_db
 def test_published_event_requires_provider_contact_via_api(api_client, user, campaign):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     payload = _published_payload(campaign)
     payload["provider_phone"] = ""
     response = api_client.post("/api/v1/events/", payload, format="json")
@@ -74,7 +79,7 @@ def test_published_event_requires_provider_contact_via_api(api_client, user, cam
 
 @pytest.mark.django_db
 def test_published_event_accepts_email_as_only_contact(api_client, user, campaign):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     payload = _published_payload(campaign)
     payload["provider_phone"] = ""
     payload["provider_email"] = "team@example.com"
@@ -84,7 +89,7 @@ def test_published_event_accepts_email_as_only_contact(api_client, user, campaig
 
 @pytest.mark.django_db
 def test_draft_event_can_omit_summary_and_contact(api_client, user, campaign):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     payload = _published_payload(campaign)
     payload["status"] = Event.Status.DRAFT
     payload["summary"] = ""
@@ -143,7 +148,7 @@ def test_language_note_allowed_when_other_present(user, campaign):
 
 @pytest.mark.django_db
 def test_event_create_round_trips_new_fields(api_client, user, campaign):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     payload = _published_payload(campaign)
     payload.update(
         {

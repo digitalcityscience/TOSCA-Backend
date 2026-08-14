@@ -133,12 +133,23 @@ def resolve_write_organization(request):
     return None
 
 
-def _org_slug_of(obj):
-    organization = getattr(obj, "organization", None)
-    return organization.slug if organization is not None else None
+def _org_slug_of(obj, *, org_attr="organization"):
+    """Resolve the owning Organization's slug, walking a dotted attribute path.
+
+    ``org_attr`` may be a single attribute (``"organization"``,
+    ``"owner_org"``) or a Django-lookup-style dotted path
+    (``"campaign__organization"`` for Event/GeoStory, whose own FK is to
+    Campaign, not directly to Organization).
+    """
+    target = obj
+    for part in org_attr.split("__"):
+        if target is None:
+            return None
+        target = getattr(target, part, None)
+    return target.slug if target is not None else None
 
 
-def check_org_level(request, obj, required):
+def check_org_level(request, obj, required, *, org_attr="organization"):
     """Shared org-ownership + role-level gate (used by the admin mixin and the
     standalone ``has_org_write_access`` helper, so the rule lives in one place).
 
@@ -146,13 +157,18 @@ def check_org_level(request, obj, required):
     object (when given) must belong to the caller's org *and* the caller must
     hold at least ``required`` for it. Does **not** check ``is_staff``/
     ``is_active`` -- callers that need that gate on it separately.
+
+    ``org_attr`` names the FK attribute that points at the owning
+    Organization -- ``"organization"`` for Campaign/Workspace, but e.g.
+    ``"owner_org"`` for MediaAsset, which can't reuse that name (it already
+    has an unrelated meaning were it ever added).
     """
     if request.user.is_superuser:
         return True
     roles, org_slug, exempt = get_request_org_context(request)
     if exempt:
         return True
-    if obj is not None and _org_slug_of(obj) != org_slug:
+    if obj is not None and _org_slug_of(obj, org_attr=org_attr) != org_slug:
         return False
     level = org_role_level(roles, org_slug)
     return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[required]
@@ -182,6 +198,16 @@ class OrgScopedAdminMixin:
 
     org_lookup = "organization__slug"
 
+    @property
+    def _org_attr(self) -> str:
+        """The model's owning-Organization FK attribute, derived from ``org_lookup``.
+
+        ``org_lookup`` is a queryset-filter path (``"organization__slug"``,
+        ``"owner_org__slug"``); this strips the ``__slug`` suffix to get the
+        plain attribute name ``check_org_level`` needs for ``getattr(obj, ...)``.
+        """
+        return self.org_lookup.rsplit("__", 1)[0]
+
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         if request.user.is_superuser:
@@ -208,7 +234,76 @@ class OrgScopedAdminMixin:
         return self._is_active_staff(request) and check_org_level(request, None, "WRITER")
 
     def has_change_permission(self, request, obj=None):
-        return self._is_active_staff(request) and check_org_level(request, obj, "WRITER")
+        return self._is_active_staff(request) and check_org_level(
+            request, obj, "WRITER", org_attr=self._org_attr
+        )
 
     def has_delete_permission(self, request, obj=None):
-        return self._is_active_staff(request) and check_org_level(request, obj, "ADMIN")
+        return self._is_active_staff(request) and check_org_level(
+            request, obj, "ADMIN", org_attr=self._org_attr
+        )
+
+
+def _org_slug_of_campaign_owned(obj):
+    campaign = getattr(obj, "campaign", None)
+    return _org_slug_of(campaign) if campaign is not None else None
+
+
+class CampaignScopedPermission(BasePermission):
+    """Write-gate for models FK'd to Campaign (Event, GeoStory, MediaAsset).
+
+    Unlike :class:`OrgScopedPermission` (used by ``Campaign`` itself, which
+    has no separate public-visibility axis), these models are meant to be
+    publicly *readable* -- their own view-level visibility/status scoping
+    (``EventViewSet._apply_visibility_scope``, ``GeoStoryViewSet.get_queryset``
+    published-only filtering) already handles that. So SAFE_METHODS always
+    pass here; this class only gates writes, requiring WRITER+ (DELETE:
+    ADMIN) in the *owning campaign's* organization -- derived through
+    ``obj.campaign.organization``, not the object's own (nonexistent)
+    ``organization`` FK.
+
+    On create, there is no ``obj`` yet (the payload's ``campaign`` hasn't
+    been validated as belonging to the caller's org) -- that check belongs
+    in the view/serializer (see epic-11 PR1 §3.3), this only confirms the
+    caller holds WRITER+ in *some* org (or is exempt), same pattern as
+    ``OrgScopedAdminMixin.has_add_permission``.
+    """
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        roles, org_slug, exempt = get_request_org_context(request)
+        if exempt:
+            return True
+        required = "ADMIN" if request.method == "DELETE" else "WRITER"
+        level = org_role_level(roles, org_slug)
+        return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[required]
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        required = "ADMIN" if request.method == "DELETE" else "WRITER"
+        roles, org_slug, exempt = get_request_org_context(request)
+        if exempt:
+            return True
+        if _org_slug_of_campaign_owned(obj) != org_slug:
+            return False
+        level = org_role_level(roles, org_slug)
+        return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[required]
+
+
+def validate_campaign_organization(request, campaign) -> bool:
+    """True when ``campaign`` belongs to the caller's org (or caller is exempt).
+
+    Called from a serializer's ``validate()`` on create/update of a
+    Campaign-owned resource (Event, GeoStory) to reject cross-org writes
+    *before* they hit the DB -- ``CampaignScopedPermission`` alone can't
+    catch this on create, since the object (and therefore its campaign)
+    doesn't exist yet when ``has_permission`` runs.
+    """
+    if campaign is None:
+        return True
+    _roles, org_slug, exempt = get_request_org_context(request)
+    if exempt:
+        return True
+    return _org_slug_of(campaign) == org_slug

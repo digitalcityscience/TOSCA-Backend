@@ -23,6 +23,11 @@ def api_client():
     return APIClient()
 
 
+def _org_token(*roles, org="dcs"):
+    """Keycloak-shaped token for org-scoped writes (epic-11 PR1 SS3.3)."""
+    return {"realm_access": {"roles": list(roles)}, "default_organization": org}
+
+
 @pytest.fixture
 def user():
     return User.objects.create_user(username="phase8", password="pw")
@@ -119,7 +124,7 @@ def test_ph_event_without_profile_row_returns_null_profile(
 def test_ph_event_profile_round_trips_via_api(
     api_client, user, campaign, ph_event_type
 ):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     payload = _payload(
         campaign,
         ph_event_type,
@@ -157,7 +162,7 @@ def test_ph_event_profile_round_trips_via_api(
 def test_general_event_rejects_profile_payload(
     api_client, user, campaign, general_event_type
 ):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     payload = _payload(
         campaign,
         general_event_type,
@@ -172,7 +177,7 @@ def test_general_event_rejects_profile_payload(
 def test_profile_rejects_reduced_greater_than_cost(
     api_client, user, campaign, ph_event_type
 ):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     payload = _payload(
         campaign,
         ph_event_type,
@@ -188,7 +193,7 @@ def test_profile_rejects_reduced_greater_than_cost(
 
 @pytest.mark.django_db
 def test_profile_rejects_negative_cost(api_client, user, campaign, ph_event_type):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     payload = _payload(
         campaign,
         ph_event_type,
@@ -201,7 +206,7 @@ def test_profile_rejects_negative_cost(api_client, user, campaign, ph_event_type
 
 @pytest.mark.django_db
 def test_profile_patch_upserts_existing_row(api_client, user, campaign, ph_event_type):
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     create_response = api_client.post(
         "/api/v1/events/",
         _payload(
