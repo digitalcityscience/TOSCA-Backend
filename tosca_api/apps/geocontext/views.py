@@ -166,6 +166,7 @@ def _store_validated_upload(
         height=height,
         size=storage.size(storage_path),
         uploader=uploader,
+        storage_alias=MediaAsset.StorageAlias.PUBLIC,
     )
 
     return Response(

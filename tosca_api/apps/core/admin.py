@@ -24,12 +24,13 @@ class MediaAssetAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         "storage_path",
         "owner_org",
         "campaign",
+        "storage_alias",
         "mime",
         "size",
         "uploader",
         "created_at",
     )
-    list_filter = ("owner_org", "mime", "created_at")
+    list_filter = ("owner_org", "storage_alias", "mime", "created_at")
     search_fields = ("storage_path", "original_name")
     readonly_fields = (
         "id",
@@ -40,6 +41,7 @@ class MediaAssetAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         "height",
         "size",
         "uploader",
+        "storage_alias",
         "created_at",
         "updated_at",
     )
@@ -48,6 +50,7 @@ class MediaAssetAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     fieldsets = (
         (None, {"fields": ("id", "storage_path", "original_name")}),
         ("Ownership", {"fields": ("owner_org", "campaign", "uploader")}),
+        ("Storage", {"fields": ("storage_alias",)}),
         ("Metadata", {"fields": ("mime", "width", "height", "size")}),
         ("Timestamps", {"fields": ("created_at", "updated_at")}),
     )
