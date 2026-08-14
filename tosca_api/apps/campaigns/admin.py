@@ -1,24 +1,43 @@
 from django.contrib import admin, messages
+from django.core.exceptions import ValidationError
+
+from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin, resolve_write_organization
 
 from .models import Campaign
 
 
 @admin.register(Campaign)
-class CampaignAdmin(admin.ModelAdmin):
+class CampaignAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     """Admin interface for Campaign model."""
 
-    list_display = ("title", "status", "visibility", "created_by", "created_at")
-    list_filter = ("status", "visibility", "created_at")
+    list_display = ("title", "organization", "status", "visibility", "created_by", "created_at")
+    list_filter = ("organization", "status", "visibility", "created_at")
     search_fields = ("title", "summary")
     readonly_fields = ("id", "created_at", "updated_at")
     ordering = ("-created_at",)
 
     fieldsets = (
-        (None, {"fields": ("id", "title", "summary")}),
+        (None, {"fields": ("id", "organization", "title", "summary")}),
         ("Status", {"fields": ("status", "visibility")}),
         ("Ownership", {"fields": ("created_by",)}),
         ("Timestamps", {"fields": ("created_at", "updated_at")}),
     )
+
+    def get_readonly_fields(self, request, obj=None):
+        readonly = list(super().get_readonly_fields(request, obj))
+        if not request.user.is_superuser:
+            # Org-scoped staff can only ever create/see rows in their own
+            # org (see get_queryset); the field is derived, not chosen.
+            readonly.append("organization")
+        return readonly
+
+    def save_model(self, request, obj, form, change):
+        if not change and not obj.organization_id:
+            organization = resolve_write_organization(request)
+            if organization is None:
+                raise ValidationError("Could not determine an organization for this campaign.")
+            obj.organization = organization
+        super().save_model(request, obj, form, change)
 
     # ------------------------------------------------------------------
     # Delete safety: warn before the Event/EventSeries/GeoStory/GeoFeedback

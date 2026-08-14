@@ -8,11 +8,13 @@ from tosca_api.apps.geodata_providers.admin import DeleteAborted, WorkspaceAdmin
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Workspace
 from tosca_api.apps.geodata_providers.results import OperationResult
 from tosca_api.apps.geodata_providers.services.commands.workspace_service import WorkspaceService
+from tosca_api.apps.organizations.models import Organization
 
 
 class WorkspaceServiceTestCase(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='workspace-service-user', password='testpass123')
+        self.org = Organization.objects.get_or_create(slug='dcs', defaults={'name': 'DCS'})[0]
         self.engine = GeodataEngine.objects.create(
             name='Workspace Engine',
             description='test',
@@ -39,6 +41,7 @@ class WorkspaceServiceTestCase(TestCase):
 
         result = WorkspaceService.create_workspace(
             engine=self.engine,
+            organization=self.org,
             name='new_workspace',
             description='desc',
             user=self.user,
@@ -55,6 +58,7 @@ class WorkspaceServiceTestCase(TestCase):
     def test_create_workspace_blocks_reserved_name(self):
         result = WorkspaceService.create_workspace(
             engine=self.engine,
+            organization=self.org,
             name='vector',
             description='desc',
             user=self.user,
@@ -129,6 +133,7 @@ class WorkspaceAdminServiceIntegrationTestCase(TestCase):
             is_staff=True,
             is_superuser=True,
         )
+        self.org = Organization.objects.get_or_create(slug='dcs', defaults={'name': 'DCS'})[0]
         self.engine = GeodataEngine.objects.create(
             name='Workspace Admin Engine',
             description='test',
@@ -164,11 +169,13 @@ class WorkspaceAdminServiceIntegrationTestCase(TestCase):
         form = MagicMock()
         form.cleaned_data = {
             'geodata_engine': self.engine,
+            'organization': self.org,
             'name': 'service_workspace',
             'description': 'desc',
         }
         workspace = Workspace(
             geodata_engine=self.engine,
+            organization=self.org,
             name='service_workspace',
             description='desc',
             created_by=self.user,
@@ -179,8 +186,10 @@ class WorkspaceAdminServiceIntegrationTestCase(TestCase):
 
         mock_create_workspace.assert_called_once_with(
             engine=self.engine,
+            organization=self.org,
             name='service_workspace',
             description='desc',
+            visibility=Workspace.Visibility.PRIVATE,
             user=self.user,
         )
         mock_run_workspace_sync.assert_called_once()

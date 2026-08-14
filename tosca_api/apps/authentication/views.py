@@ -60,8 +60,32 @@ def welcome_view(request):
     """
     if not request.user.is_authenticated:
         return redirect('account_login')
-    
+
     return render(request, 'authentication/account/welcome.html')
+
+
+# Keycloak provider login URL (allauth openid_connect). Sending users here
+# starts the SSO flow; process=login keeps allauth on the login (not connect)
+# path. Matches the callback flow already exercised in pre_social_login.
+KEYCLOAK_LOGIN_URL = "/accounts/oidc/keycloak/login/?process=login"
+
+
+def admin_login_redirect(request):
+    """SSO-only admin login: never render Django's local username/password form.
+
+    Django's default ``/admin/login/`` accepts local passwords, which is a
+    parallel authentication path that bypasses Keycloak entirely (e.g. a
+    ``createsuperuser`` account). We shadow it so the *only* way into /admin/
+    is Keycloak:
+
+    * authenticated but not staff -> the welcome page (no admin, no form, and
+      we don't disclose the admin login);
+    * everyone else -> the Keycloak login flow.
+    """
+    user = request.user
+    if user.is_authenticated and not user.is_staff:
+        return redirect('/welcome/')
+    return redirect(KEYCLOAK_LOGIN_URL)
 
 
 class AutoSignupView(View):
@@ -149,7 +173,7 @@ class AutoSignupView(View):
             user.save(update_fields=["email", "first_name", "last_name"])
         
         # Extract and apply roles
-        roles = self._extract_roles(extra_data)
+        roles = self._extract_roles(sociallogin)
         self._apply_permissions(user, roles)
         
         # Connect social account to user
@@ -175,9 +199,12 @@ class AutoSignupView(View):
             return redirect('/admin/')
         return redirect('welcome')
     
-    def _extract_roles(self, extra_data):
-        """Extract roles from Keycloak token."""
-        return extract_roles_from_social_data(extra_data)
+    def _extract_roles(self, sociallogin):
+        """Extract roles from the Keycloak login (access token first -- see
+        KeycloakAdapter._extract_roles in backends.py for why)."""
+        extra_data = sociallogin.account.extra_data
+        access_token = sociallogin.token.token if sociallogin.token else None
+        return extract_roles_from_social_data(extra_data, access_token=access_token)
     
     def _apply_permissions(self, user, roles):
         """Apply roles to Django user permissions."""

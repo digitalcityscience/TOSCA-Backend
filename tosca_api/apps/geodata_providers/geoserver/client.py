@@ -3,6 +3,7 @@ Thin, controlled wrapper around geoserver-rest
 """
 import logging
 from typing import Callable, Dict, Optional
+from urllib.parse import quote
 import requests
 
 # geo comes from the vendor/geoserver-rest submodule, installed as a normal
@@ -467,6 +468,248 @@ class GeoServerClient:
                 'error': str(e),
                 'message': 'Post-verification error',
             }
+
+    # ACL / Data Security operations (canonical §5c, §8)
+    #
+    # geoserver-rest does not wrap the Data Security ACL endpoint, so these
+    # go through `_request` directly. Endpoint contract was verified live
+    # against a running GeoServer (see ticket 07):
+    #   key = "<workspace>.<layer>.<access>", access in {r, w, a}, layer="*"
+    #   for a workspace-wide rule. value = comma-separated role string.
+    #   POSTing an existing key is a GeoServer error -- PUT updates it.
+    #
+    # "*_layer_rule" is GeoServer's own name for this endpoint
+    # (`/rest/security/acl/layers`), not a Django design decision to write
+    # per-layer rules. Epic-11 phase 1 (ticket 08) only ever calls these
+    # with a workspace-wide key (layer="*") -- the ACL role always comes
+    # from the Workspace's `organization` + `visibility` convention
+    # (canonical §5c: PRIVATE -> ROLE_<SLUG>_READER/WRITER, PUBLIC read ->
+    # "*"), never from the requesting user's own token role. Real per-layer
+    # keys are a v2 concern (canonical §6), not used yet.
+
+    def get_layer_rules(self) -> Dict[str, str]:
+        """Return the full ACL layers rule map (``{key: roles}``) from GeoServer."""
+        response = self._request("get", "/rest/security/acl/layers")
+        if response.status_code != 200:
+            raise GeoServerPublishError(
+                f"Failed to fetch ACL layer rules: HTTP {response.status_code}"
+            )
+        try:
+            return response.json()
+        except ValueError:
+            return {}
+
+    def add_layer_rule(self, key: str, roles: str) -> OperationResult:
+        """Create a new ACL layer rule. POST fails if ``key`` already exists."""
+        try:
+            response = self._request(
+                "post", "/rest/security/acl/layers", json={key: roles}
+            )
+            if response.status_code not in (200, 201):
+                return OperationResult(
+                    success=False,
+                    error=response.text.strip() or f"HTTP {response.status_code}",
+                    message=f"Failed to add ACL layer rule '{key}': HTTP {response.status_code}",
+                    data={'key': key, 'roles': roles, 'status_code': response.status_code},
+                )
+            return OperationResult(
+                success=True,
+                message=f"ACL layer rule '{key}' added",
+                data={'key': key, 'roles': roles, 'status_code': response.status_code},
+            )
+        except Exception as e:
+            logger.error(f"Failed to add ACL layer rule {key}: {e}")
+            return OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to add ACL layer rule '{key}': {e}",
+                data={'key': key, 'roles': roles},
+            )
+
+    def update_layer_rule(self, key: str, roles: str) -> OperationResult:
+        """Update an existing ACL layer rule."""
+        try:
+            response = self._request(
+                "put", "/rest/security/acl/layers", json={key: roles}
+            )
+            if response.status_code not in (200, 201):
+                return OperationResult(
+                    success=False,
+                    error=response.text.strip() or f"HTTP {response.status_code}",
+                    message=f"Failed to update ACL layer rule '{key}': HTTP {response.status_code}",
+                    data={'key': key, 'roles': roles, 'status_code': response.status_code},
+                )
+            return OperationResult(
+                success=True,
+                message=f"ACL layer rule '{key}' updated",
+                data={'key': key, 'roles': roles, 'status_code': response.status_code},
+            )
+        except Exception as e:
+            logger.error(f"Failed to update ACL layer rule {key}: {e}")
+            return OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to update ACL layer rule '{key}': {e}",
+                data={'key': key, 'roles': roles},
+            )
+
+    def delete_layer_rule(self, key: str) -> OperationResult:
+        """Delete an ACL layer rule. Missing key (404) is treated as already-deleted."""
+        try:
+            encoded_key = quote(key, safe='')
+            response = self._request("delete", f"/rest/security/acl/layers/{encoded_key}")
+            if response.status_code == 404:
+                return OperationResult(
+                    success=True,
+                    message=f"ACL layer rule '{key}' already absent",
+                    data={'key': key, 'already_deleted': True},
+                )
+            if response.status_code not in (200, 204):
+                return OperationResult(
+                    success=False,
+                    error=response.text.strip() or f"HTTP {response.status_code}",
+                    message=f"Failed to delete ACL layer rule '{key}': HTTP {response.status_code}",
+                    data={'key': key, 'status_code': response.status_code},
+                )
+            return OperationResult(
+                success=True,
+                message=f"ACL layer rule '{key}' deleted",
+                data={'key': key},
+            )
+        except Exception as e:
+            logger.error(f"Failed to delete ACL layer rule {key}: {e}")
+            return OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to delete ACL layer rule '{key}': {e}",
+                data={'key': key},
+            )
+
+    def set_layer_rule(self, key: str, roles: str) -> OperationResult:
+        """Idempotent create-or-update: POST if ``key`` is new, PUT if it already exists."""
+        try:
+            existing = self.get_layer_rules()
+        except Exception as e:
+            logger.warning(f"Could not pre-check existing ACL layer rules for '{key}': {e}")
+            existing = {}
+
+        if key in existing:
+            return self.update_layer_rule(key, roles)
+        return self.add_layer_rule(key, roles)
+
+    # Role service operations (epic-11 Phase 2)
+    #
+    # These talk to GeoServer's *active* role service via REST, so writes land
+    # in whichever service is configured (jdbc_role if activated, else the
+    # built-in default) and GeoServer refreshes its own cache -- Django never
+    # needs to know the schema or which service is active (canonical §3 dec. 6).
+
+    def get_roles(self) -> list:
+        """Return every role name declared in the active GeoServer role service."""
+        # `/rest/security/roles` defaults to XML; force JSON or `.json()` below
+        # raises and we'd silently return [] (breaks idempotency detection).
+        response = self._request(
+            "get", "/rest/security/roles", headers={"Accept": "application/json"}
+        )
+        if response.status_code != 200:
+            raise GeoServerPublishError(
+                f"Failed to fetch GeoServer roles: HTTP {response.status_code}"
+            )
+        try:
+            payload = response.json()
+        except ValueError:
+            return []
+        if isinstance(payload, dict):
+            # GeoServer wraps the list under "roles" (sometimes "roleNames").
+            for candidate in ("roles", "roleNames"):
+                value = payload.get(candidate)
+                if isinstance(value, list):
+                    return value
+            return []
+        if isinstance(payload, list):
+            return payload
+        return []
+
+    def role_exists(self, name: str) -> bool:
+        """Whether ``name`` is already declared in the active role service."""
+        try:
+            return name in self.get_roles()
+        except Exception as e:
+            logger.warning(f"Could not pre-check GeoServer role '{name}': {e}")
+            return False
+
+    def create_role(self, name: str) -> OperationResult:
+        """Declare a role in the active role service. POST is idempotent-friendly:
+        a re-declared role is not an error here."""
+        try:
+            encoded_name = quote(name, safe='')
+            response = self._request(
+                "post", f"/rest/security/roles/role/{encoded_name}"
+            )
+            if response.status_code not in (200, 201):
+                return OperationResult(
+                    success=False,
+                    error=response.text.strip() or f"HTTP {response.status_code}",
+                    message=f"Failed to create GeoServer role '{name}': HTTP {response.status_code}",
+                    data={'name': name, 'status_code': response.status_code},
+                )
+            return OperationResult(
+                success=True,
+                message=f"GeoServer role '{name}' created",
+                data={'name': name, 'status_code': response.status_code},
+            )
+        except Exception as e:
+            logger.error(f"Failed to create GeoServer role {name}: {e}")
+            return OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to create GeoServer role '{name}': {e}",
+                data={'name': name},
+            )
+
+    def set_role(self, name: str) -> OperationResult:
+        """Idempotent ensure: no-op if ``name`` already exists, else create it."""
+        if self.role_exists(name):
+            return OperationResult(
+                success=True,
+                message=f"GeoServer role '{name}' already exists",
+                data={'name': name, 'already_exists': True},
+            )
+        return self.create_role(name)
+
+    def delete_role(self, name: str) -> OperationResult:
+        """Remove a role from the active role service. Missing (404) is a no-op."""
+        try:
+            encoded_name = quote(name, safe='')
+            response = self._request(
+                "delete", f"/rest/security/roles/role/{encoded_name}"
+            )
+            if response.status_code == 404:
+                return OperationResult(
+                    success=True,
+                    message=f"GeoServer role '{name}' already absent",
+                    data={'name': name, 'already_deleted': True},
+                )
+            if response.status_code not in (200, 204):
+                return OperationResult(
+                    success=False,
+                    error=response.text.strip() or f"HTTP {response.status_code}",
+                    message=f"Failed to delete GeoServer role '{name}': HTTP {response.status_code}",
+                    data={'name': name, 'status_code': response.status_code},
+                )
+            return OperationResult(
+                success=True,
+                message=f"GeoServer role '{name}' deleted",
+                data={'name': name},
+            )
+        except Exception as e:
+            logger.error(f"Failed to delete GeoServer role {name}: {e}")
+            return OperationResult(
+                success=False,
+                error=str(e),
+                message=f"Failed to delete GeoServer role '{name}': {e}",
+                data={'name': name},
+            )
 
     # Store operations
 

@@ -1,0 +1,30 @@
+{% extends "admin/change_list.html" %}
+{% load i18n %}
+
+{% block object-tools %}
+  {{ block.super }}
+  {% comment %}
+    Out-of-flow POST form (with CSRF). Kept outside the changelist <form> so the
+    visible button rendered above the table is not an invalid nested form; the
+    button binds to it via the HTML5 `form` attribute.
+  {% endcomment %}
+  <form id="sync-keycloak-form" method="post"
+        action="{% url 'admin:tosca_authentication_keycloakrole_sync_with_keycloak' %}"
+        hidden>{% csrf_token %}</form>
+{% endblock %}
+
+{% block result_list %}
+  <div class="sync-keycloak-bar"
+       style="display:flex; align-items:center; gap:12px; margin:0 0 12px;
+              padding:10px 12px; border:1px solid var(--border-color,#ccc);
+              border-radius:6px; background:var(--darkened-bg,#f8f8f8);">
+    <button type="submit" form="sync-keycloak-form" class="button default"
+            style="font-weight:600;">
+      🔄 {% trans "Sync with Keycloak" %}
+    </button>
+    <span style="color:var(--body-quiet-color,#666); font-size:12px;">
+      {% trans "Pull roles from Keycloak, then push reader/writer roles to GeoServer (create + delete)." %}
+    </span>
+  </div>
+  {{ block.super }}
+{% endblock %}

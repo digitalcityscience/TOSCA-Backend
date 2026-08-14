@@ -2,10 +2,68 @@ from dataclasses import dataclass
 import logging
 
 from django.conf import settings
+from django.contrib import messages
 
 from tosca_api.apps.core.jwt_utils import verify_and_decode_token
 
 logger = logging.getLogger(__name__)
+
+# Platform roles are exempt from org-membership requirements (canonical §5d).
+ORG_CHECK_EXEMPT_ROLES = frozenset({"DJANGO_SUPERADMIN", "DJANGO_STAFF"})
+
+
+# Org-role levels in ascending order of capability. Roles are composite in
+# Keycloak (WRITER includes READER, ADMIN includes WRITER), so the effective
+# level is the highest one present in the token. See canonical §2/§2b.
+ORG_ROLE_LEVELS = ("READER", "WRITER", "ADMIN")
+
+# Prefix that marks a role as part of *our* system. Only these enter the
+# KeycloakRole registry -- everything else (offline_access, DJANGO_*, ADMIN,
+# free test roles) is Keycloak/platform noise we deliberately ignore.
+ROLE_PREFIX = "ROLE_"
+
+
+@dataclass(frozen=True)
+class ParsedRole:
+    """The structured identity carried by a conforming role name.
+
+    Grammar: ``ROLE_<ORG>[_<PROJECT>]_<LEVEL>`` (canonical §2, Epic-11 project
+    scoping). ``org_slug`` and ``project`` are lowercased to match
+    ``Organization.slug``; ``project`` is ``""`` for org-level roles.
+    """
+
+    org_slug: str
+    project: str
+    level: str
+
+
+def parse_role_name(name):
+    """Parse a ``ROLE_<ORG>[_<PROJECT>]_<LEVEL>`` name into its parts.
+
+    Returns a :class:`ParsedRole`, or ``None`` when the name does not conform:
+    not ``ROLE_``-prefixed, an unknown trailing level, or more than one project
+    segment (org/project slugs are single-segment -- underscores are the
+    delimiter, so ``ROLE_DCS_X_READER`` is org ``dcs`` + project ``x``, never
+    an atomic ``dcs_x``).
+    """
+    if not name or not name.startswith(ROLE_PREFIX):
+        return None
+
+    segments = name[len(ROLE_PREFIX):].split("_")
+    # Need at least <ORG> + <LEVEL>; at most <ORG> + <PROJECT> + <LEVEL>.
+    if not 2 <= len(segments) <= 3:
+        return None
+
+    level = segments[-1]
+    if level not in ORG_ROLE_LEVELS:
+        return None
+
+    org_slug = segments[0].lower()
+    project = segments[1].lower() if len(segments) == 3 else ""
+    if not org_slug:
+        return None
+
+    return ParsedRole(org_slug=org_slug, project=project, level=level)
 
 
 @dataclass(frozen=True)
@@ -15,21 +73,53 @@ class ExtractedRoles:
     sources: list[str]
 
 
-def extract_roles_from_token(decoded_token):
-    """Extract Keycloak realm roles from a decoded JWT access token."""
-    return _extract_roles_from_payloads([("access_token", decoded_token)])
+@dataclass(frozen=True)
+class ExtractedOrg:
+    """The user's default organization slug read from a Keycloak token.
+
+    ``present`` mirrors ``ExtractedRoles.authoritative``: it is True only when the
+    ``default_organization`` claim was actually found, so callers can tell "no
+    org assigned" apart from "claim missing from this payload".
+    """
+
+    default_slug: str | None
+    present: bool
+    sources: list[str]
 
 
-def extract_roles_from_social_data(extra_data):
-    """Extract Keycloak realm roles from allauth OIDC data."""
+def _social_login_payloads(extra_data, access_token=None):
+    """Assemble the (source, dict) payloads carried by an allauth OIDC login.
+
+    Shared by role and org extraction so both look in exactly the same places:
+    the raw extra_data, the (verified) id_token, userinfo, and -- if the
+    caller has it -- the actual OAuth access token.
+
+    ``access_token`` matters because allauth's generic openid_connect
+    provider (``complete_login``) only ever stores the ID token + userinfo
+    response in ``extra_data``; it never puts the access token there. Keycloak's
+    default "roles" client scope adds ``realm_access.roles`` to the access
+    token by default, but "add to ID token"/"add to userinfo" are separate,
+    often-off mapper toggles -- so without this, browser login can silently
+    see zero roles for every user regardless of what they actually hold.
+    """
     payloads = [("extra_data", extra_data)]
+
+    if isinstance(access_token, str) and access_token:
+        try:
+            decoded = verify_and_decode_token(access_token)
+            payloads.append(("access_token", decoded))
+        except Exception as exc:
+            logger.warning("Failed to decode access_token for token extraction", extra={
+                "error": str(exc),
+            })
 
     id_token = extra_data.get("id_token")
     if isinstance(id_token, str):
         try:
-            payloads.append(("id_token", verify_and_decode_token(id_token)))
+            decoded = verify_and_decode_token(id_token)
+            payloads.append(("id_token", decoded))
         except Exception as exc:
-            logger.warning("Failed to decode id_token for role extraction", extra={
+            logger.warning("Failed to decode id_token for token extraction", extra={
                 "error": str(exc),
                 "token_present": bool(id_token),
             })
@@ -40,7 +130,142 @@ def extract_roles_from_social_data(extra_data):
     if isinstance(userinfo, dict):
         payloads.append(("userinfo", userinfo))
 
-    return _extract_roles_from_payloads(payloads)
+    return payloads
+
+
+def extract_roles_from_token(decoded_token):
+    """Extract Keycloak realm roles from a decoded JWT access token."""
+    return _extract_roles_from_payloads([("access_token", decoded_token)])
+
+
+def extract_roles_from_social_data(extra_data, access_token=None):
+    """Extract Keycloak realm roles from allauth OIDC data."""
+    return _extract_roles_from_payloads(_social_login_payloads(extra_data, access_token))
+
+
+def extract_org_from_token(decoded_token):
+    """Extract the default_organization slug from a decoded JWT access token."""
+    return _extract_org_from_payloads([("access_token", decoded_token)])
+
+
+def extract_org_from_social_data(extra_data, access_token=None):
+    """Extract the default_organization slug from allauth OIDC data."""
+    return _extract_org_from_payloads(_social_login_payloads(extra_data, access_token))
+
+
+def org_role_level(roles, org_slug):
+    """Return the effective org-role level for ``org_slug`` given a role set.
+
+    Maps the Keycloak convention ``ROLE_<SLUG>_<LEVEL>`` to the highest level
+    present. Returns one of ``"READER" | "WRITER" | "ADMIN"`` or ``None`` when the
+    user holds no role for that org (canonical §2b org-role coherence).
+    """
+    if not org_slug:
+        return None
+    prefix = f"ROLE_{org_slug.upper()}_"
+    for level in reversed(ORG_ROLE_LEVELS):
+        if f"{prefix}{level}" in roles:
+            return level
+    return None
+
+
+def run_org_login_checks(user, extracted_roles, extracted_org, *, request=None):
+    """Two non-blocking login coherence checks (canonical §5d).
+
+    Never blocks login and never raises -- identity is valid regardless; these
+    only surface misconfiguration. Returns the list of triggered warning codes
+    (``"no_org"`` / ``"org_without_role"``) for testing/telemetry.
+
+    * **org-presence**: no ``default_organization`` -> org-scoped access is off.
+    * **org-role coherence**: member of an org but holding no ``ROLE_<SLUG>_*``
+      for it (e.g. a dcs member with only gq roles).
+
+    ``DJANGO_SUPERADMIN`` / ``DJANGO_STAFF`` are exempt. When ``request`` is provided
+    (browser login) a user-facing ``messages.warning`` is added too.
+    """
+    warnings: list[str] = []
+    roles = extracted_roles.roles
+
+    if roles & ORG_CHECK_EXEMPT_ROLES:
+        return warnings
+
+    if not extracted_org.default_slug:
+        warnings.append("no_org")
+        _emit_login_warning(
+            request, user, "no_org",
+            "You have no organization assigned — contact your admin.",
+        )
+        return warnings
+
+    if org_role_level(roles, extracted_org.default_slug) is None:
+        warnings.append("org_without_role")
+        _emit_login_warning(
+            request, user, "org_without_role",
+            f"You belong to organization '{extracted_org.default_slug}' but hold no "
+            "role for it — contact your admin.",
+            org_slug=extracted_org.default_slug,
+        )
+
+    return warnings
+
+
+def _emit_login_warning(request, user, code, message, *, org_slug=None):
+    logger.warning("Org login-check warning", extra={
+        "check": code,
+        "user_id": getattr(user, "pk", None),
+        "username": getattr(user, "username", None),
+        "org_slug": org_slug,
+    })
+    if request is not None:
+        try:
+            messages.warning(request, message)
+        except Exception as exc:  # messages middleware may be absent (e.g. API)
+            logger.debug("Could not add user-facing login warning", extra={
+                "error": str(exc),
+                "check": code,
+            })
+
+
+def _org_slug_from_payload(payload):
+    """Pull an org slug out of one payload, trying both claim shapes.
+
+    Keycloak's mapper config has shipped two different shapes over the
+    course of this project: the originally-specced scalar
+    ``default_organization`` claim, and (currently, live-verified 2026-08-12)
+    an ``organization`` claim carrying a list of slugs (e.g. ``["gq2"]``).
+    There is no multi-org UI/logic yet (canonical §4, ticket 14 backlog), so
+    when it's a list we just take the first slug as the user's org.
+    """
+    value = payload.get("default_organization")
+    if isinstance(value, str) and value:
+        return value, "default_organization"
+
+    value = payload.get("organization")
+    if isinstance(value, list) and value and isinstance(value[0], str):
+        return value[0], "organization[0]"
+    if isinstance(value, str) and value:
+        return value, "organization"
+
+    return None, None
+
+
+def _extract_org_from_payloads(payloads):
+    for source, payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        slug, claim = _org_slug_from_payload(payload)
+        if slug:
+            logger.info("Extracted default organization from Keycloak data", extra={
+                "default_organization": slug,
+                "claim": claim,
+                "source": source,
+            })
+            return ExtractedOrg(default_slug=slug, present=True, sources=[source])
+
+    logger.info("No default_organization claim found in Keycloak data", extra={
+        "sources_checked": [s for s, _ in payloads],
+    })
+    return ExtractedOrg(default_slug=None, present=False, sources=[])
 
 
 def sync_user_permissions_from_roles(user, extracted_roles, *, save=True):
@@ -67,12 +292,13 @@ def sync_user_permissions_from_roles(user, extracted_roles, *, save=True):
     staff_roles = set(getattr(
         settings,
         "KEYCLOAK_DJANGO_STAFF_ROLES",
-        ["DJANGO_STAFF", "ADMIN", "SUPERADMIN"],
+        # ADMIN excluded -- GeoServer console role, not Django (canonical §2).
+        ["DJANGO_STAFF", "DJANGO_SUPERADMIN"],
     ))
     superuser_roles = set(getattr(
         settings,
         "KEYCLOAK_DJANGO_SUPERUSER_ROLES",
-        ["SUPERADMIN"],
+        ["DJANGO_SUPERADMIN"],
     ))
 
     user.is_superuser = bool(extracted_roles.roles & superuser_roles)

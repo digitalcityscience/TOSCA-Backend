@@ -6,10 +6,15 @@ from rest_framework.exceptions import AuthenticationFailed
 import logging
 from tosca_api.apps.core.jwt_utils import verify_and_decode_token
 from tosca_api.apps.authentication.role_sync import (
+    extract_org_from_social_data,
+    extract_org_from_token,
     extract_roles_from_social_data,
     extract_roles_from_token,
+    run_org_login_checks,
     sync_user_permissions_from_roles,
 )
+from tosca_api.apps.authentication.role_registry import register_login_roles
+from tosca_api.apps.organizations.services import get_or_create_organization
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -73,6 +78,13 @@ class KeycloakTokenAuthentication(BaseAuthentication):
             roles = extract_roles_from_token(decoded_token)
             self._apply_permissions(user, roles)
 
+            # Non-blocking org coherence checks (log-only for API; no messages
+            # framework on a Bearer request). See canonical §5d.
+            org = extract_org_from_token(decoded_token)
+            if org.present and org.default_slug:
+                get_or_create_organization(org.default_slug)
+            run_org_login_checks(user, roles, org, request=None)
+
             # return decoded token as request.auth for downstream use
             return (user, decoded_token)
         except AuthenticationFailed:
@@ -120,8 +132,7 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
     def save_user(self, request, sociallogin, form=None):
         user = super().save_user(request, sociallogin, form)
         #extract roles from Keycloak token
-        extra_data = sociallogin.account.extra_data
-        roles = self._extract_roles(extra_data)
+        roles = self._extract_roles(sociallogin)
         #apply roles to user permissions
         self._apply_permissions(user, roles)
         return user
@@ -134,15 +145,15 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         This runs BEFORE login completes.
         """
         extra_data = sociallogin.account.extra_data
-        roles = self._extract_roles(extra_data)
-        
+        roles = self._extract_roles(sociallogin)
+
         # Get user info from userinfo or id_token
         userinfo = extra_data.get("userinfo", {})
         id_token = extra_data.get("id_token", {})
         
         email = userinfo.get("email") or (id_token.get("email") if isinstance(id_token, dict) else None)
         username = userinfo.get("preferred_username") or (id_token.get("preferred_username") if isinstance(id_token, dict) else None)
-        
+
         logger.info("Processing social login", extra={
             'username': username,
             'email': email,
@@ -156,6 +167,7 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
             if user and user.pk:
                 user.refresh_from_db()
                 self._apply_permissions(user, roles)
+                self._run_login_checks(request, user, roles, sociallogin)
             return
         
         # Not existing - try to find or create user
@@ -197,6 +209,7 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
             # Connect social account to existing user
             sociallogin.connect(request, existing_user)
             self._apply_permissions(existing_user, roles)
+            self._run_login_checks(request, existing_user, roles, sociallogin)
             return
         
         # No existing user - create one now to bypass signup form
@@ -211,7 +224,8 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
                 last_name=last_name or "",
             )
             self._apply_permissions(new_user, roles)
-            
+            self._run_login_checks(request, new_user, roles, sociallogin)
+
             # Connect sociallogin to the new user
             sociallogin.user = new_user
             logger.info("Created new user from social login", extra={
@@ -226,11 +240,32 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
                 'provider': sociallogin.account.provider
             })
 
-    def _extract_roles(self, extra_data):
-        """Extract roles from Keycloak token."""
-        return extract_roles_from_social_data(extra_data)
-    
+    def _extract_roles(self, sociallogin):
+        """Extract roles from the Keycloak login.
+
+        Checks the access token first -- allauth's openid_connect provider
+        never puts it in extra_data, but it's where Keycloak's default
+        "roles" client scope actually lands realm_access.roles (ID
+        token/userinfo mappers are a separate, often-off toggle).
+        """
+        extra_data = sociallogin.account.extra_data
+        access_token = sociallogin.token.token if sociallogin.token else None
+        return extract_roles_from_social_data(extra_data, access_token=access_token)
+
     def _apply_permissions(self, user, roles):
         """Apply roles to Django user permissions."""
         sync_user_permissions_from_roles(user, roles)
+
+    def _run_login_checks(self, request, user, roles, sociallogin):
+        """Run non-blocking org coherence checks and surface user-facing warnings."""
+        extra_data = sociallogin.account.extra_data
+        access_token = sociallogin.token.token if sociallogin.token else None
+        org = extract_org_from_social_data(extra_data, access_token=access_token)
+        if org.present and org.default_slug:
+            get_or_create_organization(org.default_slug)
+        # Opportunistically grow the KeycloakRole catalog from this login's roles
+        # (best-effort; never blocks login). Runs after get_or_create_organization
+        # so the login's own org is resolvable. See role_registry (Epic 11 §4).
+        register_login_roles(roles)
+        run_org_login_checks(user, roles, org, request=request)
         

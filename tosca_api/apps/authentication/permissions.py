@@ -9,7 +9,7 @@ from rest_framework.permissions import BasePermission
 
 class IsSuperAdmin(BasePermission):
     """
-    Allow only users with SUPERADMIN role.
+    Allow only users with DJANGO_SUPERADMIN role.
     
     Usage:
         @permission_classes([IsSuperAdmin])
@@ -22,7 +22,7 @@ class IsSuperAdmin(BasePermission):
 
 class IsAdmin(BasePermission):
     """
-    Allow users with SUPERADMIN or ADMIN roles.
+    Allow users with DJANGO_SUPERADMIN or ADMIN roles.
     
     Usage:
         @permission_classes([IsAdmin])

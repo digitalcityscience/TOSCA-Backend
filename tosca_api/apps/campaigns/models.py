@@ -51,6 +51,12 @@ class Campaign(TimeStampedModel):
         PRIVATE = "private", "Private"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.PROTECT,
+        related_name="campaigns",
+        help_text="Owning organization.",
+    )
     title = models.CharField(max_length=255)
     summary = models.TextField(blank=True, default="")
     status = models.CharField(

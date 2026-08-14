@@ -28,10 +28,12 @@ from .admin_actions import (
 from .admin_views import (
     engine_deactivate_view, engine_force_delete_view, engine_reactivate_view,
     engine_test_connection_view, engine_sync_view,
-    workspace_sync_view,
+    workspace_sync_view, workspace_visibility_toggle_view,
     store_postgis_tables_view, store_clone_view,
     publish_postgis_view, stores_for_workspace_view, tables_for_store_view,
 )
+from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin, resolve_write_organization
+
 from .engine_factory import EngineClientFactory
 from .exceptions import GeoServerConnectionError, GeodataEngineError
 from .models import GeodataEngine, Workspace, Store, Layer, Style, LayerStyleAssignment
@@ -290,12 +292,28 @@ class GeodataEngineForm(forms.ModelForm):
 
 
 class WorkspaceAdminForm(forms.ModelForm):
+    is_public = forms.BooleanField(
+        required=False,
+        label='Public workspace',
+        help_text='Let anyone read the layers. Only the owning organization can edit.',
+    )
+
     class Meta:
         model = Workspace
-        fields = '__all__'
+        exclude = ['visibility']
         widgets = {
             'description': forms.Textarea(attrs={'rows': 3}),
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['is_public'].initial = (
+            self.instance.visibility == Workspace.Visibility.PUBLIC
+        )
+        if 'organization' in self.fields:
+            self.fields['organization'].help_text = (
+                'The organization that owns this workspace and its layers.'
+            )
 
     def clean_name(self):
         name = (self.cleaned_data.get('name') or '').strip()
@@ -315,6 +333,14 @@ class WorkspaceAdminForm(forms.ModelForm):
             return
         if Workspace.objects.filter(geodata_engine=engine, name=name).exists():
             self.add_error('name', 'Workspace with this provider and name already exists.')
+
+    def save(self, commit=True):
+        self.instance.visibility = (
+            Workspace.Visibility.PUBLIC
+            if self.cleaned_data.get('is_public')
+            else Workspace.Visibility.PRIVATE
+        )
+        return super().save(commit=commit)
 
 
 # GeodataEngine Admin - Engine Management
@@ -526,11 +552,11 @@ class StoreInline(admin.TabularInline):
 
 
 @admin.register(Workspace)
-class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
+class WorkspaceAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
     form = WorkspaceAdminForm
     change_form_template = 'admin/geodata_providers/workspace/change_form.html'
-    list_display = ['name', 'engine_link', 'description', 'sync_state_badge', 'store_count', 'layer_count', 'created_at']
-    list_filter = ['geodata_engine', 'geodata_engine__engine_type', 'sync_state']
+    list_display = ['name', 'organization', 'engine_link', 'description', 'sync_state_badge', 'store_count', 'layer_count', 'created_at']
+    list_filter = ['organization', 'geodata_engine', 'geodata_engine__engine_type', 'sync_state']
     search_fields = ['name', 'geodata_engine__name']
     readonly_fields = ['id', 'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash', 'created_at', 'updated_at']
     inlines = [StoreInline]
@@ -539,13 +565,25 @@ class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
 
     fieldsets = (
         ('Identity', {
-            'fields': ('geodata_engine', 'name', 'description'),
+            'fields': ('geodata_engine', 'organization', 'is_public', 'name', 'description'),
         }),
         ('Metadata', {
             'fields': ('id', 'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier', 'remote_hash', 'created_at', 'updated_at'),
             'classes': ('collapse',),
         }),
     )
+
+    # ------------------------------------------------------------------
+    # Default the Organization field to the caller's own org on the add
+    # form, so org-scoped staff (and superusers with a resolvable org) see
+    # their organization pre-selected instead of an empty dropdown.
+    # ------------------------------------------------------------------
+    def get_changeform_initial_data(self, request):
+        initial = super().get_changeform_initial_data(request)
+        organization = resolve_write_organization(request)
+        if organization is not None:
+            initial.setdefault('organization', organization.pk)
+        return initial
 
     # ------------------------------------------------------------------
     # 2.3.2 — Custom URL for the Sync Workspace AJAX endpoint
@@ -556,6 +594,11 @@ class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
                 '<uuid:workspace_id>/sync/',
                 self.admin_site.admin_view(workspace_sync_view),
                 name='workspace_sync',
+            ),
+            path(
+                '<uuid:workspace_id>/toggle-visibility/',
+                self.admin_site.admin_view(workspace_visibility_toggle_view),
+                name='workspace_toggle_visibility',
             ),
         ]
         return custom + super().get_urls()
@@ -578,6 +621,10 @@ class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         readonly = list(self.readonly_fields)
         if obj:  # lock engine when editing existing
             readonly += ['geodata_engine', 'name']
+        if not request.user.is_superuser:
+            # Org-scoped staff can only ever create/see rows in their own
+            # org (see get_queryset); the field is derived, not chosen.
+            readonly += ['organization']
         return readonly
 
     def get_form(self, request, obj=None, **kwargs):
@@ -624,10 +671,15 @@ class WorkspaceAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
             obj.geodata_engine_id,
         )
         if not change:
+            organization = form.cleaned_data.get('organization') or resolve_write_organization(request)
+            if organization is None:
+                raise ValidationError('Could not determine an organization for this workspace.')
             result = WorkspaceService.create_workspace(
                 engine=form.cleaned_data.get('geodata_engine'),
+                organization=organization,
                 name=form.cleaned_data.get('name', obj.name),
                 description=form.cleaned_data.get('description', obj.description),
+                visibility=obj.visibility,
                 user=request.user,
             )
             if not result.get('success'):

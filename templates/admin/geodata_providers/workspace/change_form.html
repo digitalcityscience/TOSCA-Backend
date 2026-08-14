@@ -4,7 +4,55 @@
 {% block submit_buttons_bottom %}
   {{ block.super }}
 
-  {% if object.pk %}
+  <script>
+  (function () {
+    var checkbox = document.getElementById('id_is_public');
+    var orgField = document.getElementById('id_organization');
+    if (!checkbox || !orgField) return;
+
+    var form = checkbox.closest('form');
+    // The whole admin form-row for the organization field (label + widget).
+    var orgRow = orgField.closest('.form-row') || orgField.parentNode;
+
+    // A small inline lock hint we inject just below the organization widget.
+    var hint = document.createElement('div');
+    hint.id = 'org-lock-hint';
+    hint.style.cssText =
+      'display:none; margin-top:6px; padding:6px 10px; font-size:12px;' +
+      'color:#1a5276; background:#eaf2fb; border:1px solid #b6d4f2;' +
+      'border-radius:4px; line-height:1.5;';
+    hint.innerHTML =
+      '🔒 <strong>Ownership locked.</strong> This workspace is ' +
+      '<strong>public</strong> — anyone (including anonymous visitors) can ' +
+      'read its layers, while only the owning organization’s WRITER role can ' +
+      'edit. Uncheck “Public workspace” to change the organization.';
+    orgField.parentNode.insertBefore(hint, orgField.nextSibling);
+
+    function applyLock() {
+      var on = checkbox.checked;
+      orgField.disabled = on;
+      hint.style.display = on ? 'block' : 'none';
+      // Dim the locked field so the state reads at a glance.
+      orgField.style.opacity = on ? '0.6' : '';
+      orgField.style.cursor = on ? 'not-allowed' : '';
+      if (orgRow) {
+        orgRow.style.background = on ? '#fbfdff' : '';
+      }
+    }
+
+    applyLock();
+    checkbox.addEventListener('change', applyLock);
+    if (form) {
+      // Disabled fields don't submit — re-enable right before submit so the
+      // organization keeps posting its current (locked) value.
+      form.addEventListener('submit', function () {
+        orgField.disabled = false;
+      });
+    }
+  })();
+  </script>
+
+  {% if original.pk %}
   <div id="workspace-action-panel" style="
     margin: 18px 0 8px 0;
     padding: 14px 18px;
@@ -30,6 +78,24 @@
         onclick="workspaceAction('sync', this)"
       >
         Sync Workspace
+      </button>
+
+      <button
+        type="button"
+        id="btn-workspace-toggle-visibility"
+        style="
+          padding: 7px 16px;
+          background: {% if original.visibility == 'public' %}#c9762f{% else %}#3e7ecf{% endif %};
+          color: #fff;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 13px;
+        "
+        onclick="workspaceToggleVisibility(this)"
+        title="Current: {% if original.visibility == 'public' %}Public — read is open to everyone{% else %}Private — read is restricted to the owning organization{% endif %}"
+      >
+        {% if original.visibility == 'public' %}Make Private{% else %}Publish as Public{% endif %}
       </button>
 
       <span id="workspace-action-spinner" style="display:none; font-size:13px; color:#666;">
@@ -111,6 +177,60 @@
       })
       .catch(function (err) {
         spinner.style.display = 'none';
+        allBtns.forEach(function (b) { b.disabled = false; });
+        resultBox.style.background = '#fdf0f0';
+        resultBox.style.border = '1px solid #e54d4d';
+        resultBox.style.color = '#a31515';
+        resultBox.innerHTML = '&#10007; Network error: ' + err;
+        resultBox.style.display = 'block';
+      });
+    };
+
+    window.workspaceToggleVisibility = function (btn) {
+      var url = window.location.pathname.replace(/\/$/, '')
+                  .replace(/\/change$/, '') + '/toggle-visibility/';
+
+      var resultBox = document.getElementById('workspace-action-result');
+      var allBtns = document.querySelectorAll('#workspace-action-panel button');
+
+      allBtns.forEach(function (b) { b.disabled = true; });
+      resultBox.style.display = 'none';
+
+      fetch(url, {
+        method: 'POST',
+        headers: {
+          'X-CSRFToken': getCsrf(),
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({}),
+      })
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        allBtns.forEach(function (b) { b.disabled = false; });
+
+        if (data.success) {
+          var isPublic = data.is_public;
+          btn.textContent = isPublic ? 'Make Private' : 'Publish as Public';
+          btn.style.background = isPublic ? '#c9762f' : '#3e7ecf';
+          btn.title = isPublic
+            ? 'Current: Public — read is open to everyone'
+            : 'Current: Private — read is restricted to the owning organization';
+
+          resultBox.style.background = '#eaf7ee';
+          resultBox.style.border = '1px solid #3ecf8e';
+          resultBox.style.color = '#1a6b41';
+          resultBox.innerHTML = '&#10003; Workspace is now <strong>'
+              + (isPublic ? 'PUBLIC' : 'PRIVATE') + '</strong> — GeoServer ACL rules re-pushed.';
+        } else {
+          resultBox.style.background = '#fdf0f0';
+          resultBox.style.border = '1px solid #e54d4d';
+          resultBox.style.color = '#a31515';
+          resultBox.innerHTML = '&#10007; ' + (data.error || 'An error occurred.');
+        }
+        resultBox.style.display = 'block';
+      })
+      .catch(function (err) {
         allBtns.forEach(function (b) { b.disabled = false; });
         resultBox.style.background = '#fdf0f0';
         resultBox.style.border = '1px solid #e54d4d';

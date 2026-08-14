@@ -82,6 +82,7 @@ INSTALLED_APPS = [
     "formbuilder",
     # Local apps
     "tosca_api.apps.core",
+    "tosca_api.apps.organizations",
     "tosca_api.apps.tosca_web",
     "tosca_api.apps.catalog_api.apps.CatalogApiConfig",
     "tosca_api.apps.geodata_providers.apps.GeodataProvidersConfig",
@@ -272,16 +273,21 @@ LOGOUT_REDIRECT_URL = "/accounts/logout/"
 # -------------------------------------------------
 # Keycloak / OIDC
 # -------------------------------------------------
-KEYCLOAK_SERVER_URL = env("KEYCLOAK_SERVER_URL", default="https://auth.dcs.hcu-hamburg.de/")
-KEYCLOAK_REALM = env("KEYCLOAK_REALM", default="prod-realm")
+KEYCLOAK_SERVER_URL = env("KEYCLOAK_SERVER_URL", default="https://auth2.dcs.hcu-hamburg.de/")
+KEYCLOAK_REALM = env("KEYCLOAK_REALM", default="tosca-dev")
 KEYCLOAK_CLIENT_ID = env("KEYCLOAK_CLIENT_ID", default="django-dev")
+KEYCLOAK_CLIENT_SECRET = env("KEYCLOAK_CLIENT_SECRET", default="")
 KEYCLOAK_DJANGO_STAFF_ROLES = env.list(
+    # ADMIN is deliberately excluded -- it's the GeoServer console escape
+    # valve, not a Django role (canonical §2 "Çakışma çözümü": Django staff
+    # keys off DJANGO_STAFF, not ADMIN; DJANGO_SUPERADMIN already implies
+    # staff via sync_user_permissions_from_roles).
     "KEYCLOAK_DJANGO_STAFF_ROLES",
-    default=["DJANGO_STAFF", "ADMIN", "SUPERADMIN"],
+    default=["DJANGO_STAFF", "DJANGO_SUPERADMIN"],
 )
 KEYCLOAK_DJANGO_SUPERUSER_ROLES = env.list(
     "KEYCLOAK_DJANGO_SUPERUSER_ROLES",
-    default=["SUPERADMIN"],
+    default=["DJANGO_SUPERADMIN"],
 )
 
 # JWKS / issuer used to verify access/id tokens
@@ -305,9 +311,12 @@ SOCIALACCOUNT_PROVIDERS = {
                 "provider_id": "keycloak",
                 "name": "Keycloak",
                 "client_id": KEYCLOAK_CLIENT_ID,
-                "secret": "",  # Public client
+                "secret": KEYCLOAK_CLIENT_SECRET,
                 "settings": {
                     "server_url": f"{KEYCLOAK_SERVER_URL}realms/{KEYCLOAK_REALM}/.well-known/openid-configuration",
+                    # get_pkce_params() reads app.settings, i.e. this nested dict —
+                    # a top-level "oauth_pkce_enabled" key on the APP entry is ignored.
+                    "oauth_pkce_enabled": True,
                 },
             }
         ]

@@ -11,11 +11,18 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 
-from tosca_api.apps.authentication.views import KeycloakLogoutView
+from tosca_api.apps.authentication.views import (
+    KeycloakLogoutView,
+    admin_login_redirect,
+)
 from tosca_api.views import base, healthz, readyz
 
 urlpatterns = [
     path('admin/logout/', KeycloakLogoutView.as_view(), name='admin_logout'),  # Override Django admin logout
+    # Shadow Django's local admin login form so /admin/ is reachable only via
+    # Keycloak SSO (closes the parallel username/password path). MUST stay
+    # before admin.site.urls so it wins over the built-in admin:login route.
+    path('admin/login/', admin_login_redirect, name='admin_login_sso'),
     # Health/readiness (see tosca_api/views.py — healthz is liveness-only,
     # readyz checks DB connectivity).
     path('healthz', healthz, name='healthz'),

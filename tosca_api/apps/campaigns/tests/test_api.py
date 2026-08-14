@@ -19,7 +19,16 @@ def user():
 
 @pytest.fixture
 def campaign(user):
+    # conftest.py's default-org save wrapper attaches this to the seeded
+    # 'dcs' org, matching the reader/writer tokens below.
     return Campaign.objects.create(title="Existing Campaign", created_by=user)
+
+
+def _token(*roles):
+    return {
+        "realm_access": {"roles": list(roles)},
+        "default_organization": "dcs",
+    }
 
 
 @pytest.mark.django_db
@@ -31,8 +40,8 @@ def test_campaign_list_unauthenticated(api_client):
 
 @pytest.mark.django_db
 def test_campaign_list_authenticated(api_client, user, campaign):
-    """Test that authenticated users can list campaigns."""
-    api_client.force_authenticate(user=user)
+    """Test that authenticated org-reader users can list campaigns."""
+    api_client.force_authenticate(user=user, token=_token("ROLE_DCS_READER"))
     response = api_client.get("/api/v1/campaigns/")
     assert response.status_code == 200
     assert len(response.data["results"]) >= 1
@@ -41,8 +50,8 @@ def test_campaign_list_authenticated(api_client, user, campaign):
 
 @pytest.mark.django_db
 def test_campaign_create_authenticated(api_client, user):
-    """Test that authenticated users can create campaigns."""
-    api_client.force_authenticate(user=user)
+    """Test that authenticated org-writer users can create campaigns."""
+    api_client.force_authenticate(user=user, token=_token("ROLE_DCS_WRITER"))
     data = {
         "title": "New API Campaign",
         "summary": "Created via API",
@@ -57,8 +66,8 @@ def test_campaign_create_authenticated(api_client, user):
 
 @pytest.mark.django_db
 def test_campaign_retrieve(api_client, user, campaign):
-    """Test retrieving a specific campaign."""
-    api_client.force_authenticate(user=user)
+    """Test retrieving a specific campaign as an org-reader."""
+    api_client.force_authenticate(user=user, token=_token("ROLE_DCS_READER"))
     response = api_client.get(f"/api/v1/campaigns/{campaign.id}/")
     assert response.status_code == 200
     assert response.data["id"] == str(campaign.id)
