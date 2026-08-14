@@ -16,7 +16,7 @@ Temel hedefler:
 - Django storage abstraction üzerinden filesystem veya S3 backend seçebilmek.
 - Garage, MinIO, AWS S3 veya başka bir S3-compatible provider'a uygulama kodunu bağlayabilmek.
 - View, serializer ve model katmanlarına doğrudan boto3 çağrıları eklememek.
-- Local development ve test davranışını filesystem üzerinde korumak.
+- Local development ve test davranışını filesystem üzerinde korumak; development Compose profili ise Garage S3'ü varsayılan olarak kullanır.
 - EditorJS upload dosyalarını DB metadata'sı ile takip etmek.
 - S3/Garage üzerinde pahalı recursive storage scan işlemini media library'den kaldırmak.
 
@@ -95,7 +95,7 @@ MEDIA_DERIVATIVE_PREFIX=...
 
 ### Storage davranışı
 
-Filesystem varsayılan olarak korunur:
+Local development için Compose profili artık Garage S3'ü varsayılan seçer. Test settings ve doğrudan unit/regression test çalıştırmaları filesystem storage kullanmaya devam eder.
 
 ```python
 STORAGES["default"] = {
@@ -293,7 +293,7 @@ Test çalıştırma sırasında repository'nin test ayarları önceden oluşturu
 
 ## 7. Şu anda tamamlanmayan işler
 
-Bu iki commit aşağıdaki hedefleri henüz tamamlamıyor:
+Önceki iki commit'in hedeflerine ek olarak local Garage stack'i de eklendi. Aşağıdaki hedefler hâlâ tamamlanmış değildir:
 
 ### Private originals / public derivatives
 
@@ -402,7 +402,7 @@ Issue 48'in Issue 12'den önce gelmesi önerilir. S3 üzerinde DB tracking olmad
 Son commit:
 
 ```text
-fa68176 feat(media): track uploaded assets in database
+838cb94 feat(storage): add local Garage S3 stack
 ```
 
 Önceki storage commit'i:
@@ -448,13 +448,13 @@ Bu bölüm, dokümanda yazan her ana gereksinimi doğrudan bir kontrol ve gözle
 | Migration model ile uyumlu olmalı | `manage.py makemigrations core --check --dry-run` | `No changes detected in app 'core'`. Passed. |
 | Applied migration state eksiksiz olmalı | `manage.py migrate --check` | Pending migration bulunmadı. Passed. |
 | Changed Python code lint edilebilir olmalı | Container içinde Ruff | `All checks passed!`. Passed. |
-| Local Garage Compose stack'i ve persistent volumes | `docker compose -f docker-compose-dev.yml config --quiet` ve `scripts/verify_garage_s3.sh` | `dxflrs/garage:v2.3.0`, `garage_meta`, `garage_data`, bootstrap ve Django S3 wiring doğrulandı. Live sonuç aşağıdaki bölümde raporlanmıştır. |
+| Local Garage Compose stack'i ve persistent volumes | `ENV_FILE=.env.dev ./scripts/verify_garage_s3.sh` | 52 filesystem regression testi, Compose config ve shell syntax kontrolleri geçti. Live Garage akışı private/public alias upload-read ve restart persistence doğruladı. Passed. |
 | Private ve public Garage bucket alias'ları | `scripts/garage_e2e.py` üzerinden `default_storage` ve `storages["media_public"]` | Her iki bucket'a upload edildi, Garage restart sonrasında her iki object byte-for-byte okundu. Passed. |
 | Implementation documentation takip edilebilir olmalı | Dosya existence, line count, opening metadata ve commit doğrulaması | İstenen dosya mevcut, 421+ satır, branch/commit/test/limitation bölümleri içeriyor ve `d6ec700` ile commit edildi. Passed. |
 
 ### Kapsam dışı veya dış bağımlılığa bağlı kontrol
 
-Production Garage/S3 upload testi production endpoint ve credentials gerektirir. Local acceptance script'i ise gerçek local Garage endpoint'i üzerinde çalıştırılır ve aşağıdaki bölümdeki gözlenen sonuç bu branch'e aittir.
+Production Garage/S3 upload testi production endpoint ve credentials gerektirir. Local acceptance script'i ise gerçek local Garage endpoint'i üzerinde çalıştırıldı.
 
 1. Django gerçek `storages.backends.s3.S3Storage` ile başlatıldı ve Garage-compatible options üretildi.
 2. Gerçek local Garage service'e Django `default_storage` ve `storages["media_public"]` ile object upload edildi, bytes okundu ve SHA-256 doğrulandı.
