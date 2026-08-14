@@ -29,7 +29,6 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema, inline_serializer
-from PIL import Image
 from rest_framework import serializers
 from rest_framework import status
 from rest_framework.parsers import JSONParser, MultiPartParser
@@ -42,6 +41,7 @@ from tosca_api.apps.core.image_policy import (
     MAX_FILE_SIZE_BYTES,
     validate_inline_image,
 )
+from tosca_api.apps.core.models import MediaAsset
 
 
 _UPLOAD_SUBDIR = "geocontext/editorjs"
@@ -142,6 +142,16 @@ def _store_validated_upload(
     if hasattr(file_obj, "seek"):
         file_obj.seek(0)
     storage_path = default_storage.save(relative_path, file_obj)
+    uploader = request.user if getattr(request.user, "_meta", None) else None
+    MediaAsset.objects.create(
+        storage_path=storage_path,
+        original_name=original_name or "",
+        mime=mime,
+        width=width,
+        height=height,
+        size=default_storage.size(storage_path),
+        uploader=uploader,
+    )
 
     return Response(
         {
@@ -293,45 +303,16 @@ class EditorJSImageLibraryView(APIView):
 
 
 def _list_existing_uploads(request, *, limit: int) -> Iterable[dict]:
-    seen = 0
-    for absolute_path in _walk_storage(_UPLOAD_SUBDIR):
-        if seen >= limit:
-            break
-        rel = absolute_path
-        try:
-            with default_storage.open(rel, "rb") as fh:
-                head = fh.read(1024 * 32)
-        except FileNotFoundError:
-            continue
-        try:
-            with Image.open(io.BytesIO(head)) as img:
-                fmt = (img.format or "").upper()
-                width, height = img.size
-        except Exception:
-            continue
-        mime = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}.get(fmt)
-        if mime is None:
-            continue
+    prefix = f"{_UPLOAD_SUBDIR}/"
+    assets = MediaAsset.objects.filter(storage_path__startswith=prefix)[:limit]
+    for asset in assets:
         yield {
-            "url": _absolute_url(request, rel),
-            "mime": mime,
-            "width": int(width),
-            "height": int(height),
-            "name": rel.rsplit("/", 1)[-1],
+            "url": _absolute_url(request, asset.storage_path),
+            "mime": asset.mime,
+            "width": asset.width,
+            "height": asset.height,
+            "name": asset.original_name or asset.storage_path.rsplit("/", 1)[-1],
         }
-        seen += 1
-
-
-def _walk_storage(prefix: str):
-    """Recursively yield file paths under ``prefix`` from default_storage."""
-    try:
-        dirs, files = default_storage.listdir(prefix)
-    except FileNotFoundError:
-        return
-    for name in files:
-        yield f"{prefix}/{name}"
-    for sub in dirs:
-        yield from _walk_storage(f"{prefix}/{sub}")
 
 
 def _is_same_origin(parsed_url, request) -> bool:
