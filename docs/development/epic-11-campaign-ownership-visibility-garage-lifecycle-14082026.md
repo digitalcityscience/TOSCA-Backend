@@ -126,4 +126,36 @@ Eklenecek:
 
 - PR1: ✅ migration testleri (backfill script'i sentetik veri üzerinde — `core/tests/test_media_ownership.py`, 8 test: hero-image eşleşmesi, EditorJS content eşleşmesi [GeoStory/Event/EventSeries.default_context üzerinden], unmatched fallback, apply_backfill'in yalnızca resolved entry'leri yazması, zaten-linked asset'lerin re-plan'da atlanması), serializer testleri (`visibility` read-only, `effective_visibility` doğru türetiliyor — `events/tests/test_event_visibility.py`'e eklendi: Campaign.visibility ile Event.visibility çelişirken effective_visibility'nin campaign'i takip etmesi, API'nin visibility yazma isteklerini yok sayması), permission testleri (org-scoped queryset Campaign-owned kaynaklara doğru uygulanıyor — yeni `organizations/tests/test_campaign_scoped_permission.py`, 11 test: SAFE_METHODS her zaman geçer, WRITER/ADMIN seviye kontrolü, cross-org obj-level red, create-time `validate_campaign_organization`). Mevcut events/geostories test suite'leri (`test_api.py`, `test_phase2/7/8`) yeni org-token gereksinimine göre güncellendi — hepsi geçiyor.
 - PR2: ✅ path şeması testleri (`core/tests/test_media_paths.py`, 9 test: `canonical_storage_path` her üç kind için, `resolve_entity` hero-image/EditorJS-via-story/EditorJS-via-event/misc-fallback/orphan-None), path migration script dry-run/apply testleri (`core/tests/test_media_path_migration.py`, 11 test: filesystem storage backend ile plan/apply, already-canonical no-op, unresolved-orphan skip, copy-then-verify-then-delete, kesintiye-uğramış-koşuyu-devam-ettirme, size-mismatch güvenli red, management command dry-run default + `--apply` batching + boş tabloda güvenlik), storage settings testleri (`core/tests/test_storage_settings.py`'e 3 test eklendi: filesystem'de `media_archive` alias parity, S3'te archive bucket boşsa alias yok, doluysa signed URL'li alias).
-- PR3: ✅ lifecycle state-transition testleri — `core/tests/test_media_lifecycle.py` (hero image copy→verify→DB update→delete, `MediaAsset` metadata sync, `MediaAsset` satırı olmayan hero image sweep'i, campaign/story archive-restore kapsamı ve mevcut safety kontrolleri), signal testleri — `core/tests/test_media_lifecycle_signals.py` (7 test: create'te tetiklenmiyor, ilgisiz alan değişikliğinde tetiklenmiyor, status/visibility değişikliğinde tetikleniyor, Campaign ve GeoStory için ayrı ayrı — `GeoServerSecuritySyncService`/`organizations.signals` testleriyle aynı mock-the-service deseni), backfill migration testi — `core/tests/test_storage_alias_backfill.py` (mevcut EditorJS-prefix'li satırların `media_public`'e taşınması). Yerel doğrulamada Django system check, Python compile ve migration check geçiyor; veritabanı servisi çalışmadığı için pytest suite bu çalışma ortamında başlatılamadı.
+- PR3: ✅ lifecycle state-transition testleri — `core/tests/test_media_lifecycle.py` (hero image copy→verify→DB update→delete, `MediaAsset` metadata sync, `MediaAsset` satırı olmayan hero image sweep'i, campaign/story archive-restore kapsamı ve mevcut safety kontrolleri), signal testleri — `core/tests/test_media_lifecycle_signals.py` (7 test: create'te tetiklenmiyor, ilgisiz alan değişikliğinde tetiklenmiyor, status/visibility değişikliğinde tetikleniyor, Campaign ve GeoStory için ayrı ayrı — `GeoServerSecuritySyncService`/`organizations.signals` testleriyle aynı mock-the-service deseni), backfill migration testi — `core/tests/test_storage_alias_backfill.py` (mevcut EditorJS-prefix'li satırların `media_public`'e taşınması).
+
+## 8. Doğrulama sonucu (2026-08-14, DB ayaktayken çalıştırıldı)
+
+Önceki notta "veritabanı servisi çalışmadığı için pytest başlatılamadı" yazıyordu. Suite artık çalıştırıldı:
+
+- **Tam suite: 1109 passed** (`DJANGO_STORAGE_BACKEND=filesystem`, ~139 sn).
+- İlk koşuda **3 test kırıktı**, düzeltildi (commit `dde1160`):
+  - `test_media_paths.py::test_resolve_entity_matches_editorjs_content_via_geostory` ve `..._via_event` — testler `ContentFile(b"x")` yazıyordu, `GeoContext` image-block validasyonu bunu PIL ile açamayıp `UnidentifiedImageError` veriyordu. Gerçek PNG bayt üreten `_png_bytes()` helper'ı eklendi.
+  - `test_media_lifecycle.py::test_sync_story_assets_moves_only_that_storys_assets` — `story.save()` post_save sinyalini tetikleyip taşımayı *gerçek* storage üzerinde zaten yapıyordu, dolayısıyla tmp_path-backed izole servis `no-change` dönüyordu. Test artık `queryset.update()` ile sinyali baypas ediyor (sinyal davranışı zaten `test_media_lifecycle_signals.py` kapsamında).
+
+### Archive bucket canlı doğrulama
+
+Kullanıcının "archive bucket görünmüyor" gözlemi araştırıldı — bucket **mevcut ve izinli**:
+
+```
+tosca-media-private
+tosca-media-public
+tosca-media-archive   <- RWO / GKtosca-local-django
+```
+
+Django storage alias'ları: `default → tosca-media-private`, `media_public → tosca-media-public`, `media_archive → tosca-media-archive`.
+
+Not: `tosca-garage-bootstrap` container'ı 6 saat önce eski imajla koştuğu için log'u hâlâ iki bucket yazıyor (`Garage bootstrap complete: tosca-media-private, tosca-media-public`) — muhtemelen "archive yok" izleniminin kaynağı bu. Bucket, güncel bootstrap script'i ile oluşturulmuş durumda; `docker compose up --build garage-bootstrap` ile log da tazelenir.
+
+Canlı Garage üzerinde uçtan uca archive→restore smoke testi:
+
+| Adım | Sonuç |
+|---|---|
+| Campaign `active → archived` | asset `default → media_archive`, archive bucket'ta mevcut, private bucket'tan silinmiş |
+| Campaign `archived → active` | asset güncel `visibility=private` gereği `default`'a döndü, archive bucket'tan silindi |
+
+Yani §3.3 PR3'teki çift yönlü lifecycle prod-benzeri S3 backend'de doğrulanmıştır.
