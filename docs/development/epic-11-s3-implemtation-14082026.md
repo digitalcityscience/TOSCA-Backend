@@ -310,13 +310,10 @@ Sonraki adımda:
 
 ### Media migration command
 
-Henüz şu command yazılmadı:
+> **Güncelleme (§12.4):** `migrate_media_to_storage` komutu yazıldı. Aşağıdaki
+> gereksinimlerin tamamı karşılandı; detay §12.4'te.
 
-```text
-migrate_media_to_storage
-```
-
-Gerekli özellikler:
+Gereken özellikler (tamamlandı):
 
 - `--dry-run`.
 - Idempotent upload.
@@ -502,4 +499,40 @@ Yapılan:
 - `test_storage_settings.py`: filesystem `media_public` alias, s3 public bucket zorunluluğu, private bucket'ın imzalı kalması eklendi.
 - `test_editorjs_uploads.py`: IP literal blocking (metadata/loopback/RFC1918/IPv6), private-resolving hostname blocking, redirect-to-internal blocking, throttle scope wiring testleri eklendi.
 - `tosca_api/apps/geocontext` ve `tosca_api/apps/core`: 203 passed (ilgili tüm testler). İki başarısızlık — `test_database_settings.py` CONN_MAX_AGE — bu değişiklikle ilgisizdir ve çalıştırıldığı container'ın `CONN_MAX_AGE=0` env'inden kaynaklanır.
+
+### 12.4 Media migration command (production flip blocker'ı kapatıldı)
+
+Sorun: S3 backend yalnızca yeni upload'lar için çalışıyordu. `DJANGO_STORAGE_BACKEND=s3` yapılırsa filesystem üzerindeki mevcut media taşınmadığı için eski görseller kırılırdı. Bu Epic 11 production flip'i için hard blocker'dı.
+
+Eklenenler:
+
+- `tosca_api/apps/core/media_migration.py` — backend-agnostic, dependency-injected `MediaMigrator` servisi (deep module; command katmanı olmadan test edilebilir).
+- `tosca_api/apps/core/management/commands/migrate_media_to_storage.py` — ince CLI wrapper.
+
+Davranış (§7 gereksinimleriyle birebir):
+
+- **Routing:** `geocontext/editorjs/` prefix'i public (unsigned) bucket'a, geri kalanı private `default` bucket'a gider. Prefix haritası tek kaynak; migration ve verification aynı haritayı kullanır.
+- **Idempotent:** Hedefte aynı byte size ile mevcut olan object atlanır (`skipped-exists`), böylece yarım kalan migration re-run ile kaldığı yerden devam eder.
+- **Object size verification:** Her upload sonrası hedef size, kaynak size ile karşılaştırılır; uyuşmazlık `mismatch` statüsüyle raporlanır (overwrite olmadan hedef değiştirilmez).
+- **Partial-failure tolerance:** Bir object'teki hata `failed` olarak kaydedilir, batch durmaz.
+- **Missing-object detection:** `--verify`, tüm `MediaAsset` row'larının hedef storage'da gerçekten var olup olmadığını kontrol eder.
+- **CSV/JSON report:** `--report path.json|path.csv`; report yeniden yüklenebilir (`load_report`).
+- **Rollback:** `--rollback report.json` yalnızca bu aracın *oluşturduğu* (`migrated`) object'leri siler. Overwrite edilen object'ler bilinçli olarak rollback dışıdır — silmek önceki içeriği geri getirmez, veri kaybı olur.
+
+CLI:
+
+```sh
+# 1) Önce görmek için (hiçbir şey yazmaz)
+python manage.py migrate_media_to_storage --dry-run --report plan.json
+# 2) Gerçek taşıma (idempotent; tekrar çalıştırılabilir)
+python manage.py migrate_media_to_storage --report media-migration.json
+# 3) Doğrulama
+python manage.py migrate_media_to_storage --verify --dry-run
+# 4) Geri alma
+python manage.py migrate_media_to_storage --rollback media-migration.json
+```
+
+Öneri (kullanıcı talebi): flip sırası → `migrate_media_to_storage --dry-run` → gerçek migration → `--verify` → `DJANGO_STORAGE_BACKEND=s3` flip. Issue 13 (derivative generator) bununla paralel ilerleyebilir; migration bağımsızdır.
+
+Testler: `tosca_api/apps/core/tests/test_media_migration.py` — routing, idempotency, size-mismatch/overwrite, partial-failure isolation, rollback (created vs overwritten), rollback dry-run, JSON/CSV report round-trip, `--verify` missing detection, command dry-run + rollback bad-path. **12 passed.** Yeni model yok → migration gerekmez (`makemigrations core --check`: No changes).
 - Ruff temiz; `makemigrations --check` model değişikliği yok (davranış değişikliği tamamen storage/view/settings katmanındadır, yeni migration gerekmez).
