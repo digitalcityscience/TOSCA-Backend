@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 # -------------------------------------------------
 # Paths
@@ -189,6 +190,88 @@ STATIC_URL = env("DJANGO_STATIC_URL", default="/static/")
 STATIC_ROOT = Path(env("DJANGO_STATIC_ROOT", default=os.fspath(ROOT_DIR / "staticfiles")))
 MEDIA_URL = env("DJANGO_MEDIA_URL", default="/media/")
 MEDIA_ROOT = Path(env("DJANGO_MEDIA_ROOT", default=os.fspath(ROOT_DIR / "media")))
+
+# Media storage is deliberately switchable so local development and the test
+# suite keep using the filesystem while production can use Garage, MinIO, AWS
+# S3, or another S3-compatible service without application-level boto calls.
+DJANGO_STORAGE_BACKEND = env("DJANGO_STORAGE_BACKEND", default="filesystem").lower()
+if DJANGO_STORAGE_BACKEND not in {"filesystem", "s3"}:
+    raise ImproperlyConfigured(
+        "DJANGO_STORAGE_BACKEND must be either 'filesystem' or 's3'."
+    )
+
+S3_ENDPOINT_URL = env("S3_ENDPOINT_URL", default="")
+S3_REGION_NAME = env("S3_REGION_NAME", default="us-east-1")
+S3_ACCESS_KEY_ID = env("S3_ACCESS_KEY_ID", default="")
+S3_SECRET_ACCESS_KEY = env("S3_SECRET_ACCESS_KEY", default="")
+S3_BUCKET_NAME = env("S3_BUCKET_NAME", default="")
+S3_PUBLIC_BUCKET_NAME = env("S3_PUBLIC_BUCKET_NAME", default="")
+S3_ADDRESSING_STYLE = env("S3_ADDRESSING_STYLE", default="auto")
+S3_SIGNATURE_VERSION = env("S3_SIGNATURE_VERSION", default="s3v4")
+MEDIA_PUBLIC_BASE_URL = env("MEDIA_PUBLIC_BASE_URL", default=MEDIA_URL)
+MEDIA_PRIVATE_PREFIX = env("MEDIA_PRIVATE_PREFIX", default="")
+MEDIA_DERIVATIVE_PREFIX = env("MEDIA_DERIVATIVE_PREFIX", default="derivatives/")
+
+def build_storage_config(
+    backend: str,
+    *,
+    bucket_name: str = "",
+    endpoint_url: str = "",
+    region_name: str = "us-east-1",
+    access_key: str = "",
+    secret_key: str = "",
+    addressing_style: str = "auto",
+    signature_version: str = "s3v4",
+    location: str = "",
+) -> dict[str, dict[str, object]]:
+    """Build Django's storage aliases without coupling application code to S3."""
+    if backend == "filesystem":
+        return {
+            "default": {
+                "BACKEND": "django.core.files.storage.FileSystemStorage",
+            },
+            "staticfiles": {
+                "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+            },
+        }
+    if backend != "s3":
+        raise ImproperlyConfigured("DJANGO_STORAGE_BACKEND must be either 'filesystem' or 's3'.")
+    if not bucket_name:
+        raise ImproperlyConfigured("S3_BUCKET_NAME is required when using S3 storage.")
+    return {
+        "default": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": bucket_name,
+                "endpoint_url": endpoint_url or None,
+                "region_name": region_name,
+                "access_key": access_key or None,
+                "secret_key": secret_key or None,
+                "addressing_style": addressing_style,
+                "signature_version": signature_version,
+                "default_acl": None,
+                "file_overwrite": False,
+                "querystring_auth": True,
+                "location": location.strip("/"),
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+
+
+STORAGES = build_storage_config(
+    DJANGO_STORAGE_BACKEND,
+    bucket_name=S3_BUCKET_NAME,
+    endpoint_url=S3_ENDPOINT_URL,
+    region_name=S3_REGION_NAME,
+    access_key=S3_ACCESS_KEY_ID,
+    secret_key=S3_SECRET_ACCESS_KEY,
+    addressing_style=S3_ADDRESSING_STYLE,
+    signature_version=S3_SIGNATURE_VERSION,
+    location=MEDIA_PRIVATE_PREFIX,
+)
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
