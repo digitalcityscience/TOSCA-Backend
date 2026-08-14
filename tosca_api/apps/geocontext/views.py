@@ -19,14 +19,15 @@ EditorJS image tool can surface the message inline.
 from __future__ import annotations
 
 import io
+import ipaddress
+import socket
 import uuid
 from typing import Iterable, Tuple
 from urllib.parse import urlparse
 
 import requests
-from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.files.storage import default_storage
+from django.core.files.storage import storages
 from django.core.files.uploadedfile import SimpleUploadedFile
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema, inline_serializer
 from rest_framework import serializers
@@ -48,6 +49,24 @@ _UPLOAD_SUBDIR = "geocontext/editorjs"
 _DOWNLOAD_TIMEOUT_SECONDS = 5
 _MAX_REDIRECTS = 1
 _ALLOWED_REMOTE_SCHEMES = {"http", "https"}
+_BLOCKED_URL_MESSAGE = "Remote URL resolves to a private or internal address."
+
+
+class EditorJSUploadThrottle(UserRateThrottle):
+    """Rate-limit the (expensive) EditorJS upload endpoints per user."""
+
+    scope = "editorjs_upload"
+
+
+class EditorJSMediaThrottle(UserRateThrottle):
+    """Rate-limit the EditorJS media picker listing per user."""
+
+    scope = "editorjs_media"
+
+
+def _public_storage():
+    """Storage backend for browser-facing media (unsigned URLs on S3)."""
+    return storages["media_public"]
 
 _UPLOAD_SUCCESS_SERIALIZER = inline_serializer(
     name="EditorJSImageUploadSuccess",
@@ -98,15 +117,10 @@ _MEDIA_LIBRARY_SERIALIZER = inline_serializer(
 )
 
 
-def _media_url_prefix() -> str:
-    media_url = getattr(settings, "MEDIA_URL", "/media/") or "/media/"
-    if not media_url.endswith("/"):
-        media_url += "/"
-    return media_url
-
-
 def _absolute_url(request, storage_path: str) -> str:
-    return request.build_absolute_uri(default_storage.url(storage_path))
+    # Public storage produces an unsigned URL on S3 (and a MEDIA_URL path on
+    # local disk); build_absolute_uri leaves an already-absolute URL intact.
+    return request.build_absolute_uri(_public_storage().url(storage_path))
 
 
 def _failure(message: str, *, http_status: int = status.HTTP_400_BAD_REQUEST) -> Response:
@@ -141,7 +155,8 @@ def _store_validated_upload(
 
     if hasattr(file_obj, "seek"):
         file_obj.seek(0)
-    storage_path = default_storage.save(relative_path, file_obj)
+    storage = _public_storage()
+    storage_path = storage.save(relative_path, file_obj)
     uploader = request.user if getattr(request.user, "_meta", None) else None
     MediaAsset.objects.create(
         storage_path=storage_path,
@@ -149,7 +164,7 @@ def _store_validated_upload(
         mime=mime,
         width=width,
         height=height,
-        size=default_storage.size(storage_path),
+        size=storage.size(storage_path),
         uploader=uploader,
     )
 
@@ -178,7 +193,7 @@ class EditorJSImageUploadByFileView(APIView):
 
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser]
-    throttle_classes = [UserRateThrottle]
+    throttle_classes = [EditorJSUploadThrottle]
 
     @extend_schema(
         tags=["geocontext"],
@@ -222,7 +237,7 @@ class EditorJSImageUploadByUrlView(APIView):
 
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
-    throttle_classes = [UserRateThrottle]
+    throttle_classes = [EditorJSUploadThrottle]
 
     @extend_schema(
         tags=["geocontext"],
@@ -289,7 +304,7 @@ class EditorJSImageLibraryView(APIView):
     """List previously uploaded EditorJS images for the admin picker."""
 
     permission_classes = [IsAuthenticated]
-    throttle_classes = [UserRateThrottle]
+    throttle_classes = [EditorJSMediaThrottle]
 
     @extend_schema(
         tags=["geocontext"],
@@ -324,8 +339,59 @@ class _DownloadError(Exception):
     pass
 
 
+def _ip_is_blocked(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        # Unparseable address — treat as unsafe rather than let it through.
+        return True
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _resolve_host_ips(host: str) -> list[str]:
+    """Resolve a hostname to every address it maps to (IPv4 and IPv6)."""
+    return [info[4][0] for info in socket.getaddrinfo(host, None)]
+
+
+def _assert_public_url(url: str) -> None:
+    """Reject URLs that target loopback, private, link-local, or reserved hosts.
+
+    Blocks the cloud metadata endpoint (169.254.169.254) and SSRF into internal
+    services. Direct IP literals are checked without DNS; hostnames are resolved
+    and every returned address must be public. A hostname that cannot be
+    resolved is left to fail at connection time — it cannot reach an internal
+    target on its own.
+    """
+    host = urlparse(url).hostname
+    if not host:
+        raise _DownloadError("Remote URL has no host.")
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if _ip_is_blocked(str(literal)):
+            raise _DownloadError(_BLOCKED_URL_MESSAGE)
+        return
+    try:
+        resolved = _resolve_host_ips(host)
+    except OSError:
+        return
+    if any(_ip_is_blocked(ip) for ip in resolved):
+        raise _DownloadError(_BLOCKED_URL_MESSAGE)
+
+
 def _download_with_caps(url: str) -> Tuple[bytes, str]:
-    """Stream-download with size, timeout, and redirect caps."""
+    """Stream-download with SSRF, size, timeout, and redirect caps."""
+    # Validate before connecting so a direct internal address is never dialled.
+    _assert_public_url(url)
     try:
         resp = requests.get(
             url,
@@ -341,6 +407,9 @@ def _download_with_caps(url: str) -> Tuple[bytes, str]:
     final_scheme = urlparse(resp.url).scheme
     if final_scheme not in _ALLOWED_REMOTE_SCHEMES:
         raise _DownloadError(f"Redirect target uses disallowed scheme '{final_scheme}'.")
+    # A redirect can point at an internal host even when the first hop was
+    # public; re-validate the final URL the response actually came from.
+    _assert_public_url(resp.url)
     if resp.status_code != 200:
         raise _DownloadError(f"Remote URL returned status {resp.status_code}.")
 

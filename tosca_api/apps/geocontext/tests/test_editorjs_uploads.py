@@ -170,6 +170,103 @@ def test_upload_by_url_rejects_disallowed_sources(api_client, tmp_path, url, exp
     assert expected in response.json()["error"]
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        "http://127.0.0.1/secret.png",
+        "http://[::1]/secret.png",
+        "http://10.0.0.5/internal.png",
+        "http://192.168.1.10/internal.png",
+    ],
+)
+def test_upload_by_url_blocks_ip_literals_to_internal_hosts(
+    api_client, monkeypatch, tmp_path, url
+):
+    # requests.get must never be reached for a blocked literal address.
+    monkeypatch.setattr(
+        views.requests,
+        "get",
+        lambda *a, **k: pytest.fail("blocked URL should not be fetched"),
+    )
+    with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
+        response = api_client.post(
+            "/api/v1/geocontext/editorjs/upload-by-url/",
+            {"url": url},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert response.json()["success"] == 0
+    assert "internal" in response.json()["error"]
+
+
+def test_upload_by_url_blocks_hostname_resolving_to_private_ip(
+    api_client, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(views, "_resolve_host_ips", lambda host: ["10.1.2.3"])
+    monkeypatch.setattr(
+        views.requests,
+        "get",
+        lambda *a, **k: pytest.fail("blocked URL should not be fetched"),
+    )
+    with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
+        response = api_client.post(
+            "/api/v1/geocontext/editorjs/upload-by-url/",
+            {"url": "https://intranet.private.example/logo.png"},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert "internal" in response.json()["error"]
+
+
+@pytest.mark.django_db
+def test_upload_by_url_blocks_redirect_to_internal_host(
+    api_client, monkeypatch, tmp_path
+):
+    data = _image_bytes()
+
+    # First hop resolves public; the response reports a final URL on an
+    # internal literal address, simulating a redirect into the metadata host.
+    monkeypatch.setattr(views, "_resolve_host_ips", lambda host: ["93.184.216.34"])
+    monkeypatch.setattr(
+        views.requests,
+        "get",
+        lambda url, **kwargs: _FakeResponse(
+            data, url="http://169.254.169.254/latest/meta-data/"
+        ),
+    )
+    with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
+        response = api_client.post(
+            "/api/v1/geocontext/editorjs/upload-by-url/",
+            {"url": "https://public.example/inline.png"},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert "internal" in response.json()["error"]
+
+
+def test_editorjs_endpoints_declare_scoped_throttles():
+    from django.conf import settings
+
+    rates = settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]
+    assert "editorjs_upload" in rates
+    assert "editorjs_media" in rates
+    assert views.EditorJSImageUploadByFileView.throttle_classes == [
+        views.EditorJSUploadThrottle
+    ]
+    assert views.EditorJSImageUploadByUrlView.throttle_classes == [
+        views.EditorJSUploadThrottle
+    ]
+    assert views.EditorJSImageLibraryView.throttle_classes == [
+        views.EditorJSMediaThrottle
+    ]
+    assert views.EditorJSUploadThrottle.scope == "editorjs_upload"
+    assert views.EditorJSMediaThrottle.scope == "editorjs_media"
+
+
 def test_upload_by_url_rejects_oversized_download(api_client, monkeypatch, tmp_path):
     data = b"x" * (views.MAX_FILE_SIZE_BYTES + 1)
 

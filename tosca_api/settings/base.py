@@ -227,8 +227,14 @@ def build_storage_config(
 ) -> dict[str, dict[str, object]]:
     """Build Django's storage aliases without coupling application code to S3."""
     if backend == "filesystem":
+        # ``media_public`` mirrors ``default`` on local disk so application
+        # code can always resolve the alias; the private/public split only
+        # materialises on S3.
         return {
             "default": {
+                "BACKEND": "django.core.files.storage.FileSystemStorage",
+            },
+            "media_public": {
                 "BACKEND": "django.core.files.storage.FileSystemStorage",
             },
             "staticfiles": {
@@ -239,6 +245,11 @@ def build_storage_config(
         raise ImproperlyConfigured("DJANGO_STORAGE_BACKEND must be either 'filesystem' or 's3'.")
     if not bucket_name:
         raise ImproperlyConfigured("S3_BUCKET_NAME is required when using S3 storage.")
+    if not public_bucket_name:
+        raise ImproperlyConfigured(
+            "S3_PUBLIC_BUCKET_NAME is required when using S3 storage; "
+            "browser-facing media must be served unsigned from the public bucket."
+        )
     config = {
         "default": {
             "BACKEND": "storages.backends.s3.S3Storage",
@@ -260,23 +271,25 @@ def build_storage_config(
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
         },
     }
-    if public_bucket_name:
-        config["media_public"] = {
-            "BACKEND": "storages.backends.s3.S3Storage",
-            "OPTIONS": {
-                "bucket_name": public_bucket_name,
-                "endpoint_url": endpoint_url or None,
-                "region_name": region_name,
-                "access_key": access_key or None,
-                "secret_key": secret_key or None,
-                "addressing_style": addressing_style,
-                "signature_version": signature_version,
-                "default_acl": None,
-                "file_overwrite": False,
-                "querystring_auth": False,
-                "location": "",
-            },
-        }
+    # Public derivatives/inline media live in a separate bucket served with
+    # unsigned URLs (``querystring_auth=False``) so published content does not
+    # break when a signed URL expires.
+    config["media_public"] = {
+        "BACKEND": "storages.backends.s3.S3Storage",
+        "OPTIONS": {
+            "bucket_name": public_bucket_name,
+            "endpoint_url": endpoint_url or None,
+            "region_name": region_name,
+            "access_key": access_key or None,
+            "secret_key": secret_key or None,
+            "addressing_style": addressing_style,
+            "signature_version": signature_version,
+            "default_acl": None,
+            "file_overwrite": False,
+            "querystring_auth": False,
+            "location": "",
+        },
+    }
     return config
 
 
@@ -320,6 +333,12 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "tosca_api.apps.core.pagination.StandardResultsSetPagination",
     "PAGE_SIZE": 20,
+    "DEFAULT_THROTTLE_RATES": {
+        # EditorJS authoring endpoints. Uploads are far more expensive
+        # (validation + storage round-trips) than listing the picker.
+        "editorjs_upload": env("THROTTLE_EDITORJS_UPLOAD", default="30/minute"),
+        "editorjs_media": env("THROTTLE_EDITORJS_MEDIA", default="120/minute"),
+    },
 }
 
 SPECTACULAR_SETTINGS = {

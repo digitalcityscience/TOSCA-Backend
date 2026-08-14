@@ -461,3 +461,45 @@ Production Garage/S3 upload testi production endpoint ve credentials gerektirir.
 3. Garage container restart edildi; named volumes korunurken private ve public object'ler yeniden okunarak persistence doğrulandı.
 
 Bu nedenle mevcut sonuç **local Garage object I/O and restart persistence verified** seviyesindedir. Production Garage cluster replication, TLS, lifecycle ve public CDN davranışı bu local stack'in kapsamı dışındadır.
+
+## 12. Grill sonrası kapatılan eksikler (14.08.2026)
+
+Implementation grill oturumunda kodun dokümanla çeliştiği ve production öncesi blocker sayılan noktalar tespit edildi ve kapatıldı. Bu bölüm önceki bölümlerdeki "sonraki adım" ifadelerini kısmen geçersiz kılar.
+
+### Public URL modeli (önceki §7 "sonraki adım" idi)
+
+Sorun: EditorJS upload akışı browser-facing URL'i `default_storage.url()` üzerinden üretiyordu. `default` storage private bucket + `querystring_auth=True` olduğu için üretilen URL **imzalı ve süreli** oluyordu; yayınlanmış GeoStory içine gömülen görseller signed URL expiry sonrasında kırılırdı.
+
+Yapılan:
+
+- `_store_validated_upload`, `_absolute_url` ve size okuması artık `storages["media_public"]` alias'ını kullanıyor. Public S3 bucket `querystring_auth=False` ile imzasız URL döndürüyor.
+- `build_storage_config` filesystem modunda da `media_public` alias'ı (FileSystemStorage) üretiyor; böylece alias her backend'de resolve oluyor ve test/local davranışı korunuyor.
+- S3 backend'inde artık `S3_PUBLIC_BUCKET_NAME` **zorunludur** (eksikse `ImproperlyConfigured`). §11 traceability'de "aspirasyonel" görünen `media_public` alias iddiası artık settings katmanında gerçek ve testli.
+
+> Not: Derivative generator ve GeoStory serializer'ının public alias'ı kullanması hâlâ ayrı bir iştir (Issue 13). Bu commit yalnızca EditorJS inline upload URL'lerini imzasız/kalıcı hale getirir.
+
+### SSRF hardening (önceki §7'de "production için tamamlanmalı" idi)
+
+`upload-by-url` artık download öncesinde ve redirect sonrasında hedef host'u doğruluyor:
+
+- IP literal'leri DNS'siz kontrol edilir; hostname'ler `getaddrinfo` ile resolve edilip **tüm** dönen adresler kontrol edilir.
+- Reddedilenler: loopback, RFC1918 private, link-local (169.254/16, cloud metadata dahil), reserved, multicast, unspecified — IPv4 ve IPv6.
+- Redirect sonrası final URL tekrar doğrulanır (public→internal redirect saldırısı kapatıldı).
+- Kalan bilinen sınır: DNS rebinding TOCTOU (resolve ile connect arası). Pinned-connection adapter kapsam dışı bırakıldı; endpoint authenticated-only olduğu için bu oransal bir mitigasyon.
+
+### Throttling (önceki §7'de "production rate değerleri tamamlanmalı" idi)
+
+- Çıplak `UserRateThrottle` yerine scope'lu sınıflar: `editorjs_upload` ve `editorjs_media`.
+- `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]` env-configurable defaults ile eklendi (`THROTTLE_EDITORJS_UPLOAD=30/minute`, `THROTTLE_EDITORJS_MEDIA=120/minute`). `.env.example` ve prod compose güncellendi.
+
+### Bilinçli kapsam dışı bırakılanlar
+
+- **Org/tenant scoping**: Media library hâlâ tüm asset'leri listeler. CLAUDE.md POC'u superadmin-only tanımladığı ve fine-grained RBAC'i out-of-scope bıraktığı için bu commit'te org filtresi eklenmedi; multi-tenant'a geçişte `MediaAsset` scope alanı gerekecek.
+- **Orphan/lifecycle cleanup** ve `migrate_media_to_storage` command'ı: değişmedi, Issue 14 kapsamındadır.
+
+### Test ve kontroller
+
+- `test_storage_settings.py`: filesystem `media_public` alias, s3 public bucket zorunluluğu, private bucket'ın imzalı kalması eklendi.
+- `test_editorjs_uploads.py`: IP literal blocking (metadata/loopback/RFC1918/IPv6), private-resolving hostname blocking, redirect-to-internal blocking, throttle scope wiring testleri eklendi.
+- `tosca_api/apps/geocontext` ve `tosca_api/apps/core`: 203 passed (ilgili tüm testler). İki başarısızlık — `test_database_settings.py` CONN_MAX_AGE — bu değişiklikle ilgisizdir ve çalıştırıldığı container'ın `CONN_MAX_AGE=0` env'inden kaynaklanır.
+- Ruff temiz; `makemigrations --check` model değişikliği yok (davranış değişikliği tamamen storage/view/settings katmanındadır, yeni migration gerekmez).

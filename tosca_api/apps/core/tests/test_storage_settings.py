@@ -16,6 +16,12 @@ class StorageConfigTests(SimpleTestCase):
             config["staticfiles"]["BACKEND"],
             "django.contrib.staticfiles.storage.StaticFilesStorage",
         )
+        # The public alias must resolve locally too, so application code can
+        # always reference it regardless of the active backend.
+        self.assertEqual(
+            config["media_public"]["BACKEND"],
+            "django.core.files.storage.FileSystemStorage",
+        )
 
     def test_s3_config_is_provider_neutral_and_keeps_staticfiles_local(self):
         config = build_storage_config(
@@ -44,6 +50,19 @@ class StorageConfigTests(SimpleTestCase):
         self.assertEqual(config["media_public"]["OPTIONS"]["bucket_name"], "tosca-media-public")
         self.assertFalse(config["media_public"]["OPTIONS"]["querystring_auth"])
 
+    def test_private_default_bucket_keeps_signed_urls(self):
+        config = build_storage_config(
+            "s3", bucket_name="tosca-media", public_bucket_name="tosca-media-public"
+        )
+
+        self.assertTrue(config["default"]["OPTIONS"]["querystring_auth"])
+
     def test_s3_requires_a_bucket_name(self):
         with self.assertRaisesMessage(ImproperlyConfigured, "S3_BUCKET_NAME is required"):
             build_storage_config("s3")
+
+    def test_s3_requires_a_public_bucket_name(self):
+        with self.assertRaisesMessage(
+            ImproperlyConfigured, "S3_PUBLIC_BUCKET_NAME is required"
+        ):
+            build_storage_config("s3", bucket_name="tosca-media")
