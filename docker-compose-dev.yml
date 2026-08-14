@@ -103,6 +103,7 @@ services:
       GARAGE_CONFIG_FILE: /etc/garage/garage.toml
       GARAGE_PRIVATE_BUCKET: ${S3_BUCKET_NAME:-tosca-media-private}
       GARAGE_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET_NAME:-tosca-media-public}
+      GARAGE_ARCHIVE_BUCKET: ${S3_ARCHIVE_BUCKET_NAME:-tosca-media-archive}
       GARAGE_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-GKtosca-local-django}
     volumes:
       - garage_meta:/var/lib/garage/meta:ro
@@ -126,6 +127,7 @@ services:
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-tosca-local-django-secret-change-me}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-tosca-media-private}
       S3_PUBLIC_BUCKET_NAME: ${S3_PUBLIC_BUCKET_NAME:-tosca-media-public}
+      S3_ARCHIVE_BUCKET_NAME: ${S3_ARCHIVE_BUCKET_NAME:-tosca-media-archive}
       S3_ADDRESSING_STYLE: ${S3_ADDRESSING_STYLE:-path}
       S3_SIGNATURE_VERSION: ${S3_SIGNATURE_VERSION:-s3v4}
       MEDIA_PRIVATE_PREFIX: ${MEDIA_PRIVATE_PREFIX:-media/originals/}

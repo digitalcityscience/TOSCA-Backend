@@ -7,6 +7,7 @@ garage() {
 
 : "${GARAGE_PRIVATE_BUCKET:?GARAGE_PRIVATE_BUCKET is required}"
 : "${GARAGE_PUBLIC_BUCKET:?GARAGE_PUBLIC_BUCKET is required}"
+: "${GARAGE_ARCHIVE_BUCKET:?GARAGE_ARCHIVE_BUCKET is required}"
 : "${GARAGE_ACCESS_KEY:?GARAGE_ACCESS_KEY is required}"
 
 printf '%s\n' 'Waiting for the Garage single-node layout...'
@@ -30,4 +31,5 @@ ensure_bucket() {
 
 ensure_bucket "$GARAGE_PRIVATE_BUCKET"
 ensure_bucket "$GARAGE_PUBLIC_BUCKET"
-printf 'Garage bootstrap complete: %s, %s\n' "$GARAGE_PRIVATE_BUCKET" "$GARAGE_PUBLIC_BUCKET"
+ensure_bucket "$GARAGE_ARCHIVE_BUCKET"
+printf 'Garage bootstrap complete: %s, %s, %s\n' "$GARAGE_PRIVATE_BUCKET" "$GARAGE_PUBLIC_BUCKET" "$GARAGE_ARCHIVE_BUCKET"

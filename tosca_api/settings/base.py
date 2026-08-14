@@ -206,6 +206,7 @@ S3_ACCESS_KEY_ID = env("S3_ACCESS_KEY_ID", default="")
 S3_SECRET_ACCESS_KEY = env("S3_SECRET_ACCESS_KEY", default="")
 S3_BUCKET_NAME = env("S3_BUCKET_NAME", default="")
 S3_PUBLIC_BUCKET_NAME = env("S3_PUBLIC_BUCKET_NAME", default="")
+S3_ARCHIVE_BUCKET_NAME = env("S3_ARCHIVE_BUCKET_NAME", default="")
 S3_ADDRESSING_STYLE = env("S3_ADDRESSING_STYLE", default="auto")
 S3_SIGNATURE_VERSION = env("S3_SIGNATURE_VERSION", default="s3v4")
 MEDIA_PUBLIC_BASE_URL = env("MEDIA_PUBLIC_BASE_URL", default=MEDIA_URL)
@@ -217,6 +218,7 @@ def build_storage_config(
     *,
     bucket_name: str = "",
     public_bucket_name: str = "",
+    archive_bucket_name: str = "",
     endpoint_url: str = "",
     region_name: str = "us-east-1",
     access_key: str = "",
@@ -229,12 +231,17 @@ def build_storage_config(
     if backend == "filesystem":
         # ``media_public`` mirrors ``default`` on local disk so application
         # code can always resolve the alias; the private/public split only
-        # materialises on S3.
+        # materialises on S3. ``media_archive`` is included for interface
+        # parity (PR3's archive lifecycle) even though local dev has no
+        # archive concept -- it also falls back to the local filesystem.
         return {
             "default": {
                 "BACKEND": "django.core.files.storage.FileSystemStorage",
             },
             "media_public": {
+                "BACKEND": "django.core.files.storage.FileSystemStorage",
+            },
+            "media_archive": {
                 "BACKEND": "django.core.files.storage.FileSystemStorage",
             },
             "staticfiles": {
@@ -290,6 +297,28 @@ def build_storage_config(
             "location": "",
         },
     }
+    # Archive bucket for the PR3 lifecycle (Campaign/GeoStory archive+restore).
+    # Optional here: PR2 only provisions the bucket + env plumbing: nothing
+    # writes to this alias yet, so an unset archive_bucket_name leaves the
+    # alias absent rather than raising, matching how the pre-epic-11 config
+    # had no public bucket requirement until that alias was actually used.
+    if archive_bucket_name:
+        config["media_archive"] = {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": archive_bucket_name,
+                "endpoint_url": endpoint_url or None,
+                "region_name": region_name,
+                "access_key": access_key or None,
+                "secret_key": secret_key or None,
+                "addressing_style": addressing_style,
+                "signature_version": signature_version,
+                "default_acl": None,
+                "file_overwrite": False,
+                "querystring_auth": True,
+                "location": "",
+            },
+        }
     return config
 
 
@@ -297,6 +326,7 @@ STORAGES = build_storage_config(
     DJANGO_STORAGE_BACKEND,
     bucket_name=S3_BUCKET_NAME,
     public_bucket_name=S3_PUBLIC_BUCKET_NAME,
+    archive_bucket_name=S3_ARCHIVE_BUCKET_NAME,
     endpoint_url=S3_ENDPOINT_URL,
     region_name=S3_REGION_NAME,
     access_key=S3_ACCESS_KEY_ID,

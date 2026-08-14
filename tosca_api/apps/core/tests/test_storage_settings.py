@@ -66,3 +66,34 @@ class StorageConfigTests(SimpleTestCase):
             ImproperlyConfigured, "S3_PUBLIC_BUCKET_NAME is required"
         ):
             build_storage_config("s3", bucket_name="tosca-media")
+
+    def test_filesystem_includes_media_archive_alias_for_interface_parity(self):
+        config = build_storage_config("filesystem")
+
+        self.assertEqual(
+            config["media_archive"]["BACKEND"],
+            "django.core.files.storage.FileSystemStorage",
+        )
+
+    def test_s3_config_without_archive_bucket_omits_the_alias(self):
+        config = build_storage_config(
+            "s3", bucket_name="tosca-media", public_bucket_name="tosca-media-public"
+        )
+
+        self.assertNotIn("media_archive", config)
+
+    def test_s3_config_with_archive_bucket_adds_signed_alias(self):
+        config = build_storage_config(
+            "s3",
+            bucket_name="tosca-media",
+            public_bucket_name="tosca-media-public",
+            archive_bucket_name="tosca-media-archive",
+        )
+
+        self.assertEqual(config["media_archive"]["BACKEND"], "storages.backends.s3.S3Storage")
+        self.assertEqual(
+            config["media_archive"]["OPTIONS"]["bucket_name"], "tosca-media-archive"
+        )
+        # Archive objects are not browser-facing -- signed URLs, like the
+        # private default bucket.
+        self.assertTrue(config["media_archive"]["OPTIONS"]["querystring_auth"])
