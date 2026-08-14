@@ -369,8 +369,12 @@ def test_sync_story_assets_moves_only_that_storys_assets(campaign, django_user_m
         storage_alias=MediaAsset.StorageAlias.DEFAULT,
     )
 
-    story.status = GeoStory.Status.ARCHIVED
-    story.save()
+    # Bypass the post_save signal here: it would run the *real* lifecycle
+    # service against the real storages and leave nothing for the isolated
+    # tmp_path-backed service under test to do. Signal wiring itself is
+    # covered by test_media_lifecycle_signals.py.
+    GeoStory.objects.filter(pk=story.pk).update(status=GeoStory.Status.ARCHIVED)
+    story.refresh_from_db()
 
     entries = service.sync_story_assets(story)
 

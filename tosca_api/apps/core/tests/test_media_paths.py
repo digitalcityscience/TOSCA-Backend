@@ -31,6 +31,17 @@ from tosca_api.apps.organizations.models import Organization
 pytestmark = pytest.mark.django_db
 
 
+def _png_bytes() -> bytes:
+    """Real PNG bytes -- GeoContext validates image blocks via PIL on save."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (10, 10), color=(10, 20, 30)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _make_asset(path: str, **overrides) -> MediaAsset:
     defaults = dict(
         storage_path=path,
@@ -108,7 +119,7 @@ def test_resolve_entity_matches_hero_image(campaign, django_user_model):
 def test_resolve_entity_matches_editorjs_content_via_geostory(campaign, django_user_model, tmp_path):
     author = django_user_model.objects.create_user(username="author2")
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
-        default_storage.save("geocontext/editorjs/z/pic.png", ContentFile(b"x"))
+        default_storage.save("geocontext/editorjs/z/pic.png", ContentFile(_png_bytes()))
         context = GeoContext.objects.create(
             content={
                 "blocks": [
@@ -144,7 +155,7 @@ def test_resolve_entity_matches_editorjs_content_via_event(campaign, django_user
 
     author = django_user_model.objects.create_user(username="author3")
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
-        default_storage.save("geocontext/editorjs/e/evt.png", ContentFile(b"x"))
+        default_storage.save("geocontext/editorjs/e/evt.png", ContentFile(_png_bytes()))
         context = GeoContext.objects.create(
             content={
                 "blocks": [
