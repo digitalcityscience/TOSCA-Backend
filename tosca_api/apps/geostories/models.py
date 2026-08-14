@@ -190,6 +190,11 @@ class GeoStory(TimeStampedModel):
         hero_file = self.__dict__.get("hero_image")
         if hero_file and (self._state.adding or not getattr(hero_file, "_committed", True)):
             self.hero_image_storage_alias = self.desired_hero_image_storage_alias()
+            if isinstance(hero_file, HeroImageFieldFile):
+                # The descriptor may have created the FieldFile before the
+                # alias was calculated. Refresh now so FileField.pre_save()
+                # writes the upload to the selected bucket, not the default.
+                hero_file.refresh_storage()
         super().save(*args, **kwargs)
 
     def desired_hero_image_storage_alias(self) -> str:
