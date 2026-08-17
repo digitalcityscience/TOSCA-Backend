@@ -23,7 +23,7 @@ class StorageConfigTests(SimpleTestCase):
             "django.core.files.storage.FileSystemStorage",
         )
 
-    def test_s3_config_is_provider_neutral_and_keeps_staticfiles_local(self):
+    def test_s3_config_is_provider_neutral_and_keeps_staticfiles_local_by_default(self):
         config = build_storage_config(
             "s3",
             bucket_name="tosca-media",
@@ -49,6 +49,26 @@ class StorageConfigTests(SimpleTestCase):
         self.assertEqual(config["media_public"]["BACKEND"], "storages.backends.s3.S3Storage")
         self.assertEqual(config["media_public"]["OPTIONS"]["bucket_name"], "tosca-media-public")
         self.assertFalse(config["media_public"]["OPTIONS"]["querystring_auth"])
+
+    def test_s3_config_with_static_bucket_keeps_static_separate_from_media(self):
+        config = build_storage_config(
+            "s3",
+            bucket_name="tosca-media",
+            public_bucket_name="tosca-media-public",
+            static_bucket_name="tosca-static",
+            static_prefix="static/",
+            static_custom_domain="assets.example.org",
+            static_url_protocol="https:",
+        )
+
+        self.assertEqual(config["staticfiles"]["BACKEND"], "storages.backends.s3.S3Storage")
+        self.assertEqual(config["staticfiles"]["OPTIONS"]["bucket_name"], "tosca-static")
+        self.assertEqual(config["staticfiles"]["OPTIONS"]["location"], "static")
+        self.assertEqual(
+            config["staticfiles"]["OPTIONS"]["custom_domain"], "assets.example.org"
+        )
+        self.assertTrue(config["staticfiles"]["OPTIONS"]["file_overwrite"])
+        self.assertFalse(config["staticfiles"]["OPTIONS"]["querystring_auth"])
 
     def test_private_default_bucket_keeps_signed_urls(self):
         config = build_storage_config(

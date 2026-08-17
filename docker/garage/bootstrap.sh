@@ -32,4 +32,26 @@ ensure_bucket() {
 ensure_bucket "$GARAGE_PRIVATE_BUCKET"
 ensure_bucket "$GARAGE_PUBLIC_BUCKET"
 ensure_bucket "$GARAGE_ARCHIVE_BUCKET"
-printf 'Garage bootstrap complete: %s, %s, %s\n' "$GARAGE_PRIVATE_BUCKET" "$GARAGE_PUBLIC_BUCKET" "$GARAGE_ARCHIVE_BUCKET"
+
+for bucket in \
+  "${GARAGE_TEST_PRIVATE_BUCKET:-}" \
+  "${GARAGE_TEST_PUBLIC_BUCKET:-}" \
+  "${GARAGE_TEST_ARCHIVE_BUCKET:-}" \
+  "${GARAGE_STATIC_BUCKET:-}"
+do
+  if [ -n "$bucket" ]; then
+    ensure_bucket "$bucket"
+  fi
+done
+
+printf 'Garage bootstrap complete: %s, %s, %s' "$GARAGE_PRIVATE_BUCKET" "$GARAGE_PUBLIC_BUCKET" "$GARAGE_ARCHIVE_BUCKET"
+if [ -n "${GARAGE_TEST_PRIVATE_BUCKET:-}" ] || [ -n "${GARAGE_TEST_PUBLIC_BUCKET:-}" ] || [ -n "${GARAGE_TEST_ARCHIVE_BUCKET:-}" ]; then
+  printf ', test buckets: %s, %s, %s' \
+    "${GARAGE_TEST_PRIVATE_BUCKET:-}" \
+    "${GARAGE_TEST_PUBLIC_BUCKET:-}" \
+    "${GARAGE_TEST_ARCHIVE_BUCKET:-}"
+fi
+if [ -n "${GARAGE_STATIC_BUCKET:-}" ]; then
+  printf ', static bucket: %s' "$GARAGE_STATIC_BUCKET"
+fi
+printf '\n'

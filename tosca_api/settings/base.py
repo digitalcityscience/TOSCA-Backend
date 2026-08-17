@@ -207,6 +207,10 @@ S3_SECRET_ACCESS_KEY = env("S3_SECRET_ACCESS_KEY", default="")
 S3_BUCKET_NAME = env("S3_BUCKET_NAME", default="")
 S3_PUBLIC_BUCKET_NAME = env("S3_PUBLIC_BUCKET_NAME", default="")
 S3_ARCHIVE_BUCKET_NAME = env("S3_ARCHIVE_BUCKET_NAME", default="")
+S3_STATIC_BUCKET_NAME = env("S3_STATIC_BUCKET_NAME", default="")
+S3_STATIC_PREFIX = env("S3_STATIC_PREFIX", default="static/")
+S3_STATIC_CUSTOM_DOMAIN = env("S3_STATIC_CUSTOM_DOMAIN", default="")
+S3_STATIC_URL_PROTOCOL = env("S3_STATIC_URL_PROTOCOL", default="https:")
 S3_ADDRESSING_STYLE = env("S3_ADDRESSING_STYLE", default="auto")
 S3_SIGNATURE_VERSION = env("S3_SIGNATURE_VERSION", default="s3v4")
 MEDIA_PUBLIC_BASE_URL = env("MEDIA_PUBLIC_BASE_URL", default=MEDIA_URL)
@@ -219,6 +223,10 @@ def build_storage_config(
     bucket_name: str = "",
     public_bucket_name: str = "",
     archive_bucket_name: str = "",
+    static_bucket_name: str = "",
+    static_prefix: str = "static/",
+    static_custom_domain: str = "",
+    static_url_protocol: str = "https:",
     endpoint_url: str = "",
     region_name: str = "us-east-1",
     access_key: str = "",
@@ -278,6 +286,25 @@ def build_storage_config(
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
         },
     }
+    if static_bucket_name:
+        config["staticfiles"] = {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": static_bucket_name,
+                "endpoint_url": endpoint_url or None,
+                "region_name": region_name,
+                "access_key": access_key or None,
+                "secret_key": secret_key or None,
+                "addressing_style": addressing_style,
+                "signature_version": signature_version,
+                "default_acl": None,
+                "file_overwrite": True,
+                "querystring_auth": False,
+                "location": static_prefix.strip("/"),
+                "custom_domain": static_custom_domain or None,
+                "url_protocol": static_url_protocol,
+            },
+        }
     # Public derivatives/inline media live in a separate bucket served with
     # unsigned URLs (``querystring_auth=False``) so published content does not
     # break when a signed URL expires.
@@ -327,6 +354,10 @@ STORAGES = build_storage_config(
     bucket_name=S3_BUCKET_NAME,
     public_bucket_name=S3_PUBLIC_BUCKET_NAME,
     archive_bucket_name=S3_ARCHIVE_BUCKET_NAME,
+    static_bucket_name=S3_STATIC_BUCKET_NAME,
+    static_prefix=S3_STATIC_PREFIX,
+    static_custom_domain=S3_STATIC_CUSTOM_DOMAIN,
+    static_url_protocol=S3_STATIC_URL_PROTOCOL,
     endpoint_url=S3_ENDPOINT_URL,
     region_name=S3_REGION_NAME,
     access_key=S3_ACCESS_KEY_ID,

@@ -2,7 +2,7 @@
 	django-restart django-logs django-cmd django-shell django-migrate django-makemigrations \
 	django-test django-test-unit django-test-integration test-geoserver \
 	django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean \
-	sync-django-geoengine smoke-test test test-integration
+	sync-django-geoengine smoke-test list list-media list-test-media list-static media test-media static test test-integration
 
 # -------------------------------------------------
 # ENV selection (DEFAULT = dev) or prod
@@ -90,6 +90,9 @@ help:
 	@echo "  make django-logs     - Follow Django logs"
 	@echo "  make django-cmd      - Open bash shell in Django container"
 	@echo "  make django-shell    - Open Django shell (python manage.py shell)"
+	@echo "  make list-media      - List private, public, and archive media storage contents"
+	@echo "  make list-test-media - List test private, public, and archive media storage contents"
+	@echo "  make list-static     - List static storage contents"
 	@echo "  make django-migrate [APP=app] [MIGRATION=0003] - Run migrations"
 	@echo "  make django-makemigrations [APP=app] - Create new migrations"
 	@echo "  make django-test           - Run Django tests (unit & integration)"
@@ -176,6 +179,44 @@ which-env:
 	@echo "🔧 ENV=$(ENV)"
 	@echo "📄 ENV_FILE=$(ENV_FILE)"
 	@echo "🐳 COMPOSE_FILE=$(COMPOSE_FILE)"
+
+list:
+	@if [ "$(filter media,$(MAKECMDGOALS))" = "media" ]; then \
+		$(MAKE) list-media; \
+	elif [ "$(filter test-media,$(MAKECMDGOALS))" = "test-media" ]; then \
+		$(MAKE) list-test-media; \
+	elif [ "$(filter static,$(MAKECMDGOALS))" = "static" ]; then \
+		$(MAKE) list-static; \
+	else \
+		$(MAKE) help; \
+	fi
+
+media:
+	@:
+
+test-media:
+	@:
+
+static:
+	@:
+
+list-media: which-env
+	@echo "$(COLOR_BLUE)🪣 Listing media storage buckets...$(COLOR_RESET)"
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T django uv run python scripts/list_media_buckets.py
+
+list-test-media: which-env
+	@echo "$(COLOR_BLUE)🪣 Listing test media storage buckets...$(COLOR_RESET)"
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T \
+		-e S3_BUCKET_NAME=$${S3_TEST_BUCKET_NAME:-tosca-media-test-private} \
+		-e S3_PUBLIC_BUCKET_NAME=$${S3_TEST_PUBLIC_BUCKET_NAME:-tosca-media-test-public} \
+		-e S3_ARCHIVE_BUCKET_NAME=$${S3_TEST_ARCHIVE_BUCKET_NAME:-tosca-media-test-archive} \
+		django uv run python scripts/list_media_buckets.py
+
+list-static: which-env
+	@echo "$(COLOR_BLUE)🪣 Listing static storage bucket...$(COLOR_RESET)"
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T \
+		-e LIST_STATIC=1 \
+		django uv run python scripts/list_media_buckets.py
 
 # -------------------------------------------------
 # Build

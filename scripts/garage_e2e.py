@@ -11,6 +11,7 @@ from django.core.files.storage import default_storage, storages
 
 PATH = "garage-e2e/byte-match.txt"
 PUBLIC_PATH = "garage-e2e/public-byte-match.txt"
+ARCHIVE_PATH = "garage-e2e/archive-byte-match.txt"
 PAYLOAD = b"Epic 11 Garage persistence check\n"
 
 
@@ -21,7 +22,12 @@ def main() -> int:
 
     if sys.argv[1] == "write":
         public_storage = storages["media_public"]
-        for storage, path in ((default_storage, PATH), (public_storage, PUBLIC_PATH)):
+        archive_storage = storages["media_archive"]
+        for storage, path in (
+            (default_storage, PATH),
+            (public_storage, PUBLIC_PATH),
+            (archive_storage, ARCHIVE_PATH),
+        ):
             if storage.exists(path):
                 storage.delete(path)
             saved = storage.save(path, ContentFile(PAYLOAD))
@@ -31,7 +37,12 @@ def main() -> int:
         return 0
 
     public_storage = storages["media_public"]
-    for storage, path in ((default_storage, PATH), (public_storage, PUBLIC_PATH)):
+    archive_storage = storages["media_archive"]
+    for storage, path in (
+        (default_storage, PATH),
+        (public_storage, PUBLIC_PATH),
+        (archive_storage, ARCHIVE_PATH),
+    ):
         with storage.open(path, "rb") as stored:
             actual = stored.read()
         if actual != PAYLOAD:
