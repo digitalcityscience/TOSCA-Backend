@@ -29,7 +29,7 @@ ensure_bucket() {
   garage bucket allow --read --write --owner "$bucket" --key "$GARAGE_ACCESS_KEY"
 }
 
-# No bucket gets anonymous website access anymore: default, media_public and
+# No bucket gets anonymous website access: default, media_public and
 # media_archive are all private S3 buckets. "Public" media is only reachable
 # through a presigned URL Django issues after checking the asset/entity is
 # actually public/published -- not through anonymous bucket access.

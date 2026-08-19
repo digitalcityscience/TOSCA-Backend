@@ -326,13 +326,13 @@ def build_storage_config(
         },
     }
     # ``media_public`` keeps its own bucket for lifecycle semantics (backfill,
-    # promotion/demotion between aliases), but is no longer readable
-    # anonymously: Garage's public-website exposure for this bucket has been
-    # removed, so the only way to fetch an object here is a presigned URL
-    # Django issues after checking the asset/entity is actually
-    # public/published (see geocontext/views.py::_absolute_url). "Public"
-    # therefore means publicly reachable through TOSCA's application logic,
-    # not anonymously readable from the bucket itself.
+    # promotion/demotion between aliases), but is not readable anonymously:
+    # Garage has no public-website exposure configured for it, so the only
+    # way to fetch an object here is a presigned URL Django issues after
+    # checking the asset/entity is actually public/published (see
+    # geocontext/views.py::_absolute_url). "Public" therefore means publicly
+    # reachable through TOSCA's application logic, not anonymously readable
+    # from the bucket itself.
     config["media_public"] = {
         "BACKEND": "storages.backends.s3.S3Storage",
         "OPTIONS": {

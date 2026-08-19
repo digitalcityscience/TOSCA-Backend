@@ -122,17 +122,14 @@ _MEDIA_LIBRARY_SERIALIZER = inline_serializer(
 def _absolute_url(
     request, storage_path: str, *, alias: str = MediaAsset.StorageAlias.PUBLIC
 ) -> str:
-    # Every alias (default/media_public/media_archive) now produces a
-    # presigned Garage URL: Django is the only party that can mint a usable
-    # URL, whether the asset is private (authorization-gated) or
+    # Under the s3 backend, every alias (default/media_public/media_archive)
+    # produces a presigned Garage URL: Django is the only party that can mint
+    # a usable URL, whether the asset is private (authorization-gated) or
     # public/published (publication-state-gated) -- Garage itself rejects
-    # anonymous GETs on all three buckets. build_absolute_uri leaves an
-    # already-absolute URL intact.
-    logger.info(
-        "media_url.generate alias=%s signed=True path=%s",
-        alias,
-        storage_path,
-    )
+    # anonymous GETs on all three buckets. Under the filesystem backend
+    # (local dev/tests) there is no signing at all. build_absolute_uri leaves
+    # an already-absolute URL intact.
+    logger.info("media_url.generate alias=%s path=%s", alias, storage_path)
     return request.build_absolute_uri(_storage_for_alias(alias).url(storage_path))
 
 
