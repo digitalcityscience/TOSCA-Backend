@@ -1,16 +1,18 @@
 """
-Campaign status/visibility -> media archive lifecycle sync (epic-11 PR3).
+Campaign/GeoStory/Event status & visibility -> media lifecycle sync
+(epic-11 PR3; Event coverage added for security ticket 14).
 
-Fires on ``Campaign.save()`` post_save, but only performs the (potentially
-expensive, storage-touching) asset sweep when a field the lifecycle actually
-depends on -- ``status`` or ``visibility`` -- changed. An unrelated Campaign
-edit (e.g. ``title``) must not trigger an object-storage scan.
+Fires on ``Campaign``/``GeoStory``/``Event`` post_save, but only performs the
+(potentially expensive, storage-touching) asset sweep when a field the
+lifecycle actually depends on -- ``status`` (all three) or ``visibility``
+(Campaign only) -- changed. An unrelated edit (e.g. ``title``) must not
+trigger an object-storage scan.
 
 Mirrors the ``geodata_providers.signals`` pre_save/post_save prior-state
 capture pattern. Wired up in ``CoreConfig.ready()`` (this signal lives in
-``core`` rather than ``campaigns`` because the lifecycle service and
-``MediaAsset`` are both core-owned, and core already depends on campaigns --
-the reverse dependency direction would create an import cycle).
+``core`` rather than ``campaigns``/``events`` because the lifecycle service
+and ``MediaAsset`` are both core-owned, and core already depends on those
+apps -- the reverse dependency direction would create an import cycle).
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 
 from tosca_api.apps.campaigns.models import Campaign
+from tosca_api.apps.events.models import Event
 from tosca_api.apps.geostories.models import GeoStory
 
 from .media_lifecycle import MediaLifecycleService, summarize
@@ -96,6 +99,40 @@ def _sync_geostory_media_lifecycle(sender, instance, created, **kwargs):
     if entries:
         logger.info(
             "GeoStory %s lifecycle sync (%r -> %r): %s%s",
+            instance.pk,
+            prior_status,
+            instance.status,
+            summarize(entries),
+            f" -- {len(failures)} failure(s)" if failures else "",
+        )
+
+
+@receiver(pre_save, sender=Event)
+def _capture_event_prior_status(sender, instance, **kwargs):
+    if instance.pk is None:
+        setattr(instance, _PRIOR_STATE_ATTR, None)
+        return
+    try:
+        prior = sender.objects.get(pk=instance.pk)
+    except sender.DoesNotExist:
+        setattr(instance, _PRIOR_STATE_ATTR, None)
+    else:
+        setattr(instance, _PRIOR_STATE_ATTR, prior.status)
+
+
+@receiver(post_save, sender=Event)
+def _sync_event_media_lifecycle(sender, instance, created, **kwargs):
+    if created:
+        return  # a brand-new event has no linked assets yet
+    prior_status = getattr(instance, _PRIOR_STATE_ATTR, None)
+    if prior_status == instance.status:
+        return
+
+    entries = _lifecycle_service().sync_event_assets(instance)
+    failures = [e for e in entries if e.status != "ok"]
+    if entries:
+        logger.info(
+            "Event %s lifecycle sync (%r -> %r): %s%s",
             instance.pk,
             prior_status,
             instance.status,

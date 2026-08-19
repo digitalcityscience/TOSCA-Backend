@@ -266,30 +266,47 @@ class MediaLifecycleService:
             campaign.media_assets.select_related("campaign__organization").all()
         )
 
-    def sync_story_assets(self, story) -> list[LifecycleEntry]:
-        """Re-evaluate and move only the assets that resolve to ``story``.
+    def _sync_entity_assets(self, campaign, kind: str, entity_id) -> list[LifecycleEntry]:
+        """Move the subset of ``campaign``'s assets that resolve to ``(kind, entity_id)``.
 
         Scans the owning campaign's assets (there is no direct
-        ``MediaAsset -> GeoStory`` FK -- PR2's ``resolve_entity`` is the
-        single source of truth for that mapping) and moves the subset whose
-        resolved entity is this story.
+        ``MediaAsset -> GeoStory``/``Event`` FK -- PR2's ``resolve_entity`` is
+        the single source of truth for that mapping) and moves only the
+        assets whose resolved entity matches. Shared by ``sync_story_assets``
+        and ``sync_event_assets``; a GeoStory additionally has a hero image,
+        which its caller handles separately.
         """
-        if story.campaign_id is None:
-            return []
         entries = []
-        if story.hero_image:
-            entries.append(self.move_hero_image(story, story.desired_hero_image_storage_alias()))
-
-        assets = story.campaign.media_assets.select_related("campaign__organization").all()
+        assets = campaign.media_assets.select_related("campaign__organization").all()
         for asset in assets:
             resolved = resolve_entity(asset)
-            if resolved is None or resolved.kind != KIND_STORY or resolved.entity_id != str(story.id):
+            if resolved is None or resolved.kind != kind or resolved.entity_id != str(entity_id):
                 continue
             target = desired_alias_for_asset(asset)
             if target is None:
                 continue
             entries.append(self.move_one(asset, target))
         return entries
+
+    def sync_story_assets(self, story) -> list[LifecycleEntry]:
+        """Re-evaluate and move only the assets that resolve to ``story``."""
+        if story.campaign_id is None:
+            return []
+        entries = []
+        if story.hero_image:
+            entries.append(self.move_hero_image(story, story.desired_hero_image_storage_alias()))
+        entries += self._sync_entity_assets(story.campaign, KIND_STORY, story.id)
+        return entries
+
+    def sync_event_assets(self, event) -> list[LifecycleEntry]:
+        """Re-evaluate and move only the assets that resolve to ``event``.
+
+        Events have no hero image field of their own -- only EditorJS
+        content assets -- so this is the ``_sync_entity_assets`` call alone.
+        """
+        if event.campaign_id is None:
+            return []
+        return self._sync_entity_assets(event.campaign, KIND_EVENT, event.id)
 
 
 def summarize(entries: list[LifecycleEntry]) -> dict[str, int]:

@@ -487,3 +487,272 @@ def test_sync_story_assets_moves_only_that_storys_assets(campaign, django_user_m
     assert story_asset.storage_alias == MediaAsset.StorageAlias.ARCHIVE
     # The campaign-only asset (not scoped to this story) is untouched.
     assert other_asset.storage_alias == MediaAsset.StorageAlias.DEFAULT
+
+
+# ---------------------------------------------------------------------------
+# sync_event_assets (ticket 14)
+# ---------------------------------------------------------------------------
+
+
+def _make_event(campaign, author, **overrides):
+    from datetime import timedelta
+
+    from django.contrib.gis.geos import Point
+    from django.utils import timezone
+
+    from tosca_api.apps.events.models import Event
+
+    defaults = dict(
+        campaign=campaign,
+        title="Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=author,
+    )
+    defaults.update(overrides)
+    return Event.objects.create(**defaults)
+
+
+def _event_with_context_asset(campaign, django_user_model, *, status, path):
+    """An Event whose context embeds an EditorJS-uploaded asset at ``path``."""
+    from django.core.files.storage import default_storage
+
+    from tosca_api.apps.geocontext.models import GeoContext
+
+    author = django_user_model.objects.create_user(username=f"event-author-{path}")
+    default_storage.save(path, ContentFile(_png_bytes()))
+    context = GeoContext.objects.create(
+        content={
+            "blocks": [
+                {"type": "image", "data": {"file": {"url": f"/media/{path}"}, "alt": "a pic"}}
+            ]
+        },
+        created_by=author,
+    )
+    return _make_event(campaign, author, status=status, context=context)
+
+
+def test_sync_event_assets_moves_only_that_events_assets(campaign, django_user_model, tmp_path):
+    from tosca_api.apps.events.models import Event
+
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    path = "geocontext/editorjs/evt-scope/pic.png"
+    event = _event_with_context_asset(
+        campaign, django_user_model, status=Event.Status.DRAFT, path=path
+    )
+
+    service, backends, storage_for_alias = _service(tmp_path)
+    default_backend = storage_for_alias("default")
+    default_backend.save(path, ContentFile(b"x"))
+    default_backend.save("misc/other.png", ContentFile(b"y"))
+    event_asset = _make_asset(
+        path, campaign=campaign, owner_org=campaign.organization, size=1,
+        storage_alias=MediaAsset.StorageAlias.DEFAULT,
+    )
+    other_asset = _make_asset(
+        "misc/other.png", campaign=campaign, owner_org=campaign.organization, size=1,
+        storage_alias=MediaAsset.StorageAlias.DEFAULT,
+    )
+
+    # Bypass the post_save signal here: it would run the *real* lifecycle
+    # service against the real storages and leave nothing for the isolated
+    # tmp_path-backed service under test to do. Signal wiring itself is
+    # covered by test_media_lifecycle_signals.py.
+    Event.objects.filter(pk=event.pk).update(status=Event.Status.PUBLISHED)
+    event.refresh_from_db()
+
+    entries = service.sync_event_assets(event)
+
+    assert len(entries) == 1
+    assert entries[0].action == ACTION_MOVED
+    event_asset.refresh_from_db()
+    other_asset.refresh_from_db()
+    assert event_asset.storage_alias == MediaAsset.StorageAlias.PUBLIC
+    # The campaign-only asset (not scoped to this event) is untouched.
+    assert other_asset.storage_alias == MediaAsset.StorageAlias.DEFAULT
+
+
+# ---------------------------------------------------------------------------
+# Promotion / demotion (ticket 14: draft<->published under a public campaign
+# must flip the storage alias private<->public via the sync entry points)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_story_assets_promotes_hero_image_on_publish_under_public_campaign(
+    campaign, django_user_model, tmp_path
+):
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    author = django_user_model.objects.create_user(username="hero-promo-author")
+    story = GeoStory(
+        title="Story", campaign=campaign, author=author, hero_image_alt="alt",
+        status=GeoStory.Status.DRAFT,
+    )
+    story.hero_image.name = "geostories/promo/hero/image.png"
+    story.save()
+    assert story.hero_image_storage_alias == MediaAsset.StorageAlias.DEFAULT
+
+    service, backends, storage_for_alias = _service(tmp_path)
+    storage_for_alias("default").save(
+        "geostories/promo/hero/image.png", ContentFile(b"hero-promo")
+    )
+
+    GeoStory.objects.filter(pk=story.pk).update(status=GeoStory.Status.PUBLISHED)
+    story.refresh_from_db()
+
+    entries = service.sync_story_assets(story)
+
+    assert entries[0].action == ACTION_MOVED
+    assert storage_for_alias("media_public").exists("geostories/promo/hero/image.png")
+    assert not storage_for_alias("default").exists("geostories/promo/hero/image.png")
+    story.refresh_from_db()
+    assert story.hero_image_storage_alias == MediaAsset.StorageAlias.PUBLIC
+
+
+def test_sync_story_assets_demotes_hero_image_on_unpublish_under_public_campaign(
+    campaign, django_user_model, tmp_path
+):
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    author = django_user_model.objects.create_user(username="hero-demote-author")
+    story = GeoStory(
+        title="Story", campaign=campaign, author=author, hero_image_alt="alt",
+        status=GeoStory.Status.PUBLISHED,
+    )
+    story.hero_image.name = "geostories/demote/hero/image.png"
+    story.save()
+    assert story.hero_image_storage_alias == MediaAsset.StorageAlias.PUBLIC
+
+    service, backends, storage_for_alias = _service(tmp_path)
+    storage_for_alias("media_public").save(
+        "geostories/demote/hero/image.png", ContentFile(b"hero-demote")
+    )
+
+    GeoStory.objects.filter(pk=story.pk).update(status=GeoStory.Status.DRAFT)
+    story.refresh_from_db()
+
+    entries = service.sync_story_assets(story)
+
+    assert entries[0].action == ACTION_MOVED
+    assert storage_for_alias("default").exists("geostories/demote/hero/image.png")
+    assert not storage_for_alias("media_public").exists("geostories/demote/hero/image.png")
+    story.refresh_from_db()
+    assert story.hero_image_storage_alias == MediaAsset.StorageAlias.DEFAULT
+
+
+def test_sync_story_assets_promotes_editorjs_asset_on_publish_under_public_campaign(
+    campaign, django_user_model, tmp_path
+):
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    path = "geocontext/editorjs/story-promo/pic.png"
+    story = _story_with_context_asset(
+        campaign, django_user_model, status=GeoStory.Status.DRAFT, path=path
+    )
+
+    service, backends, storage_for_alias = _service(tmp_path)
+    storage_for_alias("default").save(path, ContentFile(b"x"))
+    asset = _make_asset(
+        path, campaign=campaign, owner_org=campaign.organization,
+        storage_alias=MediaAsset.StorageAlias.DEFAULT,
+    )
+
+    GeoStory.objects.filter(pk=story.pk).update(status=GeoStory.Status.PUBLISHED)
+    story.refresh_from_db()
+
+    entries = service.sync_story_assets(story)
+
+    moved = [e for e in entries if e.asset_id == str(asset.id)]
+    assert moved and moved[0].action == ACTION_MOVED
+    asset.refresh_from_db()
+    assert asset.storage_alias == MediaAsset.StorageAlias.PUBLIC
+
+
+def test_sync_story_assets_demotes_editorjs_asset_on_unpublish_under_public_campaign(
+    campaign, django_user_model, tmp_path
+):
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    path = "geocontext/editorjs/story-demote/pic.png"
+    story = _story_with_context_asset(
+        campaign, django_user_model, status=GeoStory.Status.PUBLISHED, path=path
+    )
+
+    service, backends, storage_for_alias = _service(tmp_path)
+    storage_for_alias("media_public").save(path, ContentFile(b"x"))
+    asset = _make_asset(
+        path, campaign=campaign, owner_org=campaign.organization,
+        storage_alias=MediaAsset.StorageAlias.PUBLIC,
+    )
+
+    GeoStory.objects.filter(pk=story.pk).update(status=GeoStory.Status.DRAFT)
+    story.refresh_from_db()
+
+    entries = service.sync_story_assets(story)
+
+    moved = [e for e in entries if e.asset_id == str(asset.id)]
+    assert moved and moved[0].action == ACTION_MOVED
+    asset.refresh_from_db()
+    assert asset.storage_alias == MediaAsset.StorageAlias.DEFAULT
+
+
+def test_sync_event_assets_promotes_editorjs_asset_on_publish_under_public_campaign(
+    campaign, django_user_model, tmp_path
+):
+    from tosca_api.apps.events.models import Event
+
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    path = "geocontext/editorjs/event-promo/pic.png"
+    event = _event_with_context_asset(
+        campaign, django_user_model, status=Event.Status.DRAFT, path=path
+    )
+
+    service, backends, storage_for_alias = _service(tmp_path)
+    storage_for_alias("default").save(path, ContentFile(b"x"))
+    asset = _make_asset(
+        path, campaign=campaign, owner_org=campaign.organization,
+        storage_alias=MediaAsset.StorageAlias.DEFAULT,
+    )
+
+    Event.objects.filter(pk=event.pk).update(status=Event.Status.PUBLISHED)
+    event.refresh_from_db()
+
+    entries = service.sync_event_assets(event)
+
+    assert len(entries) == 1
+    assert entries[0].action == ACTION_MOVED
+    asset.refresh_from_db()
+    assert asset.storage_alias == MediaAsset.StorageAlias.PUBLIC
+
+
+def test_sync_event_assets_demotes_editorjs_asset_on_unpublish_under_public_campaign(
+    campaign, django_user_model, tmp_path
+):
+    from tosca_api.apps.events.models import Event
+
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    path = "geocontext/editorjs/event-demote/pic.png"
+    event = _event_with_context_asset(
+        campaign, django_user_model, status=Event.Status.PUBLISHED, path=path
+    )
+
+    service, backends, storage_for_alias = _service(tmp_path)
+    storage_for_alias("media_public").save(path, ContentFile(b"x"))
+    asset = _make_asset(
+        path, campaign=campaign, owner_org=campaign.organization,
+        storage_alias=MediaAsset.StorageAlias.PUBLIC,
+    )
+
+    Event.objects.filter(pk=event.pk).update(status=Event.Status.DRAFT)
+    event.refresh_from_db()
+
+    entries = service.sync_event_assets(event)
+
+    assert len(entries) == 1
+    assert entries[0].action == ACTION_MOVED
+    asset.refresh_from_db()
+    assert asset.storage_alias == MediaAsset.StorageAlias.DEFAULT

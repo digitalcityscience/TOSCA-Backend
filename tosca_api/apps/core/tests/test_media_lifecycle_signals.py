@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from tosca_api.apps.campaigns.models import Campaign
+from tosca_api.apps.events.models import Event
 from tosca_api.apps.geostories.models import GeoStory
 from tosca_api.apps.organizations.models import Organization
 
@@ -98,3 +99,52 @@ def test_geostory_status_change_triggers_sync(org, user):
         story.save()
 
     mock_service_cls.return_value.sync_story_assets.assert_called_once_with(story)
+
+
+def _make_event(campaign, user, **overrides):
+    from datetime import timedelta
+
+    from django.contrib.gis.geos import Point
+    from django.utils import timezone
+
+    defaults = dict(
+        campaign=campaign,
+        title="Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+    )
+    defaults.update(overrides)
+    return Event.objects.create(**defaults)
+
+
+def test_event_create_does_not_trigger_sync(org, user):
+    campaign = Campaign.objects.create(title="Camp", created_by=user, organization=org)
+
+    with patch(_SERVICE_TARGET) as mock_service_cls:
+        _make_event(campaign, user)
+
+    mock_service_cls.return_value.sync_event_assets.assert_not_called()
+
+
+def test_event_unrelated_field_update_does_not_trigger_sync(org, user):
+    campaign = Campaign.objects.create(title="Camp", created_by=user, organization=org)
+    event = _make_event(campaign, user)
+
+    with patch(_SERVICE_TARGET) as mock_service_cls:
+        event.title = "Renamed Event"
+        event.save()
+
+    mock_service_cls.return_value.sync_event_assets.assert_not_called()
+
+
+def test_event_status_change_triggers_sync(org, user):
+    campaign = Campaign.objects.create(title="Camp", created_by=user, organization=org)
+    event = _make_event(campaign, user, status=Event.Status.DRAFT)
+
+    with patch(_SERVICE_TARGET) as mock_service_cls:
+        event.status = Event.Status.PUBLISHED
+        event.save()
+
+    mock_service_cls.return_value.sync_event_assets.assert_called_once_with(event)

@@ -98,7 +98,7 @@ relative to the media track.
 **New execution order:**
 
 ```text
-01 ✅ → 02 ✅ → 13 ✅ → 14 → 15 → 03 → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
+01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 → 03 → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
 ```
 
 ### Ticket summary
@@ -108,7 +108,7 @@ relative to the media track.
 | 1 | 01 | Baseline & regression tests (S1 + S2 char, golden snapshot, dead-code CI guard) | — | SEC/ARCH |
 | 2 | 02 | S1 GeoStory tenant-isolation hotfix — ship first | 01 | SEC |
 | 3 | 13 ✅ | S2 media: private EditorJS uploads | 03* | MEDIA |
-| 4 | 14 | Media: visibility/archive lifecycle re-pointing | 13 | MEDIA |
+| 4 | 14 ✅ | Media: visibility/archive lifecycle re-pointing | 13 | MEDIA |
 | 5 | 15 | Media: idempotent backfill | 14 | MEDIA |
 | 6 | 03 | Authorization foundation (entitlement + policy + delete dead perms) | 01 | ARCH |
 | 7 | 04 | `UserAuthorizationSnapshot` model | 03 | ARCH |
@@ -728,15 +728,26 @@ and entity draft → published / published → draft under a public campaign
 
 **Blocked by:** 13.
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-19)
 
-- [ ] Wire visibility/publication/archive transitions through `media_lifecycle.MediaLifecycleService` so media re-points per the §3 S2 truth table on every relevant transition.
-- [ ] Handle public↔private visibility changes and archive↔active transitions (archived campaign or story wins and is never public).
-- [ ] Decide and document physical **move** vs **copy + re-point** between buckets (lifecycle already does copy→verify→delete on `storage_alias`); keep operations idempotent.
-- [ ] Keep DB metadata / `storage_alias` consistent after each transition.
-- [ ] Tests (transition matrix): public → private re-points/moves media; private → public publishes media; archived transition follows archive policy; entity draft↔published under a public campaign flips public↔private.
+**Implementation note — most of this ticket was already built:** an earlier, pre-ticket-13 commit
+(`521c94b`, "PR3 — Campaign/GeoStory archive & restore media lifecycle") already shipped
+`media_lifecycle.MediaLifecycleService` (idempotent copy → verify size → re-point `storage_alias` →
+delete old object) and `desired_alias_for_asset()` recomputing the full §3 S2 truth table, wired to
+`pre_save`/`post_save` signals on **Campaign** and **GeoStory** that re-sync owned media whenever
+`status`/`visibility` actually changes (never on create, never on unrelated field edits). The one
+confirmed gap against this ticket was **Event**: `desired_alias_for_asset()` already accounted for
+`Event.status` via `resolve_entity`/`KIND_EVENT`, but nothing triggered a re-sync when an Event's status
+changed, so an Event flipping draft→published under a public campaign never actually promoted its
+EditorJS media. Closed that gap without rebuilding the working Campaign/GeoStory machinery.
 
-**Files:** `core/media_lifecycle.py`, signals. **Rollback risk:** medium (object moves) — idempotent copy→verify→delete.
+- [x] Wire visibility/publication/archive transitions through `media_lifecycle.MediaLifecycleService` so media re-points per the §3 S2 truth table on every relevant transition. — Campaign/GeoStory already wired (pre-existing); added the missing `Event` `pre_save`/`post_save` pair in `media_lifecycle_signals.py`, mirroring the existing GeoStory shape exactly.
+- [x] Handle public↔private visibility changes and archive↔active transitions (archived campaign or story wins and is never public). — pre-existing; unchanged. Event has no archived status of its own (`Event.Status` = DRAFT/PUBLISHED/CANCELLED), so it only archives via its owning Campaign, already covered by the Campaign signal.
+- [x] Decide and document physical **move** vs **copy + re-point** between buckets (lifecycle already does copy→verify→delete on `storage_alias`); keep operations idempotent. — pre-existing `move_one`/`move_hero_image`, unchanged; extracted the shared per-entity asset loop out of `sync_story_assets` into `_sync_entity_assets(campaign, kind, entity_id)` (a faithful, byte-for-byte-equivalent generalization) so the new `sync_event_assets` reuses the identical copy→verify→re-point→delete path rather than a second implementation.
+- [x] Keep DB metadata / `storage_alias` consistent after each transition. — unchanged, still enforced by `move_one`/`move_hero_image`.
+- [x] Tests (transition matrix): public → private re-points/moves media; private → public publishes media; archived transition follows archive policy; entity draft↔published under a public campaign flips public↔private. — added `sync_event_assets` scope-isolation test; Event draft→published (private→public) and published→draft (public→private) promotion/demotion tests for EditorJS assets; the matching GeoStory hero-image promotion/demotion pair; a GeoStory EditorJS-asset promotion test; and the one remaining gap this closes, a GeoStory EditorJS-asset **demotion** test (published→draft under a public campaign, `media_public` → `default`). Plus signal-level tests (`test_media_lifecycle_signals.py`) proving the Event signal fires only on status change, mirroring the existing Campaign/GeoStory signal tests. Full suite: 1135 passed.
+
+**Files:** `core/media_lifecycle.py` (added `_sync_entity_assets`, `sync_event_assets`), `core/media_lifecycle_signals.py` (added Event `pre_save`/`post_save` pair). **Rollback risk:** low (narrower than originally scoped — additive Event signal + a behavior-preserving extraction of already-tested logic, no change to Campaign/GeoStory code paths).
 
 ---
 
