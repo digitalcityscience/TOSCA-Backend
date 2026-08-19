@@ -115,3 +115,53 @@ class OrganizationAppEntitlement(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.organization.slug}: {self.app_label}"
+
+
+class UserAuthorizationSnapshot(TimeStampedModel):
+    """Persisted org-role claims from a user's last successful browser login
+    (security tickets ticket 04).
+
+    The browser/admin authorization path (tickets 05-07) must not decode a
+    possibly-stale ID token on every request, so the roles a token carried at
+    login are captured here once and read back cheaply afterwards.
+
+    Additive only: nothing writes or reads this table yet. Ticket 05 wires the
+    write (login signal); ticket 06's dynamic ``has_perm()`` backend is the
+    first reader.
+
+    Multi-org-ready now, single-org enforced now (see plan §"Design note"):
+    ``org_roles`` stores every org role the token carried, but authorization
+    for the PoC only ever consults ``org_roles[default_org]``. There is no
+    org-switching/multi-org request context in this plan -- the shape exists
+    solely so a later multi-org rollout isn't a migration.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="authorization_snapshot",
+    )
+    org_roles = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Org slug -> role level captured from the last successful "
+        "browser login, e.g. {'dcs': 'ADMIN', 'qg2': 'WRITER'}.",
+    )
+    default_org = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Org slug the PoC actually authorizes against "
+        "(org_roles[default_org]). Empty until a login has synced one.",
+    )
+    synced_at = models.DateTimeField(
+        help_text="When these claims were pulled from the token -- distinct "
+        "from `updated_at`, which only tracks row writes."
+    )
+
+    class Meta:
+        verbose_name = "User Authorization Snapshot"
+        verbose_name_plural = "User Authorization Snapshots"
+
+    def __str__(self) -> str:
+        return f"{self.user}: {self.default_org or '(no default org)'}"

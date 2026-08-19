@@ -2,7 +2,11 @@ from django.contrib import admin, messages
 from django.contrib.admin.utils import unquote
 from django.http import HttpResponseRedirect
 
-from tosca_api.apps.organizations.models import Organization, OrganizationAppEntitlement
+from tosca_api.apps.organizations.models import (
+    Organization,
+    OrganizationAppEntitlement,
+    UserAuthorizationSnapshot,
+)
 
 
 class OrganizationAppEntitlementInline(admin.TabularInline):
@@ -74,3 +78,18 @@ class OrganizationAdmin(admin.ModelAdmin):
         actions = super().get_actions(request)
         actions.pop("delete_selected", None)
         return actions
+
+
+@admin.register(UserAuthorizationSnapshot)
+class UserAuthorizationSnapshotAdmin(admin.ModelAdmin):
+    list_display = ("user", "default_org", "synced_at")
+    search_fields = ("user__username", "user__email", "default_org")
+    readonly_fields = ("user", "org_roles", "default_org", "synced_at", "created_at", "updated_at")
+
+    # Snapshots are only ever written by the login sync path (ticket 05) --
+    # admin is read-only visibility into what a user's last login granted.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

@@ -33,6 +33,33 @@ def user_claims(user):
     raise NotImplementedError("wired in security tickets ticket 05")
 
 
+def _load_valid_snapshot(user):
+    """Return ``user``'s :class:`UserAuthorizationSnapshot` if one exists, or
+    ``None`` (security tickets ticket 04 TTL seam).
+
+    No expiry check yet -- any persisted snapshot is "valid" for the PoC.
+    This is the single seam a future TTL (e.g. re-sync after N hours) hooks
+    into, so callers never need to know whether staleness is enforced.
+    """
+    from .models import UserAuthorizationSnapshot
+
+    return UserAuthorizationSnapshot.objects.filter(user=user).first()
+
+
+def invalidate_snapshot(user) -> None:
+    """Drop ``user``'s persisted authorization snapshot (security tickets
+    ticket 04 invalidation seam).
+
+    No caller yet -- this is the seam the demotion remedy (a user's org role
+    is downgraded/revoked in Keycloak) will hook into once ticket 06's
+    ``has_perm()`` backend actually reads snapshots, so a stale grant can't
+    outlive the next login.
+    """
+    from .models import UserAuthorizationSnapshot
+
+    UserAuthorizationSnapshot.objects.filter(user=user).delete()
+
+
 def enabled_apps_for(organization) -> set[str]:
     """Return the set of app labels ``organization`` is entitled to (gate B).
 

@@ -316,14 +316,28 @@ context in this plan; the shape exists solely to avoid a later migration.
 
 **Blocked by:** 03.
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-19)
 
-- [ ] Add `UserAuthorizationSnapshot` (in `organizations/models.py` or `tosca_authentication/`) + migration.
-- [ ] Admin: read-only snapshot visibility where useful (expose `synced_at`).
-- [ ] Leave a clean seam for a future TTL (e.g. `_load_valid_snapshot`) but implement **no** TTL now.
-- [ ] Leave a clean **invalidation seam** (e.g. `policy.invalidate_snapshot(user)`) for the demotion remedy.
-- [ ] Tests: model + admin rendering.
+- [x] Add `UserAuthorizationSnapshot` (in `organizations/models.py` or `tosca_authentication/`) + migration.
+      — added to `organizations/models.py` (alongside `Organization`/`OrganizationAppEntitlement`, since
+      it's read by the same app's `policy.py`): `user` (OneToOne → `AUTH_USER_MODEL`), `org_roles`
+      (JSONField, default `{}`), `default_org` (CharField, blank-default), `synced_at` (DateTimeField,
+      explicit — distinct from `TimeStampedModel`'s `updated_at`, which only tracks row writes).
+      Migration `organizations/migrations/0006_userauthorizationsnapshot.py`.
+- [x] Admin: read-only snapshot visibility where useful (expose `synced_at`).
+      — `UserAuthorizationSnapshotAdmin` registered in `organizations/admin.py`; `list_display` shows
+      `user`, `default_org`, `synced_at`; add/change both denied (write-only from the future login sync path).
+- [x] Leave a clean seam for a future TTL (e.g. `_load_valid_snapshot`) but implement **no** TTL now.
+      — `organizations/policy.py::_load_valid_snapshot(user)`: returns the persisted row or `None`, no
+      expiry check yet.
+- [x] Leave a clean **invalidation seam** (e.g. `policy.invalidate_snapshot(user)`) for the demotion remedy.
+      — `organizations/policy.py::invalidate_snapshot(user)`: deletes the row if present, no-op otherwise.
+- [x] Tests: model + admin rendering.
+      — `organizations/tests/test_authorization_snapshot.py` (10 tests: field storage/`__str__`, OneToOne
+      uniqueness, `_load_valid_snapshot`/`invalidate_snapshot` seams, admin add/change denial, changelist
+      renders). Full suite: 1166 passed.
 
+**Files:** `organizations/models.py`, `organizations/policy.py`, `organizations/admin.py`, migration.
 **Behavior:** additive. **Rollback risk:** low.
 
 ---
