@@ -98,7 +98,7 @@ relative to the media track.
 **New execution order:**
 
 ```text
-01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 ✅ → 03 ✅ → 04 ✅ → 05 ✅ → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
+01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 ✅ → 03 ✅ → 04 ✅ → 05 ✅ → 06 ✅ → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
 ```
 
 ### Ticket summary
@@ -113,7 +113,7 @@ relative to the media track.
 | 6 | 03 ✅ | Authorization foundation (entitlement + policy + delete dead perms) | 01 | ARCH |
 | 7 | 04 ✅ | `UserAuthorizationSnapshot` model | 03 | ARCH |
 | 8 | 05 ✅ | Claim normalization & snapshot sync (Q11 two-path, write rule, resolver) | 04 | ARCH |
-| 9 | 06 | Dynamic `has_perm` backend (A ∩ B) | 05 | ARCH |
+| 9 | 06 ✅ | Dynamic `has_perm` backend (A ∩ B) | 05 | ARCH |
 | 10 | 07 | Admin integration + custom `UserAdmin` panel | 06 | ARCH |
 | 11 | 08 | DRF: Campaign (org-private matrix) | 06 | ARCH |
 | 12 | 09 | DRF: GeoStory (public-read; co-verify w/ 02) | 06, 02 | ARCH |
@@ -481,14 +481,32 @@ are intentionally excluded by an action-prefix filter.
 
 **Blocked by:** 05.
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-19)
 
-- [ ] Implement `organizations/auth_backend.py::OrgRolePermissionBackend(BaseBackend)`; `authenticate()` returns `None`.
-- [ ] Register in `AUTHENTICATION_BACKENDS` = `[ModelBackend, OrgRolePermissionBackend, allauth.AuthenticationBackend]`.
-- [ ] `has_perm()` consults the ticket-05 resolver (live claims → snapshot → fail closed). No per-user rows.
-- [ ] Custom-permission action-prefix filter excludes anything outside view/add/change/delete.
-- [ ] Tests: READER / WRITER / ADMIN verb sets; app **not** entitled → denied (B); model **not** in allow-list → denied;
+- [x] Implement `organizations/auth_backend.py::OrgRolePermissionBackend(BaseBackend)`; `authenticate()` returns `None`.
+- [x] Register in `AUTHENTICATION_BACKENDS` = `[ModelBackend, OrgRolePermissionBackend, allauth.AuthenticationBackend]`.
+      — inserted between `ModelBackend` and `allauth.account.auth_backends.AuthenticationBackend` in `settings/base.py`.
+- [x] `has_perm()` consults the ticket-05 resolver (live claims → snapshot → fail closed). No per-user rows.
+      — calls `organizations.policy.user_claims(user_obj)` directly; consults only `org_roles[default_org]`
+      per ticket 04's single-org-enforced design.
+- [x] Custom-permission action-prefix filter excludes anything outside view/add/change/delete.
+      — `_MANAGED_ACTIONS = {"view", "add", "change", "delete"}`; codename split via `partition("_")`, action
+      checked against the set before anything else runs.
+- [x] Tests: READER / WRITER / ADMIN verb sets; app **not** entitled → denied (B); model **not** in allow-list → denied;
       no snapshot & no live claims → **fail closed**; superuser → all; inactive user → denied.
+      — `organizations/tests/test_auth_backend.py` (15 tests): role verb sets (3), entitlement-missing +
+      entitlement-for-a-different-app-doesn't-leak (2), model-not-allowlisted + unknown-app-label +
+      custom-permission-excluded (3), no-claims-at-all + no-role-for-default-org fail-closed (2), superuser-bypasses
+      + inactive-superuser-denied + inactive-regular-user-denied (3), plus two end-to-end tests through Django's
+      real `user.has_perm()` dispatch confirming the backend is actually wired into `AUTHENTICATION_BACKENDS`, not
+      just directly callable. Full suite: 1189 passed (same 5 pre-existing environment-dependent failures as
+      ticket 05's baseline — untouched by this ticket).
+
+**Deliberately out of scope here (per ticket 07-12):** this ticket does **not** touch `OrgScopedAdminMixin`'s own
+capability ladder or any existing DRF permission class — both keep enforcing gate A themselves, side by side with
+this now-meaningful `has_perm()`, until later tickets migrate call sites onto it one resource at a time. Gate C
+(tenant/object scope) stays entirely with `organizations.permissions` querysets/object-permission checks; nothing
+in `OrgRolePermissionBackend` reads or filters by organization ownership of a specific row.
 
 **Behavior:** `has_perm()` becomes meaningful for non-superusers. **Rollback risk:** medium — removing the backend restores prior all-False behavior.
 

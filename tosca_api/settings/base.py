@@ -442,6 +442,7 @@ SPECTACULAR_SETTINGS = {
 
 AUTHENTICATION_BACKENDS = [
     "django.contrib.auth.backends.ModelBackend",  # Django native (fallback)
+    "tosca_api.apps.organizations.auth_backend.OrgRolePermissionBackend",  # security tickets ticket 06
     "allauth.account.auth_backends.AuthenticationBackend",  # allauth
 ]
 
