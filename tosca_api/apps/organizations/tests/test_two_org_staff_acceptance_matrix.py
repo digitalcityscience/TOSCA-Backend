@@ -22,7 +22,7 @@ from datetime import timedelta
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import Point
-from django.test import RequestFactory
+from django.test import Client, RequestFactory
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -34,6 +34,7 @@ from tosca_api.apps.geodata_providers.admin import WorkspaceAdmin
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Workspace
 from tosca_api.apps.geostories.models import GeoStory
 from tosca_api.apps.organizations.models import Organization, OrganizationAppEntitlement
+from tosca_api.apps.organizations.policy import sync_snapshot
 
 User = get_user_model()
 
@@ -165,6 +166,32 @@ def _admin_request(factory, user):
 
 def _authenticate_api(api_client, user, *roles, org="hpa"):
     api_client.force_authenticate(user=user, token=_token(*roles, org_slug=org))
+
+
+def _staff_session_user(username, *, org=None, level=None, superuser=False):
+    """A DJANGO_STAFF user for real ``django.test.Client`` session-auth
+    requests. Unlike ``_staff_user``'s ``user._auth_claims`` (only visible to
+    the in-memory object held by the caller), a real ``Client`` request
+    re-loads the user from the DB per request, so claims must be persisted
+    to ``UserAuthorizationSnapshot`` (the ticket-05 browser-path fallback)
+    to be seen at all."""
+    user = User.objects.create_user(username=username, is_staff=True, is_superuser=superuser, password="pw")
+    if org and level:
+        sync_snapshot(
+            user,
+            AuthClaims(org_roles={org: level}, default_org=org, authoritative=True, platform_exempt=False),
+        )
+    return user
+
+
+# StoreInline's management-form fields are required by WorkspaceAdmin's
+# changeform even with zero stores.
+_WORKSPACE_INLINE_MANAGEMENT_FORM = {
+    "stores-TOTAL_FORMS": "0",
+    "stores-INITIAL_FORMS": "0",
+    "stores-MIN_NUM_FORMS": "0",
+    "stores-MAX_NUM_FORMS": "1000",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -335,3 +362,90 @@ def test_superadmin_reads_dcs_draft_story_and_event(
 
     assert story_response.status_code == 200
     assert event_response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# The incident, end to end: a real ``django.test.Client`` hitting the real
+# admin URL (session auth, CSRF, full changeform_view/get_object dispatch --
+# not just the isolated ``get_queryset()`` call above). This is the
+# regression guard for "a constant gains a role, tenant isolation silently
+# breaks everywhere" -- ORG_CHECK_EXEMPT_ROLES must never again include
+# DJANGO_STAFF.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.django_db
+def test_incident_http_hpa_writer_denied_dcs_workspace_change(dcs_org, hpa_org, dcs_workspace):
+    """HPA WRITER hits the real admin URL for a DCS Workspace.
+
+    ``WorkspaceAdmin.get_queryset`` (``OrgScopedAdminMixin``) filters the DCS
+    row out for an HPA-scoped caller entirely, so Django's own
+    ``_changeform_view`` never finds an object to check -- it takes the
+    stock "object doesn't exist" branch (``_get_obj_does_not_exist_redirect``:
+    a warning message + 302 to the admin index), the same idiom Django uses
+    for a bad/deleted id. This *is* the 404-equivalent the canonical doc
+    calls for (epic-11-canonical.md §10a: "Cross-org erişim → 404, 403
+    değil") -- just expressed as Django admin's own redirect-on-missing-
+    object convention rather than a literal HTTP 404/403 status. What
+    matters for the incident is verified directly: no object is ever
+    fetched, so ``save_model`` never runs and the description is untouched.
+    """
+    hpa_writer = _staff_session_user("hpa-writer-http-incident", org="hpa", level="WRITER")
+    client = Client()
+    client.force_login(hpa_writer)
+    url = f"/admin/geodata_providers/workspace/{dcs_workspace.pk}/change/"
+
+    get_response = client.get(url)
+    post_response = client.post(url, {
+        "name": dcs_workspace.name,
+        "description": "HACKED BY HPA WRITER",
+        "organization": dcs_org.pk,
+        "geodata_engine": dcs_workspace.geodata_engine_id,
+        **_WORKSPACE_INLINE_MANAGEMENT_FORM,
+    })
+    dcs_workspace.refresh_from_db()
+
+    assert get_response.status_code == 302
+    assert get_response.url == "/admin/"
+    assert post_response.status_code == 302
+    assert post_response.url == "/admin/"
+    assert dcs_workspace.description == "original DCS description"
+
+
+@pytest.mark.django_db
+def test_incident_http_dcs_writer_can_change_own_org_workspace(dcs_org, dcs_workspace):
+    dcs_writer = _staff_session_user("dcs-writer-http-incident", org="dcs", level="WRITER")
+    client = Client()
+    client.force_login(dcs_writer)
+    url = f"/admin/geodata_providers/workspace/{dcs_workspace.pk}/change/"
+
+    post_response = client.post(url, {
+        "name": dcs_workspace.name,
+        "description": "EDITED BY DCS WRITER",
+        "organization": dcs_org.pk,
+        "geodata_engine": dcs_workspace.geodata_engine_id,
+        **_WORKSPACE_INLINE_MANAGEMENT_FORM,
+    })
+    dcs_workspace.refresh_from_db()
+
+    assert post_response.status_code == 302
+    assert dcs_workspace.description == "EDITED BY DCS WRITER"
+
+
+@pytest.mark.django_db
+def test_incident_http_superadmin_can_change_cross_org_workspace(dcs_org, dcs_workspace):
+    superadmin = _staff_session_user("superadmin-http-incident", superuser=True)
+    client = Client()
+    client.force_login(superadmin)
+    url = f"/admin/geodata_providers/workspace/{dcs_workspace.pk}/change/"
+
+    post_response = client.post(url, {
+        "name": dcs_workspace.name,
+        "description": "EDITED BY SUPERADMIN",
+        "organization": dcs_org.pk,
+        "geodata_engine": dcs_workspace.geodata_engine_id,
+        **_WORKSPACE_INLINE_MANAGEMENT_FORM,
+    })
+    dcs_workspace.refresh_from_db()
+
+    assert post_response.status_code == 302
+    assert dcs_workspace.description == "EDITED BY SUPERADMIN"
