@@ -98,7 +98,7 @@ relative to the media track.
 **New execution order:**
 
 ```text
-01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 → 03 → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
+01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 ✅ → 03 → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
 ```
 
 ### Ticket summary
@@ -109,7 +109,7 @@ relative to the media track.
 | 2 | 02 | S1 GeoStory tenant-isolation hotfix — ship first | 01 | SEC |
 | 3 | 13 ✅ | S2 media: private EditorJS uploads | 03* | MEDIA |
 | 4 | 14 ✅ | Media: visibility/archive lifecycle re-pointing | 13 | MEDIA |
-| 5 | 15 | Media: idempotent backfill | 14 | MEDIA |
+| 5 | 15 ✅ | Media: idempotent backfill | 14 | MEDIA |
 | 6 | 03 | Authorization foundation (entitlement + policy + delete dead perms) | 01 | ARCH |
 | 7 | 04 | `UserAuthorizationSnapshot` model | 03 | ARCH |
 | 8 | 05 | Claim normalization & snapshot sync (Q11 two-path, write rule, resolver) | 04 | ARCH |
@@ -763,13 +763,38 @@ the **backfill existing** half of "new uploads only vs backfill".
 
 **Blocked by:** 14.
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-19)
 
-- [ ] Add an idempotent backfill command under `core/management/commands/` that recomputes the desired alias per asset and relocates mis-aliased objects.
-- [ ] Provide a **dry-run** mode first; perform moves as copy → verify → delete (never delete before verify).
-- [ ] Idempotent: re-running makes no further changes once assets are correct.
-- [ ] Document the chosen migration strategy (new-uploads-only vs backfill) so behavior is not left mixed/undocumented.
-- [ ] Tests: idempotent backfill relocates wrongly-public private/draft media; re-run is a no-op; verify no object is deleted without a verified copy.
+**Implementation note:** built on top of the already-tested `MediaLifecycleService` (tickets 13/14) rather than
+a parallel implementation. Added a `dry_run` parameter threaded through `move_one`/`move_hero_image`/
+`_sync_assets`/`sync_campaign_assets` (new `ACTION_WOULD_MOVE` action reports what would happen without
+touching storage or the DB), plus a `report_to_json` helper mirroring `media_path_migration`'s. The new
+`backfill_media_aliases` command iterates every `Campaign` (batched, resumable via `--start-after`, `--limit`)
+and calls `sync_campaign_assets(campaign, dry_run=not apply)` per campaign — this single entry point already
+covers both plain `MediaAsset` rows and hero images that have no `MediaAsset` row of their own (confirmed by
+the pre-existing `test_sync_story_assets_moves_hero_without_media_asset` case), so no separate hero-image
+sweep was needed. Migration strategy: **backfill-all**, matching `migrate_media_paths`'s approach, since
+tickets 13/14 already make new uploads/transitions correct going forward — this command only has work to do
+on pre-existing objects.
+
+- [x] Add an idempotent backfill command under `core/management/commands/` that recomputes the desired alias per asset and relocates mis-aliased objects. — `core/management/commands/backfill_media_aliases.py`.
+- [x] Provide a **dry-run** mode first; perform moves as copy → verify → delete (never delete before verify). — dry-run is the default (no `--apply`); the underlying copy→verify→delete ordering is unchanged, reused from `MediaLifecycleService.move_one`/`move_hero_image`.
+- [x] Idempotent: re-running makes no further changes once assets are correct. — `move_one`/`move_hero_image` already short-circuit to `ACTION_NO_CHANGE` when `storage_alias == target_alias`.
+- [x] Document the chosen migration strategy (new-uploads-only vs backfill) so behavior is not left mixed/undocumented. — see implementation note above and the command's module docstring.
+- [x] Tests: idempotent backfill relocates wrongly-public private/draft media; re-run is a no-op; verify no object is deleted without a verified copy. — `core/tests/test_backfill_media_aliases.py` (command-level, 7 tests) + `core/tests/test_media_lifecycle.py` (5 new `dry_run` tests at the service level). Full suite: 1147 passed.
+
+**Code review fix (2026-08-19):** the spec-review pass caught that `dry_run` originally short-circuited on the
+alias-mismatch check alone, before the source-existence/size checks -- so a dry run could report
+`ACTION_WOULD_MOVE` for an asset whose source object is actually missing, which `--apply` would report as
+`ACTION_FAILED`. That undermined the ticket's own "dry-run first" safety framing for a high-rollback-risk
+change. Fixed: `move_one`/`move_hero_image` now run the existence/size verification unconditionally and only
+short-circuit *after* confirming the move would succeed, so dry-run and apply agree on which assets are safe.
+Covered by `test_move_one_dry_run_fails_when_source_object_missing`.
+
+**Files:** `core/media_lifecycle.py` (added `ACTION_WOULD_MOVE`, `dry_run` params, `report_to_json`),
+`core/management/commands/backfill_media_aliases.py` (new). **Rollback risk:** low in practice — `dry_run`
+defaults the command to read-only, and `--apply` reuses the same copy→verify→delete safety property already
+exercised by tickets 13/14's signal-triggered syncs.
 
 **Rollback risk:** high (bulk object moves) — dry-run first, copy-then-verify-then-delete.
 

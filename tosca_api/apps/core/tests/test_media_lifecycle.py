@@ -19,6 +19,7 @@ from tosca_api.apps.core.media_lifecycle import (
     ACTION_FAILED,
     ACTION_MOVED,
     ACTION_NO_CHANGE,
+    ACTION_WOULD_MOVE,
     MediaLifecycleService,
     desired_alias_for_asset,
 )
@@ -296,6 +297,58 @@ def test_move_one_is_no_change_when_already_in_target_alias(campaign, tmp_path):
     assert entry.action == ACTION_NO_CHANGE
 
 
+def test_move_one_dry_run_reports_would_move_without_touching_storage(campaign, tmp_path):
+    service, backends, storage_for_alias = _service(tmp_path)
+    default_backend = storage_for_alias("default")
+    default_backend.save("misc/path.png", ContentFile(b"hello"))
+    asset = _make_asset(
+        "misc/path.png",
+        campaign=campaign,
+        owner_org=campaign.organization,
+        storage_alias=MediaAsset.StorageAlias.DEFAULT,
+    )
+
+    entry = service.move_one(asset, MediaAsset.StorageAlias.PUBLIC, dry_run=True)
+
+    assert entry.action == ACTION_WOULD_MOVE
+    assert entry.status == "ok"
+    assert default_backend.exists("misc/path.png")
+    assert not storage_for_alias("media_public").exists("misc/path.png")
+    asset.refresh_from_db()
+    assert asset.storage_alias == MediaAsset.StorageAlias.DEFAULT
+
+
+def test_move_one_dry_run_fails_when_source_object_missing(campaign, tmp_path):
+    """Dry-run must not report ACTION_WOULD_MOVE for an asset that --apply
+    would actually fail on -- otherwise a dry-run report is misleading."""
+    service, backends, storage_for_alias = _service(tmp_path)
+    asset = _make_asset(
+        "misc/gone.png",
+        campaign=campaign,
+        owner_org=campaign.organization,
+        storage_alias=MediaAsset.StorageAlias.PUBLIC,
+    )
+
+    entry = service.move_one(asset, MediaAsset.StorageAlias.DEFAULT, dry_run=True)
+
+    assert entry.action == ACTION_FAILED
+    assert entry.status == "failed"
+
+
+def test_move_one_dry_run_is_no_change_when_already_in_target_alias(campaign, tmp_path):
+    service, backends, storage_for_alias = _service(tmp_path)
+    asset = _make_asset(
+        "misc/path.png",
+        campaign=campaign,
+        owner_org=campaign.organization,
+        storage_alias=MediaAsset.StorageAlias.PUBLIC,
+    )
+
+    entry = service.move_one(asset, MediaAsset.StorageAlias.PUBLIC, dry_run=True)
+
+    assert entry.action == ACTION_NO_CHANGE
+
+
 def test_move_one_moves_hero_image_matched_asset(campaign, django_user_model, tmp_path):
     author = django_user_model.objects.create_user(username="author4")
     story = GeoStory(
@@ -323,6 +376,68 @@ def test_move_one_moves_hero_image_matched_asset(campaign, django_user_model, tm
     story.refresh_from_db()
     assert asset.storage_alias == MediaAsset.StorageAlias.ARCHIVE
     assert story.hero_image_storage_alias == MediaAsset.StorageAlias.ARCHIVE
+
+
+def test_move_one_dry_run_reports_hero_image_would_move_without_touching_storage(
+    campaign, django_user_model, tmp_path
+):
+    author = django_user_model.objects.create_user(username="author4-dry")
+    story = GeoStory(
+        title="Story", campaign=campaign, author=author, hero_image_alt="alt"
+    )
+    story.hero_image.name = "geostories/x/hero/img.png"
+    story.save()
+    service, backends, storage_for_alias = _service(tmp_path)
+    storage_for_alias("default").save(
+        "geostories/x/hero/img.png", ContentFile(b"hero-bytes")
+    )
+    asset = _make_asset(
+        "geostories/x/hero/img.png",
+        campaign=campaign,
+        owner_org=campaign.organization,
+        storage_alias=MediaAsset.StorageAlias.DEFAULT,
+    )
+
+    entry = service.move_one(asset, MediaAsset.StorageAlias.ARCHIVE, dry_run=True)
+
+    assert entry.action == ACTION_WOULD_MOVE
+    assert not storage_for_alias("media_archive").exists("geostories/x/hero/img.png")
+    assert storage_for_alias("default").exists("geostories/x/hero/img.png")
+    asset.refresh_from_db()
+    story.refresh_from_db()
+    assert asset.storage_alias == MediaAsset.StorageAlias.DEFAULT
+    assert story.hero_image_storage_alias == MediaAsset.StorageAlias.DEFAULT
+
+
+def test_sync_campaign_assets_dry_run_then_apply_is_idempotent(campaign, tmp_path):
+    """Backfill flow (ticket 15): a dry run reports what would move without
+    writing, and applying afterwards actually moves it; re-applying is a
+    no-op -- proving the same sync entry point used by the backfill command
+    is safe to dry-run first and re-run after."""
+    service, backends, storage_for_alias = _service(tmp_path)
+    storage_for_alias("media_public").save("misc/path.png", ContentFile(b"wrongly-public"))
+    asset = _make_asset(
+        "misc/path.png",
+        campaign=campaign,
+        owner_org=campaign.organization,
+        storage_alias=MediaAsset.StorageAlias.PUBLIC,
+    )
+
+    dry_entries = service.sync_campaign_assets(campaign, dry_run=True)
+    assert [e.action for e in dry_entries] == [ACTION_WOULD_MOVE]
+    asset.refresh_from_db()
+    assert asset.storage_alias == MediaAsset.StorageAlias.PUBLIC
+    assert storage_for_alias("media_public").exists("misc/path.png")
+
+    applied_entries = service.sync_campaign_assets(campaign)
+    assert [e.action for e in applied_entries] == [ACTION_MOVED]
+    asset.refresh_from_db()
+    assert asset.storage_alias == MediaAsset.StorageAlias.DEFAULT
+    assert storage_for_alias("default").exists("misc/path.png")
+    assert not storage_for_alias("media_public").exists("misc/path.png")
+
+    rerun_entries = service.sync_campaign_assets(campaign)
+    assert [e.action for e in rerun_entries] == [ACTION_NO_CHANGE]
 
 
 def test_sync_story_assets_moves_hero_without_media_asset(campaign, django_user_model, tmp_path):
