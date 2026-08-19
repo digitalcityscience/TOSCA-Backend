@@ -508,6 +508,31 @@ this now-meaningful `has_perm()`, until later tickets migrate call sites onto it
 (tenant/object scope) stays entirely with `organizations.permissions` querysets/object-permission checks; nothing
 in `OrgRolePermissionBackend` reads or filters by organization ownership of a specific row.
 
+**Post-hoc regression found and closed (2026-08-19, user-requested re-audit):** the "purely additive" claim above
+holds for every call site that was *already* consulting `has_perm()` on purpose (none did — see the
+`OrgScopedAdminMixin._is_active_staff` docstring's own note that it deliberately avoids `has_perm()`). It does
+**not** automatically hold for call sites that consult `has_perm()` as an *unintentional default* — and Django's
+own `ModelAdmin.has_view/add/change/delete_permission()` is exactly that: any `ModelAdmin` that doesn't override
+those methods falls through to `request.user.has_perm(...)`. Auditing every `TOSCA_PERMISSION_MODELS` entry's
+admin class found one such case: **`GeoFeedbackAdmin`** (`feedback/admin.py`) is a plain `admin.ModelAdmin` with
+no `OrgScopedAdminMixin` and no queryset org-scope of its own — before this ticket, `has_perm()` was always
+`False`, so it was superuser-only in practice; after registering `OrgRolePermissionBackend`, any staff user
+holding a WRITER+ role in *any* org entitled to `feedback` could see/edit **every** organization's GeoFeedback
+rows, not just their own. (`GeoContextAdmin` has the same missing-mixin shape but was confirmed *not* a
+regression: `GeoContext` has no organization/campaign FK at all — it's a shared, unowned content-block model, so
+there is no tenant boundary to leak across.)
+
+**Resolution:** rather than migrating `GeoFeedbackAdmin` onto `OrgScopedAdminMixin` (which would be a substantive,
+undiscussed scope expansion — GeoFeedback's org-authorization integration is its own open decision, ticket 11's
+A8: *"GeoFeedback scope decision (currently out of scope) ... `feedback/views.py` uses local `IsAdminOrReadOnly`.
+Leave out unless the project decides otherwise"*), `GeoFeedbackAdmin.get_queryset` got a narrow, self-contained
+org scope (superuser/exempt bypass, else filter by `campaign__organization__slug`, mirroring
+`OrgScopedAdminMixin.get_queryset` exactly) — closing the row-leak without adopting the mixin's add-time
+org-resolution or capability-ladder machinery. A code comment on `GeoFeedbackAdmin` records this as a known-gap
+module, so it isn't mistaken for a completed migration later. Tests: `feedback/tests/test_admin.py` (5 tests —
+own-org scoping, cross-org row genuinely absent (not just unlisted), superuser unscoped, `DJANGO_STAFF` exempt
+unscoped, no-org-role empty).
+
 **Behavior:** `has_perm()` becomes meaningful for non-superusers. **Rollback risk:** medium — removing the backend restores prior all-False behavior.
 
 ---
