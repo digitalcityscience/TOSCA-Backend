@@ -247,6 +247,16 @@ token.realm_access.roles = [ROLE_DCS_WRITER, ...]   +  default_organization=dcs
 - **default_org**: token'ın `default_organization` (scalar) claim'inden okunur — canlı doğrulandı, çalışıyor (§4). Çoklu-org üyelik listesi token'da henüz yok; gerekince mapper'a `organization` array'i eklenir ya da Admin API'den okunur. Login'i bloklamaz.
 - **İki login-check** (org-presence, org-role coherence) — bkz. §5(d).
 - **Platform-rol güvenlik kuralı** — bkz. §2 🔒.
+- **Platform-managed shared models — kalıcı ürün kararı (2026-08-19, org-scope-bypass audit ticket 05):**
+  `EventType`, `TaxonomyDimension`, `TaxonomyTerm`, `GeoContext` bir org'a ait değildir (org FK yok;
+  `GeoContext` özellikle `Event`/`EventSeries` üzerinden birden çok org'un içeriğine bağlanabilir —
+  bkz. ticket 05 gerekçesi). Standart READER/WRITER/ADMIN merdiveni bu modeller için **geçici bir
+  bugfix değil**, kalıcı ürün davranışıdır: `change`/`delete` **superuser-only**
+  (`PlatformOnlyChangeDeleteMixin`, `GeodataEngineAdmin` ile aynı desen); `add` normal `has_perm()`
+  merdiveninden geçer (yeni satır ekleyen org'un kendi kullanımını etkiler, paylaşılan satırları değil).
+  Bir org WRITER/ADMIN'in bu paylaşılan referans verisini değiştirmesi/silmesi diğer org'ların içeriğini
+  bozabileceği için kapatıldı — genişletilecek yeni model bu listeye eklenirken aynı soru sorulmalı:
+  "org FK'sı var mı, yoksa platform-managed mi?"
 
 ### 10b. Storage (Q4 — bu grilling'de konuşulmadı, tamamen açık)
 
