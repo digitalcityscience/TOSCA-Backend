@@ -79,40 +79,23 @@ def test_get_request_org_context_exempt_for_superadmin(django_user_model):
 
 
 # ---------------------------------------------------------------------------
-# OrgScopedPermission.has_permission
+# OrgScopedPermission.has_permission -- security tickets ticket 08: gate C
+# only (org membership + object scope). Capability (view/add/change/delete)
+# moved to `has_perm()` via `ViewGatedModelPermissions`, tested separately in
+# `campaigns/tests/test_permission_matrix.py`.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.django_db
-def test_reader_can_list_but_not_write(django_user_model):
+def test_any_org_role_passes_regardless_of_method(django_user_model):
     user = django_user_model.objects.create_user(username="reader2")
     permission = OrgScopedPermission()
 
     get_request = _request(user, auth=_token("ROLE_DCS_READER", default_organization="dcs"), method="GET")
     post_request = _request(user, auth=_token("ROLE_DCS_READER", default_organization="dcs"), method="POST")
+    delete_request = _request(user, auth=_token("ROLE_DCS_READER", default_organization="dcs"), method="DELETE")
 
     assert permission.has_permission(get_request, None) is True
-    assert permission.has_permission(post_request, None) is False
-
-
-@pytest.mark.django_db
-def test_writer_can_create_but_not_delete(django_user_model):
-    user = django_user_model.objects.create_user(username="writer1")
-    permission = OrgScopedPermission()
-
-    post_request = _request(user, auth=_token("ROLE_DCS_WRITER", default_organization="dcs"), method="POST")
-    delete_request = _request(user, auth=_token("ROLE_DCS_WRITER", default_organization="dcs"), method="DELETE")
-
     assert permission.has_permission(post_request, None) is True
-    assert permission.has_permission(delete_request, None) is False
-
-
-@pytest.mark.django_db
-def test_admin_can_delete(django_user_model):
-    user = django_user_model.objects.create_user(username="admin1")
-    permission = OrgScopedPermission()
-
-    delete_request = _request(user, auth=_token("ROLE_DCS_ADMIN", default_organization="dcs"), method="DELETE")
-
     assert permission.has_permission(delete_request, None) is True
 
 
@@ -134,6 +117,30 @@ def test_superadmin_bypasses_level_check(django_user_model):
     delete_request = _request(user, auth=_token("DJANGO_SUPERADMIN"), method="DELETE")
 
     assert permission.has_permission(delete_request, None) is True
+
+
+@pytest.mark.django_db
+def test_object_permission_denies_cross_org_object(django_user_model, orgs):
+    dcs, gq = orgs
+    user = django_user_model.objects.create_user(username="dcs-reader-obj")
+    gq_campaign = Campaign.objects.create(organization=gq, title="GQ campaign", created_by=user)
+
+    permission = OrgScopedPermission()
+    request = _request(user, auth=_token("ROLE_DCS_READER", default_organization="dcs"), method="GET")
+
+    assert permission.has_object_permission(request, None, gq_campaign) is False
+
+
+@pytest.mark.django_db
+def test_object_permission_allows_own_org_object(django_user_model, orgs):
+    dcs, _gq = orgs
+    user = django_user_model.objects.create_user(username="dcs-reader-obj2")
+    dcs_campaign = Campaign.objects.create(organization=dcs, title="DCS campaign", created_by=user)
+
+    permission = OrgScopedPermission()
+    request = _request(user, auth=_token("ROLE_DCS_READER", default_organization="dcs"), method="GET")
+
+    assert permission.has_object_permission(request, None, dcs_campaign) is True
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ place that reads those claims, so API (Bearer token) and Django admin
 
 from __future__ import annotations
 
-from rest_framework.permissions import SAFE_METHODS, BasePermission
+from rest_framework.permissions import BasePermission, DjangoModelPermissions, SAFE_METHODS
 
 from tosca_api.apps.authentication.role_sync import (
     LEVEL_RANK,
@@ -76,35 +76,54 @@ def get_request_org_context(request):
 
 
 class OrgScopedPermission(BasePermission):
-    """SAFE_METHODS require READER+, writes require WRITER+, DELETE requires ADMIN.
+    """Gate C only: org membership + object scope for org-private resources
+    (e.g. Campaign).
 
-    ``DJANGO_SUPERADMIN``/``DJANGO_STAFF`` bypass entirely (canonical §2b platform
-    roles are never org-scoped). Cross-org access is turned into a 404, not a
-    403, by queryset scoping (see :func:`org_scoped_queryset`) -- by the time
-    ``has_object_permission`` runs, an object from another org was never
-    fetched, so it never gets here at all.
+    As of security tickets ticket 08, this class no longer gates capability
+    (view/add/change/delete) -- that action->level ladder moved to
+    ``has_perm()`` (``OrgRolePermissionBackend``, ticket 06), reached through
+    ``ViewGatedModelPermissions``/``DjangoModelPermissions`` (gate A). This
+    class only confirms the caller actually holds *some* role in the org
+    they're scoped to, and that a fetched object belongs to that same org.
+    ``DJANGO_SUPERADMIN``/``DJANGO_STAFF`` bypass entirely (canonical §2b
+    platform roles are never org-scoped). Cross-org access is turned into a
+    404, not a 403, by queryset scoping (see :func:`org_scoped_queryset`) --
+    by the time ``has_object_permission`` runs, an object from another org
+    was never fetched, so it never gets here at all.
     """
 
     def has_permission(self, request, view):
         roles, org_slug, exempt = get_request_org_context(request)
         if exempt:
             return True
-
-        level = org_role_level(roles, org_slug)
-        if level is None:
-            return False
-
-        if request.method in SAFE_METHODS:
-            required = "READER"
-        elif request.method == "DELETE":
-            required = "ADMIN"
-        else:
-            required = "WRITER"
-
-        return LEVEL_RANK[level] >= LEVEL_RANK[required]
+        return org_role_level(roles, org_slug) is not None
 
     def has_object_permission(self, request, view, obj):
-        return self.has_permission(request, view)
+        roles, org_slug, exempt = get_request_org_context(request)
+        if exempt:
+            return True
+        if org_role_level(roles, org_slug) is None:
+            return False
+        return _org_slug_of(obj) == org_slug
+
+
+class ViewGatedModelPermissions(DjangoModelPermissions):
+    """``DjangoModelPermissions`` with GET/HEAD also gated on ``view_<model>``.
+
+    Plain ``DjangoModelPermissions`` leaves GET/HEAD/OPTIONS ungated (empty
+    perms lists) -- correct for public-read resources, wrong for org-private
+    ones (ticket 08), where reads must go through ``has_perm()`` (gate A)
+    too. Its ``authenticated_users_only = True`` also makes it the wrong
+    choice for public-read resources (anon GET would 403) --
+    ``DjangoModelPermissionsOrAnonReadOnly`` is used there instead (tickets
+    09/10).
+    """
+
+    perms_map = {
+        **DjangoModelPermissions.perms_map,
+        "GET": ["%(app_label)s.view_%(model_name)s"],
+        "HEAD": ["%(app_label)s.view_%(model_name)s"],
+    }
 
 
 def org_scoped_queryset(request, queryset, *, org_field="organization__slug"):

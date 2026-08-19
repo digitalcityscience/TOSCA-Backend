@@ -148,6 +148,7 @@ def test_golden_snapshot_permission_classes_per_resource():
     assert _class_names(CampaignViewSet.permission_classes) == [
         "IsAuthenticated",
         "OrgScopedPermission",
+        "ViewGatedModelPermissions",
     ]
     assert _class_names(GeoStoryViewSet.permission_classes) == [
         "CampaignScopedPermission",

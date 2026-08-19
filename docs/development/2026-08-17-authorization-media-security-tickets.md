@@ -645,10 +645,10 @@ private so `ViewGatedModelPermissions` is correct here; the anon-read caveat mat
 
 **Status:** ready-for-agent
 
-- [ ] Strip action→level ladder from `OrgScopedPermission`; keep only org/object scope + queryset scoping.
-- [ ] Add `ViewGatedModelPermissions` and apply the org-private matrix to the Campaign viewset.
-- [ ] Add a Campaign permission-matrix test suite (READER read own / WRITER change own / ADMIN delete own; cross-org denied; entitlement-missing denied).
-- [ ] Verify no global DRF default is introduced — resource-by-resource only.
+- [x] Strip action→level ladder from `OrgScopedPermission`; keep only org/object scope + queryset scoping.
+- [x] Add `ViewGatedModelPermissions` and apply the org-private matrix to the Campaign viewset.
+- [x] Add a Campaign permission-matrix test suite (READER read own / WRITER change own / ADMIN delete own; cross-org denied; entitlement-missing denied).
+- [x] Verify no global DRF default is introduced — resource-by-resource only.
 
 **Files:** `organizations/permissions.py`, `campaigns/views.py`. **Rollback risk:** high — hence the per-resource split.
 
