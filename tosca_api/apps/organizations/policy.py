@@ -1,17 +1,19 @@
-"""Authorization policy skeleton (security tickets ticket 03, phase 2.1-2.5).
+"""Authorization policy (security tickets ticket 03 foundation, ticket 05 resolver).
 
-Additive foundation for gates A (capability) and B (entitlement) -- nothing
-in this module is consulted by any view or admin yet. ``organizations.permissions``
-still owns request-time enforcement (gate A ∩ C via ``OrgScopedPermission`` /
-``CampaignScopedPermission``); ticket 06's dynamic ``has_perm()`` backend is
-the first real caller of ``enabled_apps_for``/``LEVEL_ACTIONS``.
+``enabled_apps_for``/``LEVEL_ACTIONS`` (gate B foundation) are still additive
+-- nothing consults them yet; ticket 06's dynamic ``has_perm()`` backend is
+their first real caller. ``user_claims``/``sync_snapshot`` are live as of
+ticket 05: ``organizations.permissions.get_request_org_context`` calls
+``user_claims`` for every session-based (browser/admin) request, and
+``authentication.backends`` calls ``sync_snapshot`` on browser login.
 """
 
 from __future__ import annotations
 
 from django.conf import settings
+from django.utils import timezone
 
-from tosca_api.apps.authentication.role_sync import ORG_ROLE_LEVELS
+from tosca_api.apps.authentication.role_sync import ORG_ROLE_LEVELS, AuthClaims
 
 # Role -> allowed CRUD actions (security tickets ticket 06, Layer A). Only
 # view/add/change/delete -- no custom `manage_*` verbs.
@@ -24,13 +26,58 @@ LEVEL_ACTIONS = {
 assert set(LEVEL_ACTIONS) == set(ORG_ROLE_LEVELS)
 
 
-def user_claims(user):
-    """Return the ``(roles, default_org)`` claims for ``user``.
+def user_claims(user) -> tuple[dict[str, str], str | None]:
+    """Return the ``(org_roles, default_org)`` claims for ``user``.
 
-    Skeleton for ticket 05's unified resolver (live claims -> persisted
-    snapshot -> fail closed). Not wired to any request-time check yet.
+    Security tickets ticket 05's unified resolver. Precedence (fail closed):
+
+    1. Request-local live claims (``user._auth_claims``) -- set by
+       ``KeycloakTokenAuthentication`` on every Bearer request, and by
+       ``KeycloakAdapter`` on the login request itself.
+    2. The persisted :class:`~.models.UserAuthorizationSnapshot` -- what a
+       later browser/admin request (no live claims of its own) falls back to.
+    3. No permissions (``{}``, ``None``) when neither source has anything.
+
+    No implicit decoding of a stale/expired stored ID token, and no hidden
+    in-memory "last known good" fallback beyond what's spelled out above.
     """
-    raise NotImplementedError("wired in security tickets ticket 05")
+    claims = getattr(user, "_auth_claims", None)
+    if claims is not None:
+        return claims.org_roles, claims.default_org
+
+    snapshot = _load_valid_snapshot(user)
+    if snapshot is not None:
+        return snapshot.org_roles, (snapshot.default_org or None)
+
+    return {}, None
+
+
+def sync_snapshot(user, claims: AuthClaims) -> None:
+    """Persist ``claims`` as ``user``'s :class:`~.models.UserAuthorizationSnapshot`,
+    respecting the authoritative write rule (security tickets ticket 05):
+
+    * authoritative + non-empty -> write/update snapshot
+    * authoritative + empty     -> write empty snapshot (Keycloak really returned none)
+    * non-authoritative/missing -> DO NOT overwrite a previous snapshot
+
+    A missing mapper/claim (``authoritative is False``) must not silently
+    destroy a previously valid snapshot -- mirrors the demotion guard in
+    ``role_sync.sync_user_permissions_from_roles``. Only the browser/admin
+    login path should call this; Bearer/API claims are never persisted.
+    """
+    if not claims.authoritative:
+        return
+
+    from .models import UserAuthorizationSnapshot
+
+    UserAuthorizationSnapshot.objects.update_or_create(
+        user=user,
+        defaults={
+            "org_roles": claims.org_roles,
+            "default_org": claims.default_org or "",
+            "synced_at": timezone.now(),
+        },
+    )
 
 
 def _load_valid_snapshot(user):

@@ -6,6 +6,10 @@ from rest_framework.exceptions import AuthenticationFailed
 import logging
 from tosca_api.apps.core.jwt_utils import verify_and_decode_token
 from tosca_api.apps.authentication.role_sync import (
+    ExtractedOrg,
+    ExtractedRoles,
+    attach_auth_claims,
+    build_auth_claims,
     extract_org_from_social_data,
     extract_org_from_token,
     extract_roles_from_social_data,
@@ -14,6 +18,7 @@ from tosca_api.apps.authentication.role_sync import (
     sync_user_permissions_from_roles,
 )
 from tosca_api.apps.authentication.role_registry import register_login_roles
+from tosca_api.apps.organizations.policy import sync_snapshot
 from tosca_api.apps.organizations.services import get_or_create_organization
 
 logger = logging.getLogger(__name__)
@@ -76,11 +81,11 @@ class KeycloakTokenAuthentication(BaseAuthentication):
 
             # Sync roles from token
             roles = extract_roles_from_token(decoded_token)
-            self._apply_permissions(user, roles)
+            org = extract_org_from_token(decoded_token)
+            self._apply_permissions(user, roles, org)
 
             # Non-blocking org coherence checks (log-only for API; no messages
             # framework on a Bearer request). See canonical §5d.
-            org = extract_org_from_token(decoded_token)
             if org.present and org.default_slug:
                 get_or_create_organization(org.default_slug)
             run_org_login_checks(user, roles, org, request=None)
@@ -91,10 +96,17 @@ class KeycloakTokenAuthentication(BaseAuthentication):
             raise
         except Exception as e:
             raise AuthenticationFailed(f'Authentication failed: {str(e)}')
-    
-    def _apply_permissions(self, user, roles):
-        """Apply roles to Django user permissions."""
+
+    def _apply_permissions(self, user, roles: ExtractedRoles, org: ExtractedOrg):
+        """Apply roles to Django user permissions and attach request-local
+        authorization claims (security tickets ticket 05).
+
+        Bearer/API is always the freshest claims source and must never
+        mutate the persisted ``UserAuthorizationSnapshot`` (Q11) -- only
+        ``KeycloakAdapter`` (browser/admin login) does that.
+        """
         sync_user_permissions_from_roles(user, roles)
+        attach_auth_claims(user, build_auth_claims(roles, org))
 
 
 class KeycloakAdapter(DefaultSocialAccountAdapter):
@@ -133,10 +145,11 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         user = super().save_user(request, sociallogin, form)
         #extract roles from Keycloak token
         roles = self._extract_roles(sociallogin)
+        org = self._extract_org(sociallogin)
         #apply roles to user permissions
-        self._apply_permissions(user, roles)
+        self._apply_permissions(user, roles, org)
         return user
-    
+
     def pre_social_login(self, request, sociallogin):
         """
         Update user permissions on every login based on current Keycloak roles.
@@ -146,6 +159,7 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         """
         extra_data = sociallogin.account.extra_data
         roles = self._extract_roles(sociallogin)
+        org = self._extract_org(sociallogin)
 
         # Get user info from userinfo or id_token
         userinfo = extra_data.get("userinfo", {})
@@ -166,8 +180,8 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
             user = sociallogin.user
             if user and user.pk:
                 user.refresh_from_db()
-                self._apply_permissions(user, roles)
-                self._run_login_checks(request, user, roles, sociallogin)
+                self._apply_permissions(user, roles, org)
+                self._run_login_checks(request, user, roles, org)
             return
         
         # Not existing - try to find or create user
@@ -208,8 +222,8 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         if existing_user:
             # Connect social account to existing user
             sociallogin.connect(request, existing_user)
-            self._apply_permissions(existing_user, roles)
-            self._run_login_checks(request, existing_user, roles, sociallogin)
+            self._apply_permissions(existing_user, roles, org)
+            self._run_login_checks(request, existing_user, roles, org)
             return
         
         # No existing user - create one now to bypass signup form
@@ -223,8 +237,8 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
                 first_name=first_name or "",
                 last_name=last_name or "",
             )
-            self._apply_permissions(new_user, roles)
-            self._run_login_checks(request, new_user, roles, sociallogin)
+            self._apply_permissions(new_user, roles, org)
+            self._run_login_checks(request, new_user, roles, org)
 
             # Connect sociallogin to the new user
             sociallogin.user = new_user
@@ -252,15 +266,37 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
         access_token = sociallogin.token.token if sociallogin.token else None
         return extract_roles_from_social_data(extra_data, access_token=access_token)
 
-    def _apply_permissions(self, user, roles):
-        """Apply roles to Django user permissions."""
-        sync_user_permissions_from_roles(user, roles)
+    def _extract_org(self, sociallogin):
+        """Extract the default-organization claim from the Keycloak login.
 
-    def _run_login_checks(self, request, user, roles, sociallogin):
-        """Run non-blocking org coherence checks and surface user-facing warnings."""
+        Same payload-source shape as ``_extract_roles`` (extra_data +
+        access token), extracted once per login and threaded through to
+        both ``_apply_permissions`` and ``_run_login_checks`` rather than
+        re-parsed by each.
+        """
         extra_data = sociallogin.account.extra_data
         access_token = sociallogin.token.token if sociallogin.token else None
-        org = extract_org_from_social_data(extra_data, access_token=access_token)
+        return extract_org_from_social_data(extra_data, access_token=access_token)
+
+    def _apply_permissions(self, user, roles: ExtractedRoles, org: ExtractedOrg):
+        """Apply roles to Django user permissions, attach request-local
+        authorization claims, and persist them as this user's
+        ``UserAuthorizationSnapshot`` (security tickets ticket 05).
+
+        Browser/admin is the one path that writes the snapshot -- later
+        requests in this session (and future sessions, until next login)
+        read it back via ``organizations.policy.user_claims``. The write
+        itself respects the authoritative rule (see ``policy.sync_snapshot``):
+        a login with missing/non-authoritative role claims never overwrites
+        a previously valid snapshot.
+        """
+        sync_user_permissions_from_roles(user, roles)
+        claims = build_auth_claims(roles, org)
+        attach_auth_claims(user, claims)
+        sync_snapshot(user, claims)
+
+    def _run_login_checks(self, request, user, roles, org):
+        """Run non-blocking org coherence checks and surface user-facing warnings."""
         if org.present and org.default_slug:
             get_or_create_organization(org.default_slug)
         # Opportunistically grow the KeycloakRole catalog from this login's roles

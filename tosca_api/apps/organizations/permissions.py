@@ -12,27 +12,35 @@ from __future__ import annotations
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from tosca_api.apps.authentication.role_sync import (
+    LEVEL_RANK,
     ORG_CHECK_EXEMPT_ROLES,
-    extract_org_from_social_data,
+    denormalize_org_roles,
     extract_org_from_token,
-    extract_roles_from_social_data,
     extract_roles_from_token,
     org_role_level,
 )
 
-LEVEL_RANK = {"READER": 0, "WRITER": 1, "ADMIN": 2}
+from .policy import user_claims
 
 
 def get_request_org_context(request):
     """Return ``(roles, org_slug, exempt)`` for ``request``.
 
-    Reads the decoded Keycloak token DRF authentication backends attach as
-    ``request.auth`` (``KeycloakTokenAuthentication``). Falls back to the
-    user's linked Keycloak ``SocialAccount.extra_data`` for session-based
-    requests (Django admin), which never populate ``request.auth``. Cached on
-    the request object since a single request can consult permissions
-    (queryset scoping + `has_permission` + `has_object_permission`) more than
-    once.
+    Bearer/API requests read the decoded Keycloak token DRF authentication
+    backends attach as ``request.auth`` (``KeycloakTokenAuthentication``) --
+    always the freshest source, never persisted. Session-based requests
+    (Django admin), which never populate ``request.auth``, fall through to
+    the ticket-05 unified resolver (``organizations.policy.user_claims``):
+    the current request-local live claims if this is the login request
+    itself, else the persisted ``UserAuthorizationSnapshot`` from the user's
+    last successful browser login (fail closed if neither exists). This
+    resolver is the sole consumer of ``SocialAccount.extra_data`` for
+    authorization purposes as of ticket 05 -- the two must not be left live
+    side by side, or they can silently drift apart.
+
+    Cached on the request object since a single request can consult
+    permissions (queryset scoping + `has_permission` +
+    `has_object_permission`) more than once.
     """
     cached = getattr(request, "_org_context", None)
     if cached is not None:
@@ -48,10 +56,12 @@ def get_request_org_context(request):
     else:
         user = getattr(request, "user", None)
         if user is not None and getattr(user, "is_authenticated", False):
-            social_account = user.socialaccount_set.filter(provider="keycloak").first()
-            if social_account is not None:
-                roles = extract_roles_from_social_data(social_account.extra_data).roles
-                org_slug = extract_org_from_social_data(social_account.extra_data).default_slug
+            org_roles, org_slug = user_claims(user)
+            roles = denormalize_org_roles(org_roles)
+            if user.is_superuser:
+                roles = roles | {"DJANGO_SUPERADMIN"}
+            elif user.is_staff:
+                roles = roles | {"DJANGO_STAFF"}
 
     context = (roles, org_slug, bool(roles & ORG_CHECK_EXEMPT_ROLES))
     request._org_context = context

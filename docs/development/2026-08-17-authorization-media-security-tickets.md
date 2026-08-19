@@ -98,7 +98,7 @@ relative to the media track.
 **New execution order:**
 
 ```text
-01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 ✅ → 03 ✅ → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
+01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 ✅ → 03 ✅ → 04 ✅ → 05 ✅ → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
 ```
 
 ### Ticket summary
@@ -111,8 +111,8 @@ relative to the media track.
 | 4 | 14 ✅ | Media: visibility/archive lifecycle re-pointing | 13 | MEDIA |
 | 5 | 15 ✅ | Media: idempotent backfill | 14 | MEDIA |
 | 6 | 03 ✅ | Authorization foundation (entitlement + policy + delete dead perms) | 01 | ARCH |
-| 7 | 04 | `UserAuthorizationSnapshot` model | 03 | ARCH |
-| 8 | 05 | Claim normalization & snapshot sync (Q11 two-path, write rule, resolver) | 04 | ARCH |
+| 7 | 04 ✅ | `UserAuthorizationSnapshot` model | 03 | ARCH |
+| 8 | 05 ✅ | Claim normalization & snapshot sync (Q11 two-path, write rule, resolver) | 04 | ARCH |
 | 9 | 06 | Dynamic `has_perm` backend (A ∩ B) | 05 | ARCH |
 | 10 | 07 | Admin integration + custom `UserAdmin` panel | 06 | ARCH |
 | 11 | 08 | DRF: Campaign (org-private matrix) | 06 | ARCH |
@@ -402,20 +402,45 @@ explicitly *not* the intended end state.
 
 **Blocked by:** 04.
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-19)
 
-- [ ] Normalize roles → multi-org `org_roles`, highest level per org (reuse `parse_role_name` + `org_role_level`;
+- [x] Normalize roles → multi-org `org_roles`, highest level per org (reuse `parse_role_name` + `org_role_level`;
       `LEVEL_RANK = {READER:0, WRITER:1, ADMIN:2}`).
-- [ ] Determine `default_org` (`role_sync._org_slug_from_payload` handles scalar `default_organization` and list `organization`, first).
-- [ ] Browser login attaches `user._auth_claims` and persists snapshot per the authoritative write rule.
-- [ ] Bearer auth attaches `user._auth_claims` and **never** mutates the snapshot.
-- [ ] Implement the unified resolver with the precedence above (fail closed).
-- [ ] Confirm whether one token actually carries multiple orgs' `ROLE_<ORG>_<LEVEL>` before relying on multi-org population (A7).
-- [ ] Repoint `get_request_org_context()`'s browser/admin fallback from `SocialAccount.extra_data` to
+      — `role_sync.normalize_org_roles`/`denormalize_org_roles` + `LEVEL_RANK` (moved here as the single source of
+      truth; `organizations/permissions.py::LEVEL_RANK` now imports it instead of redefining it). Project-scoped
+      roles (`parsed.project`) are deliberately dropped — no consumer yet (canonical §10 "no project-level roles").
+- [x] Determine `default_org` (`role_sync._org_slug_from_payload` handles scalar `default_organization` and list `organization`, first).
+      — unchanged, reused as-is via `extract_org_from_token`/`extract_org_from_social_data`.
+- [x] Browser login attaches `user._auth_claims` and persists snapshot per the authoritative write rule.
+      — `KeycloakAdapter._apply_permissions` (all 4 call sites in `pre_social_login`/`save_user`) now calls
+      `role_sync.build_auth_claims` → `role_sync.attach_auth_claims` → `organizations.policy.sync_snapshot`.
+- [x] Bearer auth attaches `user._auth_claims` and **never** mutates the snapshot.
+      — `KeycloakTokenAuthentication._apply_permissions` calls `build_auth_claims`/`attach_auth_claims` only;
+      no `sync_snapshot` call on this path (Q11).
+- [x] Implement the unified resolver with the precedence above (fail closed).
+      — `organizations/policy.py::user_claims(user)`: live `user._auth_claims` → persisted
+      `UserAuthorizationSnapshot` → `({}, None)`.
+- [x] Confirm whether one token actually carries multiple orgs' `ROLE_<ORG>_<LEVEL>` before relying on multi-org population (A7).
+      — not independently re-verified in this ticket; `normalize_org_roles` is written to handle it correctly
+      (dict keyed by every distinct org slug seen) if/when it occurs, per ticket 04's "multi-org-ready now,
+      single-org enforced now" design note. No live-token evidence gathered here.
+- [x] Repoint `get_request_org_context()`'s browser/admin fallback from `SocialAccount.extra_data` to
       `UserAuthorizationSnapshot` (see migration note above) — do not leave both live.
-- [ ] Tests: multiple org roles; highest-level selection; default-org lookup; authoritative-empty (writes empty);
+      — done: the browser/admin branch now calls `policy.user_claims(user)` and rebuilds a pseudo role set via
+      `denormalize_org_roles` (plus `DJANGO_SUPERADMIN`/`DJANGO_STAFF` synthesized from the already-Keycloak-synced
+      `user.is_superuser`/`user.is_staff` flags, since the normalized snapshot shape doesn't carry raw platform-role
+      strings). `extract_roles_from_social_data`/`extract_org_from_social_data` are no longer imported by
+      `permissions.py`; they're still used by `KeycloakAdapter` itself for the login-time extraction that populates
+      the snapshot in the first place — that's a different call site, not the fallback being retired.
+- [x] Tests: multiple org roles; highest-level selection; default-org lookup; authoritative-empty (writes empty);
       non-authoritative-missing (no overwrite); expired/missing stored ID token; **new browser request after login**;
       Bearer overriding a stored snapshot.
+      — `authentication/tests/test_role_sync.py` (normalize/denormalize/build_auth_claims, 7 new tests),
+      `organizations/tests/test_authz_resolver.py` (resolver precedence, snapshot write rule, browser-fallback
+      repoint, Bearer-overrides-snapshot — 14 tests), `authentication/tests/test_auth_claims_attachment.py`
+      (Bearer attaches-without-persisting vs. browser attaches-and-persists, non-authoritative doesn't clobber — 3
+      tests). Full suite: 1174 passed (same 5 pre-existing environment-dependent failures as ticket 03's baseline —
+      `test_editorjs_uploads` x3 and `test_database_settings` x2 — untouched by this ticket).
 
 **Accepted trade-off (document it):** browser/admin authorization may be **stale until next login** after
 a Keycloak role change; API requests are always fresh. **Demotion is the sharp edge** — a demoted user
