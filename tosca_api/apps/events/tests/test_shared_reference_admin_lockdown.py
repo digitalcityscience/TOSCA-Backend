@@ -5,6 +5,12 @@ These are shared, un-owned reference-data models with no org FK -- before
 this ticket a plain org WRITER could ``change`` and an org ADMIN could
 ``delete`` rows other orgs' content depends on. They're now locked to
 superuser for change/delete, same as ``GeodataEngineAdmin``.
+
+Conservative default, not the final authorization model: the taxonomy
+feature isn't fully designed yet (platform-managed vs. org-owned vs.
+shared-with-limited-curation is still an open product decision -- see
+epic-11-canonical.md §10a). This suite pins today's safe-default behavior;
+expect it to change once that decision lands.
 """
 
 import pytest

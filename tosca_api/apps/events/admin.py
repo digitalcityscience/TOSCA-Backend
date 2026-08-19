@@ -99,7 +99,12 @@ class TaxonomyTermInline(SortOrderHelpTextMixin, admin.TabularInline):
 @admin.register(EventType)
 class EventTypeAdmin(PlatformOnlyChangeDeleteMixin, admin.ModelAdmin):
     """Shared reference data, no owning org -- change/delete are
-    superuser-only (security tickets ticket 05)."""
+    superuser-only (security tickets ticket 05).
+
+    Conservative default, not the final model: the taxonomy feature isn't
+    fully designed yet. This will be revisited once product decides whether
+    taxonomy data is platform-managed, org-owned, or shared-with-limited-
+    self-service-curation -- see epic-11-canonical.md §10a."""
     list_display = ["label", "code", "profile_mode", "profile_key", "is_active"]
     list_filter = ["profile_mode", "is_active"]
     search_fields = ["label", "code", "profile_key"]
@@ -125,7 +130,12 @@ class EventTypeAdmin(PlatformOnlyChangeDeleteMixin, admin.ModelAdmin):
 @admin.register(TaxonomyDimension)
 class TaxonomyDimensionAdmin(PlatformOnlyChangeDeleteMixin, SortOrderHelpTextMixin, admin.ModelAdmin):
     """Shared reference data, no owning org -- change/delete are
-    superuser-only (security tickets ticket 05)."""
+    superuser-only (security tickets ticket 05).
+
+    Conservative default, not the final model: the taxonomy feature isn't
+    fully designed yet. This will be revisited once product decides whether
+    taxonomy data is platform-managed, org-owned, or shared-with-limited-
+    self-service-curation -- see epic-11-canonical.md §10a."""
     form = TaxonomyDimensionAdminForm
     list_display = [
         "label",
@@ -162,7 +172,12 @@ class TaxonomyDimensionAdmin(PlatformOnlyChangeDeleteMixin, SortOrderHelpTextMix
 @admin.register(TaxonomyTerm)
 class TaxonomyTermAdmin(PlatformOnlyChangeDeleteMixin, SortOrderHelpTextMixin, admin.ModelAdmin):
     """Shared reference data, no owning org -- change/delete are
-    superuser-only (security tickets ticket 05)."""
+    superuser-only (security tickets ticket 05).
+
+    Conservative default, not the final model: the taxonomy feature isn't
+    fully designed yet. This will be revisited once product decides whether
+    taxonomy data is platform-managed, org-owned, or shared-with-limited-
+    self-service-curation -- see epic-11-canonical.md §10a."""
     list_display = ["label", "code", "dimension", "parent", "is_active", "sort_order"]
     list_filter = ["dimension", "is_active"]
     search_fields = ["label", "code", "description", "dimension__label", "parent__label"]

@@ -247,16 +247,25 @@ token.realm_access.roles = [ROLE_DCS_WRITER, ...]   +  default_organization=dcs
 - **default_org**: token'ın `default_organization` (scalar) claim'inden okunur — canlı doğrulandı, çalışıyor (§4). Çoklu-org üyelik listesi token'da henüz yok; gerekince mapper'a `organization` array'i eklenir ya da Admin API'den okunur. Login'i bloklamaz.
 - **İki login-check** (org-presence, org-role coherence) — bkz. §5(d).
 - **Platform-rol güvenlik kuralı** — bkz. §2 🔒.
-- **Platform-managed shared models — kalıcı ürün kararı (2026-08-19, org-scope-bypass audit ticket 05):**
-  `EventType`, `TaxonomyDimension`, `TaxonomyTerm`, `GeoContext` bir org'a ait değildir (org FK yok;
-  `GeoContext` özellikle `Event`/`EventSeries` üzerinden birden çok org'un içeriğine bağlanabilir —
-  bkz. ticket 05 gerekçesi). Standart READER/WRITER/ADMIN merdiveni bu modeller için **geçici bir
-  bugfix değil**, kalıcı ürün davranışıdır: `change`/`delete` **superuser-only**
-  (`PlatformOnlyChangeDeleteMixin`, `GeodataEngineAdmin` ile aynı desen); `add` normal `has_perm()`
-  merdiveninden geçer (yeni satır ekleyen org'un kendi kullanımını etkiler, paylaşılan satırları değil).
-  Bir org WRITER/ADMIN'in bu paylaşılan referans verisini değiştirmesi/silmesi diğer org'ların içeriğini
-  bozabileceği için kapatıldı — genişletilecek yeni model bu listeye eklenirken aynı soru sorulmalı:
-  "org FK'sı var mı, yoksa platform-managed mi?"
+- **`GeoContext` = platform-managed shared model — kalıcı karar (2026-08-19, org-scope-bypass audit
+  ticket 05):** `GeoContext`'in org FK'sı yok ve olamaz da — `Event.context`/`EventSeries.default_context`
+  plain (unique olmayan) FK'lar olduğu için tek bir satır birden çok org'un `Event`'ine bağlı olabilir;
+  tek bir sahip org tanımsız (bkz. ticket 05 gerekçesi, model değişmeden queryset-scope bile well-formed
+  değil). Bu yapısal bir kısıt, ürün tercihi değil: `change`/`delete` **superuser-only**
+  (`PlatformOnlyChangeDeleteMixin`, `GeodataEngineAdmin` ile aynı desen), `add` normal `has_perm()`
+  merdiveninden geçer. `GeoContext`'e gerçekten org sahipliği istenirse bu ayrı bir **model değişikliği**
+  kararı gerektirir (org FK eklemek, `Event.context`'i per-org yapmak), buradaki queryset-scope'la
+  çözülemez.
+- **`EventType`/`TaxonomyDimension`/`TaxonomyTerm` = geçici/muhafazakâr, kalıcı değil (2026-08-19, ticket
+  05; not: 2026-08-2x, taksonomi tasarım önceliği):** Bu üçü için `change`/`delete`'i superuser-only
+  yapmak **ürünün nihai yetki modeli değil** — taksonomi özelliği henüz tam tasarlanmadı. Üç seçenek açık:
+  (a) platform-managed shared reference data (mevcut davranış), (b) org-owned content (org FK eklenip
+  gerçek tenant-scope), (c) shared data + org admin'lere sınırlı self-service curation (örn. sadece
+  `is_active`/`sort_order` gibi zararsız alanlar). Taksonomi sahiplik + curation workflow'u netleşene
+  kadar mevcut kısıtlayıcı (superuser-only) davranış **bilinçli olarak korunuyor** — cross-org yan
+  etkiyi önlemek için varsayılan güvenli seçenek. `add/change/delete` izinleri bu ürün kararıyla birlikte
+  yeniden ele alınmalı; şimdiki hali "düzeltilecek bug" değil "tasarım netleşene kadar güvenli varsayılan"
+  olarak okunmalı.
 
 ### 10b. Storage (Q4 — bu grilling'de konuşulmadı, tamamen açık)
 
