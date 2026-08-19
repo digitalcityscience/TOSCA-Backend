@@ -52,27 +52,82 @@ the other stays open.
 **Key point:** the media track (13–15) can proceed independently of most authorization backend work.
 Ticket 02 (S1) is independent and should ship first.
 
+### Execution sequencing decision (2026-08-19, post-ticket-02)
+
+**Decision:** run the MEDIA track (13 → 14 → 15) **before** the ARCH track (03 → 12), reversing this
+document's original top-to-bottom reading order. The blocking-edge graph above was already loose enough
+to allow this (13 only needs 03's *policy stable*, not 04–12) — this section makes the choice explicit
+and records why, so it isn't re-litigated or silently drifted from later.
+
+**Why, in order of weight:**
+
+1. **S2 is a live, confirmed, currently-exploitable gap; the ARCH track is not closing an open gap.**
+   Ticket 01's characterization test
+   (`core/tests/test_security_baseline.py::test_s2_characterization_private_campaign_editorjs_upload_alias_today`)
+   proves today's root cause directly: `geocontext/views.py::_store_validated_upload` writes every
+   EditorJS upload through `storages["media_public"]` unconditionally, with **no** owning-Campaign/
+   GeoStory lookup at all. A private/draft story's inline image is reachable today at a stable unsigned
+   URL. Gates A (capability) and C (ownership/tenant isolation) — the two gates tickets 03–12 rework —
+   are, by contrast, **already implemented and passing**: `OrgScopedPermission`, `CampaignScopedPermission`,
+   and `org_role_level()` (epic-11, pre-dating this ticket set) already enforce them, confirmed by ticket
+   01's golden-snapshot test and the full existing test suite (1120 tests green). Tickets 03–12 are a
+   **refactor of already-correct behavior onto a new `has_perm()`-based architecture** — real value
+   (see point 3), but not a confidentiality fix in themselves.
+2. **Gate B (entitlement) has no enforcement demand yet.** Ticket 03's own text: *"Ship enforcement
+   behind a feature flag or an all-entitled default so this refactor does not silently become a
+   product-licensing rollout. Real per-org restrictions are a separate, deliberate product decision."*
+   The ticket that anchors the whole ARCH chain (03 → 04 → … → 12) is explicitly a no-op on the one
+   genuinely new gate it introduces, until a product decision — not yet made — asks for it.
+3. **The ARCH track's real payoff is architectural, not defensive.** `OrgScopedAdminMixin` today
+   reimplements the role→verb ladder itself specifically *because* Django's `has_perm()` is meaningless
+   for non-superusers here (no `Permission`/`Group` rows are ever synced from Keycloak — see the mixin's
+   own docstring). Ticket 06's dynamic `has_perm()` backend would let Django admin's built-in machinery
+   (`has_module_permission`, sidebar visibility, third-party admin tooling keyed off `has_perm()`) work
+   without that custom reimplementation. Worth doing — but it is a DRY/maintainability improvement to a
+   currently-correct system, not a fix to a currently-broken one, so it does not need to gate the S2 fix.
+4. **Tickets 08–11 carry the plan's own highest rollback-risk rating ("high").** Splitting per resource
+   was already deliberate risk management in this document; sequencing the whole ARCH track after the
+   confirmed-open S2 gap is the same risk-management instinct applied one level up.
+
+**What does NOT change:** the ARCH track's own internal design (03 additive → … → 06 `has_perm` meaningful
+→ 07 admin → 08–11 migrate DRF resources one at a time, deleting old ladder logic only once each resource
+is confirmed on the new path → 12 cleanup) is **staged migration, not a rewrite**, exactly as originally
+scoped. Nothing in this section changes that internal sequencing — only *when* the whole chain starts
+relative to the media track.
+
+**New execution order:**
+
+```text
+01 ✅ → 02 ✅ → 13 → 14 → 15 → 03 → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
+```
+
 ### Ticket summary
 
-| # | Ticket | Blocked by | Track |
-|---|---|---|---|
-| 01 | Baseline & regression tests (S1 + S2 char, golden snapshot, dead-code CI guard) | — | SEC/ARCH |
-| 02 | S1 GeoStory tenant-isolation hotfix — ship first | 01 | SEC |
-| 03 | Authorization foundation (entitlement + policy + delete dead perms) | 01 | ARCH |
-| 04 | `UserAuthorizationSnapshot` model | 03 | ARCH |
-| 05 | Claim normalization & snapshot sync (Q11 two-path, write rule, resolver) | 04 | ARCH |
-| 06 | Dynamic `has_perm` backend (A ∩ B) | 05 | ARCH |
-| 07 | Admin integration + custom `UserAdmin` panel | 06 | ARCH |
-| 08 | DRF: Campaign (org-private matrix) | 06 | ARCH |
-| 09 | DRF: GeoStory (public-read; co-verify w/ 02) | 06, 02 | ARCH |
-| 10 | DRF: Event (incl. A6 second viewset) | 06 | ARCH |
-| 11 | DRF: remaining campaign-owned (A5/A8/A9) | 06 | ARCH |
-| 12 | Workspace/geodata authz cleanup | 08–11 | ARCH |
-| 13 | S2 media: private EditorJS uploads | 03 | MEDIA |
-| 14 | Media: visibility/archive lifecycle re-pointing | 13 | MEDIA |
-| 15 | Media: idempotent backfill | 14 | MEDIA |
-| 16 | Full §9 security acceptance matrix | 02–15 | SEC |
-| 17 | Optional storage hardening | — | MEDIA |
+| Order | # | Ticket | Blocked by | Track |
+|---|---|---|---|---|
+| 1 | 01 | Baseline & regression tests (S1 + S2 char, golden snapshot, dead-code CI guard) | — | SEC/ARCH |
+| 2 | 02 | S1 GeoStory tenant-isolation hotfix — ship first | 01 | SEC |
+| 3 | 13 | S2 media: private EditorJS uploads | 03* | MEDIA |
+| 4 | 14 | Media: visibility/archive lifecycle re-pointing | 13 | MEDIA |
+| 5 | 15 | Media: idempotent backfill | 14 | MEDIA |
+| 6 | 03 | Authorization foundation (entitlement + policy + delete dead perms) | 01 | ARCH |
+| 7 | 04 | `UserAuthorizationSnapshot` model | 03 | ARCH |
+| 8 | 05 | Claim normalization & snapshot sync (Q11 two-path, write rule, resolver) | 04 | ARCH |
+| 9 | 06 | Dynamic `has_perm` backend (A ∩ B) | 05 | ARCH |
+| 10 | 07 | Admin integration + custom `UserAdmin` panel | 06 | ARCH |
+| 11 | 08 | DRF: Campaign (org-private matrix) | 06 | ARCH |
+| 12 | 09 | DRF: GeoStory (public-read; co-verify w/ 02) | 06, 02 | ARCH |
+| 13 | 10 | DRF: Event (incl. A6 second viewset) | 06 | ARCH |
+| 14 | 11 | DRF: remaining campaign-owned (A5/A8/A9) | 06 | ARCH |
+| 15 | 12 | Workspace/geodata authz cleanup | 08–11 | ARCH |
+| 16 | 16 | Full §9 security acceptance matrix | 02–15 | SEC |
+| 17 | 17 | Optional storage hardening | — | MEDIA |
+
+\* Ticket 13 needs ticket 03's *policy stable* only in the sense of "the org-role/ownership rules aren't
+still changing under it" — satisfied today by the already-shipped `OrgScopedPermission`/
+`CampaignScopedPermission`/`org_role_level()` layer, not by ticket 03 itself having run. Ticket 03 is
+listed as a blocker in the original graph for policy-stability, not as a hard sequencing requirement, so
+running 13 before 03 does not violate the dependency graph as drawn.
 
 ### Open Questions carried into implementation (Appendix A1–A9)
 
@@ -171,7 +226,15 @@ models, a per-organization entitlement model, and a data migration seeding every
 with all in-scope apps so **no organization loses access on deploy**. Also delete the confirmed-dead
 legacy permission classes.
 
-**Blocked by:** 01.
+**Deferred until after the media track (2026-08-19, see "Execution sequencing decision" above):** this
+ticket's own hard gate says entitlement enforcement must ship as a no-op (all-entitled default) until "a
+separate, deliberate product decision" asks for real per-org restriction — that decision hasn't been
+made. Building the model+migration now would be schema for a policy that doesn't exist yet
+(speculative generality). Do this after 13–15, when gate B enforcement is actually needed, or when
+starting the ARCH track regardless. The dead-permission-class deletion bullet below is independent of
+the entitlement work and could ship earlier if desired, but is kept in this ticket per the original split.
+
+**Blocked by:** 01. **Execution order:** after 15 (see sequencing decision).
 
 **Status:** ready-for-agent
 
@@ -280,6 +343,30 @@ previously valid snapshot — mirrors the demotion guard in `sync_user_permissio
 ```
 No implicit decoding of stale ID tokens; no hidden in-memory "last known good" fallback.
 
+**Migration note added 2026-08-19 (grilling session, Q3):** today, *before* this ticket runs,
+`organizations/permissions.py::get_request_org_context()` already has a browser/admin fallback path that
+reads `user.socialaccount_set...extra_data` live on every request (via `extract_roles_from_social_data` /
+`extract_org_from_social_data`) — populated by allauth at each login. It is not literally a "decode a
+stale ID token" bug, and its staleness profile ("current as of last login") already matches what
+`UserAuthorizationSnapshot` is meant to provide. Two designs were weighed for this ticket:
+
+- **Reuse `extra_data`** as the persisted-claims source instead of adding a new model (cheaper, zero new
+  schema, functionally equivalent staleness behavior today).
+- **Build `UserAuthorizationSnapshot` as originally scoped**, and treat `extra_data` as allauth-owned
+  identity-provider metadata that authorization state should not be coupled to — a third-party library's
+  internal storage shape can change or be replaced (different login path, provider swap) without any
+  contract to keep serving as our authorization source of truth. The snapshot's `synced_at`, explicit
+  `invalidate_snapshot()` seam, and the authoritative-write-rule enforced *by us* (not by allauth) are
+  real, decision-owned properties `extra_data` doesn't give us for free.
+
+**Decision: build `UserAuthorizationSnapshot` as originally scoped** (decoupling wins over reuse). This
+ticket must additionally **retire the `extra_data` fallback**, not run alongside it:
+`get_request_org_context()`'s browser/admin branch (the `else` arm that currently calls
+`user.socialaccount_set.filter(provider="keycloak").first()` and reads its `extra_data`) must be
+repointed to read `UserAuthorizationSnapshot` instead, once this ticket lands. Leaving both live
+permanently would mean two sources of truth for the same fact that can silently drift apart — that is
+explicitly *not* the intended end state.
+
 **Blocked by:** 04.
 
 **Status:** ready-for-agent
@@ -291,6 +378,8 @@ No implicit decoding of stale ID tokens; no hidden in-memory "last known good" f
 - [ ] Bearer auth attaches `user._auth_claims` and **never** mutates the snapshot.
 - [ ] Implement the unified resolver with the precedence above (fail closed).
 - [ ] Confirm whether one token actually carries multiple orgs' `ROLE_<ORG>_<LEVEL>` before relying on multi-org population (A7).
+- [ ] Repoint `get_request_org_context()`'s browser/admin fallback from `SocialAccount.extra_data` to
+      `UserAuthorizationSnapshot` (see migration note above) — do not leave both live.
 - [ ] Tests: multiple org roles; highest-level selection; default-org lookup; authoritative-empty (writes empty);
       non-authoritative-missing (no overwrite); expired/missing stored ID token; **new browser request after login**;
       Bearer overriding a stored snapshot.
