@@ -29,6 +29,28 @@ def campaign(user):
 
 
 @pytest.mark.django_db
+def test_hero_image_alias_is_default_when_campaign_public_but_story_draft(user, campaign):
+    """S2 fix (security tickets ticket 13): public campaign alone is not
+    enough -- a draft story's hero image must stay private."""
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    story = GeoStory.objects.create(
+        title="Draft", campaign=campaign, author=user, status=GeoStory.Status.DRAFT
+    )
+    assert story.desired_hero_image_storage_alias() == GeoStory.StorageAlias.DEFAULT
+
+
+@pytest.mark.django_db
+def test_hero_image_alias_is_public_when_campaign_public_and_story_published(user, campaign):
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    story = GeoStory.objects.create(
+        title="Published", campaign=campaign, author=user, status=GeoStory.Status.PUBLISHED
+    )
+    assert story.desired_hero_image_storage_alias() == GeoStory.StorageAlias.PUBLIC
+
+
+@pytest.mark.django_db
 def test_geostory_creation(user, campaign):
     """Test standard GeoStory creation."""
     story = GeoStory.objects.create(

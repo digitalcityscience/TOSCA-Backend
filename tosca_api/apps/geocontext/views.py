@@ -64,9 +64,8 @@ class EditorJSMediaThrottle(UserRateThrottle):
     scope = "editorjs_media"
 
 
-def _public_storage():
-    """Storage backend for browser-facing media (unsigned URLs on S3)."""
-    return storages["media_public"]
+def _storage_for_alias(alias: str):
+    return storages[alias]
 
 _UPLOAD_SUCCESS_SERIALIZER = inline_serializer(
     name="EditorJSImageUploadSuccess",
@@ -117,10 +116,13 @@ _MEDIA_LIBRARY_SERIALIZER = inline_serializer(
 )
 
 
-def _absolute_url(request, storage_path: str) -> str:
-    # Public storage produces an unsigned URL on S3 (and a MEDIA_URL path on
-    # local disk); build_absolute_uri leaves an already-absolute URL intact.
-    return request.build_absolute_uri(_public_storage().url(storage_path))
+def _absolute_url(
+    request, storage_path: str, *, alias: str = MediaAsset.StorageAlias.PUBLIC
+) -> str:
+    # Public alias produces an unsigned URL on S3; private aliases (default/
+    # archive) produce a presigned one; build_absolute_uri leaves an
+    # already-absolute URL intact either way.
+    return request.build_absolute_uri(_storage_for_alias(alias).url(storage_path))
 
 
 def _failure(message: str, *, http_status: int = status.HTTP_400_BAD_REQUEST) -> Response:
@@ -139,7 +141,20 @@ def _validation_error_message(exc: DjangoValidationError) -> str:
 def _store_validated_upload(
     file_obj, *, request, original_name: str | None = None
 ) -> Response:
-    """Validate, persist, and return the EditorJS success response."""
+    """Validate, persist, and return the EditorJS success response.
+
+    Security tickets S2: this upload has no owning Campaign/GeoStory yet --
+    the image isn't embedded in any saved GeoContext content until the
+    author saves the story/event, so ``media_paths.resolve_entity`` has
+    nothing to resolve against at this point (it matches on hero_image /
+    embedded content references, neither of which exist yet). Every upload
+    therefore lands in the **private** (``default``) alias unconditionally;
+    once it's linked, ``core.media_lifecycle`` promotes it to the public
+    alias iff the owning campaign is public AND the owning entity is
+    published (the S2 truth table, ticket 13/14). Previously this always
+    used ``media_public`` regardless of the eventual owning campaign's
+    visibility -- the confirmed S2 root cause.
+    """
     try:
         mime, (width, height) = validate_inline_image(file_obj)
     except DjangoValidationError as exc:
@@ -155,7 +170,8 @@ def _store_validated_upload(
 
     if hasattr(file_obj, "seek"):
         file_obj.seek(0)
-    storage = _public_storage()
+    alias = MediaAsset.StorageAlias.DEFAULT
+    storage = _storage_for_alias(alias)
     storage_path = storage.save(relative_path, file_obj)
     uploader = request.user if getattr(request.user, "_meta", None) else None
     MediaAsset.objects.create(
@@ -166,14 +182,14 @@ def _store_validated_upload(
         height=height,
         size=storage.size(storage_path),
         uploader=uploader,
-        storage_alias=MediaAsset.StorageAlias.PUBLIC,
+        storage_alias=alias,
     )
 
     return Response(
         {
             "success": 1,
             "file": {
-                "url": _absolute_url(request, storage_path),
+                "url": _absolute_url(request, storage_path, alias=alias),
                 "mime": mime,
                 "width": width,
                 "height": height,
@@ -323,7 +339,7 @@ def _list_existing_uploads(request, *, limit: int) -> Iterable[dict]:
     assets = MediaAsset.objects.filter(storage_path__startswith=prefix)[:limit]
     for asset in assets:
         yield {
-            "url": _absolute_url(request, asset.storage_path),
+            "url": _absolute_url(request, asset.storage_path, alias=asset.storage_alias),
             "mime": asset.mime,
             "width": asset.width,
             "height": asset.height,

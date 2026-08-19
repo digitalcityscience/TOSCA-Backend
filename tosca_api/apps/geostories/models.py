@@ -198,7 +198,14 @@ class GeoStory(TimeStampedModel):
         super().save(*args, **kwargs)
 
     def desired_hero_image_storage_alias(self) -> str:
-        """Return the current lifecycle bucket for a newly saved hero image."""
+        """Return the current lifecycle bucket for a newly saved hero image.
+
+        Security tickets S2: public only when the campaign is public **and**
+        this story is itself published -- a draft story under a public
+        campaign must stay private (previously campaign visibility alone
+        decided it, which put a public campaign's draft-story hero images in
+        the unsigned public bucket).
+        """
         if not self.campaign_id:
             return self.StorageAlias.DEFAULT
         campaign = self.campaign
@@ -207,7 +214,10 @@ class GeoStory(TimeStampedModel):
             or self.status == self.Status.ARCHIVED
         ):
             return self.StorageAlias.ARCHIVE
-        if campaign.visibility == campaign.Visibility.PUBLIC:
+        if (
+            campaign.visibility == campaign.Visibility.PUBLIC
+            and self.status == self.Status.PUBLISHED
+        ):
             return self.StorageAlias.PUBLIC
         return self.StorageAlias.DEFAULT
 

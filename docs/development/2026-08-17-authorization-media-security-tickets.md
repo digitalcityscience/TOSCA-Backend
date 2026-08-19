@@ -98,7 +98,7 @@ relative to the media track.
 **New execution order:**
 
 ```text
-01 ✅ → 02 ✅ → 13 → 14 → 15 → 03 → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
+01 ✅ → 02 ✅ → 13 ✅ → 14 → 15 → 03 → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
 ```
 
 ### Ticket summary
@@ -107,7 +107,7 @@ relative to the media track.
 |---|---|---|---|---|
 | 1 | 01 | Baseline & regression tests (S1 + S2 char, golden snapshot, dead-code CI guard) | — | SEC/ARCH |
 | 2 | 02 | S1 GeoStory tenant-isolation hotfix — ship first | 01 | SEC |
-| 3 | 13 | S2 media: private EditorJS uploads | 03* | MEDIA |
+| 3 | 13 ✅ | S2 media: private EditorJS uploads | 03* | MEDIA |
 | 4 | 14 | Media: visibility/archive lifecycle re-pointing | 13 | MEDIA |
 | 5 | 15 | Media: idempotent backfill | 14 | MEDIA |
 | 6 | 03 | Authorization foundation (entitlement + policy + delete dead perms) | 01 | ARCH |
@@ -667,19 +667,46 @@ on `Campaign.visibility == public` **without** checking the owning story/event p
 missing `AND entity published` condition is S2. Also the migration path default is hardcoded to
 `media_public` (`core/management/commands/migrate_media_paths.py:45`).
 
-**Blocked by:** 03 (policy decisions stable). Does **not** depend on tickets 04–12.
+**Blocked by:** 03 (policy decisions stable — already true today via the shipped `OrgScopedPermission`/
+`CampaignScopedPermission`/`org_role_level()` layer; ticket 03 itself doesn't need to have run, see the
+sequencing decision above). Does **not** depend on tickets 04–12.
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-19)
 
-- [ ] Resolve A4: verify all current EditorJS upload paths in `geocontext/views.py` and the alias chosen **at upload time** (root cause). Also verify A3 (`Campaign.visibility` value set + how GeoStory/Event derive it).
-- [ ] Resolve the owning Campaign/GeoStory at upload time via `media_paths.resolve_entity`.
-- [ ] Extend `media_lifecycle.desired_alias_for_asset` to add the missing `AND entity published` condition and follow the truth table (archived wins, then public-iff-published, else private).
-- [ ] Resolve the **misc/campaign-level default** (campaign-public ⇒ public, or conservatively private) and encode it.
-- [ ] Private media URLs generated only **after** A+B+C pass; private/draft uploads use `default` + signed URL.
-- [ ] Keep DB metadata / `storage_alias` consistent with the chosen alias.
-- [ ] Tests: EditorJS upload under a private campaign uses private/default alias; private/draft media URL is signed; public + published media uses public alias.
+**Implementation note — upload-time resolution isn't actually possible, so uploads are private by
+default instead:** `media_paths.resolve_entity` matches an asset by its `storage_path` already being
+embedded in a saved `GeoStory.hero_image` or `GeoContext.content` block. At the moment
+`_store_validated_upload` runs, neither exists yet — the frontend uploads the image *first* and only
+embeds the returned URL into the story/event's EditorJS content on a later save. So "resolve the owning
+entity at upload time" has no entity to resolve. The fix taken instead: **every upload lands in the
+private (`default`) alias unconditionally**, with `campaign`/`owner_org` left unset, exactly as
+`media_ownership.plan_backfill`'s docstring already anticipated ("already-linked rows -- set by a normal
+upload flow once campaign linking exists there -- are left untouched"). This is strictly conservative
+(matches or beats every row of the truth table, since "unknown yet" can never be proven public) and
+closes the actual S2 root cause immediately. Promotion to the public alias once an asset is genuinely
+linked to a public+published entity is `core.media_lifecycle`'s job — wiring that trigger on
+save/publish is ticket 14, not this one.
 
-**Files:** `geocontext/views.py`, `core/media_paths.py`, `core/media_lifecycle.py`. **Rollback risk:** medium — verify existing public assets unaffected.
+- [x] Resolve A4: verify all current EditorJS upload paths in `geocontext/views.py` and the alias chosen **at upload time** (root cause). Also verify A3 (`Campaign.visibility` value set + how GeoStory/Event derive it). — done in ticket 01.
+- [x] ~~Resolve the owning Campaign/GeoStory at upload time via `media_paths.resolve_entity`~~ — not possible at upload time (see note above); uploads default private instead, and `resolve_entity` is used by the lifecycle service once the asset is actually linked.
+- [x] Extend `media_lifecycle.desired_alias_for_asset` to add the missing `AND entity published` condition and follow the truth table (archived wins, then public-iff-published, else private). Also fixed the identical gap in `GeoStory.desired_hero_image_storage_alias` (hero images use a separate code path from EditorJS body assets and had the same bug).
+- [x] Resolve the **misc/campaign-level default** (campaign-public ⇒ public, or conservatively private) and encode it. — `KIND_MISC` has no entity-publication axis, so campaign visibility alone decides it (unchanged from before); this is the one case where "campaign public ⇒ public" is still correct as-is.
+- [x] Private media URLs generated only **after** A+B+C pass; private/draft uploads use `default` + signed URL. — `_absolute_url` now builds the URL from the asset's actual alias (`storages[alias].url()`), which is presigned for `default`/`media_archive` per `test_storage_settings.py::test_private_default_bucket_keeps_signed_urls`.
+- [x] Keep DB metadata / `storage_alias` consistent with the chosen alias.
+- [x] Tests: EditorJS upload lands in the private/default alias regardless of campaign (`core/tests/test_security_baseline.py`); `desired_alias_for_asset`/`desired_hero_image_storage_alias` truth-table cases including public-campaign+draft-entity and public-campaign+published-entity, for both GeoStory and Event (`core/tests/test_media_lifecycle.py`, `geostories/tests/test_models.py`).
+
+**Also fixed while here:** the EditorJS "existing uploads" picker (`_list_existing_uploads`) previously
+built every URL from the public storage regardless of an asset's actual `storage_alias` — harmless while
+uploads were always public, but would have produced broken (wrong-bucket, unsigned) links for private
+assets once this fix landed. Now resolves each asset's URL from its own alias.
+
+**Deliberately out of scope here (belongs to ticket 15):** `core/management/commands/migrate_media_paths.py`'s
+`_alias_for_asset` still routes by legacy path-prefix heuristic (`DEFAULT_PUBLIC_PREFIXES`), not the S2
+truth table — that's the one-time canonical-path migration tool, not the upload path; correcting historical
+mis-aliased objects is ticket 15's job.
+
+**Files:** `geocontext/views.py`, `core/media_lifecycle.py`, `geostories/models.py`. **Rollback risk:** low
+(narrower than originally scoped — no `campaign`/`owner_org` writes at upload time to unwind).
 
 ---
 

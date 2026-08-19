@@ -99,20 +99,22 @@ def _png_upload():
 
 
 @pytest.mark.django_db
-def test_s2_characterization_private_campaign_editorjs_upload_alias_today(
-    api_client, uploader, private_campaign
-):
-    """Characterizes S2 (security tickets ticket 01/13).
+def test_s2_editorjs_upload_lands_private_by_default(api_client, uploader, private_campaign):
+    """S2 fix (security tickets ticket 13).
 
-    An EditorJS upload has **no** owning-Campaign/GeoStory context passed to
-    it at all today -- ``geocontext/views.py::_store_validated_upload``
-    always writes through ``storages["media_public"]`` and records
-    ``MediaAsset.StorageAlias.PUBLIC``, regardless of any campaign's
-    visibility. This is the confirmed root cause of S2 (object-storage
-    exposure): a private/draft story's inline image still lands in the
-    unsigned public bucket. This test pins that as *today's* behavior; it is
-    expected to change once ticket 13 resolves the owning entity at upload
-    time and picks the alias from the S2 truth table.
+    An EditorJS upload has **no** owning-Campaign/GeoStory context at upload
+    time -- the image isn't embedded in any saved ``GeoContext.content``
+    until the author saves the story/event, so nothing is resolvable yet.
+    ``geocontext/views.py::_store_validated_upload`` therefore always writes
+    through the private (``default``) alias regardless of any campaign's
+    eventual visibility; ``core.media_lifecycle`` promotes it to the public
+    alias later, once it's actually linked to a public+published entity
+    (ticket 14). Before this fix, every upload landed in ``media_public``
+    unconditionally -- the confirmed S2 root cause (a private/draft story's
+    inline image was reachable at a stable unsigned URL). ``private_campaign``
+    here stands in for "any campaign, or none at all" -- the point is that
+    the upload alias no longer depends on (or leaks through) campaign state
+    it doesn't yet know about.
     """
     api_client.force_authenticate(user=uploader)
     response = api_client.post(
@@ -123,12 +125,8 @@ def test_s2_characterization_private_campaign_editorjs_upload_alias_today(
     assert response.status_code == 200, response.data
 
     asset = MediaAsset.objects.latest("created_at")
-    # TODAY: always public/unsigned, even though `private_campaign` exists
-    # and nothing here ties the upload to it -- that's exactly the gap.
-    assert asset.storage_alias == MediaAsset.StorageAlias.PUBLIC
+    assert asset.storage_alias == MediaAsset.StorageAlias.DEFAULT
     assert response.data["file"]["url"].startswith("http")
-    assert "Signature" not in response.data["file"]["url"]
-    assert "X-Amz-Signature" not in response.data["file"]["url"]
 
 
 # ---------------------------------------------------------------------------

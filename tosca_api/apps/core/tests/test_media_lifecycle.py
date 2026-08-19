@@ -150,6 +150,108 @@ def test_desired_alias_is_archive_when_owning_story_archived_but_campaign_active
     assert desired_alias_for_asset(asset) == MediaAsset.StorageAlias.ARCHIVE
 
 
+def _story_with_context_asset(campaign, django_user_model, *, status, path):
+    """A GeoStory whose context embeds an EditorJS-uploaded asset at ``path``."""
+    from django.core.files.storage import default_storage
+
+    from tosca_api.apps.geocontext.models import GeoContext
+
+    author = django_user_model.objects.create_user(username=f"author-{path}")
+    default_storage.save(path, ContentFile(_png_bytes()))
+    context = GeoContext.objects.create(
+        content={
+            "blocks": [
+                {
+                    "type": "image",
+                    "data": {"file": {"url": f"/media/{path}"}, "alt": "a pic"},
+                }
+            ]
+        },
+        created_by=author,
+    )
+    story = GeoStory.objects.create(
+        title="Story", campaign=campaign, author=author, status=status, context=context
+    )
+    return story
+
+
+def test_desired_alias_is_default_when_campaign_public_but_story_draft(
+    campaign, django_user_model
+):
+    """S2 fix: public campaign alone is not enough -- the owning story must
+    also be published, or the asset stays private (ticket 13 truth table)."""
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    _story_with_context_asset(
+        campaign, django_user_model, status=GeoStory.Status.DRAFT, path="geocontext/editorjs/draft/pic.png"
+    )
+    asset = _make_asset(
+        "geocontext/editorjs/draft/pic.png", campaign=campaign, owner_org=campaign.organization
+    )
+
+    assert desired_alias_for_asset(asset) == MediaAsset.StorageAlias.DEFAULT
+
+
+def test_desired_alias_is_public_when_campaign_public_and_story_published(
+    campaign, django_user_model
+):
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+    _story_with_context_asset(
+        campaign,
+        django_user_model,
+        status=GeoStory.Status.PUBLISHED,
+        path="geocontext/editorjs/pub/pic.png",
+    )
+    asset = _make_asset(
+        "geocontext/editorjs/pub/pic.png", campaign=campaign, owner_org=campaign.organization
+    )
+
+    assert desired_alias_for_asset(asset) == MediaAsset.StorageAlias.PUBLIC
+
+
+def test_desired_alias_is_default_when_campaign_public_but_event_draft(
+    campaign, django_user_model
+):
+    from django.contrib.gis.geos import Point
+    from django.utils import timezone
+    from datetime import timedelta
+
+    from tosca_api.apps.events.models import Event
+
+    campaign.visibility = Campaign.Visibility.PUBLIC
+    campaign.save()
+
+    from django.core.files.storage import default_storage
+
+    from tosca_api.apps.geocontext.models import GeoContext
+
+    author = django_user_model.objects.create_user(username="event-author")
+    path = "geocontext/editorjs/evt/pic.png"
+    default_storage.save(path, ContentFile(_png_bytes()))
+    context = GeoContext.objects.create(
+        content={
+            "blocks": [
+                {"type": "image", "data": {"file": {"url": f"/media/{path}"}, "alt": "a pic"}}
+            ]
+        },
+        created_by=author,
+    )
+    Event.objects.create(
+        campaign=campaign,
+        title="Event",
+        start_datetime=timezone.now() + timedelta(days=1),
+        end_datetime=timezone.now() + timedelta(days=1, hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=author,
+        status=Event.Status.DRAFT,
+        context=context,
+    )
+    asset = _make_asset(path, campaign=campaign, owner_org=campaign.organization)
+
+    assert desired_alias_for_asset(asset) == MediaAsset.StorageAlias.DEFAULT
+
+
 # ---------------------------------------------------------------------------
 # move_one
 # ---------------------------------------------------------------------------

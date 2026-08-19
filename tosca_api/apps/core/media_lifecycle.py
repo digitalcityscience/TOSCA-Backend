@@ -10,15 +10,22 @@ Restoring (un-archiving) moves assets back to the private/public bucket that
 matches the *current* ``Campaign.visibility`` -- not necessarily the bucket
 they started in, since visibility may have changed while archived.
 
-Desired-bucket resolution, in priority order, for a given ``MediaAsset``:
+Desired-bucket resolution, in priority order, for a given ``MediaAsset``
+(security tickets S2 truth table):
 
 1. **Campaign archived** -- the whole campaign is archived -> ``media_archive``.
 2. **Owning GeoStory archived** -- the asset resolves (via
    ``media_paths.resolve_entity``) to a GeoStory whose own ``status`` is
    ``ARCHIVED`` -> ``media_archive``, even though the campaign itself may
    still be active.
-3. **Otherwise** -- ``media_public`` when ``Campaign.visibility`` is public,
-   else ``default`` (private).
+3. **Otherwise** -- ``media_public`` iff ``Campaign.visibility`` is public
+   **and** the resolved owning entity (GeoStory/Event) is itself published
+   -- an asset with a known, unpublished entity stays private under a
+   public campaign (this is the S2 gap: a public campaign alone used to be
+   enough). A ``KIND_MISC`` asset (campaign-level, no single owning entity --
+   e.g. ``EventSeries.default_context``) has no entity-publication axis to
+   check, so campaign visibility alone decides it. Anything not public by
+   this rule is ``default`` (private).
 
 Events have no archived status of their own (``Event.Status`` has no
 ``ARCHIVED`` member -- only Campaign/GeoStory do per §3.1 of the ticket), so
@@ -44,7 +51,7 @@ from typing import Callable, Iterable
 from django.core.files.base import ContentFile
 from django.db import transaction
 
-from tosca_api.apps.core.media_paths import KIND_STORY, resolve_entity
+from tosca_api.apps.core.media_paths import KIND_EVENT, KIND_STORY, resolve_entity
 
 # Planned/observed actions.
 ACTION_MOVED = "moved"
@@ -89,15 +96,29 @@ def desired_alias_for_asset(asset) -> str | None:
     if campaign.status == campaign.Status.ARCHIVED:
         return asset.__class__.StorageAlias.ARCHIVE
 
+    # KIND_MISC (campaign-level, no single owning entity) has no
+    # publication axis of its own, so it defaults to "published" for the
+    # purposes of the public-iff check below -- campaign visibility alone
+    # decides it.
     resolved = resolve_entity(asset)
+    entity_published = True
+
     if resolved is not None and resolved.kind == KIND_STORY:
         from tosca_api.apps.geostories.models import GeoStory
 
         story = GeoStory.objects.filter(id=resolved.entity_id).only("status").first()
-        if story is not None and story.status == GeoStory.Status.ARCHIVED:
-            return asset.__class__.StorageAlias.ARCHIVE
+        if story is not None:
+            if story.status == GeoStory.Status.ARCHIVED:
+                return asset.__class__.StorageAlias.ARCHIVE
+            entity_published = story.status == GeoStory.Status.PUBLISHED
+    elif resolved is not None and resolved.kind == KIND_EVENT:
+        from tosca_api.apps.events.models import Event
 
-    if campaign.visibility == campaign.Visibility.PUBLIC:
+        event = Event.objects.filter(id=resolved.entity_id).only("status").first()
+        if event is not None:
+            entity_published = event.status == Event.Status.PUBLISHED
+
+    if campaign.visibility == campaign.Visibility.PUBLIC and entity_published:
         return asset.__class__.StorageAlias.PUBLIC
     return asset.__class__.StorageAlias.DEFAULT
 
