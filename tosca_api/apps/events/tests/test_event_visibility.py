@@ -6,8 +6,10 @@ from django.contrib.gis.geos import Point
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from tosca_api.apps.authentication.role_sync import AuthClaims
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.events.models import Event, EventSeries, EventType
+from tosca_api.apps.organizations.models import Organization
 
 User = get_user_model()
 
@@ -15,6 +17,23 @@ User = get_user_model()
 @pytest.fixture
 def api_client():
     return APIClient()
+
+
+def _org_token(*roles, org="dcs"):
+    return {"realm_access": {"roles": list(roles)}, "default_organization": org}
+
+
+def _authenticate_org_member(api_client, user, *roles, org="dcs"):
+    """Authenticate ``user`` for both the Bearer-style ``request.auth`` gate
+    and the browser-fallback ``user._auth_claims`` gate (see
+    ``geostories/tests/test_api.py::_authenticate_org_writer`` for the same
+    pattern)."""
+    level = roles[0].rsplit("_", 1)[-1] if roles else None
+    if level:
+        user._auth_claims = AuthClaims(
+            org_roles={org: level}, default_org=org, authoritative=True
+        )
+    api_client.force_authenticate(user=user, token=_org_token(*roles, org=org))
 
 
 @pytest.fixture
@@ -35,8 +54,16 @@ def staff_user():
 
 
 @pytest.fixture
-def campaign(organizer):
-    return Campaign.objects.create(title="Visibility Campaign", created_by=organizer)
+def dcs_org():
+    org, _ = Organization.objects.get_or_create(slug="dcs", defaults={"name": "DCS"})
+    return org
+
+
+@pytest.fixture
+def campaign(organizer, dcs_org):
+    return Campaign.objects.create(
+        title="Visibility Campaign", created_by=organizer, organization=dcs_org
+    )
 
 
 @pytest.fixture
@@ -213,26 +240,66 @@ def test_regular_user_cannot_retrieve_draft_event(
 
 
 @pytest.mark.django_db
-def test_staff_user_can_retrieve_draft_event(api_client, staff_user, draft_event):
+def test_bare_staff_user_cannot_retrieve_draft_event(api_client, staff_user, draft_event):
+    """Security tickets ticket 02: a raw ``is_staff`` grant with no org role
+    is no longer a visibility bypass -- staff-ness alone must not surface
+    another org's drafts."""
     api_client.force_authenticate(user=staff_user)
+    response = api_client.get(f"/api/v1/events/{draft_event.id}/")
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_bare_staff_user_cannot_retrieve_private_event(
+    api_client, staff_user, private_event
+):
+    api_client.force_authenticate(user=staff_user)
+    response = api_client.get(f"/api/v1/events/{private_event.id}/")
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_bare_staff_user_list_excludes_draft_and_private(
+    api_client, staff_user, published_public_event, draft_event, private_event
+):
+    """A bare-staff, no-org-role caller's status/visibility query params are
+    coerced back to published/public, same as an anonymous caller."""
+    api_client.force_authenticate(user=staff_user)
+    response = api_client.get("/api/v1/events/?status=draft&visibility=public")
+    assert response.status_code == 200
+    titles = {item["title"] for item in response.data["results"]}
+    assert titles == {"Published Public"}
+
+
+@pytest.mark.django_db
+def test_org_member_can_retrieve_own_org_draft_event(api_client, staff_user, draft_event):
+    """DJANGO_STAFF + a real ROLE_DCS_* role can see their own org's drafts
+    (parity with GeoStoryViewSet)."""
+    _authenticate_org_member(api_client, staff_user, "ROLE_DCS_READER")
     response = api_client.get(f"/api/v1/events/{draft_event.id}/")
     assert response.status_code == 200
 
 
 @pytest.mark.django_db
-def test_staff_user_can_retrieve_private_event(
-    api_client, staff_user, private_event
-):
-    api_client.force_authenticate(user=staff_user)
+def test_org_member_can_retrieve_own_org_private_event(api_client, staff_user, private_event):
+    _authenticate_org_member(api_client, staff_user, "ROLE_DCS_READER")
     response = api_client.get(f"/api/v1/events/{private_event.id}/")
     assert response.status_code == 200
 
 
 @pytest.mark.django_db
-def test_staff_user_list_includes_draft_and_private(
+def test_org_member_cannot_retrieve_other_org_draft_event(api_client, regular_user, draft_event):
+    """A DJANGO_STAFF+ROLE_HPA_* user cannot read DCS's draft events."""
+    _authenticate_org_member(api_client, regular_user, "ROLE_HPA_READER", org="hpa")
+    response = api_client.get(f"/api/v1/events/{draft_event.id}/")
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_org_member_list_includes_own_org_draft_and_private(
     api_client, staff_user, published_public_event, draft_event, private_event
 ):
-    api_client.force_authenticate(user=staff_user)
+    _authenticate_org_member(api_client, staff_user, "ROLE_DCS_READER")
     response = api_client.get("/api/v1/events/?status=draft&visibility=public")
     assert response.status_code == 200
     titles = {item["title"] for item in response.data["results"]}

@@ -8,8 +8,12 @@ from tosca_api.apps.core.jwt_utils import verify_and_decode_token
 
 logger = logging.getLogger(__name__)
 
-# Platform roles are exempt from org-membership requirements (canonical §5d).
-ORG_CHECK_EXEMPT_ROLES = frozenset({"DJANGO_SUPERADMIN", "DJANGO_STAFF"})
+# Only the global superadmin role bypasses org-membership/org-scoping checks.
+# DJANGO_STAFF grants admin-UI *access* only (see KEYCLOAK_DJANGO_STAFF_ROLES /
+# sync_user_permissions_from_roles) -- it is still bound to ROLE_<ORG>_* for
+# what it can see/touch. Conflating the two let any admin-UI user bypass org
+# scoping entirely (2026-08-19 incident: HPA staff edited a DCS Workspace).
+ORG_CHECK_EXEMPT_ROLES = frozenset({"DJANGO_SUPERADMIN"})
 
 
 # Org-role levels in ascending order of capability. Roles are composite in
@@ -203,7 +207,7 @@ class AuthClaims:
     authoritative: bool
     platform_exempt: bool = False
     """Whether the token/login actually carried a role in
-    ``ORG_CHECK_EXEMPT_ROLES`` (``DJANGO_STAFF``/``DJANGO_SUPERADMIN``).
+    ``ORG_CHECK_EXEMPT_ROLES`` (``DJANGO_SUPERADMIN`` only).
 
     Captured here -- rather than inferred later from ``user.is_staff``/
     ``user.is_superuser`` -- because those Django columns can be toggled
@@ -261,7 +265,7 @@ def run_org_login_checks(user, extracted_roles, extracted_org, *, request=None):
     * **org-role coherence**: member of an org but holding no ``ROLE_<SLUG>_*``
       for it (e.g. a dcs member with only gq roles).
 
-    ``DJANGO_SUPERADMIN`` / ``DJANGO_STAFF`` are exempt. When ``request`` is provided
+    Only ``DJANGO_SUPERADMIN`` is exempt. When ``request`` is provided
     (browser login) a user-facing ``messages.warning`` is added too.
     """
     warnings: list[str] = []

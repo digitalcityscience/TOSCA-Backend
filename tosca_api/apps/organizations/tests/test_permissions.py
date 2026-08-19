@@ -166,6 +166,21 @@ def test_org_scoped_queryset_only_returns_own_org(django_user_model, orgs):
 @pytest.mark.django_db
 def test_org_scoped_queryset_unscoped_for_exempt_roles(django_user_model, orgs):
     dcs, gq = orgs
+    user = django_user_model.objects.create_user(username="superadmin-user")
+    Campaign.objects.create(organization=dcs, title="DCS campaign", created_by=user)
+    Campaign.objects.create(organization=gq, title="GQ campaign", created_by=user)
+
+    request = _request(user, auth=_token("DJANGO_SUPERADMIN"))
+    scoped = org_scoped_queryset(request, Campaign.objects.all())
+
+    assert scoped.count() == 2
+
+
+def test_org_scoped_queryset_django_staff_alone_is_scoped_not_exempt(django_user_model, orgs):
+    """2026-08-19 incident fix: DJANGO_STAFF without an org role is no
+    longer platform-exempt, so it sees an empty scoped queryset instead of
+    every org's rows."""
+    dcs, gq = orgs
     user = django_user_model.objects.create_user(username="staff-user")
     Campaign.objects.create(organization=dcs, title="DCS campaign", created_by=user)
     Campaign.objects.create(organization=gq, title="GQ campaign", created_by=user)
@@ -173,7 +188,7 @@ def test_org_scoped_queryset_unscoped_for_exempt_roles(django_user_model, orgs):
     request = _request(user, auth=_token("DJANGO_STAFF"))
     scoped = org_scoped_queryset(request, Campaign.objects.all())
 
-    assert scoped.count() == 2
+    assert scoped.count() == 0
 
 
 # ---------------------------------------------------------------------------

@@ -33,7 +33,11 @@ from .admin_views import (
     store_postgis_tables_view, store_clone_view,
     publish_postgis_view, stores_for_workspace_view, tables_for_store_view,
 )
-from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin, resolve_write_organization
+from tosca_api.apps.organizations.permissions import (
+    OrgScopedAdminMixin,
+    get_request_org_context,
+    resolve_write_organization,
+)
 
 from .engine_factory import EngineClientFactory
 from .exceptions import GeoServerConnectionError, GeodataEngineError
@@ -375,6 +379,7 @@ class GeodataEngineAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     list_filter = ['engine_type', 'is_active', 'is_default']
     search_fields = ['name', 'base_url', 'public_url']
     readonly_fields = ['id', 'created_at', 'updated_at']
+    filter_horizontal = ['organizations']
     list_per_page = 25
     actions = [sync_engines, test_connection, set_as_default, deactivate_engines, reactivate_engines]
 
@@ -388,11 +393,42 @@ class GeodataEngineAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
         ('State', {
             'fields': ('is_active', 'is_default'),
         }),
+        ('Access', {
+            'fields': ('organizations',),
+            'description': 'Leave empty to allow every organization entitled to Geodata Providers.',
+        }),
         ('Metadata', {
             'fields': ('id', 'created_at', 'updated_at'),
             'classes': ('collapse',),
         }),
     )
+
+    # ------------------------------------------------------------------
+    # Org visibility (ticket-11 follow-up) — GeodataEngine has no single
+    # owning org (it's shared platform infra, see `organizations` field
+    # docstring), so it can't reuse OrgScopedAdminMixin's single-FK
+    # `org_lookup`. An engine is visible when unrestricted (no
+    # `organizations` rows) or when explicitly allow-listed for the
+    # caller's org.
+    # ------------------------------------------------------------------
+    # Merged with the count-annotation get_queryset below it (security
+    # tickets ticket 06) -- as two separate `get_queryset` defs, Python kept
+    # only the later one, silently dropping this org-visibility filter and
+    # letting every entitled staff user see every org's engines.
+
+    # Change/delete stay superuser-only regardless of org role level --
+    # unlike the standard READER/WRITER/ADMIN ladder, an org WRITER/ADMIN
+    # must not be able to edit or delete an engine that other organizations
+    # may also depend on (an org's own connection fields breaking another
+    # org's GeoServer access is a real incident this closed, not a
+    # hypothetical -- see the 2026-08-19 sync-failure report). Adding a
+    # brand new engine only affects the creator, so that still goes through
+    # the normal has_perm() ladder.
+    def has_change_permission(self, request, obj=None):
+        return bool(request.user and request.user.is_superuser)
+
+    def has_delete_permission(self, request, obj=None):
+        return bool(request.user and request.user.is_superuser)
 
     # ------------------------------------------------------------------
     # 1.4.2 — Custom URLs wired for AJAX endpoints
@@ -432,7 +468,7 @@ class GeodataEngineAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
     # ------------------------------------------------------------------
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        return qs.annotate(
+        qs = qs.annotate(
             _workspace_count=Count('workspaces', distinct=True),
             _style_count=Count('styles', distinct=True),
             _layer_count=Count('workspaces__layers', distinct=True),
@@ -442,6 +478,16 @@ class GeodataEngineAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
                 distinct=True,
             ),
         )
+        if request.user.is_superuser:
+            return qs
+        _roles, org_slug, exempt = get_request_org_context(request)
+        if exempt:
+            return qs
+        if not org_slug:
+            return qs.none()
+        return qs.filter(
+            Q(organizations__isnull=True) | Q(organizations__slug=org_slug)
+        ).distinct()
 
     # ------------------------------------------------------------------
     # Computed list_display columns (tasks 1.2.1 – 1.2.3)
@@ -1059,7 +1105,12 @@ class NoCredentialFilter(SimpleListFilter):
 
 
 @admin.register(Store)
-class StoreAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
+class StoreAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
+    # Store has no direct `organization` FK -- it reaches its org only
+    # through its owning Workspace (A9, security tickets ticket 11), same
+    # reasoning as `WorkspaceOwnedScopedPermission.org_attr` in
+    # organizations/permissions.py.
+    org_lookup = "workspace__organization__slug"
     form = StoreAdminForm
     actions = [clone_store]
     list_display = [
@@ -1321,7 +1372,12 @@ class LayerStyleInline(admin.TabularInline):
 
 
 @admin.register(Layer)
-class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
+class LayerAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
+    # Layer has no direct `organization` FK -- it reaches its org only
+    # through its owning Workspace (A9, security tickets ticket 11), same
+    # reasoning as `WorkspaceOwnedScopedPermission.org_attr` in
+    # organizations/permissions.py.
+    org_lookup = "workspace__organization__slug"
     form = LayerAdminForm
     actions = [publish_layer, unpublish_layer]
     change_form_template = 'admin/geodata_providers/layer/change_form.html'
@@ -1645,7 +1701,13 @@ class LayerAdmin(RemoteDeleteAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(Style)
-class StyleAdmin(admin.ModelAdmin):
+class StyleAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
+    # Style reaches its org only through its (optional) Workspace. A
+    # workspace-less style is engine-global (no owning org at all) --
+    # `org_lookup`'s FK filter naturally excludes those for org-scoped
+    # staff (they simply never match), same conservative default as
+    # Store/Layer.
+    org_lookup = "workspace__organization__slug"
     form = StyleAdminForm
     change_form_template = 'admin/geodata_providers/style/change_form.html'
     list_display = [
@@ -1976,7 +2038,11 @@ class SpriteAssetAdminForm(forms.ModelForm):
 
 
 @admin.register(SpriteAsset)
-class SpriteAssetAdmin(admin.ModelAdmin):
+class SpriteAssetAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
+    # Same reasoning as StyleAdmin: SpriteAsset's Workspace FK is optional,
+    # a workspace-less sprite is engine-global and naturally excluded from
+    # org-scoped staff's queryset.
+    org_lookup = "workspace__organization__slug"
     form = SpriteAssetAdminForm
     list_display = ('name', 'geodata_engine', 'workspace', 'validation_state', 'updated_at')
     list_filter = ('geodata_engine', 'workspace', 'validation_state')
@@ -2319,7 +2385,10 @@ class LayerGroupMemberInline(admin.TabularInline):
 
 
 @admin.register(LayerGroup)
-class LayerGroupAdmin(admin.ModelAdmin):
+class LayerGroupAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
+    # LayerGroup's Workspace FK is required, so this always resolves to an
+    # owning org (A9 pattern, same as Store/Layer).
+    org_lookup = "workspace__organization__slug"
     form = LayerGroupAdminForm
     list_display = (
         'name', 'title', 'workspace', 'composition_display', 'member_count',

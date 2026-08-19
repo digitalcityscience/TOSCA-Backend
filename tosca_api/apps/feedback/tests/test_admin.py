@@ -104,9 +104,28 @@ def test_get_queryset_unscoped_for_superuser(django_user_model, orgs, feedback_a
 
 @pytest.mark.django_db
 def test_get_queryset_unscoped_for_exempt_platform_roles(django_user_model, orgs, feedback_admin):
-    """DJANGO_STAFF/DJANGO_SUPERADMIN are exempt from org scoping everywhere
-    else in this app (canonical §2b) -- confirm that stays true here too,
-    rather than accidentally locking staff-only users out."""
+    """DJANGO_SUPERADMIN is exempt from org scoping everywhere else in this
+    app (canonical §2b) -- confirm that stays true here too, rather than
+    accidentally locking superadmin users out."""
+    dcs, gq = orgs
+    superadmin_user = django_user_model.objects.create_user(
+        username="django-superadmin-feedback", is_staff=True, is_superuser=True,
+    )
+    dcs_campaign = Campaign.objects.create(organization=dcs, title="DCS campaign", created_by=superadmin_user)
+    gq_campaign = Campaign.objects.create(organization=gq, title="GQ campaign", created_by=superadmin_user)
+    GeoFeedback.objects.create(campaign=dcs_campaign, title="DCS feedback", created_by=superadmin_user)
+    GeoFeedback.objects.create(campaign=gq_campaign, title="GQ feedback", created_by=superadmin_user)
+
+    request = _request(superadmin_user, auth=_token("DJANGO_SUPERADMIN"))
+    qs = feedback_admin.get_queryset(request)
+
+    assert qs.count() == 2
+
+
+def test_get_queryset_scoped_for_django_staff_without_org_role(django_user_model, orgs, feedback_admin):
+    """2026-08-19 incident fix: a bare DJANGO_STAFF grant no longer bypasses
+    org scoping -- it must still hold a real ROLE_<ORG>_* to see any org's
+    feedback rows."""
     dcs, gq = orgs
     staff_user = django_user_model.objects.create_user(username="django-staff-feedback", is_staff=True)
     dcs_campaign = Campaign.objects.create(organization=dcs, title="DCS campaign", created_by=staff_user)
@@ -117,7 +136,7 @@ def test_get_queryset_unscoped_for_exempt_platform_roles(django_user_model, orgs
     request = _request(staff_user, auth=_token("DJANGO_STAFF"))
     qs = feedback_admin.get_queryset(request)
 
-    assert qs.count() == 2
+    assert qs.count() == 0
 
 
 @pytest.mark.django_db

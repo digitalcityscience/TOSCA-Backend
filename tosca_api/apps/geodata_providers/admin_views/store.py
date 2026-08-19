@@ -9,6 +9,8 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_GET
 
+from tosca_api.apps.organizations.permissions import has_org_write_access
+
 from ..engine_factory import EngineClientFactory
 from ..exceptions import GeodataEngineError
 from ..models import Store, Workspace
@@ -29,12 +31,15 @@ def store_postgis_tables_view(request, store_id):
 
     try:
         store = (
-            Store.objects.select_related('workspace__geodata_engine')
+            Store.objects.select_related('workspace__geodata_engine', 'workspace__organization')
             .filter(workspace__geodata_engine__is_active=True)
             .get(pk=store_id)
         )
     except Store.DoesNotExist:
         return JsonResponse({'error': 'Store not found.'}, status=404)
+
+    if not has_org_write_access(request, store, required='READER', org_attr='workspace__organization'):
+        return JsonResponse({'error': 'Forbidden'}, status=403)
 
     if store.store_type != 'postgis':
         return JsonResponse(
@@ -92,17 +97,34 @@ def store_clone_view(request, store_id):
     from tosca_api.apps.geodata_providers.admin import StoreCloneForm
 
     source = get_object_or_404(
-        Store.objects.select_related('workspace__geodata_engine').filter(
+        Store.objects.select_related('workspace__geodata_engine', 'workspace__organization').filter(
             workspace__geodata_engine__is_active=True,
         ),
         pk=store_id,
     )
+
+    if not has_org_write_access(request, source, required='WRITER', org_attr='workspace__organization'):
+        from django.core.exceptions import PermissionDenied
+        raise PermissionDenied
 
     if request.method == 'POST':
         form = StoreCloneForm(request.POST)
         if form.is_valid():
             cd = form.cleaned_data
             target_ws: Workspace = cd['workspace']
+            # StoreCloneForm's workspace field queryset is unscoped across
+            # orgs (`_active_workspace_queryset`) -- confirm the caller can
+            # actually write into the chosen target too, or a cross-org
+            # staff user could clone a store into another org's workspace
+            # (security tickets ticket 03).
+            if not has_org_write_access(request, target_ws, required='WRITER'):
+                form.add_error('workspace', 'You do not have write access to the selected target workspace.')
+                return render(request, 'admin/geodata_providers/store/clone.html', {
+                    'form': form,
+                    'source': source,
+                    'title': f'Clone store: {source.name}',
+                    'opts': Store._meta,
+                })
             new_name: str = cd['name']
             result = StoreService.clone_store(
                 source_store=source,

@@ -6,7 +6,10 @@ from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin, UpdateMo
 from rest_framework.pagination import CursorPagination
 from rest_framework.response import Response
 
-from tosca_api.apps.organizations.permissions import CampaignScopedPermission
+from tosca_api.apps.organizations.permissions import (
+    CampaignScopedPermission,
+    get_request_org_context,
+)
 
 from .filters import apply_event_filters
 from .models import Event, EventSeries, EventTerm, EventType, TaxonomyDimension, TaxonomyTerm
@@ -119,17 +122,39 @@ class EventViewSet(viewsets.ModelViewSet):
             return [permissions.AllowAny()]
         return super().get_permissions()
 
-    def _is_admin_reader(self) -> bool:
+    def _is_privileged_reader(self) -> bool:
+        """True when the caller may see non-published events: platform-exempt,
+        or an org member (their own org's drafts/private, per
+        ``_apply_visibility_scope``). Org-context based (security tickets
+        ticket 02) -- no longer a raw ``user.is_staff`` read, which let any
+        DJANGO_STAFF user (even with no org role) see every org's drafts."""
         user = self.request.user
-        return bool(user and user.is_authenticated and user.is_staff)
+        if not (user and user.is_authenticated):
+            return False
+        _roles, org_slug, exempt = get_request_org_context(self.request)
+        return exempt or bool(org_slug)
 
     def _apply_visibility_scope(self, queryset):
-        if self._is_admin_reader():
+        """Tenant-scope non-published rows, mirroring
+        ``GeoStoryViewSet._scope_by_visibility``: exempt -> unscoped;
+        authenticated org member -> published/public from any org plus their
+        own org's drafts/private; everyone else -> published/public only."""
+        user = self.request.user
+        if not (user and user.is_authenticated):
+            return queryset.published_public()
+
+        _roles, org_slug, exempt = get_request_org_context(self.request)
+        if exempt:
             return queryset
-        return queryset.published_public()
+        if not org_slug:
+            return queryset.published_public()
+        return queryset.filter(
+            Q(status=Event.Status.PUBLISHED, visibility=Event.Visibility.PUBLIC)
+            | Q(campaign__organization__slug=org_slug)
+        )
 
     def _coerce_public_filters(self, filters: dict) -> dict:
-        if not self._is_admin_reader():
+        if not self._is_privileged_reader():
             filters["status"] = Event.Status.PUBLISHED
             filters["visibility"] = Event.Visibility.PUBLIC
         return filters
@@ -296,14 +321,32 @@ class EventSeriesViewSet(
         "default_context",
         "created_by",
     )
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly, CampaignScopedPermission]
+    # security tickets ticket 04: was IsAuthenticatedOrReadOnly, which let any
+    # authenticated user (READER included) create/update a series -- the
+    # admin already requires WRITER+ (has_perm() -> TOSCA_PERMISSION_MODELS),
+    # so DRF must enforce the same capability ladder instead of disagreeing
+    # with it.
+    permission_classes = [permissions.DjangoModelPermissionsOrAnonReadOnly, CampaignScopedPermission]
 
     def get_queryset(self):
+        """Tenant-scope like ``EventViewSet._apply_visibility_scope``: exempt
+        sees everything; an org member also sees their own org's series
+        (via any event's campaign); everyone else sees only series with a
+        published/public event (security tickets ticket 02 -- was a raw
+        ``user.is_staff`` read)."""
         queryset = super().get_queryset()
         user = self.request.user
-        if user and user.is_authenticated and user.is_staff:
+        if not (user and user.is_authenticated):
+            return queryset.filter(events__in=Event.objects.published_public()).distinct()
+
+        _roles, org_slug, exempt = get_request_org_context(self.request)
+        if exempt:
             return queryset
-        return queryset.filter(events__in=Event.objects.published_public()).distinct()
+        if not org_slug:
+            return queryset.filter(events__in=Event.objects.published_public()).distinct()
+        return queryset.filter(
+            Q(events__in=Event.objects.published_public()) | Q(campaign__organization__slug=org_slug)
+        ).distinct()
 
     def get_serializer_class(self):
         if self.action == "retrieve":

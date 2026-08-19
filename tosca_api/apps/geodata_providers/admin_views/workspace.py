@@ -27,12 +27,15 @@ def workspace_sync_view(request, workspace_id):
 
     try:
         workspace = (
-            Workspace.objects.select_related('geodata_engine')
+            Workspace.objects.select_related('geodata_engine', 'organization')
             .filter(geodata_engine__is_active=True)
             .get(pk=workspace_id)
         )
     except Workspace.DoesNotExist:
         return JsonResponse({'error': 'Workspace not found.'}, status=404)
+
+    if not has_org_write_access(request, workspace):
+        return JsonResponse({'error': 'Forbidden'}, status=403)
 
     engine = workspace.geodata_engine
     if not engine:

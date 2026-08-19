@@ -1,5 +1,7 @@
 from django.contrib import admin
 
+from tosca_api.apps.organizations.permissions import PlatformOnlyChangeDeleteMixin
+
 from .forms import GeoContextAdminForm
 from .models import GeoContext
 
@@ -32,8 +34,17 @@ def _extract_plain_text(content) -> str:
 
 
 @admin.register(GeoContext)
-class GeoContextAdmin(admin.ModelAdmin):
-    """Admin interface for GeoContext with Editor.js authoring."""
+class GeoContextAdmin(PlatformOnlyChangeDeleteMixin, admin.ModelAdmin):
+    """Admin interface for GeoContext with Editor.js authoring.
+
+    GeoContext has no owning org -- ``Event.context``/``EventSeries.default_context``
+    are plain (non-unique) FKs, so one row can be referenced by events across
+    different organizations (security tickets 2026-08-19 ticket 05). No
+    coherent org-scoped queryset exists for it, so change/delete are locked
+    to superuser instead of the normal WRITER/ADMIN ladder; API-side writes
+    (nested authoring flows) are unaffected -- this only restricts the
+    admin UI.
+    """
 
     form = GeoContextAdminForm
 

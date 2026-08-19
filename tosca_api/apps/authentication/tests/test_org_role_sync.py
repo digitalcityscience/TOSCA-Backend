@@ -114,10 +114,21 @@ def test_login_check_org_with_role_has_no_warnings(django_user_model):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("exempt_role", ["DJANGO_SUPERADMIN", "DJANGO_STAFF"])
-def test_login_check_exempt_roles_never_warn(django_user_model, exempt_role):
-    user = django_user_model.objects.create_user(username=f"exempt-{exempt_role.lower()}")
+def test_login_check_exempt_role_never_warns(django_user_model):
+    user = django_user_model.objects.create_user(username="exempt-djangosuperadmin")
 
-    warnings = run_org_login_checks(user, _roles(exempt_role), _org(None, present=False))
+    warnings = run_org_login_checks(user, _roles("DJANGO_SUPERADMIN"), _org(None, present=False))
 
     assert warnings == []
+
+
+@pytest.mark.django_db
+def test_login_check_org_less_django_staff_still_warns(django_user_model):
+    """2026-08-19 incident fix: DJANGO_STAFF is no longer platform-exempt, so
+    an org-less DJANGO_STAFF login surfaces the same no_org warning any other
+    org-less user would get."""
+    user = django_user_model.objects.create_user(username="orgless-django-staff")
+
+    warnings = run_org_login_checks(user, _roles("DJANGO_STAFF"), _org(None, present=False))
+
+    assert warnings == ["no_org"]

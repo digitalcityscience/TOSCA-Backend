@@ -158,15 +158,15 @@ def test_golden_snapshot_permission_classes_per_resource():
         "CampaignScopedPermission",
         "DjangoModelPermissionsOrAnonReadOnly",
     ]
-    # EventSeries is not a TOSCA_PERMISSION_MODELS entry (no gate-A has_perm()
-    # capability check), so DjangoModelPermissionsOrAnonReadOnly is not used
-    # here -- CampaignScopedPermission's org-membership check is the only
-    # write gate. Closes the tickets-09/10 write gap where this viewset
-    # previously had no CampaignScopedPermission at all (any authenticated
-    # user, any org, could write any org's series).
+    # EventSeries *is* a TOSCA_PERMISSION_MODELS entry (registry drift fix,
+    # security tickets ticket 04) -- the admin already required WRITER+, but
+    # this viewset previously used IsAuthenticatedOrReadOnly, which let any
+    # authenticated user (READER included) write a series. Now uses the same
+    # DjangoModelPermissionsOrAnonReadOnly -> has_perm() capability gate as
+    # EventViewSet/GeoStoryViewSet.
     assert _class_names(EventSeriesViewSet.permission_classes) == [
         "CampaignScopedPermission",
-        "IsAuthenticatedOrReadOnly",
+        "DjangoModelPermissionsOrAnonReadOnly",
     ]
     assert _class_names(WorkspaceViewSet.permission_classes) == [
         "IsAuthenticated",

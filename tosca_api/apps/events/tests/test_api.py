@@ -795,7 +795,7 @@ def test_events_list_staff_visibility_private_filter(
         provider_phone="+49 89 12345",
     )
 
-    api_client.force_authenticate(user=staff_user)
+    _authenticate_org_writer(api_client, staff_user, "ROLE_DCS_READER")
     response = api_client.get("/api/v1/events/?visibility=private")
     assert response.status_code == 200
     titles = [item["title"] for item in response.data["results"]]
@@ -1154,7 +1154,7 @@ def test_events_shared_filters_match_between_list_and_within(api_client, user, s
     start_after = (timezone.now() + timedelta(days=1)).isoformat()
     start_before = (timezone.now() + timedelta(days=3)).isoformat()
 
-    api_client.force_authenticate(user=staff_user)
+    _authenticate_org_writer(api_client, staff_user, "ROLE_DCS_READER")
     list_response = api_client.get(
         "/api/v1/events/",
         {
@@ -1393,7 +1393,7 @@ def test_event_series_retrieve_fails_without_base_occurrence_template(
         )
     )
 
-    api_client.force_authenticate(user=staff_user)
+    _authenticate_org_writer(api_client, staff_user, "ROLE_DCS_READER")
     response = api_client.get(f"/api/v1/event-series/{series.id}/")
 
     assert response.status_code == 409

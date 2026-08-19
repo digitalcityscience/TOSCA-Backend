@@ -12,6 +12,8 @@ from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 
+from tosca_api.apps.organizations.permissions import has_org_write_access
+
 from ..admin_forms import PublishPostGISForm
 from ..engine_factory import EngineClientFactory
 from ..exceptions import GeoServerConnectionError, GeoServerPublishError
@@ -38,6 +40,17 @@ def publish_postgis_view(request):
             cd = form.cleaned_data
             workspace: Workspace = cd['workspace']
             store: Store = cd['store']
+            # PublishPostGISForm's workspace/store querysets are unscoped
+            # across orgs -- confirm the caller can actually write into the
+            # chosen workspace, or a cross-org staff user could publish a
+            # layer into another org's workspace (security tickets ticket 03).
+            if not has_org_write_access(request, workspace, required='WRITER'):
+                form.add_error('workspace', 'You do not have write access to the selected workspace.')
+                return render(request, 'admin/geodata_providers/layer/publish_postgis.html', {
+                    'form': form,
+                    'title': 'Publish Layer from PostGIS',
+                    'opts': Layer._meta,
+                })
             table_name: str = cd['table_name']
             layer_name: str = (cd.get('layer_name') or table_name).strip()
             title: str = (cd.get('title') or layer_name).strip()
@@ -123,6 +136,14 @@ def stores_for_workspace_view(request):
         return JsonResponse({'error': 'workspace_id is required.'}, status=400)
 
     try:
+        workspace = Workspace.objects.select_related('organization').get(pk=workspace_id)
+    except Workspace.DoesNotExist:
+        return JsonResponse({'error': 'Workspace not found.'}, status=404)
+
+    if not has_org_write_access(request, workspace, required='READER'):
+        return JsonResponse({'error': 'Forbidden'}, status=403)
+
+    try:
         stores = (
             Store.objects
             .filter(
@@ -153,12 +174,15 @@ def tables_for_store_view(request):
 
     try:
         store = (
-            Store.objects.select_related('workspace__geodata_engine')
+            Store.objects.select_related('workspace__geodata_engine', 'workspace__organization')
             .filter(workspace__geodata_engine__is_active=True)
             .get(pk=store_id)
         )
     except Store.DoesNotExist:
         return JsonResponse({'error': 'Store not found.'}, status=404)
+
+    if not has_org_write_access(request, store, required='READER', org_attr='workspace__organization'):
+        return JsonResponse({'error': 'Forbidden'}, status=403)
 
     if workspace_id and str(store.workspace_id) != workspace_id:
         return JsonResponse({'error': 'Store does not belong to the selected workspace.'}, status=400)

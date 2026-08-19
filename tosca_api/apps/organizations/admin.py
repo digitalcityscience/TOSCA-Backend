@@ -159,7 +159,7 @@ class UserAdmin(DjangoUserAdmin):
             return "(none)"
         return ", ".join(f"{org}: {level}" for org, level in sorted(org_roles.items()))
 
-    @admin.display(description="Platform exempt (DJANGO_STAFF/DJANGO_SUPERADMIN)", boolean=True)
+    @admin.display(description="Platform exempt (DJANGO_SUPERADMIN)", boolean=True)
     def effective_platform_exempt(self, obj):
         return is_platform_exempt(obj)
 

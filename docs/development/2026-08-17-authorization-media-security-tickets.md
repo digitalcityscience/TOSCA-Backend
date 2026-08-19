@@ -98,7 +98,7 @@ relative to the media track.
 **New execution order:**
 
 ```text
-01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 ✅ → 03 ✅ → 04 ✅ → 05 ✅ → 06 ✅ → 07 ✅ → 08 → 09 → 10 → 11 → 12 → 16 → 17
+01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 ✅ → 03 ✅ → 04 ✅ → 05 ✅ → 06 ✅ → 07 ✅ → 08 ✅ → 09 ✅ → 10 ✅ → 11 ✅ → 12 ✅ → 16 ✅ → 17
 ```
 
 ### Ticket summary
@@ -120,7 +120,7 @@ relative to the media track.
 | 13 | 10 | DRF: Event (incl. A6 second viewset) | 06 | ARCH |
 | 14 | 11 | DRF: remaining campaign-owned (A5/A8/A9) | 06 | ARCH |
 | 15 | 12 | Workspace/geodata authz cleanup | 08–11 | ARCH |
-| 16 | 16 | Full §9 security acceptance matrix | 02–15 | SEC |
+| 16 | 16 ✅ | Full §9 security acceptance matrix | 02–15 | SEC |
 | 17 | 17 | Optional storage hardening | — | MEDIA |
 
 \* Ticket 13 needs ticket 03's *policy stable* only in the sense of "the org-role/ownership rules aren't
@@ -755,18 +755,66 @@ Public catalog (catalog_api):         retain AllowAny — GeoServer ACL is the a
 
 **Blocked by:** 06.
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-19)
 
-- [ ] Enumerate remaining campaign-owned DRF resources and apply the correct matrix to each (no global switch; verify intent per resource).
-- [ ] Identify `core/permissions.py` (one class, not yet read) before touching it (A5).
-- [ ] Decide GeoFeedback scope (A8): currently **out of scope** — `feedback/views.py` uses local `IsAdminOrReadOnly`.
+- [x] Enumerate remaining campaign-owned DRF resources and apply the correct matrix to each (no global switch; verify intent per resource).
+      — full inventory: `LayerViewSet`/`StoreViewSet`/`GeodataEngineViewSet` (`geodata_providers/api/views.py`),
+      `GeoFeedbackViewSet` (`feedback/views.py`), `tosca_web/layers` + `tosca_web/participation` viewsets (no
+      Campaign/Organization FK at all — not campaign-owned, out of scope), `core/permissions.py::IsActive` (dead
+      code, see A5), catalog_api's `AllowAny` views (unchanged, see below).
+- [x] Identify `core/permissions.py` (one class, not yet read) before touching it (A5).
+      — **A5 resolved:** one class, `IsActive(BasePermission)` (`is_authenticated and is_active`). Zero real
+      call sites anywhere in the repo (`find_references` confirmed) — dead code, same shape as the classes
+      ticket 03 deleted. Not wired to any viewset; left in place (not blocking, not part of this ticket's
+      migration surface) rather than deleted, since deletion wasn't requested and isn't required to close a gap.
+- [x] Decide GeoFeedback scope (A8): currently **out of scope** — `feedback/views.py` uses local `IsAdminOrReadOnly`.
       Leave out unless the project decides otherwise; record the decision.
-- [ ] Decide whether geodata models beyond `Workspace` (Layer/Store/Style) should be role-controlled (A9);
+      — **A8 confirmed out of scope** per explicit instruction; `GeoFeedbackViewSet` untouched.
+- [x] Decide whether geodata models beyond `Workspace` (Layer/Store/Style) should be role-controlled (A9);
       if yes, extend `TOSCA_PERMISSION_MODELS["geodata_providers"]` (coordinate with ticket 03's SOT).
-- [ ] Retain `AllowAny` on public catalog endpoints (catalog_api Workspace/Layer list).
-- [ ] Add permission-matrix tests for each migrated resource; **anonymous public GET must stay 200** where applicable.
+      — **A9 resolved (user decision, 2026-08-19):** extend to **Store + Layer** (not GeodataEngine, which is
+      platform-level infra shared across orgs via Workspace, not itself org-owned; not Style, which has no
+      exposed DRF viewset). Both Store and Layer reach their organization only through their owning Workspace
+      (no direct FK), so `OrgScopedPermission` gained a configurable `org_attr` (default `"organization"`,
+      unchanged for Campaign/Workspace) and a new `WorkspaceOwnedScopedPermission` subclass
+      (`org_attr="workspace__organization"`) for Store/Layer. `TOSCA_PERMISSION_MODELS["geodata_providers"]`
+      now `{"workspace", "store", "layer"}`. A second user decision: `LayerViewSet.list`/`retrieve` **keep**
+      their existing `AllowAny`, unscoped-read behavior unchanged (mirrors the public catalog on this
+      management endpoint) — only Layer's write actions (`create`/`update`/`destroy`/`publish_postgis`) gained
+      the org-private matrix. Store got the **full** org-private matrix (reads included) since it never had
+      `AllowAny` to begin with and carries PostGIS connection credentials.
+      Added `validate_workspace_organization(request, workspace)` (mirrors `validate_campaign_organization`)
+      to catch cross-org writes at create time, before `has_object_permission` would even run (no object
+      exists yet on create).
+      **Regression found and fixed while migrating:** `StoreViewSet.test_connection_config` (stateless
+      pre-save connection check, no Store/Workspace object exists yet) would have inherited the new
+      class-level org-scope and denied every caller with no org role at all. `@action(permission_classes=...)`
+      turned out **not** to be honored when a viewset is invoked directly via `.as_view()` (bypassing a DRF
+      Router) — which is how this repo's existing `geodata_providers` tests invoke these viewsets throughout
+      (`api/urls.py` isn't mounted yet). Fixed with an explicit `StoreViewSet.get_permissions()` override
+      (mirrors `LayerViewSet`'s existing pattern) rather than relying on the action-kwarg mechanism.
+      **Also updated two pre-existing tests** (`test_api_views.py::LayerUpdateEndpointTests`,
+      `test_layer_usage.py::admin_user` fixture) that authenticated as a bare Django `is_staff`/`is_superuser`
+      user with no Keycloak claims at all — under ticket 07's fix, that alone is **not** treated as
+      platform-exempt (a real Keycloak `DJANGO_STAFF`/`DJANGO_SUPERADMIN` role is required), so both now
+      attach explicit `AuthClaims(platform_exempt=True, ...)` to keep passing under the new gate.
+- [x] Retain `AllowAny` on public catalog endpoints (catalog_api Workspace/Layer list).
+      — confirmed unchanged; `catalog_api/views.py` was not touched by this ticket.
+- [x] Add permission-matrix tests for each migrated resource; **anonymous public GET must stay 200** where applicable.
+      — `geodata_providers/tests/test_store_permission_matrix.py` (12 tests: role matrix, cross-org 404 on
+      read/write/delete, list exclusion, cross-org create denial) and
+      `geodata_providers/tests/test_layer_permission_matrix.py` (9 tests: write-side role matrix, cross-org
+      write/delete/create denial, plus a regression guard proving anonymous list/retrieve of a **public**
+      Layer still returns 200 unchanged). Full suite: 1298 passed.
 
-**Rollback risk:** high — migrate one resource at a time.
+**Files:** `tosca_api/settings/base.py` (`TOSCA_PERMISSION_MODELS`), `organizations/permissions.py`
+(`OrgScopedPermission.org_attr`, `WorkspaceOwnedScopedPermission`, `validate_workspace_organization`),
+`geodata_providers/api/views.py` (`StoreViewSet`, `LayerViewSet`), plus the two pre-existing test fixups above.
+
+**Rollback risk:** high — migrate one resource at a time. (Mitigated: Store/Layer migrated together since both
+share `WorkspaceOwnedScopedPermission`, same pattern ticket 09/10 used for the shared `CampaignScopedPermission`
+strip — migrating one without the other would have reopened the "shared class, one consumer migrated" regression
+`34231a7` already closed once for Workspace/`OrgScopedPermission`.)
 
 ---
 
@@ -781,14 +829,74 @@ GeoServer ACL owns *layer-level visibility* — do **not** move GeoServer ACL au
 
 **Blocked by:** 08, 09, 10, 11 (all of PR 8 / the DRF enforcement refactor).
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-19)
 
-- [ ] Replace `IsAdminUser` in `geodata_providers/api/views.py` with `model capability (A) + organization ownership (C)` where an org ADMIN should manage own-org resources.
-- [ ] Verify interaction with GeoServer/Keycloak role sync (`geodata_providers/role_sync.py`, `security_sync.py`) is unaffected.
-- [ ] Document the boundary explicitly: Django owns role meaning; GeoServer ACL owns layer visibility. No GeoServer ACL redesign.
-- [ ] Tests: org ADMIN manages own-org workspaces (no `is_staff` required); cross-org management denied; GeoServer sync still functions.
+**Scope narrowed against the current codebase before starting:** ticket 11 already migrated
+`WorkspaceViewSet` (`ViewGatedModelPermissions` + `OrgScopedPermission`) and `StoreViewSet`/most of
+`LayerViewSet` (`ViewGatedModelPermissions` + `WorkspaceOwnedScopedPermission`) — its own text says so
+explicitly ("only Layer's write actions (`create`/`update`/`destroy`/`publish_postgis`) gained the
+org-private matrix"). Re-grepped `geodata_providers/api/views.py` for `IsAdminUser` before touching
+anything; found exactly two remaining gaps, both left un-migrated on purpose by ticket 11:
 
-**Files:** `geodata_providers/api/views.py`. **Rollback risk:** medium — verify GeoServer sync unaffected.
+1. `LayerViewSet.publish` / `LayerViewSet.unpublish` (detail=True actions) — still gated on Django
+   `is_staff` (`IsAdminUser`) only, with **no org scope at all**, inconsistent with every other write
+   action on the same viewset. This is the real "own-org management gap": a non-staff org ADMIN
+   couldn't publish/unpublish their own org's layer, while a bare Django staff user (no org role) could
+   publish/unpublish *any* org's layer.
+2. `LayerViewSet.preview` (detail=False, stateless file-extension-detection utility — no Layer/Workspace
+   object touched at all) — also `IsAdminUser`, but has no owning org to scope to in the first place.
+
+`GeodataEngineViewSet`'s four `IsAdminUser`-gated actions (`sync`/`sync_all`/`validate`/`push`) were
+**deliberately left unchanged** — `GeodataEngine` was explicitly excluded from `TOSCA_PERMISSION_MODELS`
+in ticket 11 (A9) because it is platform-level infra shared across organizations via `Workspace`, not
+itself org-owned. "org ADMIN manages own-org resources" doesn't apply to a resource with no owning org,
+so replacing `IsAdminUser` there would have been a scope expansion this ticket doesn't ask for, not a
+gap-close. A code comment now documents this boundary explicitly on `GeodataEngineViewSet` so it isn't
+mistaken for an oversight later.
+
+- [x] Replace `IsAdminUser` in `geodata_providers/api/views.py` with `model capability (A) + organization ownership (C)` where an org ADMIN should manage own-org resources.
+      — `LayerViewSet.get_permissions()`: `publish`/`unpublish` now use the same
+      `[IsAuthenticated, ViewGatedModelPermissions, WorkspaceOwnedScopedPermission]` matrix as
+      create/update/destroy (POST maps to `add_layer` under `DjangoModelPermissions`' default
+      `perms_map`, so WRITER+ may publish/unpublish their own org's layer; `WorkspaceOwnedScopedPermission`
+      still 403s a cross-org object). `preview` now uses `[IsAuthenticated]` only — it touches no
+      Layer/Workspace object, so org-ownership scope doesn't apply; mirrors `StoreViewSet`'s existing
+      `test_connection_config` exemption pattern for stateless pre-object actions.
+- [x] Verify interaction with GeoServer/Keycloak role sync (`geodata_providers/role_sync.py`, `security_sync.py`) is unaffected.
+      — grepped both files for `IsAdminUser`/`permission_classes`: zero references. Neither module is
+      reached from DRF permission classes at all (they're consulted from `LayerService`/`WorkspaceService`
+      command objects, not from the view layer), so this change has no code path into them.
+- [x] Document the boundary explicitly: Django owns role meaning; GeoServer ACL owns layer visibility. No GeoServer ACL redesign.
+      — recorded above (`GeodataEngineViewSet` boundary comment) + inline code comment on the viewset.
+      No GeoServer ACL logic was touched; `publish`/`unpublish` still call the same `LayerService` methods
+      as before — only the DRF-layer gate changed.
+- [x] Tests: org ADMIN manages own-org workspaces (no `is_staff` required); cross-org management denied; GeoServer sync still functions.
+      — `geodata_providers/tests/test_layer_permission_matrix.py`: added `test_reader_cannot_publish_own_org_layer`,
+      `test_reader_cannot_unpublish_own_org_layer`, `test_writer_can_publish_own_org_layer_without_is_staff`,
+      `test_writer_can_unpublish_own_org_layer_without_is_staff`, `test_preview_only_requires_authentication`,
+      `test_cross_org_publish_denied`, `test_cross_org_unpublish_denied` (7 new tests; WorkspaceViewSet/
+      StoreViewSet own-org/cross-org coverage already existed from ticket 11 and needed no changes).
+      GeoServer sync itself isn't exercised by these tests (no live engine in the test fixtures — publish/
+      unpublish tests use the idempotent DRF-layer short-circuit paths so they assert the permission gate,
+      not the orchestration), consistent with how ticket 11's own Store/Layer tests were scoped. Full
+      `geodata_providers` suite: 278 passed. Full project suite: 1305 passed, no regressions.
+
+**Files:** `geodata_providers/api/views.py`, `geodata_providers/tests/test_layer_permission_matrix.py`.
+**Rollback risk:** medium — verify GeoServer sync unaffected. (Narrower than originally scoped — no
+`WorkspaceViewSet`/`StoreViewSet` changes needed, since ticket 11 already covered them.)
+
+> **2026-08-19 annotation (org-scope-bypass audit, ticket 08):** the org-scoping work done in this
+> ticket and in ticket 11 is **not reachable in production** — `geodata_providers/api/urls.py`'s
+> router was never wired into the root URLconf (`tosca_api/urls.py`), so `WorkspaceViewSet`/
+> `StoreViewSet`/`LayerViewSet` only run in tests that call `.as_view()` directly. Do not read
+> ticket 11/12's "done" status as an active production control; Workspace/Store/Layer management is
+> **admin-only** today. The follow-up audit also found `GeodataEngineViewSet` (line ~53 of
+> `api/views.py`) is plain `IsAuthenticated` with no capability/org gate on its default CRUD actions
+> (only its custom `sync`/`sync_all`/`validate`/`push` actions are `IsAdminUser`) — mounting the
+> router as-is would let any authenticated user write/delete `GeodataEngine` rows, which hold admin
+> GeoServer credentials. Decision recorded in
+> [`2026-08-19-org-scope-bypass-findings-tickets.md`](./2026-08-19-org-scope-bypass-findings-tickets.md)
+> ticket 08: **quarantine, do not mount**, until that gap is closed separately.
 
 ---
 
@@ -979,24 +1087,57 @@ public read was broken.
 
 **Blocked by:** 02–15.
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-19)
 
-- [ ] Anonymous → public published GeoStory → **200** — `test_anon_published_200`
-- [ ] Auth DCS → QG2 public published GeoStory → **200** — `test_cross_org_published_200`
-- [ ] Auth DCS → QG2 **draft** GeoStory → **404** — `test_cross_org_draft_404`
-- [ ] DCS READER → own-org draft GeoStory read → **200** — `test_own_org_reader_draft_200`
-- [ ] DCS READER → own-org campaign **change** → **403** — `test_reader_change_denied`
-- [ ] DCS WRITER → own-org campaign change → **200** — `test_writer_change_own_200`
-- [ ] DCS WRITER → other-org campaign change → **404/403** — `test_writer_change_cross_denied`
-- [ ] DCS ADMIN → own-org delete → **200** — `test_admin_delete_own_200`
-- [ ] Org without `geostories` entitlement → **403** — `test_entitlement_missing_denied`
-- [ ] Private EditorJS media without signed URL → **not readable** — `test_private_media_requires_signed`
-- [ ] Private EditorJS media via authorized generated URL → **200 (≤1 h)** — `test_authorized_private_media_url`
-- [ ] Public/published EditorJS media → **200 unsigned** — `test_public_media_unsigned`
-- [ ] Role changed in Keycloak after browser login → **stale until next login** — `test_browser_stale_until_relogin`
-- [ ] Fresh Bearer token after Keycloak role change → **immediately current** — `test_bearer_fresh_claims`
+**Approach taken:** verification pass, not a refactor. Mapped every §9 row to existing tests first;
+only wrote new tests for rows with a genuine coverage gap. 11 of 14 rows were already proven (by
+name-different but functionally-equivalent tests from tickets 08/09/02/05); 3 rows (storage-signing
+composition) had no test tying the already-proven pieces together. Full suite run against the real
+Postgres/Garage-backed containers (`docker exec tosca-django-api`, `DJANGO_STORAGE_BACKEND=filesystem`):
+**1308 passed, 0 failed** (1305 baseline from ticket 12 + 3 new). No row failed — no regression/defect
+to fix.
 
-**Behavior:** none (tests only). **Rollback risk:** none.
+- [x] Anonymous → public published GeoStory → **200** — `geostories/tests/test_permission_matrix.py::test_anon_can_read_published_story`
+- [x] Auth DCS → QG2 public published GeoStory → **200** — `geostories/tests/test_org_isolation.py::test_cross_org_published_stays_200`
+- [x] Auth DCS → QG2 **draft** GeoStory → **404** — `geostories/tests/test_org_isolation.py::test_cross_org_draft_returns_404` +
+      `test_permission_matrix.py::test_cross_org_draft_retrieve_is_404`
+- [x] DCS READER → own-org draft GeoStory read → **200** — `geostories/tests/test_permission_matrix.py::test_reader_can_read_own_org_draft`
+- [x] DCS READER → own-org campaign **change** → **403** — `campaigns/tests/test_permission_matrix.py::test_reader_cannot_write_own_org_campaign`
+- [x] DCS WRITER → own-org campaign change → **200** — `campaigns/tests/test_permission_matrix.py::test_writer_can_change_own_org_campaign`
+- [x] DCS WRITER → other-org campaign change → **404/403** — `campaigns/tests/test_permission_matrix.py::test_cross_org_write_is_404`
+- [x] DCS ADMIN → own-org delete → **200** — `campaigns/tests/test_permission_matrix.py::test_admin_can_delete_own_org_campaign`
+- [x] Org without `geostories` entitlement → **403** — `geostories/tests/test_permission_matrix.py::test_entitlement_missing_denies_write`
+      (+ `campaigns/tests/test_permission_matrix.py::test_entitlement_missing_denies_{read,write}`)
+- [x] Private EditorJS media without signed URL → **not readable** — **gap, closed**:
+      `core/tests/test_media_storage_signing.py::test_private_default_media_url_is_signed` (new)
+- [x] Private EditorJS media via authorized generated URL → **200 (≤1 h)** — **gap, closed**: same file,
+      asserts `X-Amz-Signature` + `X-Amz-Expires` are present on the `default`/`media_archive` alias URL
+      (ticket 17 leaves the 3600s django-storages default unpinned, so "≤1h" holds by that default)
+- [x] Public/published EditorJS media → **200 unsigned** — **gap, closed**:
+      `core/tests/test_media_storage_signing.py::test_public_media_url_is_unsigned` (new)
+- [x] Role changed in Keycloak after browser login → **stale until next login** —
+      `organizations/tests/test_authz_resolver.py::test_user_claims_falls_back_to_snapshot_when_no_live_claims`
+      (a later browser request has no live claims and reads back exactly what login persisted, proving
+      the resolver cannot observe a live Keycloak change without new live claims)
+- [x] Fresh Bearer token after Keycloak role change → **immediately current** —
+      `organizations/tests/test_authz_resolver.py::test_user_claims_prefers_live_claims_over_snapshot`
+      (stale snapshot present; live claims for a *different* org/role win outright)
+
+**Gap analysis (why only 3 new tests):** rows 1-9 (the A/B/C authorization matrix) were fully proven by
+tickets 08/09/02's own permission-matrix suites — re-deriving them under new names would have been
+pure duplication. Rows 13-14 (snapshot precedence) were fully proven by ticket 05's resolver-precedence
+tests at the unit level, which is the correct altitude for "does the precedence rule hold," not a new
+login-flow integration test. Rows 10-12 (gate D storage signing) were the one place with a real hole:
+`core/tests/test_storage_settings.py` only asserted the **config shape** (`querystring_auth` flag per
+alias in a `build_storage_config()` dict) and `core/tests/test_media_lifecycle.py` only asserted **which
+alias** an asset ends up in (the S2 truth table) — nothing asserted that `storages[alias].url(...)`
+(what `geocontext/views.py::_absolute_url` actually calls) produces a signed URL for private aliases and
+an unsigned one for the public alias when exercised together. `test_media_storage_signing.py` closes
+that by presigning (a local HMAC computation, no network call) against an S3-shaped `STORAGES` override
+and asserting on the presence/absence of `X-Amz-Signature`/`X-Amz-Expires` in the resulting URL.
+
+**Files:** `core/tests/test_media_storage_signing.py` (new). **Behavior:** none (tests only).
+**Rollback risk:** none.
 
 ---
 
@@ -1015,12 +1156,22 @@ django-storages' default of **3600 s / 1 hour** applies to signed aliases (`defa
 
 **Blocked by:** None — independent (best done after the media track lands).
 
-**Status:** ready-for-agent
+**Status:** partially done (2026-08-19) — the two low-risk items below landed; TTL reduction,
+object-name-predictability audit, and per-org IAM remain explicitly out of scope per the
+2026-08-19 scoping decision (architecture not reopened).
 
-- [ ] Pin `querystring_expire=3600` so signed-URL TTL does not depend on a library default.
-- [ ] Audit object-name predictability (stable/guessable paths for private objects).
-- [ ] Log/monitor media URL generation.
-- [ ] (Only if a real revocation requirement appears) consider a shorter TTL — otherwise keep 1 hour.
+- [x] Pin `querystring_expire=3600` so signed-URL TTL does not depend on a library default —
+      `tosca_api/settings/base.py::build_storage_config` now sets it explicitly on the `default`
+      and `media_archive` OPTIONS dicts (same value as django-storages' current default, so
+      behavior is unchanged; only the dependency on the library default is removed). Covered by
+      `core/tests/test_storage_settings.py::test_private_default_bucket_pins_the_signed_url_ttl`
+      and `::test_s3_config_with_archive_bucket_adds_signed_alias`.
+- [x] Log/monitor media URL generation — `geocontext/views.py::_absolute_url` (the single call
+      site behind both EditorJS upload responses and `MediaAsset` URL resolution) now logs
+      `media_url.generate alias=<alias> signed=<bool> path=<storage_path>` at INFO. No secrets
+      (query string / signature) are logged, only the alias and storage path.
+- [ ] Audit object-name predictability — deferred, not attempted.
+- [ ] (Only if a real revocation requirement appears) consider a shorter TTL — otherwise keep 1 hour. Deferred.
 - [ ] (Only if operations justify it) reconsider per-org IAM — explicitly **out of scope** by current decision.
 
 **Out of scope reminders (from §10):** no per-org S3 buckets, no per-org IAM keys, no per-user Django

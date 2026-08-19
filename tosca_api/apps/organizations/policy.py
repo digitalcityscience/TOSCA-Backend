@@ -70,7 +70,7 @@ def user_claims(user) -> tuple[dict[str, str], str | None]:
 
 def is_platform_exempt(user) -> bool:
     """Whether ``user`` actually held a role in ``ORG_CHECK_EXEMPT_ROLES``
-    (``DJANGO_STAFF``/``DJANGO_SUPERADMIN``) at last sync -- same precedence
+    (``DJANGO_SUPERADMIN`` only) at last sync -- same precedence
     as :func:`user_claims` (see :func:`_resolve_claims`).
 
     Deliberately **not** ``user.is_staff``/``user.is_superuser``: those
