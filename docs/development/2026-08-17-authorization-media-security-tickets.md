@@ -98,7 +98,7 @@ relative to the media track.
 **New execution order:**
 
 ```text
-01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 ✅ → 03 → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
+01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 ✅ → 03 ✅ → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
 ```
 
 ### Ticket summary
@@ -110,7 +110,7 @@ relative to the media track.
 | 3 | 13 ✅ | S2 media: private EditorJS uploads | 03* | MEDIA |
 | 4 | 14 ✅ | Media: visibility/archive lifecycle re-pointing | 13 | MEDIA |
 | 5 | 15 ✅ | Media: idempotent backfill | 14 | MEDIA |
-| 6 | 03 | Authorization foundation (entitlement + policy + delete dead perms) | 01 | ARCH |
+| 6 | 03 ✅ | Authorization foundation (entitlement + policy + delete dead perms) | 01 | ARCH |
 | 7 | 04 | `UserAuthorizationSnapshot` model | 03 | ARCH |
 | 8 | 05 | Claim normalization & snapshot sync (Q11 two-path, write rule, resolver) | 04 | ARCH |
 | 9 | 06 | Dynamic `has_perm` backend (A ∩ B) | 05 | ARCH |
@@ -236,12 +236,19 @@ the entitlement work and could ship earlier if desired, but is kept in this tick
 
 **Blocked by:** 01. **Execution order:** after 15 (see sequencing decision).
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-19)
 
-- [ ] Delete confirmed-dead `tosca_authentication/permissions.py` (`IsSuperAdmin/IsAdmin/IsEditor/IsViewer`
+- [x] Delete confirmed-dead `tosca_authentication/permissions.py` (`IsSuperAdmin/IsAdmin/IsEditor/IsViewer`
       — zero real call sites; `IsEditor/IsViewer` gate on never-populated Django groups, would deny everyone if wired).
-- [ ] Add `organizations/policy.py` with `LEVEL_ACTIONS`, `user_claims`, `enabled_apps_for` (skeleton).
-- [ ] Add to settings the **single source of truth** and derived set:
+      — deleted `tosca_api/apps/authentication/permissions.py` (the actual path; the ticket's `tosca_authentication`
+      naming was shorthand). CI guard in `test_security_baseline.py` updated from "stays uncalled" to
+      "stays deleted" (asserts the file no longer exists + the four class names don't resurface anywhere).
+- [x] Add `organizations/policy.py` with `LEVEL_ACTIONS`, `user_claims`, `enabled_apps_for` (skeleton).
+      Also added `role_controlled_models_for_app` (reads `TOSCA_PERMISSION_MODELS`) as a small companion the
+      spec didn't name but ticket 06 will need alongside `enabled_apps_for`. `user_claims` is a stub
+      (`NotImplementedError`, wired in ticket 05); nothing in this diff calls into `policy.py` from any
+      view/permission/admin path yet — additive only, per the ticket's own hard gate.
+- [x] Add to settings the **single source of truth** and derived set:
       ```python
       TOSCA_PERMISSION_MODELS = {
           "campaigns":         {"campaign"},
@@ -255,18 +262,30 @@ the entitlement work and could ship earlier if desired, but is kept in this tick
       ```
       Rationale: entitling an *app* must **not** auto-expose every future model in it (revisions, audit
       logs, import jobs). Only models in this map get role-controlled.
-- [ ] Add `OrganizationAppEntitlement` (smallest form) + validator + migration:
+- [x] Add `OrganizationAppEntitlement` (smallest form) + validator + migration:
       ```text
       - organization  (FK → organizations.Organization)
       - app_label     (CharField, validated against TOSCA_ENTITLEABLE_APPS)
       - unique_together (organization, app_label)
       ```
-- [ ] Data migration seeding all existing organizations with their current expected entitlements (all in-scope apps).
-- [ ] **HARD GATE:** after deployment, no existing organization loses access due to entitlement. Ship
+      — `organizations/migrations/0004_organizationappentitlement.py`; validator checks membership in
+      `settings.TOSCA_ENTITLEABLE_APPS` at call time (not import time), so it respects `override_settings` in tests.
+- [x] Data migration seeding all existing organizations with their current expected entitlements (all in-scope apps).
+      — `organizations/migrations/0005_seed_all_entitlements.py`, bulk-creates the org × app cross product with
+      `ignore_conflicts=True` (idempotent); reverse migration deletes only rows whose `app_label` is in
+      `TOSCA_ENTITLEABLE_APPS`, scoped so it can't touch a future real entitlement decision's rows.
+- [x] **HARD GATE:** after deployment, no existing organization loses access due to entitlement. Ship
       enforcement behind a feature flag or an all-entitled default so this refactor does **not** silently
       become a product-licensing rollout. Real per-org restrictions are a **separate, deliberate** product decision.
-- [ ] Admin: entitlement inline on `OrganizationAdmin`.
-- [ ] Tests: entitlement validation (rejects app labels not in the SOT); seed migration correctness.
+      — satisfied: every org gets every entitleable app via the seed migration, and nothing in this diff
+      consults `policy.py`/entitlements from any enforcement path yet.
+- [x] Admin: entitlement inline on `OrganizationAdmin`. — `OrganizationAppEntitlementInline` (TabularInline).
+- [x] Tests: entitlement validation (rejects app labels not in the SOT); seed migration correctness.
+      — `organizations/tests/test_entitlements.py` (6 tests: valid/invalid app_label, unique_together,
+      `enabled_apps_for` scoping, SOT derivation, settings-override respected) +
+      `organizations/tests/test_seed_entitlements_migration.py` (3 tests: full coverage, idempotency, unseed
+      scoping). Full suite: 1143 passed (same 5 pre-existing unrelated failures as baseline — `test_editorjs_uploads`
+      and `test_database_settings`, both environment-dependent, not touched by this ticket).
 
 **Files:** `organizations/models.py`, `organizations/policy.py`, `settings/base.py`, migration,
 `organizations/admin.py`. **Behavior:** additive. **Rollback risk:** low (additive schema).
