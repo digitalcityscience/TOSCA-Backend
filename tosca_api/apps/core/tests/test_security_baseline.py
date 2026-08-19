@@ -164,28 +164,28 @@ def test_golden_snapshot_permission_classes_per_resource():
 
 
 # ---------------------------------------------------------------------------
-# CI guard -- confirmed-dead legacy permission classes stay uncalled.
+# CI guard -- confirmed-dead legacy permission classes stay deleted.
 # ---------------------------------------------------------------------------
 
 _DEAD_CLASSES = ("IsSuperAdmin", "IsAdmin", "IsEditor", "IsViewer")
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
-def test_dead_permission_classes_have_zero_real_call_sites():
-    """Re-asserts (security tickets ticket 01) that
-    ``tosca_api/apps/authentication/permissions.py``'s ``IsSuperAdmin`` /
-    ``IsAdmin`` / ``IsEditor`` / ``IsViewer`` are never actually referenced
-    anywhere else in the codebase -- only defined (and self-documented via a
-    docstring example) in that one file.
+def test_dead_permission_classes_stay_deleted():
+    """Re-asserts (security tickets ticket 03) that
+    ``tosca_api/apps/authentication/permissions.py`` -- which defined the
+    zero-call-site ``IsSuperAdmin``/``IsAdmin``/``IsEditor``/``IsViewer``
+    classes ticket 01 first characterized as dead -- was deleted, and that
+    none of those names have resurfaced anywhere else in the codebase.
     """
     perms_file = _REPO_ROOT / "tosca_api/apps/authentication/permissions.py"
-    assert perms_file.is_file()
+    assert not perms_file.exists()
     this_file = Path(__file__).resolve()
 
     offenders = []
     for path in _REPO_ROOT.rglob("*.py"):
         rel = "/" + str(path.relative_to(_REPO_ROOT))
-        if path in (perms_file, this_file):
+        if path == this_file:
             continue
         if any(part in rel for part in ("/.venv/", "/venv/", "/build/", "/.git/")):
             continue
@@ -195,7 +195,7 @@ def test_dead_permission_classes_have_zero_real_call_sites():
                 offenders.append((str(path.relative_to(_REPO_ROOT)), name))
 
     assert offenders == [], (
-        "Dead permission class referenced outside its own module -- either "
+        "Dead permission class name resurfaced outside this guard -- either "
         "it's actually wired up now (update this guard) or the reference "
         f"should be removed: {offenders}"
     )

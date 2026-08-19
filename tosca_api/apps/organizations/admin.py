@@ -2,7 +2,13 @@ from django.contrib import admin, messages
 from django.contrib.admin.utils import unquote
 from django.http import HttpResponseRedirect
 
-from tosca_api.apps.organizations.models import Organization
+from tosca_api.apps.organizations.models import Organization, OrganizationAppEntitlement
+
+
+class OrganizationAppEntitlementInline(admin.TabularInline):
+    model = OrganizationAppEntitlement
+    extra = 0
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(Organization)
@@ -11,6 +17,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     search_fields = ("name", "slug", "keycloak_org_id")
     list_filter = ("is_active",)
     readonly_fields = ("id", "created_at", "updated_at")
+    inlines = [OrganizationAppEntitlementInline]
 
     # Organization mirrors a native Keycloak org (canonical §5): the only
     # legitimate source of a row is `get_or_create_organization` firing on a

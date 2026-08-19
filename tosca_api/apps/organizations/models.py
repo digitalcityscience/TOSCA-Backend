@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import uuid
 
+from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
 
@@ -78,3 +80,38 @@ class Organization(TimeStampedModel):
     @property
     def admin_role(self) -> str:
         return f"{self.role_prefix}_ADMIN"
+
+
+def validate_entitleable_app_label(value: str) -> None:
+    """Reject any app_label not in the ``TOSCA_ENTITLEABLE_APPS`` single source
+    of truth (security tickets ticket 03) -- entitlements may only ever name
+    an app whose models are actually role-controlled.
+    """
+    if value not in settings.TOSCA_ENTITLEABLE_APPS:
+        raise ValidationError(
+            f"{value!r} is not an entitleable app. Must be one of "
+            f"{sorted(settings.TOSCA_ENTITLEABLE_APPS)}."
+        )
+
+
+class OrganizationAppEntitlement(TimeStampedModel):
+    """Which TOSCA apps an organization may use at all (gate B: entitlement).
+
+    Additive-only for now (security tickets ticket 03): a data migration
+    seeds every existing organization with all in-scope apps so no
+    organization loses access on deploy, and nothing enforces this yet --
+    real per-org restriction is a separate, deliberate product decision.
+    """
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="app_entitlements"
+    )
+    app_label = models.CharField(max_length=100, validators=[validate_entitleable_app_label])
+
+    class Meta:
+        unique_together = ("organization", "app_label")
+        verbose_name = "Organization App Entitlement"
+        verbose_name_plural = "Organization App Entitlements"
+
+    def __str__(self) -> str:
+        return f"{self.organization.slug}: {self.app_label}"

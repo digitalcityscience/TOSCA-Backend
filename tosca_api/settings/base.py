@@ -95,6 +95,22 @@ INSTALLED_APPS = [
     "tosca_api.apps.feedback",
 ]
 
+# Authorization foundation (security tickets ticket 03) -- the single source
+# of truth for which apps' models are role-controlled (gate A) and
+# entitleable per-organization (gate B). Entitling an *app* must not
+# auto-expose every future model in it (revisions, audit logs, import jobs),
+# so only models listed here get role-controlled; TOSCA_ENTITLEABLE_APPS is
+# derived from the keys, never maintained twice.
+TOSCA_PERMISSION_MODELS = {
+    "campaigns": {"campaign"},
+    "geostories": {"geostory"},
+    "events": {"event"},
+    "feedback": {"geofeedback"},  # model is GeoFeedback (Open Q A8: in scope?)
+    "geocontext": {"geocontext"},
+    "geodata_providers": {"workspace"},  # Open Q A9: extend if Layer/Store/Style API-exposed
+}
+TOSCA_ENTITLEABLE_APPS = set(TOSCA_PERMISSION_MODELS)
+
 # django-basic-form-builder: enable read-only API endpoint
 FORMBUILDER_API_ENABLED = True
 
