@@ -98,6 +98,24 @@ class OrgRolePermissionBackend(BaseBackend):
 
         return action in LEVEL_ACTIONS[level]
 
+    def has_module_perms(self, user_obj, app_label) -> bool:
+        """Gate admin sidebar/app_index visibility on the same role +
+        entitlement context ``has_perm`` uses -- without this, Django's
+        module-visibility check falls through to ``ModelBackend``, which
+        only sees real ``Permission`` rows. This backend never creates
+        those rows (by design, see module docstring), so admin apps a user
+        is actually entitled to via their org role would otherwise stay
+        invisible in the UI even though ``has_perm`` grants the underlying
+        actions.
+        """
+        if user_obj is None or not getattr(user_obj, "is_active", False):
+            return False
+        if getattr(user_obj, "is_superuser", False):
+            return True
+
+        _level, entitled_apps = self._capability_context(user_obj)
+        return app_label in entitled_apps
+
     def get_user_permissions(self, user_obj, obj=None) -> set[str]:
         """Enumerate every ``app_label.action_model`` codename ``user_obj``
         currently holds -- the set ``has_perm`` checks membership against,

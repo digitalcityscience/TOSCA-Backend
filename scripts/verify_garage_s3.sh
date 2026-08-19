@@ -39,8 +39,18 @@ run_django_e2e() {
 
 run_django_e2e write
 
+# Real, unsigned+signed browser-style HTTP GETs against the live Garage
+# container -- storage.open()/storage.url() alone don't prove access control
+# actually works, since they use boto3's authenticated client.
+run_django_e2e http
+
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" restart garage
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up --wait garage
 run_django_e2e read
+
+# Rerun the HTTP checks post-restart: the reject-unsigned/accept-presigned
+# behavior must come from bucket ACLs, not any transient in-memory
+# website-config state that a restart would otherwise reset.
+run_django_e2e http
 
 printf '%s\n' 'Garage end-to-end persistence check passed.'

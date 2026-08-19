@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
 
-from tosca_api.apps.organizations.permissions import get_request_org_context
+from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin, get_request_org_context
 
 from .forms import FeedbackLayerFormSet
 from .models import FeedbackLayer, FeedbackSubmission, GeoFeedback
@@ -104,8 +104,10 @@ class GeoFeedbackAdmin(admin.ModelAdmin):
 
 
 @admin.register(FeedbackSubmission)
-class FeedbackSubmissionAdmin(GISModelAdmin):
+class FeedbackSubmissionAdmin(OrgScopedAdminMixin, GISModelAdmin):
     """Admin interface for FeedbackSubmission with map widget for geometry."""
+
+    org_lookup = "feedback__campaign__organization__slug"
 
     list_display = [
         "id",

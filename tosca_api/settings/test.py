@@ -16,10 +16,6 @@ if DJANGO_STORAGE_BACKEND == "s3":  # noqa: F405
         archive_bucket_name=env(
             "S3_TEST_ARCHIVE_BUCKET_NAME", default="tosca-media-test-archive"
         ),
-        static_bucket_name=env("S3_STATIC_BUCKET_NAME", default=""),
-        static_prefix=S3_STATIC_PREFIX,  # noqa: F405
-        static_custom_domain=S3_STATIC_CUSTOM_DOMAIN,  # noqa: F405
-        static_url_protocol=S3_STATIC_URL_PROTOCOL,  # noqa: F405
         endpoint_url=S3_ENDPOINT_URL,  # noqa: F405
         region_name=S3_REGION_NAME,  # noqa: F405
         access_key=S3_ACCESS_KEY_ID,  # noqa: F405

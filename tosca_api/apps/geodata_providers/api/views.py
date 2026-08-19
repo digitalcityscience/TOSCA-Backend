@@ -25,8 +25,10 @@ from rest_framework.response import Response
 from tosca_api.apps.organizations.permissions import (
     OrgScopedPermission,
     ViewGatedModelPermissions,
+    WorkspaceOwnedScopedPermission,
     org_scoped_queryset,
     resolve_write_organization,
+    validate_workspace_organization,
 )
 
 from ..engine_factory import EngineClientFactory
@@ -49,6 +51,18 @@ def _api_result(result: dict) -> dict:
 
 
 class GeodataEngineViewSet(viewsets.ModelViewSet):
+    # Deliberately unmigrated (security tickets ticket 12): GeodataEngine is
+    # platform-level infra shared across organizations via Workspace, not
+    # itself org-owned (ticket 11, A9). It was added to TOSCA_PERMISSION_MODELS
+    # for the Django *admin* only (GeodataEngineAdmin.get_queryset scopes by
+    # its `organizations` allow-list, has_delete_permission stays
+    # superuser-only) -- this DRF viewset never consults has_perm() (its
+    # permission_classes is plain IsAuthenticated, not
+    # ViewGatedModelPermissions/DjangoModelPermissions), so that admin-only
+    # change doesn't affect it. "org ADMIN manages own-org resources" (gate A
+    # + gate C) doesn't apply here since there is no single owning org to
+    # scope an API queryset to; the sync/validate/push actions below correctly
+    # stay Django `is_staff`-gated (IsAdminUser), same as before.
     queryset = GeodataEngine.objects.all()
     serializer_class = GeodataEngineSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -250,7 +264,18 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 class StoreViewSet(viewsets.ModelViewSet):
     queryset = Store.objects.select_related('workspace', 'geodata_engine')
     serializer_class = StoreSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, ViewGatedModelPermissions, WorkspaceOwnedScopedPermission]
+
+    def get_permissions(self):
+        if self.action == 'test_connection_config':
+            # Stateless pre-save validation -- no Store/Workspace object
+            # exists yet, so org-scope (gate C) doesn't apply. `@action`'s
+            # own `permission_classes` kwarg is only honored when the
+            # viewset is routed through a DRF Router; existing tests invoke
+            # this action directly via `.as_view()`, which bypasses that, so
+            # the override has to live here (mirrors LayerViewSet).
+            return [permissions.IsAuthenticated()]
+        return super().get_permissions()
 
     def get_queryset(self):
         qs = Store.objects.select_related('workspace', 'geodata_engine')
@@ -260,7 +285,7 @@ class StoreViewSet(viewsets.ModelViewSet):
             qs = qs.filter(geodata_engine__id=engine_id)
         if workspace_id:
             qs = qs.filter(workspace__id=workspace_id)
-        return qs
+        return org_scoped_queryset(self.request, qs, org_field='workspace__organization__slug')
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -268,6 +293,11 @@ class StoreViewSet(viewsets.ModelViewSet):
         data = serializer.validated_data
 
         workspace = data['workspace']
+        if not validate_workspace_organization(request, workspace):
+            return Response(
+                {'error': 'Workspace does not belong to your organization.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         result = StoreService.create_postgis_store(
             workspace=workspace,
             name=data['name'],
@@ -315,7 +345,9 @@ class StoreViewSet(viewsets.ModelViewSet):
     def test_connection_config(self, request):
         """
         POST /api/v1/providers/provider/stores/test_connection/
-        Stateless pre-save validation for store connection details.
+        Stateless pre-save validation for store connection details. See
+        ``get_permissions`` above for why this action is exempted from
+        org-scope.
         """
         result = StoreService.test_store_connection(
             store_type=request.data.get('store_type', 'postgis'),
@@ -417,10 +449,22 @@ class LayerViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in {'list', 'retrieve'}:
+            # Unchanged (security tickets ticket 11, A9): mirrors the public
+            # catalog's anonymous-read behavior on this management endpoint.
             return [permissions.AllowAny()]
-        if self.action in {'publish', 'unpublish', 'preview'}:
-            return [permissions.IsAdminUser()]
-        return [permissions.IsAuthenticated()]
+        if self.action == 'preview':
+            # Stateless utility (file-extension detection only) -- no
+            # Layer/Workspace object is ever touched, so org-ownership scope
+            # (gate C) doesn't apply. Mirrors StoreViewSet.test_connection_config.
+            return [permissions.IsAuthenticated()]
+        # security tickets ticket 12: publish/unpublish previously required
+        # Django `is_staff` (IsAdminUser), unlike every other write action on
+        # this viewset. That let a bare Django staff user publish/unpublish
+        # any org's layer, and blocked a non-staff org ADMIN from managing
+        # their own org's layers. Bring them under the same gate A (capability,
+        # via ViewGatedModelPermissions) + gate C (org ownership, via
+        # WorkspaceOwnedScopedPermission) matrix as create/update/destroy.
+        return [permissions.IsAuthenticated(), ViewGatedModelPermissions(), WorkspaceOwnedScopedPermission()]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -439,6 +483,12 @@ class LayerViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+
+        if not validate_workspace_organization(request, data['workspace']):
+            return Response(
+                {'error': 'Workspace does not belong to your organization.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         layer, created = Layer.objects.get_or_create(
             workspace=data['workspace'],
@@ -583,6 +633,12 @@ class LayerViewSet(viewsets.ModelViewSet):
             return Response(
                 {'success': False, 'error': 'Store does not belong to the selected workspace.'},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not validate_workspace_organization(request, workspace):
+            return Response(
+                {'success': False, 'error': 'Workspace does not belong to your organization.'},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         geometry_column = data.get('geometry_column', 'geom')

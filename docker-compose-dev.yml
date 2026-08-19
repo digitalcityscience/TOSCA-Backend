@@ -107,7 +107,6 @@ services:
       GARAGE_TEST_PRIVATE_BUCKET: ${S3_TEST_BUCKET_NAME:-tosca-media-test-private}
       GARAGE_TEST_PUBLIC_BUCKET: ${S3_TEST_PUBLIC_BUCKET_NAME:-tosca-media-test-public}
       GARAGE_TEST_ARCHIVE_BUCKET: ${S3_TEST_ARCHIVE_BUCKET_NAME:-tosca-media-test-archive}
-      GARAGE_STATIC_BUCKET: ${S3_STATIC_BUCKET_NAME:-}
       GARAGE_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-GKtosca-local-django}
     volumes:
       - garage_meta:/var/lib/garage/meta:ro
@@ -132,10 +131,6 @@ services:
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-tosca-media-private}
       S3_PUBLIC_BUCKET_NAME: ${S3_PUBLIC_BUCKET_NAME:-tosca-media-public}
       S3_ARCHIVE_BUCKET_NAME: ${S3_ARCHIVE_BUCKET_NAME:-tosca-media-archive}
-      S3_STATIC_BUCKET_NAME: ${S3_STATIC_BUCKET_NAME:-tosca-static}
-      S3_STATIC_PREFIX: ${S3_STATIC_PREFIX:-static/}
-      S3_STATIC_CUSTOM_DOMAIN: ${S3_STATIC_CUSTOM_DOMAIN:-localhost:3900/tosca-static}
-      S3_STATIC_URL_PROTOCOL: ${S3_STATIC_URL_PROTOCOL:-http:}
       S3_ADDRESSING_STYLE: ${S3_ADDRESSING_STYLE:-path}
       S3_SIGNATURE_VERSION: ${S3_SIGNATURE_VERSION:-s3v4}
       MEDIA_PRIVATE_PREFIX: ${MEDIA_PRIVATE_PREFIX:-media/originals/}

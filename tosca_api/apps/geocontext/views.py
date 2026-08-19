@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import io
 import ipaddress
+import logging
 import socket
 import uuid
 from typing import Iterable, Tuple
@@ -44,6 +45,8 @@ from tosca_api.apps.core.image_policy import (
 )
 from tosca_api.apps.core.models import MediaAsset
 
+
+logger = logging.getLogger(__name__)
 
 _UPLOAD_SUBDIR = "geocontext/editorjs"
 _DOWNLOAD_TIMEOUT_SECONDS = 5
@@ -119,9 +122,17 @@ _MEDIA_LIBRARY_SERIALIZER = inline_serializer(
 def _absolute_url(
     request, storage_path: str, *, alias: str = MediaAsset.StorageAlias.PUBLIC
 ) -> str:
-    # Public alias produces an unsigned URL on S3; private aliases (default/
-    # archive) produce a presigned one; build_absolute_uri leaves an
-    # already-absolute URL intact either way.
+    # Every alias (default/media_public/media_archive) now produces a
+    # presigned Garage URL: Django is the only party that can mint a usable
+    # URL, whether the asset is private (authorization-gated) or
+    # public/published (publication-state-gated) -- Garage itself rejects
+    # anonymous GETs on all three buckets. build_absolute_uri leaves an
+    # already-absolute URL intact.
+    logger.info(
+        "media_url.generate alias=%s signed=True path=%s",
+        alias,
+        storage_path,
+    )
     return request.build_absolute_uri(_storage_for_alias(alias).url(storage_path))
 
 

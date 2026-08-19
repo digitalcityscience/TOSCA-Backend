@@ -13,6 +13,7 @@ methods still produces the exact same response shape as before.
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
+from tosca_api.apps.geodata_providers.exceptions import GeoServerConnectionError
 from tosca_api.apps.geodata_providers.geoserver.client import GeoServerClient
 
 
@@ -397,3 +398,64 @@ class DeleteStoreTests(TestCase):
 
         self.assertFalse(result["success"])
         self.assertIn("still there", result["error"])
+
+
+class ValidateConnectionTests(TestCase):
+    """2026-08-19 incident: /rest/about/version.json alone returned 200 for
+    wrong credentials (many GeoServer deployments allow anonymous read on
+    it), so an admin-credential edit passed validation and was persisted --
+    the very next real operation (workspace sync) then failed with 401.
+    validate_connection must reject bad credentials itself, using the same
+    /rest/workspaces endpoint the rest of the app depends on being
+    authenticated against.
+    """
+
+    def setUp(self):
+        self.client = make_client()
+        self.client._client.get_version.return_value = {
+            "about": {"resource": [{"@name": "GeoServer", "Version": "2.25.0"}]}
+        }
+
+    def test_success_returns_version_when_credentials_are_accepted(self):
+        auth_response = MagicMock(status_code=200)
+        with patch.object(self.client, "_request", return_value=auth_response) as mock_request:
+            result = self.client.validate_connection()
+
+        mock_request.assert_called_once_with("get", "/rest/workspaces")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["version"], "2.25.0")
+
+    def test_unreachable_server_raises_before_checking_credentials(self):
+        self.client._client.get_version.side_effect = Exception("connection refused")
+
+        with patch.object(self.client, "_request") as mock_request:
+            with self.assertRaises(GeoServerConnectionError) as ctx:
+                self.client.validate_connection()
+
+        mock_request.assert_not_called()
+        self.assertIn("unreachable", str(ctx.exception))
+
+    def test_rejected_credentials_raise_even_though_version_check_passed(self):
+        auth_response = MagicMock(status_code=401, text="Unauthorized")
+        with patch.object(self.client, "_request", return_value=auth_response):
+            with self.assertRaises(GeoServerConnectionError) as ctx:
+                self.client.validate_connection()
+
+        self.assertIn("credentials rejected", str(ctx.exception))
+        self.assertIn("401", str(ctx.exception))
+
+    def test_forbidden_credentials_raise(self):
+        auth_response = MagicMock(status_code=403, text="Forbidden")
+        with patch.object(self.client, "_request", return_value=auth_response):
+            with self.assertRaises(GeoServerConnectionError) as ctx:
+                self.client.validate_connection()
+
+        self.assertIn("credentials rejected", str(ctx.exception))
+
+    def test_unexpected_status_raises_generic_connection_error(self):
+        auth_response = MagicMock(status_code=500, text="Internal Server Error")
+        with patch.object(self.client, "_request", return_value=auth_response):
+            with self.assertRaises(GeoServerConnectionError) as ctx:
+                self.client.validate_connection()
+
+        self.assertIn("connection check failed", str(ctx.exception))

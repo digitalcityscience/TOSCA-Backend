@@ -104,10 +104,39 @@ INSTALLED_APPS = [
 TOSCA_PERMISSION_MODELS = {
     "campaigns": {"campaign"},
     "geostories": {"geostory"},
-    "events": {"event"},
-    "feedback": {"geofeedback"},  # model is GeoFeedback (Open Q A8: in scope?)
+    # EventType/TaxonomyDimension/TaxonomyTerm are shared reference data with
+    # no owning org (no FK path to Organization at all) -- unlike
+    # EventSeries/EventTerm, which reach one through campaign, there is
+    # nothing to queryset-scope; any staff entitled to `events` manages the
+    # same shared rows, same as the app-wide entitlement model itself implies.
+    "events": {
+        "event", "eventseries", "eventterm",
+        "eventtype", "taxonomydimension", "taxonomyterm",
+    },
+    # GeoFeedback stays out (A8: decided out of scope, see feedback/views.py)
+    # -- its admin keeps its own hand-rolled get_queryset scope instead of
+    # OrgScopedAdminMixin, deliberately not touched here. FeedbackSubmission
+    # reaches its org through feedback__campaign__organization.
+    "feedback": {"geofeedback", "feedbacksubmission"},
     "geocontext": {"geocontext"},
-    "geodata_providers": {"workspace"},  # Open Q A9: extend if Layer/Store/Style API-exposed
+    # A9 (security tickets ticket 11): Store/Layer/LayerGroup/Style/SpriteAsset
+    # reach their organization only through their owning Workspace (no direct
+    # FK) -- their admin classes use org_lookup="workspace__organization__slug"
+    # accordingly (Style/SpriteAsset's Workspace FK is optional; a
+    # workspace-less row is engine-global and simply excluded from org-scoped
+    # staff's queryset, same conservative default as Store/Layer). GeodataEngine
+    # has no single owning org (shared platform infra -- see its `organizations`
+    # M2M field) -- view/add go through the normal has_perm() ladder, scoped by
+    # GeodataEngineAdmin.get_queryset (unrestricted engines + any explicitly
+    # allow-listed for the caller's org); change/delete are overridden to
+    # superuser-only in GeodataEngineAdmin regardless of org role level, since
+    # an org WRITER/ADMIN must not be able to edit or delete an engine other
+    # orgs may depend on (an org's connection-field edit breaking another org's
+    # GeoServer access is a real incident this closed, see the admin.py comment).
+    "geodata_providers": {
+        "workspace", "store", "layer", "layergroup", "style", "spriteasset",
+        "geodataengine",
+    },
 }
 TOSCA_ENTITLEABLE_APPS = set(TOSCA_PERMISSION_MODELS)
 
@@ -223,13 +252,8 @@ S3_SECRET_ACCESS_KEY = env("S3_SECRET_ACCESS_KEY", default="")
 S3_BUCKET_NAME = env("S3_BUCKET_NAME", default="")
 S3_PUBLIC_BUCKET_NAME = env("S3_PUBLIC_BUCKET_NAME", default="")
 S3_ARCHIVE_BUCKET_NAME = env("S3_ARCHIVE_BUCKET_NAME", default="")
-S3_STATIC_BUCKET_NAME = env("S3_STATIC_BUCKET_NAME", default="")
-S3_STATIC_PREFIX = env("S3_STATIC_PREFIX", default="static/")
-S3_STATIC_CUSTOM_DOMAIN = env("S3_STATIC_CUSTOM_DOMAIN", default="")
-S3_STATIC_URL_PROTOCOL = env("S3_STATIC_URL_PROTOCOL", default="https:")
 S3_ADDRESSING_STYLE = env("S3_ADDRESSING_STYLE", default="auto")
 S3_SIGNATURE_VERSION = env("S3_SIGNATURE_VERSION", default="s3v4")
-MEDIA_PUBLIC_BASE_URL = env("MEDIA_PUBLIC_BASE_URL", default=MEDIA_URL)
 MEDIA_PRIVATE_PREFIX = env("MEDIA_PRIVATE_PREFIX", default="")
 MEDIA_DERIVATIVE_PREFIX = env("MEDIA_DERIVATIVE_PREFIX", default="derivatives/")
 
@@ -239,10 +263,6 @@ def build_storage_config(
     bucket_name: str = "",
     public_bucket_name: str = "",
     archive_bucket_name: str = "",
-    static_bucket_name: str = "",
-    static_prefix: str = "static/",
-    static_custom_domain: str = "",
-    static_url_protocol: str = "https:",
     endpoint_url: str = "",
     region_name: str = "us-east-1",
     access_key: str = "",
@@ -251,7 +271,7 @@ def build_storage_config(
     signature_version: str = "s3v4",
     location: str = "",
 ) -> dict[str, dict[str, object]]:
-    """Build Django's storage aliases without coupling application code to S3."""
+    """Build media-storage aliases without coupling static files to S3."""
     if backend == "filesystem":
         # ``media_public`` mirrors ``default`` on local disk so application
         # code can always resolve the alias; the private/public split only
@@ -278,8 +298,7 @@ def build_storage_config(
         raise ImproperlyConfigured("S3_BUCKET_NAME is required when using S3 storage.")
     if not public_bucket_name:
         raise ImproperlyConfigured(
-            "S3_PUBLIC_BUCKET_NAME is required when using S3 storage; "
-            "browser-facing media must be served unsigned from the public bucket."
+            "S3_PUBLIC_BUCKET_NAME is required when using S3 storage."
         )
     config = {
         "default": {
@@ -295,6 +314,10 @@ def build_storage_config(
                 "default_acl": None,
                 "file_overwrite": False,
                 "querystring_auth": True,
+                # Pinned explicitly rather than relying on django-storages'
+                # default (also 3600s today) so the signed-URL TTL doesn't
+                # silently change on a library upgrade (ticket 17).
+                "querystring_expire": 3600,
                 "location": location.strip("/"),
             },
         },
@@ -302,28 +325,14 @@ def build_storage_config(
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
         },
     }
-    if static_bucket_name:
-        config["staticfiles"] = {
-            "BACKEND": "storages.backends.s3.S3Storage",
-            "OPTIONS": {
-                "bucket_name": static_bucket_name,
-                "endpoint_url": endpoint_url or None,
-                "region_name": region_name,
-                "access_key": access_key or None,
-                "secret_key": secret_key or None,
-                "addressing_style": addressing_style,
-                "signature_version": signature_version,
-                "default_acl": None,
-                "file_overwrite": True,
-                "querystring_auth": False,
-                "location": static_prefix.strip("/"),
-                "custom_domain": static_custom_domain or None,
-                "url_protocol": static_url_protocol,
-            },
-        }
-    # Public derivatives/inline media live in a separate bucket served with
-    # unsigned URLs (``querystring_auth=False``) so published content does not
-    # break when a signed URL expires.
+    # ``media_public`` keeps its own bucket for lifecycle semantics (backfill,
+    # promotion/demotion between aliases), but is no longer readable
+    # anonymously: Garage's public-website exposure for this bucket has been
+    # removed, so the only way to fetch an object here is a presigned URL
+    # Django issues after checking the asset/entity is actually
+    # public/published (see geocontext/views.py::_absolute_url). "Public"
+    # therefore means publicly reachable through TOSCA's application logic,
+    # not anonymously readable from the bucket itself.
     config["media_public"] = {
         "BACKEND": "storages.backends.s3.S3Storage",
         "OPTIONS": {
@@ -336,7 +345,8 @@ def build_storage_config(
             "signature_version": signature_version,
             "default_acl": None,
             "file_overwrite": False,
-            "querystring_auth": False,
+            "querystring_auth": True,
+            "querystring_expire": 3600,
             "location": "",
         },
     }
@@ -359,6 +369,7 @@ def build_storage_config(
                 "default_acl": None,
                 "file_overwrite": False,
                 "querystring_auth": True,
+                "querystring_expire": 3600,
                 "location": "",
             },
         }
@@ -370,10 +381,6 @@ STORAGES = build_storage_config(
     bucket_name=S3_BUCKET_NAME,
     public_bucket_name=S3_PUBLIC_BUCKET_NAME,
     archive_bucket_name=S3_ARCHIVE_BUCKET_NAME,
-    static_bucket_name=S3_STATIC_BUCKET_NAME,
-    static_prefix=S3_STATIC_PREFIX,
-    static_custom_domain=S3_STATIC_CUSTOM_DOMAIN,
-    static_url_protocol=S3_STATIC_URL_PROTOCOL,
     endpoint_url=S3_ENDPOINT_URL,
     region_name=S3_REGION_NAME,
     access_key=S3_ACCESS_KEY_ID,

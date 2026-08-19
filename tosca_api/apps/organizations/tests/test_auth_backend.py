@@ -187,3 +187,57 @@ def test_registered_backend_fail_closed_for_plain_user(django_user_model, db):
     user = django_user_model.objects.create_user(username="plain-user")
 
     assert user.has_perm("campaigns.view_campaign") is False
+
+
+# ---------------------------------------------------------------------------
+# has_module_perms: admin sidebar/app_index visibility (regression --
+# previously unimplemented, so it silently fell through to ModelBackend,
+# which only sees real Permission rows and always denied role-only users).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.django_db
+def test_reader_has_module_perms_for_entitled_app(django_user_model, backend, dcs):
+    user = _user_with_role(django_user_model, "READER")
+
+    assert backend.has_module_perms(user, "campaigns") is True
+
+
+@pytest.mark.django_db
+def test_has_module_perms_false_for_unentitled_app(django_user_model, backend, db):
+    org, _ = Organization.objects.get_or_create(slug="qg4", defaults={"name": "QG4"})
+    OrganizationAppEntitlement.objects.create(organization=org, app_label="campaigns")
+    user = _user_with_role(django_user_model, "ADMIN", org_slug="qg4")
+
+    assert backend.has_module_perms(user, "campaigns") is True
+    assert backend.has_module_perms(user, "events") is False
+
+
+@pytest.mark.django_db
+def test_has_module_perms_superuser_bypasses_everything(django_user_model, backend, db):
+    superuser = django_user_model.objects.create_superuser(
+        username="root-module", email="root@example.com", password="x"
+    )
+
+    assert backend.has_module_perms(superuser, "not_a_real_app") is True
+
+
+@pytest.mark.django_db
+def test_has_module_perms_inactive_user_denied(django_user_model, backend, dcs):
+    user = _user_with_role(django_user_model, "ADMIN")
+    user.is_active = False
+
+    assert backend.has_module_perms(user, "campaigns") is False
+
+
+@pytest.mark.django_db
+def test_registered_backend_makes_user_has_module_perms_meaningful(django_user_model, db):
+    """End-to-end through Django's has_module_perms() dispatch (registered
+    backend) -- this is what actually drives admin sidebar/app_index
+    visibility, distinct from has_perm() which only gates individual
+    add/change/delete/view actions."""
+    org, _ = Organization.objects.get_or_create(slug="qg5", defaults={"name": "QG5"})
+    OrganizationAppEntitlement.objects.create(organization=org, app_label="campaigns")
+    user = _user_with_role(django_user_model, "READER", org_slug="qg5")
+
+    assert user.has_module_perms("campaigns") is True
+    assert user.has_module_perms("events") is False

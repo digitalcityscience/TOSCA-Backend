@@ -29,20 +29,23 @@ ensure_bucket() {
   garage bucket allow --read --write --owner "$bucket" --key "$GARAGE_ACCESS_KEY"
 }
 
+# No bucket gets anonymous website access anymore: default, media_public and
+# media_archive are all private S3 buckets. "Public" media is only reachable
+# through a presigned URL Django issues after checking the asset/entity is
+# actually public/published -- not through anonymous bucket access.
 ensure_bucket "$GARAGE_PRIVATE_BUCKET"
 ensure_bucket "$GARAGE_PUBLIC_BUCKET"
 ensure_bucket "$GARAGE_ARCHIVE_BUCKET"
 
-for bucket in \
-  "${GARAGE_TEST_PRIVATE_BUCKET:-}" \
-  "${GARAGE_TEST_PUBLIC_BUCKET:-}" \
-  "${GARAGE_TEST_ARCHIVE_BUCKET:-}" \
-  "${GARAGE_STATIC_BUCKET:-}"
-do
-  if [ -n "$bucket" ]; then
-    ensure_bucket "$bucket"
-  fi
-done
+if [ -n "${GARAGE_TEST_PRIVATE_BUCKET:-}" ]; then
+  ensure_bucket "$GARAGE_TEST_PRIVATE_BUCKET"
+fi
+if [ -n "${GARAGE_TEST_PUBLIC_BUCKET:-}" ]; then
+  ensure_bucket "$GARAGE_TEST_PUBLIC_BUCKET"
+fi
+if [ -n "${GARAGE_TEST_ARCHIVE_BUCKET:-}" ]; then
+  ensure_bucket "$GARAGE_TEST_ARCHIVE_BUCKET"
+fi
 
 printf 'Garage bootstrap complete: %s, %s, %s' "$GARAGE_PRIVATE_BUCKET" "$GARAGE_PUBLIC_BUCKET" "$GARAGE_ARCHIVE_BUCKET"
 if [ -n "${GARAGE_TEST_PRIVATE_BUCKET:-}" ] || [ -n "${GARAGE_TEST_PUBLIC_BUCKET:-}" ] || [ -n "${GARAGE_TEST_ARCHIVE_BUCKET:-}" ]; then
@@ -50,8 +53,5 @@ if [ -n "${GARAGE_TEST_PRIVATE_BUCKET:-}" ] || [ -n "${GARAGE_TEST_PUBLIC_BUCKET
     "${GARAGE_TEST_PRIVATE_BUCKET:-}" \
     "${GARAGE_TEST_PUBLIC_BUCKET:-}" \
     "${GARAGE_TEST_ARCHIVE_BUCKET:-}"
-fi
-if [ -n "${GARAGE_STATIC_BUCKET:-}" ]; then
-  printf ', static bucket: %s' "$GARAGE_STATIC_BUCKET"
 fi
 printf '\n'

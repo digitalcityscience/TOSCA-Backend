@@ -2336,14 +2336,26 @@ class GeoServerClient:
 
     def validate_connection(self) -> Dict:
         """
-        Verify that GeoServer is reachable and responding correctly.
-        Uses /rest/about/version.json which raises a real exception on failure
-        (unlike get_workspaces which silently returns []).
+        Verify that GeoServer is reachable AND that the configured
+        credentials are actually accepted for admin operations.
+
+        /rest/about/version.json alone is not sufficient: many GeoServer
+        deployments allow anonymous/read-only access to it, so it can return
+        200 even with wrong or missing credentials -- reachable, but not
+        proof the credentials work. That gap let an admin-credential edit
+        pass validation and get persisted, only for the very next real
+        operation (workspace sync) to fail with 401 (2026-08-19 incident).
+        /rest/workspaces requires an authenticated admin session on every
+        GeoServer deployment this app targets, so it's used here as the
+        actual credential check -- the same endpoint the post-save sync
+        depends on, so a passing validation here means that sync will not
+        fail on auth grounds.
 
         Returns:
             Dict with success=True and version string on success.
         Raises:
-            GeoServerConnectionError on any network or HTTP error.
+            GeoServerConnectionError on any network/HTTP error or rejected
+            credentials.
         """
         try:
             result = self._client.get_version()
@@ -2359,10 +2371,23 @@ class GeoServerClient:
                         break
             except Exception:
                 pass
-            return {'success': True, 'version': version, 'message': 'Connection validated'}
         except Exception as e:
             logger.error(f"GeoServer validate_connection failed for {self.url}: {e}")
             raise GeoServerConnectionError(f"GeoServer unreachable at {self.url}: {e}")
+
+        auth_response = self._request("get", "/rest/workspaces")
+        if auth_response.status_code in (401, 403):
+            raise GeoServerConnectionError(
+                f"GeoServer credentials rejected at {self.url}: "
+                f"HTTP {auth_response.status_code}"
+            )
+        if auth_response.status_code != 200:
+            raise GeoServerConnectionError(
+                f"GeoServer connection check failed at {self.url}: "
+                f"HTTP {auth_response.status_code}: {auth_response.text}"
+            )
+
+        return {'success': True, 'version': version, 'message': 'Connection validated'}
 
     # Shared helpers
 

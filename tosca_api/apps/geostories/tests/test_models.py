@@ -107,6 +107,39 @@ def test_geostory_hero_image_upload_path_is_story_scoped(user, campaign):
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "x.jpg/../evil",
+        "../../evil.jpg",
+        "a/../../b.jpg",
+        "x.jpg\\..\\evil",
+        "....//....//etc/passwd.jpg",
+        "..",
+        "../",
+    ],
+)
+def test_geostory_hero_image_upload_path_rejects_traversal_filenames(user, campaign, filename):
+    """A crafted filename must never let the stored path escape the
+    per-story ``hero/`` scope.
+
+    The function only ever keeps the substring after the *last* ``.`` in the
+    filename (as a lowercased "extension") and prefixes a fresh UUID -- so
+    even when that substring carries a stray ``/`` or ``\\`` from a crafted
+    filename, it can never carry a ``..`` (a ``..`` needs two adjacent dots,
+    and splitting on the last dot always consumes the second one). This
+    regression test pins that existing, already-safe behavior; it adds no
+    new sanitization.
+    """
+    story = GeoStory(title="Hero Story", campaign=campaign, author=user)
+
+    path = geostory_hero_image_upload_to(story, filename)
+
+    assert path.startswith(f"geostories/{story.pk}/hero/")
+    assert ".." not in path.split("/")
+
+
+@pytest.mark.django_db
 def test_geostory_sanitization(user, campaign):
     """Test standard GeoStory sanitization."""
     story = GeoStory.objects.create(

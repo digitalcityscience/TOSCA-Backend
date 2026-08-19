@@ -8,6 +8,7 @@ from django.contrib.gis.geos import Point
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
+from tosca_api.apps.authentication.role_sync import AuthClaims
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.geodata_providers.api.views import LayerViewSet
 
@@ -31,9 +32,17 @@ User = get_user_model()
 
 @pytest.fixture
 def admin_user():
-    return User.objects.create_user(
+    user = User.objects.create_user(
         username="usage_admin", password="x", is_staff=True, is_superuser=True
     )
+    # security tickets ticket 11 (A9): LayerViewSet.destroy now goes through
+    # WorkspaceOwnedScopedPermission, not satisfied by a bare Django
+    # `is_superuser` flag alone (ticket 07's fix) -- attach platform-exempt
+    # claims so this pre-existing fixture's user still authorizes.
+    user._auth_claims = AuthClaims(
+        org_roles={}, default_org=None, authoritative=True, platform_exempt=True,
+    )
+    return user
 
 
 @pytest.fixture
