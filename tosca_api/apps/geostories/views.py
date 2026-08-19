@@ -1,9 +1,13 @@
+from django.db.models import Q
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema, extend_schema_view
 from rest_framework import permissions, viewsets
 from rest_framework.pagination import CursorPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 
-from tosca_api.apps.organizations.permissions import CampaignScopedPermission
+from tosca_api.apps.organizations.permissions import (
+    CampaignScopedPermission,
+    get_request_org_context,
+)
 
 from .models import GeoStory
 from .serializers import (
@@ -98,20 +102,16 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
         """
         Filter queryset based on action and parameters.
 
-        - List view: Only published stories (unless user is staff).
-        - Anonymous detail view: Only published stories.
+        - Anonymous: published/public content only.
+        - Authenticated: published content from any org, plus unpublished/
+          archived content of the caller's own org (security tickets S1 --
+          this is the real tenant boundary; ``CampaignScopedPermission``
+          deliberately passes SAFE methods through).
         - Filter by campaign_id if provided.
         - Optimize queries with select_related/prefetch_related.
         """
         queryset = super().get_queryset()
-
-        user = self.request.user
-        if self.action == "list":
-            if not (user and user.is_staff):
-                queryset = queryset.published()
-        elif self.action == "retrieve":
-            if not (user and user.is_authenticated):
-                queryset = queryset.published()
+        queryset = self._scope_by_visibility(queryset)
 
         # Filter by campaign_id if provided
         campaign_id = self.request.query_params.get("campaign_id")
@@ -130,6 +130,27 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
             queryset = queryset.select_related("campaign")
 
         return queryset
+
+    def _scope_by_visibility(self, queryset):
+        """Org-scope unpublished/archived rows; published rows stay public.
+
+        Cross-org draft/archived stories must never enter the queryset (so
+        retrieve returns 404, not a permission 403). Superadmin/staff-exempt
+        token roles bypass the org scope entirely, same as elsewhere in the
+        org permission layer.
+        """
+        user = self.request.user
+        if not (user and user.is_authenticated):
+            return queryset.published()
+
+        _roles, org_slug, exempt = get_request_org_context(self.request)
+        if exempt:
+            return queryset
+        if not org_slug:
+            return queryset.published()
+        return queryset.filter(
+            Q(status=GeoStory.Status.PUBLISHED) | Q(campaign__organization__slug=org_slug)
+        )
 
     def perform_create(self, serializer):
         """Set the author to the current user."""

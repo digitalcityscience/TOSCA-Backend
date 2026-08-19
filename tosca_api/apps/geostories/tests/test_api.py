@@ -104,19 +104,23 @@ def test_published_queryset_matches_inline_visibility_rule(geostory, draft_story
 
 
 @pytest.mark.django_db
-def test_geostory_list_published_only(api_client, user, geostory, draft_story):
-    """Test that non-staff users only see published stories."""
+def test_geostory_list_published_and_own_org_draft(api_client, user, geostory, draft_story):
+    """Non-staff org members see published stories plus their own org's drafts.
+
+    ``draft_story`` belongs to the caller's own org (security tickets S1 /
+    ticket 02 target rule: own-org unpublished content is visible; only
+    *cross-org* unpublished content is excluded -- see
+    ``geostories/tests/test_org_isolation.py`` for the cross-org case).
+    """
     api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
     response = api_client.get("/api/v1/stories/")
     assert response.status_code == 200
-    
+
     results = response.data["results"]
     titles = [r["title"] for r in results]
-    
-    # Published story should be visible
+
     assert "Existing Story" in titles
-    # Draft story should NOT be visible to non-staff
-    assert "Draft Story" not in titles
+    assert "Draft Story" in titles
 
 
 @pytest.mark.django_db
