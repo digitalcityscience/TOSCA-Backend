@@ -16,7 +16,7 @@ from django.utils import timezone
 from tosca_api.apps.authentication.role_sync import AuthClaims
 from tosca_api.apps.organizations.models import UserAuthorizationSnapshot
 from tosca_api.apps.organizations.permissions import get_request_org_context
-from tosca_api.apps.organizations.policy import sync_snapshot, user_claims
+from tosca_api.apps.organizations.policy import is_platform_exempt, sync_snapshot, user_claims
 
 
 @pytest.fixture
@@ -73,6 +73,46 @@ def test_user_claims_no_snapshot_default_org_normalizes_to_none(user):
 
 
 # ---------------------------------------------------------------------------
+# policy.is_platform_exempt precedence (security tickets ticket 07 fix --
+# same live-claims -> snapshot -> fail-closed precedence as user_claims, but
+# deliberately independent of user.is_staff/is_superuser)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.django_db
+def test_is_platform_exempt_fail_closed_when_neither_source_exists(user):
+    assert is_platform_exempt(user) is False
+
+
+@pytest.mark.django_db
+def test_is_platform_exempt_reads_live_claims(user):
+    user._auth_claims = AuthClaims(org_roles={}, default_org=None, authoritative=True, platform_exempt=True)
+
+    assert is_platform_exempt(user) is True
+
+
+@pytest.mark.django_db
+def test_is_platform_exempt_falls_back_to_snapshot(user):
+    UserAuthorizationSnapshot.objects.create(
+        user=user, org_roles={}, default_org="", platform_exempt=True, synced_at=timezone.now()
+    )
+
+    assert is_platform_exempt(user) is True
+
+
+@pytest.mark.django_db
+def test_is_platform_exempt_ignores_is_staff_and_is_superuser(django_user_model, db):
+    """The whole point of ticket 07's fix: a Django is_staff/is_superuser
+    flag toggled independently of Keycloak (e.g. via the admin's own
+    UserAdmin) must NOT grant platform exemption -- only a real captured
+    claim does."""
+    user = django_user_model.objects.create_superuser(
+        username="staff-flag-only", email="root@example.com", password="x"
+    )
+
+    assert is_platform_exempt(user) is False
+
+
+# ---------------------------------------------------------------------------
 # policy.sync_snapshot authoritative write rule
 # ---------------------------------------------------------------------------
 
@@ -85,6 +125,17 @@ def test_sync_snapshot_writes_when_authoritative_non_empty(user):
     snapshot = UserAuthorizationSnapshot.objects.get(user=user)
     assert snapshot.org_roles == {"dcs": "WRITER"}
     assert snapshot.default_org == "dcs"
+
+
+@pytest.mark.django_db
+def test_sync_snapshot_persists_platform_exempt(user):
+    claims = AuthClaims(
+        org_roles={"dcs": "WRITER"}, default_org="dcs", authoritative=True, platform_exempt=True
+    )
+
+    sync_snapshot(user, claims)
+
+    assert UserAuthorizationSnapshot.objects.get(user=user).platform_exempt is True
 
 
 @pytest.mark.django_db
@@ -153,12 +204,34 @@ def test_get_request_org_context_browser_fail_closed_without_snapshot(user):
 
 
 @pytest.mark.django_db
-def test_get_request_org_context_browser_exempt_for_superuser_without_org_role(django_user_model, db):
+def test_get_request_org_context_browser_not_exempt_for_bare_superuser(django_user_model, db):
+    """Security tickets ticket 07 fix: a Django superuser with no Keycloak
+    claims of their own is *not* exempt through this resolver -- exemption
+    here is purely `AuthClaims.platform_exempt` (real DJANGO_STAFF/
+    DJANGO_SUPERADMIN role membership), never inferred from
+    `user.is_superuser`/`is_staff`. Callers that need a superuser bypass
+    check `request.user.is_superuser` themselves, separately and first (see
+    `OrgScopedAdminMixin.get_queryset`, `check_org_level`) -- exactly as they
+    did before ticket 05 ever touched this function."""
     superuser = django_user_model.objects.create_superuser(
         username="resolver-superuser", email="root@example.com", password="x"
     )
 
     _roles, _org_slug, exempt = get_request_org_context(_request(superuser))
+
+    assert exempt is False
+
+
+@pytest.mark.django_db
+def test_get_request_org_context_browser_exempt_from_real_platform_claim(user):
+    """Exemption is honored when it's actually present in the claims --
+    proves the mechanism works independent of the Django is_staff/is_superuser
+    columns (this user is neither)."""
+    UserAuthorizationSnapshot.objects.create(
+        user=user, org_roles={}, default_org="", platform_exempt=True, synced_at=timezone.now()
+    )
+
+    _roles, _org_slug, exempt = get_request_org_context(_request(user))
 
     assert exempt is True
 

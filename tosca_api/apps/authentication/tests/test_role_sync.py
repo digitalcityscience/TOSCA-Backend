@@ -182,6 +182,7 @@ def test_build_auth_claims_combines_roles_and_default_org():
     assert claims.org_roles == {"dcs": "WRITER"}
     assert claims.default_org == "dcs"
     assert claims.authoritative is True
+    assert claims.platform_exempt is False
 
 
 def test_build_auth_claims_non_authoritative_when_roles_missing():
@@ -193,3 +194,25 @@ def test_build_auth_claims_non_authoritative_when_roles_missing():
     assert claims.org_roles == {}
     assert claims.default_org is None
     assert claims.authoritative is False
+
+
+@pytest.mark.parametrize("exempt_role", ["DJANGO_STAFF", "DJANGO_SUPERADMIN"])
+def test_build_auth_claims_captures_platform_exempt_role(exempt_role):
+    """Security tickets ticket 07 fix: platform-role membership is captured
+    as real claims data, not left to be inferred later from
+    user.is_staff/is_superuser (which can drift from Keycloak)."""
+    roles = ExtractedRoles(roles={"ROLE_DCS_WRITER", exempt_role}, authoritative=True, sources=["access_token"])
+    org = ExtractedOrg(default_slug="dcs", present=True, sources=["access_token"])
+
+    claims = build_auth_claims(roles, org)
+
+    assert claims.platform_exempt is True
+
+
+def test_build_auth_claims_platform_exempt_false_without_the_role():
+    roles = ExtractedRoles(roles={"ROLE_DCS_ADMIN"}, authoritative=True, sources=["access_token"])
+    org = ExtractedOrg(default_slug="dcs", present=True, sources=["access_token"])
+
+    claims = build_auth_claims(roles, org)
+
+    assert claims.platform_exempt is False

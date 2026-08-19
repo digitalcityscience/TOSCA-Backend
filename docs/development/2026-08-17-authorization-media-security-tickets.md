@@ -98,7 +98,7 @@ relative to the media track.
 **New execution order:**
 
 ```text
-01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 ✅ → 03 ✅ → 04 ✅ → 05 ✅ → 06 ✅ → 07 → 08 → 09 → 10 → 11 → 12 → 16 → 17
+01 ✅ → 02 ✅ → 13 ✅ → 14 ✅ → 15 ✅ → 03 ✅ → 04 ✅ → 05 ✅ → 06 ✅ → 07 ✅ → 08 → 09 → 10 → 11 → 12 → 16 → 17
 ```
 
 ### Ticket summary
@@ -114,7 +114,7 @@ relative to the media track.
 | 7 | 04 ✅ | `UserAuthorizationSnapshot` model | 03 | ARCH |
 | 8 | 05 ✅ | Claim normalization & snapshot sync (Q11 two-path, write rule, resolver) | 04 | ARCH |
 | 9 | 06 ✅ | Dynamic `has_perm` backend (A ∩ B) | 05 | ARCH |
-| 10 | 07 | Admin integration + custom `UserAdmin` panel | 06 | ARCH |
+| 10 | 07 ✅ | Admin integration + custom `UserAdmin` panel | 06 | ARCH |
 | 11 | 08 | DRF: Campaign (org-private matrix) | 06 | ARCH |
 | 12 | 09 | DRF: GeoStory (public-read; co-verify w/ 02) | 06, 02 | ARCH |
 | 13 | 10 | DRF: Event (incl. A6 second viewset) | 06 | ARCH |
@@ -555,16 +555,58 @@ admin queryset scope= which organization rows
 
 **Blocked by:** 06.
 
-**Status:** ready-for-agent
+**Status:** done (2026-08-19)
 
-- [ ] Simplify `OrgScopedAdminMixin` to row-scoping (`get_queryset`, `org_lookup` e.g. `owner_org__slug`) +
+- [x] Simplify `OrgScopedAdminMixin` to row-scoping (`get_queryset`, `org_lookup` e.g. `owner_org__slug`) +
       standard `has_*_permission`; **drop** its duplicated role/action capability logic (now owned by the backend).
-- [ ] Register a custom `UserAdmin` with a **read-only effective-permissions panel**: current/default org,
+      — `has_add/change/delete/view_permission` now delegate to Django's own default implementation via `super()`
+      (which reads `request.user.has_perm(...)`, meaningful as of ticket 06), gated only by an explicit `is_staff`
+      check; `check_org_level`'s object-org comparison was dropped from the mixin (it's still used standalone by
+      `has_org_write_access`, untouched). Cross-org writes/deletes are prevented the same way cross-org reads are:
+      `get_object` filters through `get_queryset` first, so a cross-org row is never fetched at all — matches the
+      "queryset is the real tenant gate" pattern already used by `OrgScopedPermission`/`CampaignScopedPermission`.
+      Dead code removed: `_org_attr` (only existed to feed the now-deleted `check_org_level` calls).
+- [x] Register a custom `UserAdmin` with a **read-only effective-permissions panel**: current/default org,
       org role(s), entitled apps, computed `get_all_permissions()`, and `synced_at` ("last synced at login").
-- [ ] Keep the `is_staff` gate intact.
-- [ ] Tests: admin menu/action visibility per role and per org; effective-perms panel renders correct computed perms.
+      — `organizations/admin.py::UserAdmin(DjangoUserAdmin)`, registered in place of the default (unregistered
+      first). Panel fields: `effective_default_org`, `effective_org_roles`, `effective_platform_exempt` (new,
+      see fix below), `effective_entitled_apps`, `effective_permissions`, `effective_synced_at` — all read-only,
+      only shown on the change form (never the add form). **Prerequisite fix**: Django's `get_all_permissions()`
+      aggregator calls each backend's `get_user_permissions()`, not `has_perm()` — `OrgRolePermissionBackend`
+      (ticket 06) only had `has_perm()`, so the panel would have shown nothing. Added
+      `OrgRolePermissionBackend.get_user_permissions()`, extracted the shared org/entitlement resolution into
+      `_capability_context()` so `has_perm()` and the new method share it instead of duplicating the chain
+      (`has_perm()`'s own per-permission parsing/checking logic is unchanged).
+- [x] Keep the `is_staff` gate intact. — explicit `_is_active_staff` check preserved in the mixin (defense-in-depth
+      for direct calls that bypass `AdminSite.has_permission`, e.g. tests).
+- [x] Tests: admin menu/action visibility per role and per org; effective-perms panel renders correct computed perms.
+      — `organizations/tests/test_permissions.py` (existing admin-scoping tests updated + 2 new: `is_staff` entry
+      gate, `get_object` 404s cross-org id), `organizations/tests/test_user_admin.py` (13 tests: each panel field,
+      readonly-only-when-editing, full HTTP change-view render). Full suite: 1218 passed (same 5 pre-existing
+      environment-dependent failures as ticket 06's baseline).
 
-**Files:** `organizations/permissions.py` (slim mixin), custom `UserAdmin`, admin modules.
+**Regression found and fixed during this ticket (2026-08-19, user-requested re-audit):** writing a realistic
+admin test (session/browser request, not the Bearer-style `request.auth` shortcut prior admin tests reused)
+surfaced a real precision bug in ticket 05's own `get_request_org_context`: its browser-fallback branch inferred
+platform exemption (`DJANGO_STAFF`/`DJANGO_SUPERADMIN`) from `user.is_superuser`/`user.is_staff` — but those Django
+columns are editable independently of Keycloak (e.g. via this very `UserAdmin`'s own "Permissions" fieldset), so
+manually toggling `is_staff` on an org WRITER would have silently also granted them full cross-org bypass
+everywhere `get_request_org_context` is consulted (DRF permission classes and admin queryset scoping alike). Fixed
+by capturing platform-role membership as real claims data instead of inferring it: `AuthClaims.platform_exempt`
+(computed once in `build_auth_claims` from the actual token/login role set) and a new
+`UserAuthorizationSnapshot.platform_exempt` column (migration `0007_userauthorizationsnapshot_platform_exempt`),
+read back through a new `policy.is_platform_exempt(user)` accessor mirroring `user_claims`'s precedence (live
+claims → snapshot → fail closed `False`). `get_request_org_context`'s browser branch now calls
+`is_platform_exempt(user)` instead of inspecting `is_staff`/`is_superuser`. One of ticket 05's own tests
+(`test_get_request_org_context_browser_exempt_for_superuser_without_org_role`) encoded the buggy expectation and
+was corrected; this also restores the exact pre-ticket-05 behavior for a bare Django superuser with no Keycloak
+login (not exempt through this resolver — callers needing a superuser bypass check `request.user.is_superuser`
+separately and first, as `OrgScopedAdminMixin.get_queryset`/`check_org_level` already do).
+
+**Files:** `organizations/permissions.py` (slim mixin), `organizations/admin.py` (custom `UserAdmin`),
+`organizations/auth_backend.py` (`get_user_permissions`), `authentication/role_sync.py` (`AuthClaims.platform_exempt`),
+`organizations/models.py` + migration (`UserAuthorizationSnapshot.platform_exempt`), `organizations/policy.py`
+(`is_platform_exempt`).
 **Rollback risk:** medium — admin access regressions; keep `is_staff` gate intact.
 
 ---

@@ -26,30 +26,61 @@ LEVEL_ACTIONS = {
 assert set(LEVEL_ACTIONS) == set(ORG_ROLE_LEVELS)
 
 
-def user_claims(user) -> tuple[dict[str, str], str | None]:
-    """Return the ``(org_roles, default_org)`` claims for ``user``.
-
-    Security tickets ticket 05's unified resolver. Precedence (fail closed):
+def _resolve_claims(user) -> AuthClaims:
+    """Resolve ``user``'s effective claims (security tickets ticket 05's
+    unified resolver). Precedence (fail closed):
 
     1. Request-local live claims (``user._auth_claims``) -- set by
        ``KeycloakTokenAuthentication`` on every Bearer request, and by
        ``KeycloakAdapter`` on the login request itself.
     2. The persisted :class:`~.models.UserAuthorizationSnapshot` -- what a
        later browser/admin request (no live claims of its own) falls back to.
-    3. No permissions (``{}``, ``None``) when neither source has anything.
+    3. No permissions when neither source has anything.
 
     No implicit decoding of a stale/expired stored ID token, and no hidden
     in-memory "last known good" fallback beyond what's spelled out above.
+    Single shared precedence chain -- :func:`user_claims` and
+    :func:`is_platform_exempt` are thin views over the same
+    :class:`AuthClaims` this returns, so the precedence rule lives in
+    exactly one place.
     """
     claims = getattr(user, "_auth_claims", None)
     if claims is not None:
-        return claims.org_roles, claims.default_org
+        return claims
 
     snapshot = _load_valid_snapshot(user)
     if snapshot is not None:
-        return snapshot.org_roles, (snapshot.default_org or None)
+        return AuthClaims(
+            org_roles=snapshot.org_roles,
+            default_org=snapshot.default_org or None,
+            authoritative=True,
+            platform_exempt=snapshot.platform_exempt,
+        )
 
-    return {}, None
+    return AuthClaims(org_roles={}, default_org=None, authoritative=False, platform_exempt=False)
+
+
+def user_claims(user) -> tuple[dict[str, str], str | None]:
+    """Return the ``(org_roles, default_org)`` claims for ``user`` -- see
+    :func:`_resolve_claims` for the precedence rule.
+    """
+    claims = _resolve_claims(user)
+    return claims.org_roles, claims.default_org
+
+
+def is_platform_exempt(user) -> bool:
+    """Whether ``user`` actually held a role in ``ORG_CHECK_EXEMPT_ROLES``
+    (``DJANGO_STAFF``/``DJANGO_SUPERADMIN``) at last sync -- same precedence
+    as :func:`user_claims` (see :func:`_resolve_claims`).
+
+    Deliberately **not** ``user.is_staff``/``user.is_superuser``: those
+    Django columns can be toggled independently of Keycloak (e.g. via the
+    admin's own ``UserAdmin`` "Permissions" fieldset), so they are not a
+    faithful proxy for "Keycloak actually granted a platform-exempt role" --
+    using them here would let an incidental ``is_staff`` grant silently also
+    bypass org scoping everywhere ``get_request_org_context`` is consulted.
+    """
+    return _resolve_claims(user).platform_exempt
 
 
 def sync_snapshot(user, claims: AuthClaims) -> None:
@@ -75,6 +106,7 @@ def sync_snapshot(user, claims: AuthClaims) -> None:
         defaults={
             "org_roles": claims.org_roles,
             "default_org": claims.default_org or "",
+            "platform_exempt": claims.platform_exempt,
             "synced_at": timezone.now(),
         },
     )

@@ -20,7 +20,7 @@ from tosca_api.apps.authentication.role_sync import (
     org_role_level,
 )
 
-from .policy import user_claims
+from .policy import is_platform_exempt, user_claims
 
 
 def get_request_org_context(request):
@@ -28,15 +28,23 @@ def get_request_org_context(request):
 
     Bearer/API requests read the decoded Keycloak token DRF authentication
     backends attach as ``request.auth`` (``KeycloakTokenAuthentication``) --
-    always the freshest source, never persisted. Session-based requests
+    always the freshest source, never persisted; ``exempt`` there is computed
+    directly from the token's own raw role set. Session-based requests
     (Django admin), which never populate ``request.auth``, fall through to
-    the ticket-05 unified resolver (``organizations.policy.user_claims``):
-    the current request-local live claims if this is the login request
-    itself, else the persisted ``UserAuthorizationSnapshot`` from the user's
-    last successful browser login (fail closed if neither exists). This
-    resolver is the sole consumer of ``SocialAccount.extra_data`` for
-    authorization purposes as of ticket 05 -- the two must not be left live
-    side by side, or they can silently drift apart.
+    the ticket-05 unified resolver (``organizations.policy.user_claims`` /
+    ``is_platform_exempt``): the current request-local live claims if this is
+    the login request itself, else the persisted ``UserAuthorizationSnapshot``
+    from the user's last successful browser login (fail closed if neither
+    exists). This resolver is the sole consumer of ``SocialAccount.extra_data``
+    for authorization purposes as of ticket 05 -- the two must not be left
+    live side by side, or they can silently drift apart.
+
+    ``exempt`` for the browser branch is **not** derived from
+    ``user.is_staff``/``user.is_superuser`` -- those Django columns are
+    editable independently of Keycloak (e.g. via the admin's own
+    ``UserAdmin``), so they are not a faithful stand-in for "Keycloak
+    actually granted a platform-exempt role" (security tickets ticket 07
+    fix; see ``policy.is_platform_exempt``'s docstring).
 
     Cached on the request object since a single request can consult
     permissions (queryset scoping + `has_permission` +
@@ -48,22 +56,21 @@ def get_request_org_context(request):
 
     roles: set[str] = set()
     org_slug = None
+    exempt = False
 
     auth = getattr(request, "auth", None)
     if isinstance(auth, dict):
         roles = extract_roles_from_token(auth).roles
         org_slug = extract_org_from_token(auth).default_slug
+        exempt = bool(roles & ORG_CHECK_EXEMPT_ROLES)
     else:
         user = getattr(request, "user", None)
         if user is not None and getattr(user, "is_authenticated", False):
             org_roles, org_slug = user_claims(user)
             roles = denormalize_org_roles(org_roles)
-            if user.is_superuser:
-                roles = roles | {"DJANGO_SUPERADMIN"}
-            elif user.is_staff:
-                roles = roles | {"DJANGO_STAFF"}
+            exempt = is_platform_exempt(user)
 
-    context = (roles, org_slug, bool(roles & ORG_CHECK_EXEMPT_ROLES))
+    context = (roles, org_slug, exempt)
     request._org_context = context
     return context
 
@@ -201,22 +208,31 @@ def has_org_write_access(request, obj, required="WRITER"):
 class OrgScopedAdminMixin:
     """Restrict a ``ModelAdmin`` to the caller's org (canonical §5b).
 
-    Superusers and ``DJANGO_SUPERADMIN``/``DJANGO_STAFF`` token holders see every
-    org's rows. Everyone else sees only their own org's rows; changing
-    requires WRITER, deleting requires ADMIN (§2b level table).
+    As of security tickets ticket 07, this mixin owns **only** gate C (row
+    scoping, via ``get_queryset``) -- capability (which models/actions are
+    allowed at all) is entirely ``has_perm()``'s job now
+    (``OrgRolePermissionBackend``, ticket 06), reached through Django's own
+    default ``has_*_permission`` implementations (``super()``), not
+    reimplemented here. The split:
+
+    ```text
+    is_staff             = may enter admin        (_is_active_staff below)
+    has_perm()           = which models/actions    (super(), i.e. Django's default)
+    admin queryset scope = which organization rows (get_queryset below)
+    ```
+
+    Cross-org writes/deletes are prevented the same way cross-org reads are:
+    ``get_object`` (used by the changeform/delete views) filters through
+    ``get_queryset`` first, so a cross-org row is never fetched in the first
+    place -- matches the "queryset is the real tenant gate" pattern already
+    used by ``OrgScopedPermission``/``CampaignScopedPermission`` in DRF
+    (neither checks the object's org in ``has_object_permission`` either).
+    Superusers and ``DJANGO_SUPERADMIN``/``DJANGO_STAFF`` token holders see
+    every org's rows (queryset only -- still separately gated by
+    entitlement/role through ``has_perm()``).
     """
 
     org_lookup = "organization__slug"
-
-    @property
-    def _org_attr(self) -> str:
-        """The model's owning-Organization FK attribute, derived from ``org_lookup``.
-
-        ``org_lookup`` is a queryset-filter path (``"organization__slug"``,
-        ``"owner_org__slug"``); this strips the ``__slug`` suffix to get the
-        plain attribute name ``check_org_level`` needs for ``getattr(obj, ...)``.
-        """
-        return self.org_lookup.rsplit("__", 1)[0]
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -230,28 +246,24 @@ class OrgScopedAdminMixin:
         return qs.filter(**{self.org_lookup: org_slug})
 
     def _is_active_staff(self, request):
-        # Deliberately not `super().has_*_permission()` (Django's default
-        # `user.has_perm(...)` check): this app never syncs Django
-        # Permission/Group objects from Keycloak (canonical §11.3 -- no
-        # separate authorization DB), so that check would always be False
-        # for a non-superuser and make org-scoped staff access unreachable.
+        # Explicit, defense-in-depth is_staff check: `AdminSite.has_permission`
+        # already enforces is_staff at the whole-site level before any
+        # ModelAdmin method runs, but has_*_permission is also called
+        # directly (by tests, or third-party admin tooling) without going
+        # through that gate -- keep it intact here too (ticket 07 spec).
         return bool(request.user and request.user.is_active and request.user.is_staff)
 
+    def has_view_permission(self, request, obj=None):
+        return self._is_active_staff(request) and super().has_view_permission(request, obj)
+
     def has_add_permission(self, request):
-        # No `obj` yet to check org ownership against -- WRITER+ in *some*
-        # org (or exempt) is enough; the actual owning org is resolved at
-        # save time (see `resolve_write_organization`).
-        return self._is_active_staff(request) and check_org_level(request, None, "WRITER")
+        return self._is_active_staff(request) and super().has_add_permission(request)
 
     def has_change_permission(self, request, obj=None):
-        return self._is_active_staff(request) and check_org_level(
-            request, obj, "WRITER", org_attr=self._org_attr
-        )
+        return self._is_active_staff(request) and super().has_change_permission(request, obj)
 
     def has_delete_permission(self, request, obj=None):
-        return self._is_active_staff(request) and check_org_level(
-            request, obj, "ADMIN", org_attr=self._org_attr
-        )
+        return self._is_active_staff(request) and super().has_delete_permission(request, obj)
 
 
 def _org_slug_of_campaign_owned(obj):

@@ -201,6 +201,16 @@ class AuthClaims:
     org_roles: dict[str, str]
     default_org: str | None
     authoritative: bool
+    platform_exempt: bool = False
+    """Whether the token/login actually carried a role in
+    ``ORG_CHECK_EXEMPT_ROLES`` (``DJANGO_STAFF``/``DJANGO_SUPERADMIN``).
+
+    Captured here -- rather than inferred later from ``user.is_staff``/
+    ``user.is_superuser`` -- because those Django columns can be toggled
+    independently of Keycloak (e.g. via the admin's own ``UserAdmin``
+    "Permissions" fieldset); this field is the actual last-synced source of
+    truth for platform-role exemption (canonical §2b), not a proxy for it.
+    """
 
 
 def build_auth_claims(extracted_roles: ExtractedRoles, extracted_org: ExtractedOrg) -> AuthClaims:
@@ -209,6 +219,7 @@ def build_auth_claims(extracted_roles: ExtractedRoles, extracted_org: ExtractedO
         org_roles=normalize_org_roles(extracted_roles.roles),
         default_org=extracted_org.default_slug,
         authoritative=extracted_roles.authoritative,
+        platform_exempt=bool(extracted_roles.roles & ORG_CHECK_EXEMPT_ROLES),
     )
 
 

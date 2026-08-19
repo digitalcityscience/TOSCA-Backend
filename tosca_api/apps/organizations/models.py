@@ -154,6 +154,14 @@ class UserAuthorizationSnapshot(TimeStampedModel):
         help_text="Org slug the PoC actually authorizes against "
         "(org_roles[default_org]). Empty until a login has synced one.",
     )
+    platform_exempt = models.BooleanField(
+        default=False,
+        help_text="Whether the last login's roles included DJANGO_STAFF/"
+        "DJANGO_SUPERADMIN (canonical §2b platform exemption from org "
+        "scoping). Captured explicitly -- not inferred from user.is_staff/"
+        "is_superuser, which can be toggled independently of Keycloak via "
+        "the admin's own UserAdmin (security tickets ticket 07).",
+    )
     synced_at = models.DateTimeField(
         help_text="When these claims were pulled from the token -- distinct "
         "from `updated_at`, which only tracks row writes."

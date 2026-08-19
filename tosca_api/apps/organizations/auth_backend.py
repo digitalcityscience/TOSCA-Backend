@@ -44,6 +44,32 @@ class OrgRolePermissionBackend(BaseBackend):
     def authenticate(self, request, **kwargs):
         return None
 
+    def _capability_context(self, user_obj) -> tuple[str | None, set[str]]:
+        """Resolve ``(level, entitled_apps)`` for ``user_obj``'s default org.
+
+        ``level`` is ``None`` if any gate fails (inactive, no claims, no
+        default-org role, unresolvable/unentitled organization) -- the
+        shared prefix both ``has_perm`` and ``get_user_permissions`` need
+        before diverging into "check one permission" vs. "enumerate all of
+        them".
+        """
+        if user_obj is None or not getattr(user_obj, "is_active", False):
+            return None, set()
+
+        org_roles, default_org = user_claims(user_obj)
+        if not default_org:
+            return None, set()
+
+        level = org_roles.get(default_org)
+        if level is None:
+            return None, set()
+
+        organization = Organization.objects.filter(slug=default_org).first()
+        if organization is None:
+            return None, set()
+
+        return level, enabled_apps_for(organization)
+
     def has_perm(self, user_obj, perm, obj=None) -> bool:
         if user_obj is None or not getattr(user_obj, "is_active", False):
             return False
@@ -66,16 +92,39 @@ class OrgRolePermissionBackend(BaseBackend):
         if model_name not in role_controlled_models_for_app(app_label):
             return False
 
-        org_roles, default_org = user_claims(user_obj)
-        if not default_org:
-            return False
-
-        level = org_roles.get(default_org)
-        if level is None:
-            return False
-
-        organization = Organization.objects.filter(slug=default_org).first()
-        if organization is None or app_label not in enabled_apps_for(organization):
+        level, entitled_apps = self._capability_context(user_obj)
+        if level is None or app_label not in entitled_apps:
             return False
 
         return action in LEVEL_ACTIONS[level]
+
+    def get_user_permissions(self, user_obj, obj=None) -> set[str]:
+        """Enumerate every ``app_label.action_model`` codename ``user_obj``
+        currently holds -- the set ``has_perm`` checks membership against,
+        materialized so Django's ``get_all_permissions()``/
+        ``get_user_permissions()`` aggregators (which call this method, not
+        ``has_perm``) see the same grants. First real caller: ticket 07's
+        admin effective-permissions panel.
+
+        Superusers are deliberately excluded here -- ``ModelBackend`` (listed
+        before this backend in ``AUTHENTICATION_BACKENDS``) already returns
+        every ``Permission`` in the system for an active superuser, and
+        Django unions results across backends, so re-deriving the same
+        (smaller, role-controlled-only) subset here would be redundant.
+        """
+        if obj is not None:
+            return set()
+        if getattr(user_obj, "is_superuser", False):
+            return set()
+
+        level, entitled_apps = self._capability_context(user_obj)
+        if level is None:
+            return set()
+
+        actions = LEVEL_ACTIONS[level]
+        return {
+            f"{app_label}.{action}_{model_name}"
+            for app_label in entitled_apps
+            for model_name in role_controlled_models_for_app(app_label)
+            for action in actions
+        }
