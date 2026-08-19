@@ -791,6 +791,12 @@ change. Fixed: `move_one`/`move_hero_image` now run the existence/size verificat
 short-circuit *after* confirming the move would succeed, so dry-run and apply agree on which assets are safe.
 Covered by `test_move_one_dry_run_fails_when_source_object_missing`.
 
+**Follow-up (not blocking, not done here):** the Standards review pass flagged that `media_lifecycle.py`'s new
+`report_to_json` is now a third byte-for-byte-identical `asdict(entry) -> json.dumps(...)` implementation,
+alongside the existing copies in `media_migration.py` and `media_path_migration.py`. Worth consolidating into
+one shared helper generic over any `asdict`-able entry dataclass in a future cleanup ticket — left as-is here
+to keep this ticket's diff scoped to the backfill command itself.
+
 **Files:** `core/media_lifecycle.py` (added `ACTION_WOULD_MOVE`, `dry_run` params, `report_to_json`),
 `core/management/commands/backfill_media_aliases.py` (new). **Rollback risk:** low in practice — `dry_run`
 defaults the command to read-only, and `--apply` reuses the same copy→verify→delete safety property already
