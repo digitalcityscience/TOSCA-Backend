@@ -27,7 +27,7 @@ from rest_framework.test import APIClient
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.campaigns.views import CampaignViewSet
 from tosca_api.apps.core.models import MediaAsset
-from tosca_api.apps.events.views import EventViewSet
+from tosca_api.apps.events.views import EventSeriesViewSet, EventViewSet
 from tosca_api.apps.geodata_providers.api.views import WorkspaceViewSet
 from tosca_api.apps.geostories.views import GeoStoryViewSet
 from tosca_api.apps.organizations.models import Organization
@@ -152,9 +152,19 @@ def test_golden_snapshot_permission_classes_per_resource():
     ]
     assert _class_names(GeoStoryViewSet.permission_classes) == [
         "CampaignScopedPermission",
-        "IsAuthenticatedOrReadOnly",
+        "DjangoModelPermissionsOrAnonReadOnly",
     ]
     assert _class_names(EventViewSet.permission_classes) == [
+        "CampaignScopedPermission",
+        "DjangoModelPermissionsOrAnonReadOnly",
+    ]
+    # EventSeries is not a TOSCA_PERMISSION_MODELS entry (no gate-A has_perm()
+    # capability check), so DjangoModelPermissionsOrAnonReadOnly is not used
+    # here -- CampaignScopedPermission's org-membership check is the only
+    # write gate. Closes the tickets-09/10 write gap where this viewset
+    # previously had no CampaignScopedPermission at all (any authenticated
+    # user, any org, could write any org's series).
+    assert _class_names(EventSeriesViewSet.permission_classes) == [
         "CampaignScopedPermission",
         "IsAuthenticatedOrReadOnly",
     ]

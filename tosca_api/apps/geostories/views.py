@@ -81,7 +81,7 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
     """
 
     queryset = GeoStory.objects.all()
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly, CampaignScopedPermission]
+    permission_classes = [permissions.DjangoModelPermissionsOrAnonReadOnly, CampaignScopedPermission]
     pagination_class = GeoStoryCursorPagination
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 

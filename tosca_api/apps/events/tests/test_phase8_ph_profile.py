@@ -28,6 +28,27 @@ def _org_token(*roles, org="dcs"):
     return {"realm_access": {"roles": list(roles)}, "default_organization": org}
 
 
+def _authenticate_org_writer(api_client, user, *roles, org="dcs"):
+    """Authenticate ``user`` for both gate C (``request.auth`` token, read by
+    ``CampaignScopedPermission``) and gate A (``user._auth_claims``, read by
+    ``has_perm()`` -> ``OrgRolePermissionBackend`` via
+    ``DjangoModelPermissionsOrAnonReadOnly``, security tickets ticket 10).
+
+    ``APIClient.force_authenticate`` bypasses ``KeycloakTokenAuthentication``
+    entirely, so it never attaches ``_auth_claims`` itself -- it must be set
+    on the same ``user`` object passed in here, since DRF's
+    ``force_authenticate`` uses that exact instance as ``request.user``.
+    """
+    from tosca_api.apps.authentication.role_sync import AuthClaims
+
+    level = roles[0].rsplit("_", 1)[-1] if roles else None
+    if level:
+        user._auth_claims = AuthClaims(
+            org_roles={org: level}, default_org=org, authoritative=True
+        )
+    api_client.force_authenticate(user=user, token=_org_token(*roles, org=org))
+
+
 @pytest.fixture
 def user():
     return User.objects.create_user(username="phase8", password="pw")
@@ -124,7 +145,7 @@ def test_ph_event_without_profile_row_returns_null_profile(
 def test_ph_event_profile_round_trips_via_api(
     api_client, user, campaign, ph_event_type
 ):
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     payload = _payload(
         campaign,
         ph_event_type,
@@ -162,7 +183,7 @@ def test_ph_event_profile_round_trips_via_api(
 def test_general_event_rejects_profile_payload(
     api_client, user, campaign, general_event_type
 ):
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     payload = _payload(
         campaign,
         general_event_type,
@@ -177,7 +198,7 @@ def test_general_event_rejects_profile_payload(
 def test_profile_rejects_reduced_greater_than_cost(
     api_client, user, campaign, ph_event_type
 ):
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     payload = _payload(
         campaign,
         ph_event_type,
@@ -193,7 +214,7 @@ def test_profile_rejects_reduced_greater_than_cost(
 
 @pytest.mark.django_db
 def test_profile_rejects_negative_cost(api_client, user, campaign, ph_event_type):
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     payload = _payload(
         campaign,
         ph_event_type,
@@ -206,7 +227,7 @@ def test_profile_rejects_negative_cost(api_client, user, campaign, ph_event_type
 
 @pytest.mark.django_db
 def test_profile_patch_upserts_existing_row(api_client, user, campaign, ph_event_type):
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     create_response = api_client.post(
         "/api/v1/events/",
         _payload(

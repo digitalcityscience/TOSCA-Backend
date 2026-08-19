@@ -676,15 +676,20 @@ Public Event/GeoStory:
 
 **Blocked by:** 06 **and** 02.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Strip the action→level ladder from `CampaignScopedPermission`; keep only org/object scope + queryset scoping
+- [x] Strip the action→level ladder from `CampaignScopedPermission`; keep only org/object scope + queryset scoping
       (SAFE methods still pass — the queryset is the read tenant gate).
-- [ ] Apply `DjangoModelPermissionsOrAnonReadOnly + CampaignScopedPermission` to the GeoStory viewset.
-- [ ] Confirm anon GET of published/public GeoStory → **200**; cross-org draft → **404** (ticket 02 holds); writes need add/change/delete.
-- [ ] Add a GeoStory permission-matrix test suite covering the §9 rows for GeoStory.
+- [x] Apply `DjangoModelPermissionsOrAnonReadOnly + CampaignScopedPermission` to the GeoStory viewset.
+- [x] Confirm anon GET of published/public GeoStory → **200**; cross-org draft → **404** (ticket 02 holds); writes need add/change/delete.
+- [x] Add a GeoStory permission-matrix test suite covering the §9 rows for GeoStory.
 
 **Files:** `geostories/views.py`. **Rollback risk:** high — co-verify with ticket 02.
+
+**Note:** `CampaignScopedPermission` is shared with Event, so this ladder strip was landed together
+with ticket 10 in the same session rather than as two separate PRs — an Event-only ladder strip would
+have silently reopened the same "shared permission class, one consumer migrated, one not" regression
+`34231a7` just closed for Workspace/`OrgScopedPermission`. See ticket 10's note.
 
 ---
 
@@ -705,16 +710,30 @@ Public Event/GeoStory:
 
 **Blocked by:** 06.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Apply `DjangoModelPermissionsOrAnonReadOnly + CampaignScopedPermission` to the primary Event viewset.
-- [ ] Resolve A6: identify the second viewset at `events/views.py:299`, confirm whether its `IsAuthenticatedOrReadOnly` is a write gap, and gate it correctly.
-- [ ] Anonymous public GET stays **200**; writes need add/change/delete; cross-org writes denied by scope.
-- [ ] Note `Event` has **no ARCHIVED status** (`Event.Status`) and `Event.effective_visibility` already derives
+- [x] Apply `DjangoModelPermissionsOrAnonReadOnly + CampaignScopedPermission` to the primary Event viewset.
+- [x] Resolve A6: identify the second viewset at `events/views.py:299`, confirm whether its `IsAuthenticatedOrReadOnly` is a write gap, and gate it correctly.
+- [x] Anonymous public GET stays **200**; writes need add/change/delete; cross-org writes denied by scope.
+- [x] Note `Event` has **no ARCHIVED status** (`Event.Status`) and `Event.effective_visibility` already derives
       visibility from the owning Campaign — context for the media track, not a change here.
-- [ ] Add an Event permission-matrix test suite covering the §9 rows for Event.
+- [x] Add an Event permission-matrix test suite covering the §9 rows for Event.
 
 **Files:** `events/views.py`. **Rollback risk:** high.
+
+**A6 resolved:** the second viewset is `EventSeriesViewSet` (preview/create/update of recurring event
+series). It was a real write gap, worse than the Event/GeoStory pre-ticket state: `IsAuthenticatedOrReadOnly`
+alone, with **no** `CampaignScopedPermission` at all and no `validate_campaign_organization` call in
+`EventSeriesWriteSerializer.validate()` — any authenticated user, in any org, could create or edit a series
+against *any* campaign. `EventSeries` is not a `TOSCA_PERMISSION_MODELS` entry, so it gets no gate-A
+`has_perm()` capability check (`DjangoModelPermissionsOrAnonReadOnly` was deliberately **not** applied here —
+it would 403 every write, since `OrgRolePermissionBackend` denies any model not in that registry). Fixed by
+adding `CampaignScopedPermission` (org-membership gate C only) to the viewset and a
+`validate_campaign_organization` call to the serializer's `validate()`, mirroring the Event/GeoStory
+create-time check. Whether `EventSeries`/`eventseries` should join `TOSCA_PERMISSION_MODELS` for a full
+gate-A capability ladder is an open question for a future ticket, not resolved here.
+
+**Landed together with ticket 09** (see its note) since both consume the same `CampaignScopedPermission`.
 
 ---
 

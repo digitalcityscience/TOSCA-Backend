@@ -111,7 +111,7 @@ class EventViewSet(viewsets.ModelViewSet):
     """
 
     queryset = Event.objects.all()
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly, CampaignScopedPermission]
+    permission_classes = [permissions.DjangoModelPermissionsOrAnonReadOnly, CampaignScopedPermission]
     pagination_class = EventCursorPagination
 
     def get_permissions(self):
@@ -296,7 +296,7 @@ class EventSeriesViewSet(
         "default_context",
         "created_by",
     )
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly, CampaignScopedPermission]
 
     def get_queryset(self):
         queryset = super().get_queryset()

@@ -7,6 +7,7 @@ from django.contrib.gis.geos import Point
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from tosca_api.apps.authentication.role_sync import AuthClaims
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.events.models import (
     Event,
@@ -79,6 +80,25 @@ def _org_token(*roles, org="dcs"):
     so ``org="dcs"`` is the default here to match.
     """
     return {"realm_access": {"roles": list(roles)}, "default_organization": org}
+
+
+def _authenticate_org_writer(api_client, user, *roles, org="dcs"):
+    """Authenticate ``user`` for both gate C (``request.auth`` token, read by
+    ``CampaignScopedPermission``) and gate A (``user._auth_claims``, read by
+    ``has_perm()`` -> ``OrgRolePermissionBackend`` via
+    ``DjangoModelPermissionsOrAnonReadOnly``, security tickets ticket 10).
+
+    ``APIClient.force_authenticate`` bypasses ``KeycloakTokenAuthentication``
+    entirely, so it never attaches ``_auth_claims`` itself -- it must be set
+    on the same ``user`` object passed in here, since DRF's
+    ``force_authenticate`` uses that exact instance as ``request.user``.
+    """
+    level = roles[0].rsplit("_", 1)[-1] if roles else None
+    if level:
+        user._auth_claims = AuthClaims(
+            org_roles={org: level}, default_org=org, authoritative=True
+        )
+    api_client.force_authenticate(user=user, token=_org_token(*roles, org=org))
 
 
 @pytest.fixture
@@ -1320,7 +1340,7 @@ def test_event_series_retrieve_returns_grouped_taxonomy_assignments(
         label="Climate",
     )
 
-    api_client.force_authenticate(user=staff_user)
+    _authenticate_org_writer(api_client, staff_user, "ROLE_DCS_WRITER")
     create_response = api_client.post(
         "/api/v1/event-series/",
         {
@@ -1390,7 +1410,7 @@ def test_event_series_preview_manual_batch_returns_one_occurrence_per_explicit_d
     api_client, user, campaign, event_type
 ):
     """Manual batch preview should return one preview occurrence per explicit date."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
         "/api/v1/event-series/preview/",
         {
@@ -1425,7 +1445,7 @@ def test_event_series_preview_rejects_invalid_location_geojson(
     api_client, user, campaign, event_type
 ):
     """Series preview should return a clear location validation error for bad GeoJSON."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
         "/api/v1/event-series/preview/",
         {
@@ -1455,7 +1475,7 @@ def test_event_series_create_weekly_generates_occurrences_with_series_metadata(
     api_client, user, campaign, event_type
 ):
     """Recurring series creation should persist generated events with series metadata."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
         "/api/v1/event-series/",
         {
@@ -1499,7 +1519,7 @@ def test_event_series_preview_weekly_preserves_wall_time_across_dst(
     api_client, user, campaign, event_type
 ):
     """Weekly previews should preserve the same local clock time across DST changes."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
         "/api/v1/event-series/preview/",
         {
@@ -1543,7 +1563,7 @@ def test_events_patch_marks_generated_occurrence_as_exception(
     api_client, user, staff_user, campaign, event_type
 ):
     """Editing a generated occurrence directly should mark it as an exception."""
-    api_client.force_authenticate(user=staff_user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, staff_user, "ROLE_DCS_WRITER")
     create_response = api_client.post(
         "/api/v1/event-series/",
         {
@@ -1598,7 +1618,7 @@ def test_event_series_patch_skips_future_exception_occurrences_by_default(
         days_until_monday = 7
     start_date = today + timedelta(days=days_until_monday)
 
-    api_client.force_authenticate(user=staff_user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, staff_user, "ROLE_DCS_WRITER")
     create_response = api_client.post(
         "/api/v1/event-series/",
         {
@@ -1649,7 +1669,7 @@ def test_event_series_patch_skips_future_exception_occurrences_by_default(
 @pytest.mark.django_db
 def test_events_create(api_client, user, campaign):
     """Test creating a new event."""
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     data = {
         "title": "New Event",
         "summary": "Test summary",
@@ -1693,7 +1713,7 @@ def test_events_create_assigns_taxonomy_terms(api_client, user, campaign):
         label="Youth",
     )
 
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     data = {
         "title": "Tagged Event",
         "campaign": str(campaign.id),
@@ -1742,7 +1762,7 @@ def test_events_create_rejects_multiple_single_select_terms(api_client, user, ca
         label="Seniors",
     )
 
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     data = {
         "title": "Conflicting Tagged Event",
         "campaign": str(campaign.id),
@@ -1771,7 +1791,7 @@ def test_events_create_rejects_duplicate_taxonomy_dimensions(api_client, user, c
     climate = TaxonomyTerm.objects.create(dimension=dimension, code="climate", label="Climate")
     mobility = TaxonomyTerm.objects.create(dimension=dimension, code="mobility", label="Mobility")
 
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     data = {
         "title": "Duplicate Dimension Event",
         "campaign": str(campaign.id),
@@ -1804,7 +1824,7 @@ def test_events_create_rejects_non_leaf_taxonomy_term(api_client, user, campaign
         label="Mental Health",
     )
 
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     data = {
         "title": "Parent Tagged Event",
         "campaign": str(campaign.id),
@@ -1835,7 +1855,7 @@ def test_events_create_rejects_inactive_taxonomy_term(api_client, user, campaign
         is_active=False,
     )
 
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     data = {
         "title": "Inactive Tagged Event",
         "campaign": str(campaign.id),
@@ -1877,7 +1897,7 @@ def test_event_series_create_assigns_grouped_taxonomy_to_generated_occurrences(
         label="Youth",
     )
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
         "/api/v1/event-series/",
         {
@@ -1935,7 +1955,7 @@ def test_event_series_create_rejects_invalid_grouped_taxonomy_assignments(
         label="Seniors",
     )
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
         "/api/v1/event-series/",
         {
@@ -1972,7 +1992,7 @@ def test_event_series_create_rejects_invalid_grouped_taxonomy_assignments(
 @pytest.mark.django_db
 def test_events_create_rejects_online_event_without_access_data(api_client, user, campaign):
     """Online events without access data should be rejected."""
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     data = {
         "title": "Broken Online Event",
         "campaign": str(campaign.id),
@@ -2079,7 +2099,7 @@ def test_events_list_filters_by_dimension_and_term(api_client, user, campaign):
 @pytest.mark.django_db
 def test_events_delete(api_client, user, future_event):
     """Test deleting an event."""
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_ADMIN"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_ADMIN")
     response = api_client.delete(f"/api/v1/events/{future_event.id}/")
     assert response.status_code == 204
     assert not Event.objects.filter(id=future_event.id).exists()
@@ -2120,7 +2140,7 @@ def test_event_create_with_layer_uuids(api_client, user, campaign):
     l2 = make_layer("workspace:evt_w_2", user=user)
 
     now = timezone.now()
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     payload = {
         "title": "Event w/ layers",
         "campaign": str(campaign.id),
@@ -2146,7 +2166,7 @@ def test_event_create_rejects_unpublished_layer(api_client, user, campaign):
         "workspace:evt_w_draft", user=user, publishing_state="DRAFT"
     )
     now = timezone.now()
-    api_client.force_authenticate(user=user, token=_org_token("ROLE_DCS_WRITER"))
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     payload = {
         "title": "Bad layers",
         "campaign": str(campaign.id),

@@ -967,6 +967,18 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
             )
 
         series_attrs = self._merged_series_attrs(attrs)
+
+        request = self.context.get("request")
+        if request is not None:
+            from tosca_api.apps.organizations.permissions import (
+                validate_campaign_organization,
+            )
+
+            if not validate_campaign_organization(request, series_attrs.get("campaign")):
+                raise serializers.ValidationError(
+                    {"campaign": "Campaign does not belong to your organization."}
+                )
+
         explicit_dates = self._resolved_explicit_dates(attrs)
         series_candidate = EventSeries(
             **series_attrs,

@@ -1,7 +1,14 @@
 """Unit tests for CampaignScopedPermission / validate_campaign_organization
-(epic-11 PR1 §3.3): write-gate for Campaign-owned resources (Event,
-GeoStory, MediaAsset) that derives org membership through `obj.campaign`
-rather than a direct `obj.organization` FK.
+(epic-11 PR1 §3.3, updated by security tickets ticket 09): write-gate for
+Campaign-owned resources (Event, EventSeries, GeoStory, MediaAsset) that
+derives org membership through `obj.campaign` rather than a direct
+`obj.organization` FK.
+
+As of ticket 09, this class is gate C only (org membership + object scope)
+-- the action->level ladder (WRITER+ for writes, ADMIN for DELETE) moved to
+`has_perm()` via `DjangoModelPermissionsOrAnonReadOnly` for role-controlled
+models (Event, GeoStory); see `events/tests/test_permission_matrix.py` and
+`geostories/tests/test_permission_matrix.py`.
 """
 
 import pytest
@@ -59,33 +66,32 @@ def test_safe_methods_always_pass_without_role(django_user_model):
 
 
 @pytest.mark.django_db
-def test_write_requires_writer_role_in_some_org(django_user_model):
+def test_write_requires_some_role_in_some_org(django_user_model):
     user = django_user_model.objects.create_user(username="no-role-writer")
     permission = CampaignScopedPermission()
 
     no_role_request = _request(user, auth=_token(default_organization="dcs"), method="POST")
-    writer_request = _request(
-        user, auth=_token("ROLE_DCS_WRITER", default_organization="dcs"), method="POST"
+    reader_request = _request(
+        user, auth=_token("ROLE_DCS_READER", default_organization="dcs"), method="POST"
     )
 
     assert permission.has_permission(no_role_request, None) is False
-    assert permission.has_permission(writer_request, None) is True
+    assert permission.has_permission(reader_request, None) is True
 
 
 @pytest.mark.django_db
-def test_delete_requires_admin_not_writer(django_user_model):
+def test_delete_no_longer_requires_admin(django_user_model):
+    """As of ticket 09, this class no longer gates capability -- any role
+    passes DELETE too (WRITER+/ADMIN capability, where applicable, is
+    ``has_perm()``'s job via ``DjangoModelPermissionsOrAnonReadOnly``)."""
     user = django_user_model.objects.create_user(username="writer-delete")
     permission = CampaignScopedPermission()
 
-    writer_request = _request(
-        user, auth=_token("ROLE_DCS_WRITER", default_organization="dcs"), method="DELETE"
-    )
-    admin_request = _request(
-        user, auth=_token("ROLE_DCS_ADMIN", default_organization="dcs"), method="DELETE"
+    reader_request = _request(
+        user, auth=_token("ROLE_DCS_READER", default_organization="dcs"), method="DELETE"
     )
 
-    assert permission.has_permission(writer_request, None) is False
-    assert permission.has_permission(admin_request, None) is True
+    assert permission.has_permission(reader_request, None) is True
 
 
 # ---------------------------------------------------------------------------

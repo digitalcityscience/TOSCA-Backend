@@ -291,23 +291,34 @@ def _org_slug_of_campaign_owned(obj):
 
 
 class CampaignScopedPermission(BasePermission):
-    """Write-gate for models FK'd to Campaign (Event, GeoStory, MediaAsset).
+    """Gate C only: org membership + object scope for writes on models FK'd
+    to Campaign (Event, EventSeries, GeoStory, MediaAsset).
 
     Unlike :class:`OrgScopedPermission` (used by ``Campaign`` itself, which
     has no separate public-visibility axis), these models are meant to be
     publicly *readable* -- their own view-level visibility/status scoping
     (``EventViewSet._apply_visibility_scope``, ``GeoStoryViewSet.get_queryset``
     published-only filtering) already handles that. So SAFE_METHODS always
-    pass here; this class only gates writes, requiring WRITER+ (DELETE:
-    ADMIN) in the *owning campaign's* organization -- derived through
-    ``obj.campaign.organization``, not the object's own (nonexistent)
-    ``organization`` FK.
+    pass here.
+
+    As of security tickets ticket 09, this class no longer gates capability
+    (add/change/delete) itself -- for role-controlled models (Event,
+    GeoStory) that ladder moved to ``has_perm()``
+    (``OrgRolePermissionBackend``, ticket 06), reached through
+    ``DjangoModelPermissionsOrAnonReadOnly`` (gate A). This class only
+    confirms the caller holds *some* role in the *owning campaign's*
+    organization (or is exempt), and that a fetched object's campaign
+    belongs to that org -- derived through ``obj.campaign.organization``,
+    not the object's own (nonexistent) ``organization`` FK. For
+    ``EventSeries``, which is not a ``TOSCA_PERMISSION_MODELS`` entry and so
+    has no gate-A capability check at all, this org-membership check is the
+    *only* write gate -- see ``events/views.py``'s ``EventSeriesViewSet``.
 
     On create, there is no ``obj`` yet (the payload's ``campaign`` hasn't
     been validated as belonging to the caller's org) -- that check belongs
-    in the view/serializer (see epic-11 PR1 §3.3), this only confirms the
-    caller holds WRITER+ in *some* org (or is exempt), same pattern as
-    ``OrgScopedAdminMixin.has_add_permission``.
+    in the view/serializer (see epic-11 PR1 §3.3, ``validate_campaign_organization``),
+    this only confirms the caller holds *some* role in *some* org (or is
+    exempt), same pattern as ``OrgScopedAdminMixin.has_add_permission``.
     """
 
     def has_permission(self, request, view):
@@ -316,21 +327,17 @@ class CampaignScopedPermission(BasePermission):
         roles, org_slug, exempt = get_request_org_context(request)
         if exempt:
             return True
-        required = "ADMIN" if request.method == "DELETE" else "WRITER"
-        level = org_role_level(roles, org_slug)
-        return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[required]
+        return org_role_level(roles, org_slug) is not None
 
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:
             return True
-        required = "ADMIN" if request.method == "DELETE" else "WRITER"
         roles, org_slug, exempt = get_request_org_context(request)
         if exempt:
             return True
-        if _org_slug_of_campaign_owned(obj) != org_slug:
+        if org_role_level(roles, org_slug) is None:
             return False
-        level = org_role_level(roles, org_slug)
-        return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[required]
+        return _org_slug_of_campaign_owned(obj) == org_slug
 
 
 def validate_campaign_organization(request, campaign) -> bool:
