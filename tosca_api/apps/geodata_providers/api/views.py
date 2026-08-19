@@ -24,6 +24,7 @@ from rest_framework.response import Response
 
 from tosca_api.apps.organizations.permissions import (
     OrgScopedPermission,
+    ViewGatedModelPermissions,
     org_scoped_queryset,
     resolve_write_organization,
 )
@@ -205,7 +206,7 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
 class WorkspaceViewSet(viewsets.ModelViewSet):
     queryset = Workspace.objects.select_related('geodata_engine')
     serializer_class = WorkspaceSerializer
-    permission_classes = [permissions.IsAuthenticated, OrgScopedPermission]
+    permission_classes = [permissions.IsAuthenticated, ViewGatedModelPermissions, OrgScopedPermission]
 
     def get_queryset(self):
         qs = Workspace.objects.select_related('geodata_engine')
