@@ -4,7 +4,7 @@
 {% block submit_buttons_bottom %}
   {{ block.super }}
 
-  {% if original and original.pk %}
+  {% if original and original.pk and has_change_permission %}
   <div id="engine-action-panel" style="
     margin: 18px 0 8px 0;
     padding: 14px 18px;

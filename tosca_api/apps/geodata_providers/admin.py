@@ -269,6 +269,13 @@ class GeodataEngineForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # ModelAdmin.get_form() excludes every field when the caller lacks
+        # change permission (view-only request) -- self.fields is then empty,
+        # not merely missing 'engine_type'. That's Django's own read-only
+        # rendering path (fields display via AdminReadonlyField instead), so
+        # there's nothing to restrict here.
+        if 'engine_type' not in self.fields:
+            return
         # MARTIN/PG_TILESERV have no working client implementation — hide them
         # from selection, but keep a pre-existing row's own type selectable so
         # editing it doesn't fail on a field the user isn't even changing.
