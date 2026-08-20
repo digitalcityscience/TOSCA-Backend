@@ -1,0 +1,112 @@
+from django.core.exceptions import ImproperlyConfigured
+from django.test import SimpleTestCase
+
+from tosca_api.settings.base import build_storage_config
+
+
+class StorageConfigTests(SimpleTestCase):
+    def test_filesystem_is_the_default_shape_for_local_development(self):
+        config = build_storage_config("filesystem")
+
+        self.assertEqual(
+            config["default"]["BACKEND"],
+            "django.core.files.storage.FileSystemStorage",
+        )
+        self.assertEqual(
+            config["staticfiles"]["BACKEND"],
+            "django.contrib.staticfiles.storage.StaticFilesStorage",
+        )
+        # The public alias must resolve locally too, so application code can
+        # always reference it regardless of the active backend.
+        self.assertEqual(
+            config["media_public"]["BACKEND"],
+            "django.core.files.storage.FileSystemStorage",
+        )
+
+    def test_s3_config_is_provider_neutral_and_keeps_staticfiles_local_by_default(self):
+        config = build_storage_config(
+            "s3",
+            bucket_name="tosca-media",
+            public_bucket_name="tosca-media-public",
+            endpoint_url="https://garage.example.org",
+            region_name="garage",
+            access_key="access",
+            secret_key="secret",
+            addressing_style="path",
+            signature_version="s3v4",
+            location="media/originals/",
+        )
+
+        self.assertEqual(config["default"]["BACKEND"], "storages.backends.s3.S3Storage")
+        self.assertEqual(config["default"]["OPTIONS"]["bucket_name"], "tosca-media")
+        self.assertEqual(config["default"]["OPTIONS"]["endpoint_url"], "https://garage.example.org")
+        self.assertEqual(config["default"]["OPTIONS"]["addressing_style"], "path")
+        self.assertEqual(config["default"]["OPTIONS"]["location"], "media/originals")
+        self.assertEqual(
+            config["staticfiles"]["BACKEND"],
+            "django.contrib.staticfiles.storage.StaticFilesStorage",
+        )
+        self.assertEqual(config["media_public"]["BACKEND"], "storages.backends.s3.S3Storage")
+        self.assertEqual(config["media_public"]["OPTIONS"]["bucket_name"], "tosca-media-public")
+        # media_public is not anonymously readable: it produces presigned
+        # URLs like default/media_archive. "Public" means reachable through
+        # TOSCA's application logic, not through anonymous bucket access.
+        self.assertTrue(config["media_public"]["OPTIONS"]["querystring_auth"])
+        self.assertEqual(config["media_public"]["OPTIONS"]["querystring_expire"], 3600)
+
+    def test_private_default_bucket_keeps_signed_urls(self):
+        config = build_storage_config(
+            "s3", bucket_name="tosca-media", public_bucket_name="tosca-media-public"
+        )
+
+        self.assertTrue(config["default"]["OPTIONS"]["querystring_auth"])
+
+    def test_private_default_bucket_pins_the_signed_url_ttl(self):
+        # ticket 17: don't rely on django-storages' library default.
+        config = build_storage_config(
+            "s3", bucket_name="tosca-media", public_bucket_name="tosca-media-public"
+        )
+
+        self.assertEqual(config["default"]["OPTIONS"]["querystring_expire"], 3600)
+
+    def test_s3_requires_a_bucket_name(self):
+        with self.assertRaisesMessage(ImproperlyConfigured, "S3_BUCKET_NAME is required"):
+            build_storage_config("s3")
+
+    def test_s3_requires_a_public_bucket_name(self):
+        with self.assertRaisesMessage(
+            ImproperlyConfigured, "S3_PUBLIC_BUCKET_NAME is required"
+        ):
+            build_storage_config("s3", bucket_name="tosca-media")
+
+    def test_filesystem_includes_media_archive_alias_for_interface_parity(self):
+        config = build_storage_config("filesystem")
+
+        self.assertEqual(
+            config["media_archive"]["BACKEND"],
+            "django.core.files.storage.FileSystemStorage",
+        )
+
+    def test_s3_config_without_archive_bucket_omits_the_alias(self):
+        config = build_storage_config(
+            "s3", bucket_name="tosca-media", public_bucket_name="tosca-media-public"
+        )
+
+        self.assertNotIn("media_archive", config)
+
+    def test_s3_config_with_archive_bucket_adds_signed_alias(self):
+        config = build_storage_config(
+            "s3",
+            bucket_name="tosca-media",
+            public_bucket_name="tosca-media-public",
+            archive_bucket_name="tosca-media-archive",
+        )
+
+        self.assertEqual(config["media_archive"]["BACKEND"], "storages.backends.s3.S3Storage")
+        self.assertEqual(
+            config["media_archive"]["OPTIONS"]["bucket_name"], "tosca-media-archive"
+        )
+        # Archive objects are not browser-facing -- signed URLs, like the
+        # private default bucket.
+        self.assertTrue(config["media_archive"]["OPTIONS"]["querystring_auth"])
+        self.assertEqual(config["media_archive"]["OPTIONS"]["querystring_expire"], 3600)

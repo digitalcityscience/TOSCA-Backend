@@ -156,6 +156,22 @@ class GeodataEngine(TimeStampedModel, EncryptedCharField):
 
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
+    # Engine is platform-level infra that can serve more than one org's
+    # Workspaces (no single owning org), so it can't be scoped the way
+    # Workspace/Store/Layer are. Empty (the default) means unrestricted --
+    # visible to every organization entitled to `geodata_providers`; a
+    # superuser can narrow an engine to specific organizations by picking
+    # them here. See GeodataEngineAdmin.get_queryset.
+    organizations = models.ManyToManyField(
+        "organizations.Organization",
+        related_name="geodata_engines",
+        blank=True,
+        help_text=(
+            "Restrict this engine to specific organizations. Leave empty to "
+            "allow every organization entitled to Geodata Providers."
+        ),
+    )
+
     class Meta:
         verbose_name = "Geodata Provider"
         verbose_name_plural = "Geodata Providers"

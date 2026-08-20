@@ -2,6 +2,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
+from tosca_api.apps.authentication.role_sync import AuthClaims
 from tosca_api.apps.geodata_providers.api.views import LayerViewSet
 from tosca_api.apps.geodata_providers.models import GeodataEngine, Layer, Store, Workspace
 from tosca_api.apps.geodata_providers.test_helpers import make_layer
@@ -104,6 +105,15 @@ class LayerUpdateEndpointTests(TestCase):
             created_by=self.user,
         )
         self.view = LayerViewSet.as_view({'patch': 'update'})
+        # security tickets ticket 11 (A9): LayerViewSet writes now go through
+        # WorkspaceOwnedScopedPermission, which is *not* satisfied by a bare
+        # Django `is_superuser` flag (ticket 07's fix -- that column isn't a
+        # faithful stand-in for an actual Keycloak platform-exempt role).
+        # Attach platform-exempt claims so this pre-existing test's
+        # `is_staff=True, is_superuser=True` user still authorizes.
+        self.user._auth_claims = AuthClaims(
+            org_roles={}, default_org=None, authoritative=True, platform_exempt=True,
+        )
 
     def _patch(self, data):
         request = self.factory.patch(f'/layers/{self.layer.pk}/', data, format='json')

@@ -4,6 +4,7 @@ from rest_framework.pagination import CursorPagination
 
 from tosca_api.apps.organizations.permissions import (
     OrgScopedPermission,
+    ViewGatedModelPermissions,
     org_scoped_queryset,
     resolve_write_organization,
 )
@@ -30,7 +31,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
     """
     queryset = Campaign.objects.all()
     serializer_class = CampaignDetailSerializer
-    permission_classes = [permissions.IsAuthenticated, OrgScopedPermission]
+    permission_classes = [permissions.IsAuthenticated, ViewGatedModelPermissions, OrgScopedPermission]
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):

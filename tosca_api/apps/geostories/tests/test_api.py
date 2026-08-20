@@ -2,6 +2,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
+from tosca_api.apps.authentication.role_sync import AuthClaims
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geocontext.models import GeoContext
@@ -14,6 +15,30 @@ User = get_user_model()
 @pytest.fixture
 def api_client():
     return APIClient()
+
+
+def _org_token(*roles, org="dcs"):
+    """Keycloak-shaped token for org-scoped writes (epic-11 PR1 SS3.3)."""
+    return {"realm_access": {"roles": list(roles)}, "default_organization": org}
+
+
+def _authenticate_org_writer(api_client, user, *roles, org="dcs"):
+    """Authenticate ``user`` for both gate C (``request.auth`` token, read by
+    ``CampaignScopedPermission``) and gate A (``user._auth_claims``, read by
+    ``has_perm()`` -> ``OrgRolePermissionBackend`` via
+    ``DjangoModelPermissionsOrAnonReadOnly``, security tickets ticket 09).
+
+    ``APIClient.force_authenticate`` bypasses ``KeycloakTokenAuthentication``
+    entirely, so it never attaches ``_auth_claims`` itself -- it must be set
+    on the same ``user`` object passed in here, since DRF's
+    ``force_authenticate`` uses that exact instance as ``request.user``.
+    """
+    level = roles[0].rsplit("_", 1)[-1] if roles else None
+    if level:
+        user._auth_claims = AuthClaims(
+            org_roles={org: level}, default_org=org, authoritative=True
+        )
+    api_client.force_authenticate(user=user, token=_org_token(*roles, org=org))
 
 
 @pytest.fixture
@@ -99,25 +124,29 @@ def test_published_queryset_matches_inline_visibility_rule(geostory, draft_story
 
 
 @pytest.mark.django_db
-def test_geostory_list_published_only(api_client, user, geostory, draft_story):
-    """Test that non-staff users only see published stories."""
-    api_client.force_authenticate(user=user)
+def test_geostory_list_published_and_own_org_draft(api_client, user, geostory, draft_story):
+    """Non-staff org members see published stories plus their own org's drafts.
+
+    ``draft_story`` belongs to the caller's own org (security tickets S1 /
+    ticket 02 target rule: own-org unpublished content is visible; only
+    *cross-org* unpublished content is excluded -- see
+    ``geostories/tests/test_org_isolation.py`` for the cross-org case).
+    """
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get("/api/v1/stories/")
     assert response.status_code == 200
-    
+
     results = response.data["results"]
     titles = [r["title"] for r in results]
-    
-    # Published story should be visible
+
     assert "Existing Story" in titles
-    # Draft story should NOT be visible to non-staff
-    assert "Draft Story" not in titles
+    assert "Draft Story" in titles
 
 
 @pytest.mark.django_db
 def test_geostory_list_staff_sees_all(api_client, staff_user, geostory, draft_story):
     """Test that staff users can see all stories including drafts."""
-    api_client.force_authenticate(user=staff_user)
+    _authenticate_org_writer(api_client, staff_user, "ROLE_DCS_WRITER")
     response = api_client.get("/api/v1/stories/")
     assert response.status_code == 200
     
@@ -172,7 +201,7 @@ def test_geostory_create_unauthenticated_forbidden(api_client, campaign):
 @pytest.mark.django_db
 def test_geostory_list_payload_fields(api_client, user, geostory):
     """Test that list response has slim payload (required fields only)."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get("/api/v1/stories/")
     assert response.status_code == 200
     
@@ -210,7 +239,7 @@ def test_geostory_filter_by_campaign(api_client, user, campaign):
         title="Other Story", campaign=other_campaign, author=user, status=GeoStory.Status.PUBLISHED
     )
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get(f"/api/v1/stories/?campaign_id={campaign.id}")
     assert response.status_code == 200
     assert len(response.data["results"]) == 2
@@ -224,7 +253,7 @@ def test_geostory_filter_by_campaign(api_client, user, campaign):
 @pytest.mark.django_db
 def test_geostory_detail_has_nested_context(api_client, user, geostory):
     """Test that detail view returns nested context object (not just UUID)."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get(f"/api/v1/stories/{geostory.id}/")
     assert response.status_code == 200
     
@@ -246,7 +275,7 @@ def test_geostory_detail_has_layers(api_client, user, geostory, layer_ref):
     # Add layer to story
     GeoStoryLayer.objects.create(geostory=geostory, layer=layer_ref, display_order=1)
     
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get(f"/api/v1/stories/{geostory.id}/")
     assert response.status_code == 200
     
@@ -270,7 +299,7 @@ def test_geostory_detail_layers_no_n_plus_one(api_client, user, geostory):
 
     from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     url = f"/api/v1/stories/{geostory.id}/"
 
     # Warm caches (auth, content types) so they don't pollute the count.
@@ -310,7 +339,7 @@ def test_geostory_create_with_layer_uuids(api_client, user, campaign):
     layer1 = make_layer("workspace:write_a", user=user)
     layer2 = make_layer("workspace:write_b", user=user)
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     payload = {
         "title": "Story With Layers",
         "campaign": str(campaign.id),
@@ -329,7 +358,7 @@ def test_geostory_create_with_layer_uuids(api_client, user, campaign):
 def test_geostory_create_rejects_unknown_layer_uuid(api_client, user, campaign):
     import uuid as uuid_module
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     payload = {
         "title": "Story",
         "campaign": str(campaign.id),
@@ -346,7 +375,7 @@ def test_geostory_create_rejects_non_public_layer(api_client, user, campaign):
 
     private = make_layer("workspace:write_private", user=user, is_public=False)
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     payload = {
         "title": "Story",
         "campaign": str(campaign.id),
@@ -365,7 +394,7 @@ def test_geostory_update_replaces_layers(api_client, user, geostory):
     GeoStoryLayer.objects.create(geostory=geostory, layer=initial, display_order=0)
 
     replacement = make_layer("workspace:upd_replacement", user=user)
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.patch(
         f"/api/v1/stories/{geostory.id}/",
         {"layers": [str(replacement.id)]},
@@ -398,7 +427,7 @@ def test_geostory_detail_has_feature_links(api_client, user, geostory, campaign)
         created_by=user,
     )
     
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get(f"/api/v1/stories/{geostory.id}/")
     assert response.status_code == 200
     
@@ -412,7 +441,7 @@ def test_geostory_detail_has_feature_links(api_client, user, geostory, campaign)
 @pytest.mark.django_db
 def test_geostory_detail_full_payload(api_client, user, geostory):
     """Test that detail response has all required fields."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get(f"/api/v1/stories/{geostory.id}/")
     assert response.status_code == 200
     
@@ -439,7 +468,7 @@ def test_geostory_detail_full_payload(api_client, user, geostory):
 @pytest.mark.django_db
 def test_geostory_create(api_client, user, campaign):
     """Test creating a new geostory."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     data = {
         "title": "New Story",
         "summary": "A test story",
@@ -455,7 +484,7 @@ def test_geostory_create(api_client, user, campaign):
 @pytest.mark.django_db
 def test_geostory_create_requires_title(api_client, user, campaign):
     """Test that title is required."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     data = {
         "campaign": str(campaign.id),
     }
@@ -467,7 +496,7 @@ def test_geostory_create_requires_title(api_client, user, campaign):
 @pytest.mark.django_db
 def test_geostory_update(api_client, user, geostory):
     """Test updating a geostory."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.patch(
         f"/api/v1/stories/{geostory.id}/",
         {"title": "Updated Title"},
@@ -483,7 +512,7 @@ def test_geostory_write_serializer_surfaces_hero_alt_error(api_client, user, geo
     geostory.hero_image_alt = "Existing alt"
     geostory.save()
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.patch(
         f"/api/v1/stories/{geostory.id}/",
         {"hero_image_alt": ""},
@@ -497,7 +526,7 @@ def test_geostory_write_serializer_surfaces_hero_alt_error(api_client, user, geo
 @pytest.mark.django_db
 def test_geostory_list_includes_hero_fields(api_client, user, geostory):
     """List payload exposes hero_image_url + hero_image_alt."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get("/api/v1/stories/")
     assert response.status_code == 200
 
@@ -510,7 +539,7 @@ def test_geostory_list_includes_hero_fields(api_client, user, geostory):
 @pytest.mark.django_db
 def test_geostory_detail_includes_hero_fields_no_image(api_client, user, geostory):
     """Detail payload exposes hero fields even when no image is set."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get(f"/api/v1/stories/{geostory.id}/")
     assert response.status_code == 200
     assert response.data["hero_image_url"] is None
@@ -528,7 +557,7 @@ def test_geostory_create_with_hero_image_multipart(api_client, user, campaign):
     Image.new("RGB", (1200, 800), color=(10, 20, 30)).save(buf, format="JPEG")
     upload = SimpleUploadedFile("hero.jpg", buf.getvalue(), content_type="image/jpeg")
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
         "/api/v1/stories/",
         {
@@ -563,7 +592,7 @@ def test_geostory_create_rejects_undersized_hero(api_client, user, campaign):
     Image.new("RGB", (400, 300)).save(buf, format="PNG")
     upload = SimpleUploadedFile("small.png", buf.getvalue(), content_type="image/png")
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
         "/api/v1/stories/",
         {
@@ -591,7 +620,7 @@ def test_geostory_create_rejects_disallowed_mime(api_client, user, campaign):
         "fake.png", buf.getvalue(), content_type="image/png"
     )
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
         "/api/v1/stories/",
         {
@@ -617,7 +646,7 @@ def test_geostory_create_with_hero_requires_alt(api_client, user, campaign):
     Image.new("RGB", (1200, 800)).save(buf, format="JPEG")
     upload = SimpleUploadedFile("hero.jpg", buf.getvalue(), content_type="image/jpeg")
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
         "/api/v1/stories/",
         {
@@ -638,7 +667,7 @@ def test_geostory_patch_replaces_hero_image(api_client, user, campaign):
     from django.core.files.uploadedfile import SimpleUploadedFile
     from PIL import Image
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
 
     buf = io.BytesIO()
     Image.new("RGB", (1200, 800), color=(1, 2, 3)).save(buf, format="JPEG")
@@ -681,7 +710,7 @@ def test_geostory_patch_clears_hero_image(api_client, user, campaign):
     from django.core.files.uploadedfile import SimpleUploadedFile
     from PIL import Image
 
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     buf = io.BytesIO()
     Image.new("RGB", (1200, 800)).save(buf, format="JPEG")
     upload = SimpleUploadedFile("hero.jpg", buf.getvalue(), content_type="image/jpeg")
@@ -725,7 +754,7 @@ def test_geostory_admin_thumbnail_handles_missing_image(geostory):
 @pytest.mark.django_db
 def test_geostory_delete(api_client, user, geostory):
     """Test deleting a geostory."""
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_ADMIN")
     response = api_client.delete(f"/api/v1/stories/{geostory.id}/")
     assert response.status_code == 204
     assert not GeoStory.objects.filter(id=geostory.id).exists()

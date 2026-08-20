@@ -191,6 +191,20 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         """Invoke model clean() for DB-level validation."""
+        campaign = attrs.get("campaign")
+        if campaign is None and self.instance is not None:
+            campaign = self.instance.campaign
+        request = self.context.get("request")
+        if request is not None:
+            from tosca_api.apps.organizations.permissions import (
+                validate_campaign_organization,
+            )
+
+            if not validate_campaign_organization(request, campaign):
+                raise serializers.ValidationError(
+                    {"campaign": "Campaign does not belong to your organization."}
+                )
+
         # Route any incoming hero image upload through the hero tier of the
         # shared image policy before model-level checks run. Validation is
         # read-only — the underlying file bytes are not mutated.

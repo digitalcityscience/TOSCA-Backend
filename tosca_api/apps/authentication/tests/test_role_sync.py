@@ -3,8 +3,13 @@ from unittest.mock import patch
 import pytest
 
 from tosca_api.apps.authentication.role_sync import (
+    ExtractedOrg,
+    ExtractedRoles,
+    build_auth_claims,
+    denormalize_org_roles,
     extract_roles_from_social_data,
     extract_roles_from_token,
+    normalize_org_roles,
     sync_user_permissions_from_roles,
 )
 
@@ -127,3 +132,97 @@ def test_social_data_without_access_token_is_unaffected():
 
     assert roles.authoritative is False
     assert roles.roles == set()
+
+
+# ---------------------------------------------------------------------------
+# normalize_org_roles / denormalize_org_roles (security tickets ticket 05)
+# ---------------------------------------------------------------------------
+
+def test_normalize_org_roles_multiple_orgs():
+    org_roles = normalize_org_roles({"ROLE_DCS_READER", "ROLE_QG2_ADMIN"})
+
+    assert org_roles == {"dcs": "READER", "qg2": "ADMIN"}
+
+
+def test_normalize_org_roles_picks_highest_level_per_org():
+    """A composite Keycloak grant can carry more than one level for the same
+    org (e.g. both WRITER and ADMIN roles); the highest rank wins."""
+    org_roles = normalize_org_roles({"ROLE_DCS_WRITER", "ROLE_DCS_ADMIN"})
+
+    assert org_roles == {"dcs": "ADMIN"}
+
+
+def test_normalize_org_roles_ignores_project_scoped_and_noise_roles():
+    org_roles = normalize_org_roles({
+        "ROLE_DCS_TOSCA_WRITER",  # project-scoped, out of scope
+        "DJANGO_STAFF",  # platform noise, not ROLE_-conforming
+        "offline_access",
+        "ROLE_DCS_READER",
+    })
+
+    assert org_roles == {"dcs": "READER"}
+
+
+def test_denormalize_org_roles_roundtrips_normalize():
+    original = {"ROLE_DCS_ADMIN", "ROLE_QG2_READER"}
+
+    assert denormalize_org_roles(normalize_org_roles(original)) == original
+
+
+# ---------------------------------------------------------------------------
+# build_auth_claims
+# ---------------------------------------------------------------------------
+
+def test_build_auth_claims_combines_roles_and_default_org():
+    roles = ExtractedRoles(roles={"ROLE_DCS_WRITER"}, authoritative=True, sources=["access_token"])
+    org = ExtractedOrg(default_slug="dcs", present=True, sources=["access_token"])
+
+    claims = build_auth_claims(roles, org)
+
+    assert claims.org_roles == {"dcs": "WRITER"}
+    assert claims.default_org == "dcs"
+    assert claims.authoritative is True
+    assert claims.platform_exempt is False
+
+
+def test_build_auth_claims_non_authoritative_when_roles_missing():
+    roles = ExtractedRoles(roles=set(), authoritative=False, sources=[])
+    org = ExtractedOrg(default_slug=None, present=False, sources=[])
+
+    claims = build_auth_claims(roles, org)
+
+    assert claims.org_roles == {}
+    assert claims.default_org is None
+    assert claims.authoritative is False
+
+
+def test_build_auth_claims_captures_platform_exempt_role():
+    """Security tickets ticket 07 fix: platform-role membership is captured
+    as real claims data, not left to be inferred later from
+    user.is_staff/is_superuser (which can drift from Keycloak)."""
+    roles = ExtractedRoles(roles={"ROLE_DCS_WRITER", "DJANGO_SUPERADMIN"}, authoritative=True, sources=["access_token"])
+    org = ExtractedOrg(default_slug="dcs", present=True, sources=["access_token"])
+
+    claims = build_auth_claims(roles, org)
+
+    assert claims.platform_exempt is True
+
+
+def test_build_auth_claims_django_staff_alone_is_not_platform_exempt():
+    """2026-08-19 incident fix: DJANGO_STAFF grants admin-UI access only, not
+    a global org-scoping bypass -- only DJANGO_SUPERADMIN is exempt now."""
+    roles = ExtractedRoles(roles={"ROLE_HPA_WRITER", "DJANGO_STAFF"}, authoritative=True, sources=["access_token"])
+    org = ExtractedOrg(default_slug="hpa", present=True, sources=["access_token"])
+
+    claims = build_auth_claims(roles, org)
+
+    assert claims.platform_exempt is False
+
+
+def test_build_auth_claims_platform_exempt_false_without_the_role():
+    roles = ExtractedRoles(roles={"ROLE_DCS_ADMIN"}, authoritative=True, sources=["access_token"])
+    org = ExtractedOrg(default_slug="dcs", present=True, sources=["access_token"])
+
+    claims = build_auth_claims(roles, org)
+
+    assert claims.platform_exempt is False

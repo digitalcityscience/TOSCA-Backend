@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 # -------------------------------------------------
 # Paths
@@ -93,6 +94,51 @@ INSTALLED_APPS = [
     "tosca_api.apps.events",
     "tosca_api.apps.feedback",
 ]
+
+# Authorization foundation (security tickets ticket 03) -- the single source
+# of truth for which apps' models are role-controlled (gate A) and
+# entitleable per-organization (gate B). Entitling an *app* must not
+# auto-expose every future model in it (revisions, audit logs, import jobs),
+# so only models listed here get role-controlled; TOSCA_ENTITLEABLE_APPS is
+# derived from the keys, never maintained twice.
+TOSCA_PERMISSION_MODELS = {
+    "campaigns": {"campaign"},
+    "geostories": {"geostory"},
+    # EventType/TaxonomyDimension/TaxonomyTerm are shared reference data with
+    # no owning org (no FK path to Organization at all) -- unlike
+    # EventSeries/EventTerm, which reach one through campaign, there is
+    # nothing to queryset-scope; any staff entitled to `events` manages the
+    # same shared rows, same as the app-wide entitlement model itself implies.
+    "events": {
+        "event", "eventseries", "eventterm",
+        "eventtype", "taxonomydimension", "taxonomyterm",
+    },
+    # GeoFeedback stays out (A8: decided out of scope, see feedback/views.py)
+    # -- its admin keeps its own hand-rolled get_queryset scope instead of
+    # OrgScopedAdminMixin, deliberately not touched here. FeedbackSubmission
+    # reaches its org through feedback__campaign__organization.
+    "feedback": {"geofeedback", "feedbacksubmission"},
+    "geocontext": {"geocontext"},
+    # A9 (security tickets ticket 11): Store/Layer/LayerGroup/Style/SpriteAsset
+    # reach their organization only through their owning Workspace (no direct
+    # FK) -- their admin classes use org_lookup="workspace__organization__slug"
+    # accordingly (Style/SpriteAsset's Workspace FK is optional; a
+    # workspace-less row is engine-global and simply excluded from org-scoped
+    # staff's queryset, same conservative default as Store/Layer). GeodataEngine
+    # has no single owning org (shared platform infra -- see its `organizations`
+    # M2M field) -- view/add go through the normal has_perm() ladder, scoped by
+    # GeodataEngineAdmin.get_queryset (unrestricted engines + any explicitly
+    # allow-listed for the caller's org); change/delete are overridden to
+    # superuser-only in GeodataEngineAdmin regardless of org role level, since
+    # an org WRITER/ADMIN must not be able to edit or delete an engine other
+    # orgs may depend on (an org's connection-field edit breaking another org's
+    # GeoServer access is a real incident this closed, see the admin.py comment).
+    "geodata_providers": {
+        "workspace", "store", "layer", "layergroup", "style", "spriteasset",
+        "geodataengine",
+    },
+}
+TOSCA_ENTITLEABLE_APPS = set(TOSCA_PERMISSION_MODELS)
 
 # django-basic-form-builder: enable read-only API endpoint
 FORMBUILDER_API_ENABLED = True
@@ -190,6 +236,160 @@ STATIC_ROOT = Path(env("DJANGO_STATIC_ROOT", default=os.fspath(ROOT_DIR / "stati
 MEDIA_URL = env("DJANGO_MEDIA_URL", default="/media/")
 MEDIA_ROOT = Path(env("DJANGO_MEDIA_ROOT", default=os.fspath(ROOT_DIR / "media")))
 
+# Media storage is deliberately switchable so local development and the test
+# suite keep using the filesystem while production can use Garage, MinIO, AWS
+# S3, or another S3-compatible service without application-level boto calls.
+DJANGO_STORAGE_BACKEND = env("DJANGO_STORAGE_BACKEND", default="filesystem").lower()
+if DJANGO_STORAGE_BACKEND not in {"filesystem", "s3"}:
+    raise ImproperlyConfigured(
+        "DJANGO_STORAGE_BACKEND must be either 'filesystem' or 's3'."
+    )
+
+S3_ENDPOINT_URL = env("S3_ENDPOINT_URL", default="")
+S3_REGION_NAME = env("S3_REGION_NAME", default="us-east-1")
+S3_ACCESS_KEY_ID = env("S3_ACCESS_KEY_ID", default="")
+S3_SECRET_ACCESS_KEY = env("S3_SECRET_ACCESS_KEY", default="")
+S3_BUCKET_NAME = env("S3_BUCKET_NAME", default="")
+S3_PUBLIC_BUCKET_NAME = env("S3_PUBLIC_BUCKET_NAME", default="")
+S3_ARCHIVE_BUCKET_NAME = env("S3_ARCHIVE_BUCKET_NAME", default="")
+S3_ADDRESSING_STYLE = env("S3_ADDRESSING_STYLE", default="auto")
+S3_SIGNATURE_VERSION = env("S3_SIGNATURE_VERSION", default="s3v4")
+MEDIA_PRIVATE_PREFIX = env("MEDIA_PRIVATE_PREFIX", default="")
+MEDIA_DERIVATIVE_PREFIX = env("MEDIA_DERIVATIVE_PREFIX", default="derivatives/")
+
+def build_storage_config(
+    backend: str,
+    *,
+    bucket_name: str = "",
+    public_bucket_name: str = "",
+    archive_bucket_name: str = "",
+    endpoint_url: str = "",
+    region_name: str = "us-east-1",
+    access_key: str = "",
+    secret_key: str = "",
+    addressing_style: str = "auto",
+    signature_version: str = "s3v4",
+    location: str = "",
+) -> dict[str, dict[str, object]]:
+    """Build media-storage aliases without coupling static files to S3."""
+    if backend == "filesystem":
+        # ``media_public`` mirrors ``default`` on local disk so application
+        # code can always resolve the alias; the private/public split only
+        # materialises on S3. ``media_archive`` is included for interface
+        # parity (PR3's archive lifecycle) even though local dev has no
+        # archive concept -- it also falls back to the local filesystem.
+        return {
+            "default": {
+                "BACKEND": "django.core.files.storage.FileSystemStorage",
+            },
+            "media_public": {
+                "BACKEND": "django.core.files.storage.FileSystemStorage",
+            },
+            "media_archive": {
+                "BACKEND": "django.core.files.storage.FileSystemStorage",
+            },
+            "staticfiles": {
+                "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+            },
+        }
+    if backend != "s3":
+        raise ImproperlyConfigured("DJANGO_STORAGE_BACKEND must be either 'filesystem' or 's3'.")
+    if not bucket_name:
+        raise ImproperlyConfigured("S3_BUCKET_NAME is required when using S3 storage.")
+    if not public_bucket_name:
+        raise ImproperlyConfigured(
+            "S3_PUBLIC_BUCKET_NAME is required when using S3 storage."
+        )
+    config = {
+        "default": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": bucket_name,
+                "endpoint_url": endpoint_url or None,
+                "region_name": region_name,
+                "access_key": access_key or None,
+                "secret_key": secret_key or None,
+                "addressing_style": addressing_style,
+                "signature_version": signature_version,
+                "default_acl": None,
+                "file_overwrite": False,
+                "querystring_auth": True,
+                # Pinned explicitly rather than relying on django-storages'
+                # default (also 3600s today) so the signed-URL TTL doesn't
+                # silently change on a library upgrade (ticket 17).
+                "querystring_expire": 3600,
+                "location": location.strip("/"),
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+    # ``media_public`` keeps its own bucket for lifecycle semantics (backfill,
+    # promotion/demotion between aliases), but is not readable anonymously:
+    # Garage has no public-website exposure configured for it, so the only
+    # way to fetch an object here is a presigned URL Django issues after
+    # checking the asset/entity is actually public/published (see
+    # geocontext/views.py::_absolute_url). "Public" therefore means publicly
+    # reachable through TOSCA's application logic, not anonymously readable
+    # from the bucket itself.
+    config["media_public"] = {
+        "BACKEND": "storages.backends.s3.S3Storage",
+        "OPTIONS": {
+            "bucket_name": public_bucket_name,
+            "endpoint_url": endpoint_url or None,
+            "region_name": region_name,
+            "access_key": access_key or None,
+            "secret_key": secret_key or None,
+            "addressing_style": addressing_style,
+            "signature_version": signature_version,
+            "default_acl": None,
+            "file_overwrite": False,
+            "querystring_auth": True,
+            "querystring_expire": 3600,
+            "location": "",
+        },
+    }
+    # Archive bucket for the PR3 lifecycle (Campaign/GeoStory archive+restore).
+    # Optional here: PR2 only provisions the bucket + env plumbing: nothing
+    # writes to this alias yet, so an unset archive_bucket_name leaves the
+    # alias absent rather than raising, matching how the pre-epic-11 config
+    # had no public bucket requirement until that alias was actually used.
+    if archive_bucket_name:
+        config["media_archive"] = {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": archive_bucket_name,
+                "endpoint_url": endpoint_url or None,
+                "region_name": region_name,
+                "access_key": access_key or None,
+                "secret_key": secret_key or None,
+                "addressing_style": addressing_style,
+                "signature_version": signature_version,
+                "default_acl": None,
+                "file_overwrite": False,
+                "querystring_auth": True,
+                "querystring_expire": 3600,
+                "location": "",
+            },
+        }
+    return config
+
+
+STORAGES = build_storage_config(
+    DJANGO_STORAGE_BACKEND,
+    bucket_name=S3_BUCKET_NAME,
+    public_bucket_name=S3_PUBLIC_BUCKET_NAME,
+    archive_bucket_name=S3_ARCHIVE_BUCKET_NAME,
+    endpoint_url=S3_ENDPOINT_URL,
+    region_name=S3_REGION_NAME,
+    access_key=S3_ACCESS_KEY_ID,
+    secret_key=S3_SECRET_ACCESS_KEY,
+    addressing_style=S3_ADDRESSING_STYLE,
+    signature_version=S3_SIGNATURE_VERSION,
+    location=MEDIA_PRIVATE_PREFIX,
+)
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 INTERNAL_API_BASE_URL = env(
@@ -217,6 +417,12 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "tosca_api.apps.core.pagination.StandardResultsSetPagination",
     "PAGE_SIZE": 20,
+    "DEFAULT_THROTTLE_RATES": {
+        # EditorJS authoring endpoints. Uploads are far more expensive
+        # (validation + storage round-trips) than listing the picker.
+        "editorjs_upload": env("THROTTLE_EDITORJS_UPLOAD", default="30/minute"),
+        "editorjs_media": env("THROTTLE_EDITORJS_MEDIA", default="120/minute"),
+    },
 }
 
 SPECTACULAR_SETTINGS = {
@@ -243,6 +449,7 @@ SPECTACULAR_SETTINGS = {
 
 AUTHENTICATION_BACKENDS = [
     "django.contrib.auth.backends.ModelBackend",  # Django native (fallback)
+    "tosca_api.apps.organizations.auth_backend.OrgRolePermissionBackend",  # security tickets ticket 06
     "allauth.account.auth_backends.AuthenticationBackend",  # allauth
 ]
 

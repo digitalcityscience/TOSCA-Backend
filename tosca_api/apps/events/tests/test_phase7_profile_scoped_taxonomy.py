@@ -26,6 +26,32 @@ def api_client():
     return APIClient()
 
 
+def _org_token(*roles, org="dcs"):
+    """Keycloak-shaped token for org-scoped writes (epic-11 PR1 SS3.3)."""
+    return {"realm_access": {"roles": list(roles)}, "default_organization": org}
+
+
+def _authenticate_org_writer(api_client, user, *roles, org="dcs"):
+    """Authenticate ``user`` for both gate C (``request.auth`` token, read by
+    ``CampaignScopedPermission``) and gate A (``user._auth_claims``, read by
+    ``has_perm()`` -> ``OrgRolePermissionBackend`` via
+    ``DjangoModelPermissionsOrAnonReadOnly``, security tickets ticket 10).
+
+    ``APIClient.force_authenticate`` bypasses ``KeycloakTokenAuthentication``
+    entirely, so it never attaches ``_auth_claims`` itself -- it must be set
+    on the same ``user`` object passed in here, since DRF's
+    ``force_authenticate`` uses that exact instance as ``request.user``.
+    """
+    from tosca_api.apps.authentication.role_sync import AuthClaims
+
+    level = roles[0].rsplit("_", 1)[-1] if roles else None
+    if level:
+        user._auth_claims = AuthClaims(
+            org_roles={org: level}, default_org=org, authoritative=True
+        )
+    api_client.force_authenticate(user=user, token=_org_token(*roles, org=org))
+
+
 @pytest.fixture
 def user():
     return User.objects.create_user(username="phase7", password="pw")
@@ -171,7 +197,7 @@ def test_event_detail_exposes_profile_key_on_taxonomy_assignment(
 def test_event_api_rejects_ph_dimension_on_general_event_via_write(
     api_client, user, campaign, general_event_type, ph_scoped_dimension
 ):
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     term = ph_scoped_dimension.terms.first()
     payload = {
         "title": "Mismatch",
@@ -197,7 +223,7 @@ def test_event_api_rejects_ph_dimension_on_general_event_via_write(
 def test_event_api_accepts_ph_dimension_on_ph_event_via_write(
     api_client, user, campaign, ph_event_type, ph_scoped_dimension
 ):
-    api_client.force_authenticate(user=user)
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     term = ph_scoped_dimension.terms.first()
     payload = {
         "title": "Match",

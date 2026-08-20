@@ -8,8 +8,12 @@ from tosca_api.apps.core.jwt_utils import verify_and_decode_token
 
 logger = logging.getLogger(__name__)
 
-# Platform roles are exempt from org-membership requirements (canonical §5d).
-ORG_CHECK_EXEMPT_ROLES = frozenset({"DJANGO_SUPERADMIN", "DJANGO_STAFF"})
+# Only the global superadmin role bypasses org-membership/org-scoping checks.
+# DJANGO_STAFF grants admin-UI *access* only (see KEYCLOAK_DJANGO_STAFF_ROLES /
+# sync_user_permissions_from_roles) -- it is still bound to ROLE_<ORG>_* for
+# what it can see/touch. Conflating the two let any admin-UI user bypass org
+# scoping entirely (2026-08-19 incident: HPA staff edited a DCS Workspace).
+ORG_CHECK_EXEMPT_ROLES = frozenset({"DJANGO_SUPERADMIN"})
 
 
 # Org-role levels in ascending order of capability. Roles are composite in
@@ -21,6 +25,12 @@ ORG_ROLE_LEVELS = ("READER", "WRITER", "ADMIN")
 # KeycloakRole registry -- everything else (offline_access, DJANGO_*, ADMIN,
 # free test roles) is Keycloak/platform noise we deliberately ignore.
 ROLE_PREFIX = "ROLE_"
+
+# Single source of truth for level ranking (security tickets ticket 05) --
+# used both to pick the highest org-role level out of a raw role set
+# (`normalize_org_roles`) and by DRF permission classes comparing a caller's
+# level against a required one (`organizations.permissions.LEVEL_RANK`).
+LEVEL_RANK = {"READER": 0, "WRITER": 1, "ADMIN": 2}
 
 
 @dataclass(frozen=True)
@@ -153,6 +163,81 @@ def extract_org_from_social_data(extra_data, access_token=None):
     return _extract_org_from_payloads(_social_login_payloads(extra_data, access_token))
 
 
+def normalize_org_roles(roles: set[str]) -> dict[str, str]:
+    """Normalize a flat Keycloak role set into ``{org_slug: highest_level}``.
+
+    Org-level roles only (``parsed.project == ""``) -- project-scoped roles
+    have no consumer yet (canonical §10 "no project-level roles") and are
+    silently dropped here rather than half-supported. When a token carries
+    more than one level for the same org (composite roles, e.g. both
+    ``ROLE_DCS_WRITER`` and ``ROLE_DCS_ADMIN``), the highest rank wins.
+    """
+    org_roles: dict[str, str] = {}
+    for role in roles:
+        parsed = parse_role_name(role)
+        if parsed is None or parsed.project:
+            continue
+        current = org_roles.get(parsed.org_slug)
+        if current is None or LEVEL_RANK[parsed.level] > LEVEL_RANK[current]:
+            org_roles[parsed.org_slug] = parsed.level
+    return org_roles
+
+
+def denormalize_org_roles(org_roles: dict[str, str]) -> set[str]:
+    """Inverse of :func:`normalize_org_roles`: rebuild ``ROLE_<ORG>_<LEVEL>``
+    tokens from a normalized ``{org_slug: level}`` mapping.
+
+    Used to feed a persisted/normalized claims source (e.g.
+    :class:`~tosca_api.apps.organizations.models.UserAuthorizationSnapshot`)
+    back into call sites that still key off the raw Keycloak role-name shape
+    (``org_role_level``, ``ORG_CHECK_EXEMPT_ROLES`` membership checks).
+    """
+    return {f"ROLE_{org.upper()}_{level}" for org, level in org_roles.items()}
+
+
+@dataclass(frozen=True)
+class AuthClaims:
+    """Normalized authorization claims for one user, ready to attach
+    request-locally (``user._auth_claims``) or persist as a
+    :class:`~tosca_api.apps.organizations.models.UserAuthorizationSnapshot`.
+    """
+
+    org_roles: dict[str, str]
+    default_org: str | None
+    authoritative: bool
+    platform_exempt: bool = False
+    """Whether the token/login actually carried a role in
+    ``ORG_CHECK_EXEMPT_ROLES`` (``DJANGO_SUPERADMIN`` only).
+
+    Captured here -- rather than inferred later from ``user.is_staff``/
+    ``user.is_superuser`` -- because those Django columns can be toggled
+    independently of Keycloak (e.g. via the admin's own ``UserAdmin``
+    "Permissions" fieldset); this field is the actual last-synced source of
+    truth for platform-role exemption (canonical §2b), not a proxy for it.
+    """
+
+
+def build_auth_claims(extracted_roles: ExtractedRoles, extracted_org: ExtractedOrg) -> AuthClaims:
+    """Combine role + org extraction results into normalized :class:`AuthClaims`."""
+    return AuthClaims(
+        org_roles=normalize_org_roles(extracted_roles.roles),
+        default_org=extracted_org.default_slug,
+        authoritative=extracted_roles.authoritative,
+        platform_exempt=bool(extracted_roles.roles & ORG_CHECK_EXEMPT_ROLES),
+    )
+
+
+def attach_auth_claims(user, claims: AuthClaims) -> None:
+    """Attach ``claims`` request-locally to ``user`` (never persisted here).
+
+    The single write path both auth entry points (Bearer, browser/admin) use
+    to make live claims available to :func:`organizations.policy.user_claims`
+    for the duration of the current request/login, per the ticket-05
+    precedence: live claims first, persisted snapshot second, fail closed.
+    """
+    user._auth_claims = claims
+
+
 def org_role_level(roles, org_slug):
     """Return the effective org-role level for ``org_slug`` given a role set.
 
@@ -180,7 +265,7 @@ def run_org_login_checks(user, extracted_roles, extracted_org, *, request=None):
     * **org-role coherence**: member of an org but holding no ``ROLE_<SLUG>_*``
       for it (e.g. a dcs member with only gq roles).
 
-    ``DJANGO_SUPERADMIN`` / ``DJANGO_STAFF`` are exempt. When ``request`` is provided
+    Only ``DJANGO_SUPERADMIN`` is exempt. When ``request`` is provided
     (browser login) a user-facing ``messages.warning`` is added too.
     """
     warnings: list[str] = []

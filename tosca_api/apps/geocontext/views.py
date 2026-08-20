@@ -19,17 +19,18 @@ EditorJS image tool can surface the message inline.
 from __future__ import annotations
 
 import io
+import ipaddress
+import logging
+import socket
 import uuid
 from typing import Iterable, Tuple
 from urllib.parse import urlparse
 
 import requests
-from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.files.storage import default_storage
+from django.core.files.storage import storages
 from django.core.files.uploadedfile import SimpleUploadedFile
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema, inline_serializer
-from PIL import Image
 from rest_framework import serializers
 from rest_framework import status
 from rest_framework.parsers import JSONParser, MultiPartParser
@@ -42,12 +43,32 @@ from tosca_api.apps.core.image_policy import (
     MAX_FILE_SIZE_BYTES,
     validate_inline_image,
 )
+from tosca_api.apps.core.models import MediaAsset
 
+
+logger = logging.getLogger(__name__)
 
 _UPLOAD_SUBDIR = "geocontext/editorjs"
 _DOWNLOAD_TIMEOUT_SECONDS = 5
 _MAX_REDIRECTS = 1
 _ALLOWED_REMOTE_SCHEMES = {"http", "https"}
+_BLOCKED_URL_MESSAGE = "Remote URL resolves to a private or internal address."
+
+
+class EditorJSUploadThrottle(UserRateThrottle):
+    """Rate-limit the (expensive) EditorJS upload endpoints per user."""
+
+    scope = "editorjs_upload"
+
+
+class EditorJSMediaThrottle(UserRateThrottle):
+    """Rate-limit the EditorJS media picker listing per user."""
+
+    scope = "editorjs_media"
+
+
+def _storage_for_alias(alias: str):
+    return storages[alias]
 
 _UPLOAD_SUCCESS_SERIALIZER = inline_serializer(
     name="EditorJSImageUploadSuccess",
@@ -98,15 +119,18 @@ _MEDIA_LIBRARY_SERIALIZER = inline_serializer(
 )
 
 
-def _media_url_prefix() -> str:
-    media_url = getattr(settings, "MEDIA_URL", "/media/") or "/media/"
-    if not media_url.endswith("/"):
-        media_url += "/"
-    return media_url
-
-
-def _absolute_url(request, storage_path: str) -> str:
-    return request.build_absolute_uri(default_storage.url(storage_path))
+def _absolute_url(
+    request, storage_path: str, *, alias: str = MediaAsset.StorageAlias.PUBLIC
+) -> str:
+    # Under the s3 backend, every alias (default/media_public/media_archive)
+    # produces a presigned Garage URL: Django is the only party that can mint
+    # a usable URL, whether the asset is private (authorization-gated) or
+    # public/published (publication-state-gated) -- Garage itself rejects
+    # anonymous GETs on all three buckets. Under the filesystem backend
+    # (local dev/tests) there is no signing at all. build_absolute_uri leaves
+    # an already-absolute URL intact.
+    logger.info("media_url.generate alias=%s path=%s", alias, storage_path)
+    return request.build_absolute_uri(_storage_for_alias(alias).url(storage_path))
 
 
 def _failure(message: str, *, http_status: int = status.HTTP_400_BAD_REQUEST) -> Response:
@@ -125,7 +149,20 @@ def _validation_error_message(exc: DjangoValidationError) -> str:
 def _store_validated_upload(
     file_obj, *, request, original_name: str | None = None
 ) -> Response:
-    """Validate, persist, and return the EditorJS success response."""
+    """Validate, persist, and return the EditorJS success response.
+
+    Security tickets S2: this upload has no owning Campaign/GeoStory yet --
+    the image isn't embedded in any saved GeoContext content until the
+    author saves the story/event, so ``media_paths.resolve_entity`` has
+    nothing to resolve against at this point (it matches on hero_image /
+    embedded content references, neither of which exist yet). Every upload
+    therefore lands in the **private** (``default``) alias unconditionally;
+    once it's linked, ``core.media_lifecycle`` promotes it to the public
+    alias iff the owning campaign is public AND the owning entity is
+    published (the S2 truth table, ticket 13/14). Previously this always
+    used ``media_public`` regardless of the eventual owning campaign's
+    visibility -- the confirmed S2 root cause.
+    """
     try:
         mime, (width, height) = validate_inline_image(file_obj)
     except DjangoValidationError as exc:
@@ -141,13 +178,26 @@ def _store_validated_upload(
 
     if hasattr(file_obj, "seek"):
         file_obj.seek(0)
-    storage_path = default_storage.save(relative_path, file_obj)
+    alias = MediaAsset.StorageAlias.DEFAULT
+    storage = _storage_for_alias(alias)
+    storage_path = storage.save(relative_path, file_obj)
+    uploader = request.user if getattr(request.user, "_meta", None) else None
+    MediaAsset.objects.create(
+        storage_path=storage_path,
+        original_name=original_name or "",
+        mime=mime,
+        width=width,
+        height=height,
+        size=storage.size(storage_path),
+        uploader=uploader,
+        storage_alias=alias,
+    )
 
     return Response(
         {
             "success": 1,
             "file": {
-                "url": _absolute_url(request, storage_path),
+                "url": _absolute_url(request, storage_path, alias=alias),
                 "mime": mime,
                 "width": width,
                 "height": height,
@@ -168,7 +218,7 @@ class EditorJSImageUploadByFileView(APIView):
 
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser]
-    throttle_classes = [UserRateThrottle]
+    throttle_classes = [EditorJSUploadThrottle]
 
     @extend_schema(
         tags=["geocontext"],
@@ -212,7 +262,7 @@ class EditorJSImageUploadByUrlView(APIView):
 
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
-    throttle_classes = [UserRateThrottle]
+    throttle_classes = [EditorJSUploadThrottle]
 
     @extend_schema(
         tags=["geocontext"],
@@ -279,7 +329,7 @@ class EditorJSImageLibraryView(APIView):
     """List previously uploaded EditorJS images for the admin picker."""
 
     permission_classes = [IsAuthenticated]
-    throttle_classes = [UserRateThrottle]
+    throttle_classes = [EditorJSMediaThrottle]
 
     @extend_schema(
         tags=["geocontext"],
@@ -293,45 +343,16 @@ class EditorJSImageLibraryView(APIView):
 
 
 def _list_existing_uploads(request, *, limit: int) -> Iterable[dict]:
-    seen = 0
-    for absolute_path in _walk_storage(_UPLOAD_SUBDIR):
-        if seen >= limit:
-            break
-        rel = absolute_path
-        try:
-            with default_storage.open(rel, "rb") as fh:
-                head = fh.read(1024 * 32)
-        except FileNotFoundError:
-            continue
-        try:
-            with Image.open(io.BytesIO(head)) as img:
-                fmt = (img.format or "").upper()
-                width, height = img.size
-        except Exception:
-            continue
-        mime = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}.get(fmt)
-        if mime is None:
-            continue
+    prefix = f"{_UPLOAD_SUBDIR}/"
+    assets = MediaAsset.objects.filter(storage_path__startswith=prefix)[:limit]
+    for asset in assets:
         yield {
-            "url": _absolute_url(request, rel),
-            "mime": mime,
-            "width": int(width),
-            "height": int(height),
-            "name": rel.rsplit("/", 1)[-1],
+            "url": _absolute_url(request, asset.storage_path, alias=asset.storage_alias),
+            "mime": asset.mime,
+            "width": asset.width,
+            "height": asset.height,
+            "name": asset.original_name or asset.storage_path.rsplit("/", 1)[-1],
         }
-        seen += 1
-
-
-def _walk_storage(prefix: str):
-    """Recursively yield file paths under ``prefix`` from default_storage."""
-    try:
-        dirs, files = default_storage.listdir(prefix)
-    except FileNotFoundError:
-        return
-    for name in files:
-        yield f"{prefix}/{name}"
-    for sub in dirs:
-        yield from _walk_storage(f"{prefix}/{sub}")
 
 
 def _is_same_origin(parsed_url, request) -> bool:
@@ -343,8 +364,59 @@ class _DownloadError(Exception):
     pass
 
 
+def _ip_is_blocked(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        # Unparseable address — treat as unsafe rather than let it through.
+        return True
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _resolve_host_ips(host: str) -> list[str]:
+    """Resolve a hostname to every address it maps to (IPv4 and IPv6)."""
+    return [info[4][0] for info in socket.getaddrinfo(host, None)]
+
+
+def _assert_public_url(url: str) -> None:
+    """Reject URLs that target loopback, private, link-local, or reserved hosts.
+
+    Blocks the cloud metadata endpoint (169.254.169.254) and SSRF into internal
+    services. Direct IP literals are checked without DNS; hostnames are resolved
+    and every returned address must be public. A hostname that cannot be
+    resolved is left to fail at connection time — it cannot reach an internal
+    target on its own.
+    """
+    host = urlparse(url).hostname
+    if not host:
+        raise _DownloadError("Remote URL has no host.")
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if _ip_is_blocked(str(literal)):
+            raise _DownloadError(_BLOCKED_URL_MESSAGE)
+        return
+    try:
+        resolved = _resolve_host_ips(host)
+    except OSError:
+        return
+    if any(_ip_is_blocked(ip) for ip in resolved):
+        raise _DownloadError(_BLOCKED_URL_MESSAGE)
+
+
 def _download_with_caps(url: str) -> Tuple[bytes, str]:
-    """Stream-download with size, timeout, and redirect caps."""
+    """Stream-download with SSRF, size, timeout, and redirect caps."""
+    # Validate before connecting so a direct internal address is never dialled.
+    _assert_public_url(url)
     try:
         resp = requests.get(
             url,
@@ -360,6 +432,9 @@ def _download_with_caps(url: str) -> Tuple[bytes, str]:
     final_scheme = urlparse(resp.url).scheme
     if final_scheme not in _ALLOWED_REMOTE_SCHEMES:
         raise _DownloadError(f"Redirect target uses disallowed scheme '{final_scheme}'.")
+    # A redirect can point at an internal host even when the first hop was
+    # public; re-validate the final URL the response actually came from.
+    _assert_public_url(resp.url)
     if resp.status_code != 200:
         raise _DownloadError(f"Remote URL returned status {resp.status_code}.")
 

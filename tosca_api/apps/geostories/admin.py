@@ -1,6 +1,8 @@
 from django.contrib import admin
 from django.utils.html import format_html
 
+from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin
+
 from .forms import GeoStoryLayerFormSet
 from .models import GeoStory, GeoStoryLayer
 
@@ -16,7 +18,9 @@ class GeoStoryLayerInline(admin.TabularInline):
 
 
 @admin.register(GeoStory)
-class GeoStoryAdmin(admin.ModelAdmin):
+class GeoStoryAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
+    org_lookup = "campaign__organization__slug"
+
     list_display = ("title", "hero_image_thumbnail", "status", "campaign", "author", "created_at")
     list_filter = ("status", "created_at", "campaign")
     search_fields = ("title", "summary")

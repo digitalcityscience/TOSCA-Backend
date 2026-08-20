@@ -27,6 +27,12 @@ def engine_test_connection_view(request, engine_id):
     POST /admin/geodata_providers/geodataengine/<id>/test-connection/
     Wrapped by admin_site.admin_view() in get_urls() — auth handled there.
     Returns JSON: {success, version, latency_ms} or {success: false, error}.
+
+    Org-scope exemption (security tickets ticket 03): GeodataEngine has no
+    single owning org (shared platform infra, see admin.py's
+    `GeodataEngineAdmin.get_queryset` docstring) and this is a stateless
+    read-only diagnostic -- nothing org-owned is touched or mutated, so
+    ``is_staff`` alone is the correct, deliberate gate here.
     """
     if not request.user.is_staff:
         return JsonResponse({'error': 'Forbidden'}, status=403)
@@ -58,8 +64,15 @@ def engine_sync_view(request, engine_id):
     POST /admin/geodata_providers/geodataengine/<id>/sync/
     Wrapped by admin_site.admin_view() in get_urls() — auth handled there.
     Returns JSON with workspace/store/layer delta counts.
+
+    Superuser-only (security tickets ticket 03), not just ``is_staff``:
+    this mutates every org's workspaces/stores/layers on the shared engine
+    at once, same reasoning as ``GeodataEngineAdmin.has_change_permission``
+    -- an org-scoped WRITER/ADMIN must not be able to alter state that
+    other orgs depend on via a side-channel AJAX action the admin's own
+    change/delete gate doesn't cover.
     """
-    if not request.user.is_staff:
+    if not request.user.is_superuser:
         return JsonResponse({'error': 'Forbidden'}, status=403)
 
     try:
@@ -94,7 +107,10 @@ def engine_sync_view(request, engine_id):
 
 @require_POST
 def engine_deactivate_view(request, engine_id):
-    if not request.user.is_staff:
+    """Superuser-only (security tickets ticket 03) -- same shared-engine
+    reasoning as ``engine_sync_view``: deactivating disables the engine for
+    every org that uses it, not just the caller's."""
+    if not request.user.is_superuser:
         raise PermissionDenied
 
     engine = get_object_or_404(GeodataEngine, pk=engine_id)
@@ -105,7 +121,9 @@ def engine_deactivate_view(request, engine_id):
 
 @require_POST
 def engine_reactivate_view(request, engine_id):
-    if not request.user.is_staff:
+    """Superuser-only (security tickets ticket 03) -- see
+    ``engine_deactivate_view``."""
+    if not request.user.is_superuser:
         raise PermissionDenied
 
     engine = get_object_or_404(GeodataEngine, pk=engine_id)

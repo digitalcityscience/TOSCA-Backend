@@ -9,30 +9,46 @@ place that reads those claims, so API (Bearer token) and Django admin
 
 from __future__ import annotations
 
-from rest_framework.permissions import SAFE_METHODS, BasePermission
+from rest_framework.permissions import BasePermission, DjangoModelPermissions, SAFE_METHODS
 
 from tosca_api.apps.authentication.role_sync import (
+    LEVEL_RANK,
     ORG_CHECK_EXEMPT_ROLES,
-    extract_org_from_social_data,
+    denormalize_org_roles,
     extract_org_from_token,
-    extract_roles_from_social_data,
     extract_roles_from_token,
     org_role_level,
 )
 
-LEVEL_RANK = {"READER": 0, "WRITER": 1, "ADMIN": 2}
+from .policy import is_platform_exempt, user_claims
 
 
 def get_request_org_context(request):
     """Return ``(roles, org_slug, exempt)`` for ``request``.
 
-    Reads the decoded Keycloak token DRF authentication backends attach as
-    ``request.auth`` (``KeycloakTokenAuthentication``). Falls back to the
-    user's linked Keycloak ``SocialAccount.extra_data`` for session-based
-    requests (Django admin), which never populate ``request.auth``. Cached on
-    the request object since a single request can consult permissions
-    (queryset scoping + `has_permission` + `has_object_permission`) more than
-    once.
+    Bearer/API requests read the decoded Keycloak token DRF authentication
+    backends attach as ``request.auth`` (``KeycloakTokenAuthentication``) --
+    always the freshest source, never persisted; ``exempt`` there is computed
+    directly from the token's own raw role set. Session-based requests
+    (Django admin), which never populate ``request.auth``, fall through to
+    the ticket-05 unified resolver (``organizations.policy.user_claims`` /
+    ``is_platform_exempt``): the current request-local live claims if this is
+    the login request itself, else the persisted ``UserAuthorizationSnapshot``
+    from the user's last successful browser login (fail closed if neither
+    exists). This resolver is the sole consumer of ``SocialAccount.extra_data``
+    for authorization purposes as of ticket 05 -- the two must not be left
+    live side by side, or they can silently drift apart.
+
+    ``exempt`` for the browser branch is **not** derived from
+    ``user.is_staff``/``user.is_superuser`` -- those Django columns are
+    editable independently of Keycloak (e.g. via the admin's own
+    ``UserAdmin``), so they are not a faithful stand-in for "Keycloak
+    actually granted a platform-exempt role" (security tickets ticket 07
+    fix; see ``policy.is_platform_exempt``'s docstring).
+
+    Cached on the request object since a single request can consult
+    permissions (queryset scoping + `has_permission` +
+    `has_object_permission`) more than once.
     """
     cached = getattr(request, "_org_context", None)
     if cached is not None:
@@ -40,54 +56,90 @@ def get_request_org_context(request):
 
     roles: set[str] = set()
     org_slug = None
+    exempt = False
 
     auth = getattr(request, "auth", None)
     if isinstance(auth, dict):
         roles = extract_roles_from_token(auth).roles
         org_slug = extract_org_from_token(auth).default_slug
+        exempt = bool(roles & ORG_CHECK_EXEMPT_ROLES)
     else:
         user = getattr(request, "user", None)
         if user is not None and getattr(user, "is_authenticated", False):
-            social_account = user.socialaccount_set.filter(provider="keycloak").first()
-            if social_account is not None:
-                roles = extract_roles_from_social_data(social_account.extra_data).roles
-                org_slug = extract_org_from_social_data(social_account.extra_data).default_slug
+            org_roles, org_slug = user_claims(user)
+            roles = denormalize_org_roles(org_roles)
+            exempt = is_platform_exempt(user)
 
-    context = (roles, org_slug, bool(roles & ORG_CHECK_EXEMPT_ROLES))
+    context = (roles, org_slug, exempt)
     request._org_context = context
     return context
 
 
 class OrgScopedPermission(BasePermission):
-    """SAFE_METHODS require READER+, writes require WRITER+, DELETE requires ADMIN.
+    """Gate C only: org membership + object scope for org-private resources
+    (e.g. Campaign).
 
-    ``DJANGO_SUPERADMIN``/``DJANGO_STAFF`` bypass entirely (canonical §2b platform
-    roles are never org-scoped). Cross-org access is turned into a 404, not a
-    403, by queryset scoping (see :func:`org_scoped_queryset`) -- by the time
-    ``has_object_permission`` runs, an object from another org was never
-    fetched, so it never gets here at all.
+    As of security tickets ticket 08, this class no longer gates capability
+    (view/add/change/delete) -- that action->level ladder moved to
+    ``has_perm()`` (``OrgRolePermissionBackend``, ticket 06), reached through
+    ``ViewGatedModelPermissions``/``DjangoModelPermissions`` (gate A). This
+    class only confirms the caller actually holds *some* role in the org
+    they're scoped to, and that a fetched object belongs to that same org.
+    Only ``DJANGO_SUPERADMIN`` bypasses entirely (canonical §2b; narrowed
+    2026-08-19 -- ``DJANGO_STAFF`` is admin-UI access only, not a global
+    org-scoping bypass). Cross-org access is turned into a
+    404, not a 403, by queryset scoping (see :func:`org_scoped_queryset`) --
+    by the time ``has_object_permission`` runs, an object from another org
+    was never fetched, so it never gets here at all.
+
+    ``org_attr`` names the (possibly dotted) attribute path to the owning
+    Organization -- ``"organization"`` for models with a direct FK
+    (Campaign, Workspace), or e.g. ``"workspace__organization"`` for models
+    that only reach their org through another FK (Store, Layer).
     """
+
+    org_attr = "organization"
 
     def has_permission(self, request, view):
         roles, org_slug, exempt = get_request_org_context(request)
         if exempt:
             return True
-
-        level = org_role_level(roles, org_slug)
-        if level is None:
-            return False
-
-        if request.method in SAFE_METHODS:
-            required = "READER"
-        elif request.method == "DELETE":
-            required = "ADMIN"
-        else:
-            required = "WRITER"
-
-        return LEVEL_RANK[level] >= LEVEL_RANK[required]
+        return org_role_level(roles, org_slug) is not None
 
     def has_object_permission(self, request, view, obj):
-        return self.has_permission(request, view)
+        roles, org_slug, exempt = get_request_org_context(request)
+        if exempt:
+            return True
+        if org_role_level(roles, org_slug) is None:
+            return False
+        return _org_slug_of(obj, org_attr=self.org_attr) == org_slug
+
+
+class WorkspaceOwnedScopedPermission(OrgScopedPermission):
+    """:class:`OrgScopedPermission` for models FK'd to Workspace, not directly
+    to Organization (Store, Layer -- security tickets ticket 11, A9).
+    """
+
+    org_attr = "workspace__organization"
+
+
+class ViewGatedModelPermissions(DjangoModelPermissions):
+    """``DjangoModelPermissions`` with GET/HEAD also gated on ``view_<model>``.
+
+    Plain ``DjangoModelPermissions`` leaves GET/HEAD/OPTIONS ungated (empty
+    perms lists) -- correct for public-read resources, wrong for org-private
+    ones (ticket 08), where reads must go through ``has_perm()`` (gate A)
+    too. Its ``authenticated_users_only = True`` also makes it the wrong
+    choice for public-read resources (anon GET would 403) --
+    ``DjangoModelPermissionsOrAnonReadOnly`` is used there instead (tickets
+    09/10).
+    """
+
+    perms_map = {
+        **DjangoModelPermissions.perms_map,
+        "GET": ["%(app_label)s.view_%(model_name)s"],
+        "HEAD": ["%(app_label)s.view_%(model_name)s"],
+    }
 
 
 def org_scoped_queryset(request, queryset, *, org_field="organization__slug"):
@@ -109,8 +161,8 @@ def resolve_write_organization(request):
     """Resolve which :class:`Organization` a create should be attached to.
 
     Org-scoped members can only ever write into their own org, so it is
-    derived from the token rather than trusted client input. Exempt callers
-    (``DJANGO_SUPERADMIN``/``DJANGO_STAFF``, who may have no ``default_organization``
+    derived from the token rather than trusted client input. The exempt
+    caller (``DJANGO_SUPERADMIN``, who may have no ``default_organization``
     of their own) may pass ``organization`` (slug or id) in the request body.
     Returns ``None`` if no organization could be resolved.
     """
@@ -133,12 +185,23 @@ def resolve_write_organization(request):
     return None
 
 
-def _org_slug_of(obj):
-    organization = getattr(obj, "organization", None)
-    return organization.slug if organization is not None else None
+def _org_slug_of(obj, *, org_attr="organization"):
+    """Resolve the owning Organization's slug, walking a dotted attribute path.
+
+    ``org_attr`` may be a single attribute (``"organization"``,
+    ``"owner_org"``) or a Django-lookup-style dotted path
+    (``"campaign__organization"`` for Event/GeoStory, whose own FK is to
+    Campaign, not directly to Organization).
+    """
+    target = obj
+    for part in org_attr.split("__"):
+        if target is None:
+            return None
+        target = getattr(target, part, None)
+    return target.slug if target is not None else None
 
 
-def check_org_level(request, obj, required):
+def check_org_level(request, obj, required, *, org_attr="organization"):
     """Shared org-ownership + role-level gate (used by the admin mixin and the
     standalone ``has_org_write_access`` helper, so the rule lives in one place).
 
@@ -146,38 +209,67 @@ def check_org_level(request, obj, required):
     object (when given) must belong to the caller's org *and* the caller must
     hold at least ``required`` for it. Does **not** check ``is_staff``/
     ``is_active`` -- callers that need that gate on it separately.
+
+    ``org_attr`` names the FK attribute that points at the owning
+    Organization -- ``"organization"`` for Campaign/Workspace, but e.g.
+    ``"owner_org"`` for MediaAsset, which can't reuse that name (it already
+    has an unrelated meaning were it ever added).
     """
     if request.user.is_superuser:
         return True
     roles, org_slug, exempt = get_request_org_context(request)
     if exempt:
         return True
-    if obj is not None and _org_slug_of(obj) != org_slug:
+    if obj is not None and _org_slug_of(obj, org_attr=org_attr) != org_slug:
         return False
     level = org_role_level(roles, org_slug)
     return level is not None and LEVEL_RANK[level] >= LEVEL_RANK[required]
 
 
-def has_org_write_access(request, obj, required="WRITER"):
+def has_org_write_access(request, obj, required="WRITER", *, org_attr="organization"):
     """Standalone version of ``OrgScopedAdminMixin``'s change-permission rule.
 
     For plain admin AJAX views (e.g. a change-form action button) that sit
     outside a ``ModelAdmin`` and so can't call ``self.has_change_permission``.
-    ``obj`` must have an ``organization`` FK.
+
+    ``org_attr`` names the (possibly dotted) attribute path to the owning
+    Organization -- ``"organization"`` for models with a direct FK
+    (Workspace), or e.g. ``"workspace__organization"`` for models that only
+    reach their org through another FK (Store, Layer; security tickets
+    ticket 03).
     """
     if request.user.is_superuser:
         return True
     if not (request.user and request.user.is_active and request.user.is_staff):
         return False
-    return check_org_level(request, obj, required)
+    return check_org_level(request, obj, required, org_attr=org_attr)
 
 
 class OrgScopedAdminMixin:
     """Restrict a ``ModelAdmin`` to the caller's org (canonical §5b).
 
-    Superusers and ``DJANGO_SUPERADMIN``/``DJANGO_STAFF`` token holders see every
-    org's rows. Everyone else sees only their own org's rows; changing
-    requires WRITER, deleting requires ADMIN (§2b level table).
+    As of security tickets ticket 07, this mixin owns **only** gate C (row
+    scoping, via ``get_queryset``) -- capability (which models/actions are
+    allowed at all) is entirely ``has_perm()``'s job now
+    (``OrgRolePermissionBackend``, ticket 06), reached through Django's own
+    default ``has_*_permission`` implementations (``super()``), not
+    reimplemented here. The split:
+
+    ```text
+    is_staff             = may enter admin        (_is_active_staff below)
+    has_perm()           = which models/actions    (super(), i.e. Django's default)
+    admin queryset scope = which organization rows (get_queryset below)
+    ```
+
+    Cross-org writes/deletes are prevented the same way cross-org reads are:
+    ``get_object`` (used by the changeform/delete views) filters through
+    ``get_queryset`` first, so a cross-org row is never fetched in the first
+    place -- matches the "queryset is the real tenant gate" pattern already
+    used by ``OrgScopedPermission``/``CampaignScopedPermission`` in DRF
+    (neither checks the object's org in ``has_object_permission`` either).
+    Superusers and ``DJANGO_SUPERADMIN`` token holders see every org's rows
+    (queryset only -- still separately gated by entitlement/role through
+    ``has_perm()``).
     """
 
     org_lookup = "organization__slug"
@@ -194,21 +286,132 @@ class OrgScopedAdminMixin:
         return qs.filter(**{self.org_lookup: org_slug})
 
     def _is_active_staff(self, request):
-        # Deliberately not `super().has_*_permission()` (Django's default
-        # `user.has_perm(...)` check): this app never syncs Django
-        # Permission/Group objects from Keycloak (canonical §11.3 -- no
-        # separate authorization DB), so that check would always be False
-        # for a non-superuser and make org-scoped staff access unreachable.
+        # Explicit, defense-in-depth is_staff check: `AdminSite.has_permission`
+        # already enforces is_staff at the whole-site level before any
+        # ModelAdmin method runs, but has_*_permission is also called
+        # directly (by tests, or third-party admin tooling) without going
+        # through that gate -- keep it intact here too (ticket 07 spec).
         return bool(request.user and request.user.is_active and request.user.is_staff)
 
+    def has_view_permission(self, request, obj=None):
+        return self._is_active_staff(request) and super().has_view_permission(request, obj)
+
     def has_add_permission(self, request):
-        # No `obj` yet to check org ownership against -- WRITER+ in *some*
-        # org (or exempt) is enough; the actual owning org is resolved at
-        # save time (see `resolve_write_organization`).
-        return self._is_active_staff(request) and check_org_level(request, None, "WRITER")
+        return self._is_active_staff(request) and super().has_add_permission(request)
 
     def has_change_permission(self, request, obj=None):
-        return self._is_active_staff(request) and check_org_level(request, obj, "WRITER")
+        return self._is_active_staff(request) and super().has_change_permission(request, obj)
 
     def has_delete_permission(self, request, obj=None):
-        return self._is_active_staff(request) and check_org_level(request, obj, "ADMIN")
+        return self._is_active_staff(request) and super().has_delete_permission(request, obj)
+
+
+class PlatformOnlyChangeDeleteMixin:
+    """Restrict ``change``/``delete`` to Django superusers on a shared,
+    un-owned model (security tickets ticket 05).
+
+    For models with no ownership path -- ``EventType``, ``TaxonomyDimension``/
+    ``TaxonomyTerm``, ``GeoContext`` -- the standard READER/WRITER/ADMIN
+    ``has_perm()`` ladder would let a WRITER in *any* entitled org
+    ``add``/``change`` these shared rows and an ADMIN ``delete`` them,
+    including reference data other orgs' entities reference. There is no
+    queryset to scope by (no owning org), so -- same choice already made for
+    ``GeodataEngineAdmin`` -- mutation is locked to superuser instead;
+    ``add`` still goes through the normal ``has_perm()`` ladder (only
+    affects the creator's own org's usage of the shared row).
+    """
+
+    def has_change_permission(self, request, obj=None):
+        return bool(request.user and request.user.is_superuser)
+
+    def has_delete_permission(self, request, obj=None):
+        return bool(request.user and request.user.is_superuser)
+
+
+def _org_slug_of_campaign_owned(obj):
+    campaign = getattr(obj, "campaign", None)
+    return _org_slug_of(campaign) if campaign is not None else None
+
+
+class CampaignScopedPermission(BasePermission):
+    """Gate C only: org membership + object scope for writes on models FK'd
+    to Campaign (Event, EventSeries, GeoStory, MediaAsset).
+
+    Unlike :class:`OrgScopedPermission` (used by ``Campaign`` itself, which
+    has no separate public-visibility axis), these models are meant to be
+    publicly *readable* -- their own view-level visibility/status scoping
+    (``EventViewSet._apply_visibility_scope``, ``GeoStoryViewSet.get_queryset``
+    published-only filtering) already handles that. So SAFE_METHODS always
+    pass here.
+
+    As of security tickets ticket 09, this class no longer gates capability
+    (add/change/delete) itself -- for role-controlled models (Event,
+    GeoStory) that ladder moved to ``has_perm()``
+    (``OrgRolePermissionBackend``, ticket 06), reached through
+    ``DjangoModelPermissionsOrAnonReadOnly`` (gate A). This class only
+    confirms the caller holds *some* role in the *owning campaign's*
+    organization (or is exempt), and that a fetched object's campaign
+    belongs to that org -- derived through ``obj.campaign.organization``,
+    not the object's own (nonexistent) ``organization`` FK. For
+    ``EventSeries``, which is not a ``TOSCA_PERMISSION_MODELS`` entry and so
+    has no gate-A capability check at all, this org-membership check is the
+    *only* write gate -- see ``events/views.py``'s ``EventSeriesViewSet``.
+
+    On create, there is no ``obj`` yet (the payload's ``campaign`` hasn't
+    been validated as belonging to the caller's org) -- that check belongs
+    in the view/serializer (see epic-11 PR1 §3.3, ``validate_campaign_organization``),
+    this only confirms the caller holds *some* role in *some* org (or is
+    exempt), same pattern as ``OrgScopedAdminMixin.has_add_permission``.
+    """
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        roles, org_slug, exempt = get_request_org_context(request)
+        if exempt:
+            return True
+        return org_role_level(roles, org_slug) is not None
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        roles, org_slug, exempt = get_request_org_context(request)
+        if exempt:
+            return True
+        if org_role_level(roles, org_slug) is None:
+            return False
+        return _org_slug_of_campaign_owned(obj) == org_slug
+
+
+def validate_campaign_organization(request, campaign) -> bool:
+    """True when ``campaign`` belongs to the caller's org (or caller is exempt).
+
+    Called from a serializer's ``validate()`` on create/update of a
+    Campaign-owned resource (Event, GeoStory) to reject cross-org writes
+    *before* they hit the DB -- ``CampaignScopedPermission`` alone can't
+    catch this on create, since the object (and therefore its campaign)
+    doesn't exist yet when ``has_permission`` runs.
+    """
+    if campaign is None:
+        return True
+    _roles, org_slug, exempt = get_request_org_context(request)
+    if exempt:
+        return True
+    return _org_slug_of(campaign) == org_slug
+
+
+def validate_workspace_organization(request, workspace) -> bool:
+    """True when ``workspace`` belongs to the caller's org (or caller is exempt).
+
+    Mirrors :func:`validate_campaign_organization` for Store/Layer creates
+    (security tickets ticket 11, A9): ``WorkspaceOwnedScopedPermission`` can't
+    catch a cross-org write on create, since there's no Store/Layer object
+    (and therefore no ``.workspace``) yet when ``has_permission`` runs -- the
+    payload's ``workspace`` must be checked directly against the caller's org.
+    """
+    if workspace is None:
+        return True
+    _roles, org_slug, exempt = get_request_org_context(request)
+    if exempt:
+        return True
+    return _org_slug_of(workspace) == org_slug

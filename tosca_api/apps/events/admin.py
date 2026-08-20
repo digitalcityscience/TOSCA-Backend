@@ -2,6 +2,11 @@ from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
 from django.db import transaction
 
+from tosca_api.apps.organizations.permissions import (
+    OrgScopedAdminMixin,
+    PlatformOnlyChangeDeleteMixin,
+)
+
 from .forms import (
     EventAdminForm,
     EventSeriesAdminForm,
@@ -92,7 +97,14 @@ class TaxonomyTermInline(SortOrderHelpTextMixin, admin.TabularInline):
 
 
 @admin.register(EventType)
-class EventTypeAdmin(admin.ModelAdmin):
+class EventTypeAdmin(PlatformOnlyChangeDeleteMixin, admin.ModelAdmin):
+    """Shared reference data, no owning org -- change/delete are
+    superuser-only (security tickets ticket 05).
+
+    Conservative default, not the final model: the taxonomy feature isn't
+    fully designed yet. This will be revisited once product decides whether
+    taxonomy data is platform-managed, org-owned, or shared-with-limited-
+    self-service-curation -- see epic-11-canonical.md §10a."""
     list_display = ["label", "code", "profile_mode", "profile_key", "is_active"]
     list_filter = ["profile_mode", "is_active"]
     search_fields = ["label", "code", "profile_key"]
@@ -116,7 +128,14 @@ class EventTypeAdmin(admin.ModelAdmin):
 
 
 @admin.register(TaxonomyDimension)
-class TaxonomyDimensionAdmin(SortOrderHelpTextMixin, admin.ModelAdmin):
+class TaxonomyDimensionAdmin(PlatformOnlyChangeDeleteMixin, SortOrderHelpTextMixin, admin.ModelAdmin):
+    """Shared reference data, no owning org -- change/delete are
+    superuser-only (security tickets ticket 05).
+
+    Conservative default, not the final model: the taxonomy feature isn't
+    fully designed yet. This will be revisited once product decides whether
+    taxonomy data is platform-managed, org-owned, or shared-with-limited-
+    self-service-curation -- see epic-11-canonical.md §10a."""
     form = TaxonomyDimensionAdminForm
     list_display = [
         "label",
@@ -151,7 +170,14 @@ class TaxonomyDimensionAdmin(SortOrderHelpTextMixin, admin.ModelAdmin):
 
 
 @admin.register(TaxonomyTerm)
-class TaxonomyTermAdmin(SortOrderHelpTextMixin, admin.ModelAdmin):
+class TaxonomyTermAdmin(PlatformOnlyChangeDeleteMixin, SortOrderHelpTextMixin, admin.ModelAdmin):
+    """Shared reference data, no owning org -- change/delete are
+    superuser-only (security tickets ticket 05).
+
+    Conservative default, not the final model: the taxonomy feature isn't
+    fully designed yet. This will be revisited once product decides whether
+    taxonomy data is platform-managed, org-owned, or shared-with-limited-
+    self-service-curation -- see epic-11-canonical.md §10a."""
     list_display = ["label", "code", "dimension", "parent", "is_active", "sort_order"]
     list_filter = ["dimension", "is_active"]
     search_fields = ["label", "code", "description", "dimension__label", "parent__label"]
@@ -178,7 +204,8 @@ class TaxonomyTermAdmin(SortOrderHelpTextMixin, admin.ModelAdmin):
 
 
 @admin.register(EventSeries)
-class EventSeriesAdmin(admin.ModelAdmin):
+class EventSeriesAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
+    org_lookup = "campaign__organization__slug"
     form = EventSeriesAdminForm
     list_display = [
         "name",
@@ -397,8 +424,10 @@ class EventSeriesAdmin(admin.ModelAdmin):
 
 
 @admin.register(Event)
-class EventAdmin(GISModelAdmin):
+class EventAdmin(OrgScopedAdminMixin, GISModelAdmin):
     """Admin interface for Event with map widget for location."""
+
+    org_lookup = "campaign__organization__slug"
 
     form = EventAdminForm
     list_display = [
@@ -575,7 +604,8 @@ class EventAdmin(GISModelAdmin):
 
 
 @admin.register(EventTerm)
-class EventTermAdmin(admin.ModelAdmin):
+class EventTermAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
+    org_lookup = "event__campaign__organization__slug"
     list_display = ["event", "term", "created_at"]
     list_filter = ["term__dimension"]
     search_fields = ["event__title", "term__label", "term__code", "term__dimension__label"]

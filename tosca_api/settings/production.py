@@ -26,6 +26,13 @@ TEMPLATES = [{
 }]
 
 DEBUG = False
+
+# Static assets are collected locally and served by WhiteNoise through Django.
+# Garage is reserved for media storage aliases configured in ``base``.
+STORAGES["staticfiles"] = {  # noqa: F405
+    "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+}
+
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True

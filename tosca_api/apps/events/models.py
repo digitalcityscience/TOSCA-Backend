@@ -485,6 +485,15 @@ class Event(TimeStampedModel):
         CANCELLED = "cancelled", "Cancelled"
 
     class Visibility(models.TextChoices):
+        """Deprecated (epic-11 §3.2): no longer an authorization source.
+
+        Campaign.visibility is now the single authoritative visibility axis
+        for Campaign-owned resources; this field is kept for backward
+        compatibility (existing data, admin display) but is read-only via
+        the API -- see EventWriteSerializer.visibility and
+        Event.effective_visibility.
+        """
+
         PUBLIC = "public", "Public"
         PRIVATE = "private", "Private"
 
@@ -587,6 +596,10 @@ class Event(TimeStampedModel):
         max_length=20,
         choices=Visibility.choices,
         default=Visibility.PUBLIC,
+        help_text=(
+            "Deprecated (epic-11 §3.2): not used for authorization. "
+            "Read-only via the API -- see effective_visibility."
+        ),
     )
 
     # Reverse generic relations for cascading deletes of FeatureLinks
@@ -667,6 +680,23 @@ class Event(TimeStampedModel):
             if series is not None and series.default_context_id is not None:
                 return series.default_context
         return None
+
+    @property
+    def effective_visibility(self) -> str:
+        """Authoritative visibility, derived from the owning Campaign.
+
+        Epic-11 §3.2: ``Event.visibility`` is deprecated as an authorization
+        source (two independent visibility fields could disagree, so there
+        is no AND-gate -- Campaign is simply the sole authority). Falls back
+        to ``Campaign.Visibility.PRIVATE`` when the campaign is somehow
+        unset, matching the fail-closed default the field itself uses.
+        """
+        campaign = self.campaign
+        if campaign is None:
+            from tosca_api.apps.campaigns.models import Campaign
+
+            return Campaign.Visibility.PRIVATE
+        return campaign.visibility
 
     def clean(self) -> None:
         """Validate the event."""

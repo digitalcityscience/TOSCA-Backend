@@ -62,6 +62,57 @@ services:
       retries: 10
     restart: unless-stopped
 
+  garage:
+    image: ${GARAGE_IMAGE:-dxflrs/garage:v2.3.0}
+    container_name: tosca-garage
+    environment:
+      GARAGE_CONFIG_FILE: /etc/garage/garage.toml
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-0000000000000000000000000000000000000000000000000000000000000000}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:-local-garage-admin-token}
+      GARAGE_DEFAULT_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-GKtosca-local-django}
+      GARAGE_DEFAULT_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-tosca-local-django-secret-change-me}
+      GARAGE_DEFAULT_BUCKET: ${S3_BUCKET_NAME:-tosca-media-private}
+    ports:
+      - "${GARAGE_S3_PORT:-3900}:3900"
+      - "${GARAGE_ADMIN_PORT:-3903}:3903"
+    volumes:
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+      - ./docker/garage/garage.toml:/etc/garage.toml:ro
+    entrypoint: ["/garage"]
+    command: ["-c", "/etc/garage.toml", "server", "--single-node", "--default-bucket"]
+    healthcheck:
+      test: ["CMD", "/garage", "-c", "/etc/garage.toml", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  garage-bootstrap:
+    build:
+      context: ./docker/garage
+      dockerfile: Dockerfile.bootstrap
+      args:
+        GARAGE_IMAGE: ${GARAGE_IMAGE:-dxflrs/garage:v2.3.0}
+    image: tosca-garage-bootstrap:v2.3.0
+    container_name: tosca-garage-bootstrap
+    depends_on:
+      garage:
+        condition: service_healthy
+    environment:
+      GARAGE_CONFIG_FILE: /etc/garage/garage.toml
+      GARAGE_PRIVATE_BUCKET: ${S3_BUCKET_NAME:-tosca-media-private}
+      GARAGE_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET_NAME:-tosca-media-public}
+      GARAGE_ARCHIVE_BUCKET: ${S3_ARCHIVE_BUCKET_NAME:-tosca-media-archive}
+      GARAGE_TEST_PRIVATE_BUCKET: ${S3_TEST_BUCKET_NAME:-tosca-media-test-private}
+      GARAGE_TEST_PUBLIC_BUCKET: ${S3_TEST_PUBLIC_BUCKET_NAME:-tosca-media-test-public}
+      GARAGE_TEST_ARCHIVE_BUCKET: ${S3_TEST_ARCHIVE_BUCKET_NAME:-tosca-media-test-archive}
+      GARAGE_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-GKtosca-local-django}
+    volumes:
+      - garage_meta:/var/lib/garage/meta:ro
+      - ./docker/garage/garage.toml:/etc/garage/garage.toml:ro
+    restart: "no"
+
   django:
     build:
       context: .
@@ -72,6 +123,18 @@ services:
     environment:
       DJANGO_SETTINGS_MODULE: tosca_api.settings.${ENV_TYPE}
       DATABASE_URL: postgresql://${PG_API_USER}:${PG_API_PASSWORD}@db:5432/${PG_DATABASE}
+      DJANGO_STORAGE_BACKEND: s3
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://garage:3900}
+      S3_REGION_NAME: ${S3_REGION_NAME:-garage}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-GKtosca-local-django}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-tosca-local-django-secret-change-me}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-tosca-media-private}
+      S3_PUBLIC_BUCKET_NAME: ${S3_PUBLIC_BUCKET_NAME:-tosca-media-public}
+      S3_ARCHIVE_BUCKET_NAME: ${S3_ARCHIVE_BUCKET_NAME:-tosca-media-archive}
+      S3_ADDRESSING_STYLE: ${S3_ADDRESSING_STYLE:-path}
+      S3_SIGNATURE_VERSION: ${S3_SIGNATURE_VERSION:-s3v4}
+      MEDIA_PRIVATE_PREFIX: ${MEDIA_PRIVATE_PREFIX:-media/originals/}
+      MEDIA_DERIVATIVE_PREFIX: ${MEDIA_DERIVATIVE_PREFIX:-media/derivatives/}
     volumes:
       - .:/app
     ports:
@@ -79,6 +142,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      garage-bootstrap:
+        condition: service_completed_successfully
     entrypoint: bash docker/django/entrypoint.sh
     command: uv run python manage.py runserver 0.0.0.0:8000
     stdin_open: true
@@ -87,3 +152,5 @@ services:
 volumes:
   pg_data:
   geoserver_data:
+  garage_meta:
+  garage_data:

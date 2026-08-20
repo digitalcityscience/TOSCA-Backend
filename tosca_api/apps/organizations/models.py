@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import uuid
 
+from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
 
@@ -78,3 +80,97 @@ class Organization(TimeStampedModel):
     @property
     def admin_role(self) -> str:
         return f"{self.role_prefix}_ADMIN"
+
+
+def validate_entitleable_app_label(value: str) -> None:
+    """Reject any app_label not in the ``TOSCA_ENTITLEABLE_APPS`` single source
+    of truth (security tickets ticket 03) -- entitlements may only ever name
+    an app whose models are actually role-controlled.
+    """
+    if value not in settings.TOSCA_ENTITLEABLE_APPS:
+        raise ValidationError(
+            f"{value!r} is not an entitleable app. Must be one of "
+            f"{sorted(settings.TOSCA_ENTITLEABLE_APPS)}."
+        )
+
+
+class OrganizationAppEntitlement(TimeStampedModel):
+    """Which TOSCA apps an organization may use at all (gate B: entitlement).
+
+    Additive-only for now (security tickets ticket 03): a data migration
+    seeds every existing organization with all in-scope apps so no
+    organization loses access on deploy, and nothing enforces this yet --
+    real per-org restriction is a separate, deliberate product decision.
+    """
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="app_entitlements"
+    )
+    app_label = models.CharField(max_length=100, validators=[validate_entitleable_app_label])
+
+    class Meta:
+        unique_together = ("organization", "app_label")
+        verbose_name = "Organization App Entitlement"
+        verbose_name_plural = "Organization App Entitlements"
+
+    def __str__(self) -> str:
+        return f"{self.organization.slug}: {self.app_label}"
+
+
+class UserAuthorizationSnapshot(TimeStampedModel):
+    """Persisted org-role claims from a user's last successful browser login
+    (security tickets ticket 04).
+
+    The browser/admin authorization path (tickets 05-07) must not decode a
+    possibly-stale ID token on every request, so the roles a token carried at
+    login are captured here once and read back cheaply afterwards.
+
+    Additive only: nothing writes or reads this table yet. Ticket 05 wires the
+    write (login signal); ticket 06's dynamic ``has_perm()`` backend is the
+    first reader.
+
+    Multi-org-ready now, single-org enforced now (see plan §"Design note"):
+    ``org_roles`` stores every org role the token carried, but authorization
+    for the PoC only ever consults ``org_roles[default_org]``. There is no
+    org-switching/multi-org request context in this plan -- the shape exists
+    solely so a later multi-org rollout isn't a migration.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="authorization_snapshot",
+    )
+    org_roles = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Org slug -> role level captured from the last successful "
+        "browser login, e.g. {'dcs': 'ADMIN', 'qg2': 'WRITER'}.",
+    )
+    default_org = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Org slug the PoC actually authorizes against "
+        "(org_roles[default_org]). Empty until a login has synced one.",
+    )
+    platform_exempt = models.BooleanField(
+        default=False,
+        help_text="Whether the last login's roles included DJANGO_SUPERADMIN "
+        "(canonical §2b platform exemption from org scoping; narrowed "
+        "2026-08-19 -- DJANGO_STAFF is admin-UI access only). Captured "
+        "explicitly -- not inferred from user.is_staff/"
+        "is_superuser, which can be toggled independently of Keycloak via "
+        "the admin's own UserAdmin (security tickets ticket 07).",
+    )
+    synced_at = models.DateTimeField(
+        help_text="When these claims were pulled from the token -- distinct "
+        "from `updated_at`, which only tracks row writes."
+    )
+
+    class Meta:
+        verbose_name = "User Authorization Snapshot"
+        verbose_name_plural = "User Authorization Snapshots"
+
+    def __str__(self) -> str:
+        return f"{self.user}: {self.default_org or '(no default org)'}"
