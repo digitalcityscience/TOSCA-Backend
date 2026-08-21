@@ -41,8 +41,8 @@ def test_env_local_is_forbidden():
 
 
 def test_nested_path_is_checked_by_basename():
-    assert find_forbidden_env_files(["docker/geoserver_docker/.env.prod"]) == [
-        "docker/geoserver_docker/.env.prod"
+    assert find_forbidden_env_files(["docker/example/.env.prod"]) == [
+        "docker/example/.env.prod"
     ]
 
 
