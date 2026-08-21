@@ -33,5 +33,10 @@ if [ "${RUN_SETUP_DEFAULT_ENGINE:-true}" = "true" ]; then
   run_as_appuser uv run python manage.py setup_default_engine
 fi
 
+if [ "${RUN_DEFAULT_GEODATA_PROVIDER_SYNC_ON_STARTUP:-true}" = "true" ]; then
+  echo "🔄 Syncing the default GeoData provider..."
+  run_as_appuser uv run python manage.py sync_geoserver --default
+fi
+
 echo "🚀 Starting Gunicorn..."
 exec gosu "${APP_USER}:${APP_GROUP}" "$@"

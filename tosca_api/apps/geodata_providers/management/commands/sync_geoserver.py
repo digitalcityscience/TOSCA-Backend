@@ -18,6 +18,11 @@ class Command(BaseCommand):
             help='Sync specific engine by name (default: all active engines)'
         )
         parser.add_argument(
+            '--default',
+            action='store_true',
+            help='Sync only the active default engine'
+        )
+        parser.add_argument(
             '--dry-run',
             action='store_true',
             help='Show what would be synced without making changes'
@@ -54,6 +59,13 @@ class Command(BaseCommand):
             if not engines.exists():
                 self.stdout.write(
                     self.style.ERROR(f'❌ Engine "{options["engine"]}" not found or inactive')
+                )
+                return
+        elif options['default']:
+            engines = GeodataEngine.objects.filter(is_default=True, is_active=True)
+            if not engines.exists():
+                self.stdout.write(
+                    self.style.WARNING('⚠️ No active default GeoServer engine found')
                 )
                 return
         else:
