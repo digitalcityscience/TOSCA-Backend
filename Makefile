@@ -3,7 +3,7 @@
 	django-test django-test-unit django-test-integration test-geoserver \
 	django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean \
 	sync-django-geoengine smoke-test list list-media list-test-media list-static media test-media static test test-integration \
-	reconcile-postgis-service-passwords
+	reconcile-postgis-service-passwords snapshot restore snapshots
 
 # -------------------------------------------------
 # ENV selection (DEFAULT = dev) or prod
@@ -112,6 +112,11 @@ help:
 	@echo "  make sync-django-geoengine   - Sync GeoEngine with active engine"
 	@echo "  make smoke-test              - Run GeoEngine smoke test (validate setup)"
 	@echo ""
+	@echo "$(COLOR_BLUE)Snapshot / Restore (before deploy/upgrade):$(COLOR_RESET)"
+	@echo "  make snapshot [ENV=dev|prod] [LABEL=pre-epic12] - Create a Postgres+GeoServer restore point"
+	@echo "  make snapshots [ENV=dev|prod]                   - List existing snapshots"
+	@echo "  make restore SNAPSHOT=<id> [ENV=dev|prod] [YES=1] [ONLY=postgres|geoserver] - Restore a snapshot (destructive)"
+	@echo ""
 	@echo "$(COLOR_GREEN)Project Initialization:$(COLOR_RESET)"
 	@echo "  make initialize-project - Build, start all services, run migrations, restart Django"
 	@echo "  make jdbc-settings-activation - Run GeoServer JDBC settings activation script"
@@ -188,6 +193,23 @@ reconcile-postgis-service-passwords: which-env
 	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T db \
 		bash /docker-entrypoint-initdb.d/operations/reconcile_service_role_passwords.sh
 	@echo "$(COLOR_GREEN)✅ Passwords reconciled. Restart dependent services to load the selected environment.$(COLOR_RESET)"
+
+# -------------------------------------------------
+# P0 Snapshot / Restore (Postgres + GeoServer volume)
+# -------------------------------------------------
+# Single-command, same-host restore point taken before deploy/upgrade.
+# All logic lives in scripts/snapshot.sh; these targets are thin shells.
+snapshot: which-env
+	@ENV_FILE=$(ENV_FILE) COMPOSE_FILE=$(COMPOSE_FILE) ENV=$(ENV) \
+	  scripts/snapshot.sh create --label "$(LABEL)"
+
+restore: which-env
+	@test -n "$(SNAPSHOT)" || { echo "$(COLOR_RED)❌ SNAPSHOT=<id> required$(COLOR_RESET)"; exit 1; }
+	@ENV_FILE=$(ENV_FILE) COMPOSE_FILE=$(COMPOSE_FILE) ENV=$(ENV) \
+	  scripts/snapshot.sh restore --id "$(SNAPSHOT)" $(if $(YES),--yes,) $(if $(ONLY),--only $(ONLY),)
+
+snapshots: which-env ## List existing snapshots (manifest summaries)
+	@scripts/snapshot.sh list
 
 list:
 	@if [ "$(filter media,$(MAKECMDGOALS))" = "media" ]; then \

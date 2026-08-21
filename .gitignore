@@ -20,6 +20,9 @@ dcs-api/
 staticfiles/
 media/
 
+# P0 snapshot/restore artifacts (dumps, tars, manifests) — never committed
+backups/
+
 # Editors
 .vscode/
 .idea/
