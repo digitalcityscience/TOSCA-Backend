@@ -33,15 +33,10 @@ services:
     restart: unless-stopped
 
   geoserver:
-    build:
-      context: ./docker/geoserver_docker
-      dockerfile: docker/Dockerfile
-      args:
-        GEOSERVER_VERSION: ${GEOSERVER_VERSION}
-        DEFAULT_OFFICIAL_PLUGINS: ${OFFICIAL_PLUGINS:-gdal,monitor,vectortiles,mbstyle}
-        DEFAULT_COMMUNITY_PLUGINS: ${COMMUNITY_PLUGINS:-}
-        BUILD_JDBC_PLUGINS: ${BUILD_JDBC_PLUGINS:-false}
-    image: tosca-geoserver-dev:${GEOSERVER_VERSION}
+    # Match production: consume the CI-published GeoServer image rather than
+    # building the GeoServer implementation from a source submodule.
+    image: ghcr.io/digitalcityscience/tosca-geoserver:${GEOSERVER_VERSION}
+    pull_policy: always
     container_name: tosca-geoserver
     env_file:
       - ${ENV_FILE}

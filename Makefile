@@ -147,16 +147,6 @@ initialize-project: which-env
 	@echo "  make jdbc-settings-activation"
 
 # -------------------------------------------------
-# Run GeoServer JDBC settings activation script
-jdbc-settings-activation: which-env
-	@echo "$(COLOR_BLUE)⚙️  Activating GeoServer JDBC settings (ENV_FILE=$(ENV_FILE))...$(COLOR_RESET)"
-	@cd docker/geoserver_docker && \
-	ENV_FILE="$(abspath $(ENV_FILE))" \
-	./scripts/activate_jdbcS_settings.sh
-	@echo "$(COLOR_GREEN)✅ Done. For all logs: make logs | For Django only: make django-logs$(COLOR_RESET)"
-
-
-# -------------------------------------------------
 # Helpers
 # -------------------------------------------------
 set-env:

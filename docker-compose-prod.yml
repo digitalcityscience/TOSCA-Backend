@@ -33,9 +33,10 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # GeoServer in production is always pulled from GHCR; no local submodule build is used here.
+  # GeoServer is always pulled from GHCR. Pin GEOSERVER_VERSION in the active
+  # environment file to promote the same tested image from development.
   geoserver:
-    image: ghcr.io/digitalcityscience/tosca-geoserver:latest
+    image: ghcr.io/digitalcityscience/tosca-geoserver:${GEOSERVER_VERSION}
     pull_policy: always
     container_name: tosca-geoserver-prod
     env_file:

@@ -206,16 +206,14 @@ form-action 'self' https://*.example.org
 
 ## Docker Model
 
-Development and production intentionally use different GeoServer image sources.
+Development and production both use the CI-published GeoServer image from
+GitHub Container Registry. Pin `GEOSERVER_VERSION` in the active environment
+file to the same tested release in both environments; do not use `latest` for
+deployments that need reproducibility.
 
-- `docker-compose-dev.yml` builds GeoServer from the local submodule at
-  `docker/geoserver_docker`. Use this when changing GeoServer Docker scripts or
-  templates.
-- `docker-compose-prod.yml` uses the production GeoServer image published from
-  GitHub Container Registry.
-
-GeoServer Docker changes should be validated in dev, merged in
-`docker/geoserver_docker`, then consumed through the CI-built production image.
+GeoServer Docker implementation changes belong in the
+`digitalcityscience/geoserver_docker` repository. Publish and test a new image
+there, then update `GEOSERVER_VERSION` here to promote it.
 
 ## GeoServer Admin Bootstrap
 
@@ -248,16 +246,9 @@ GEOSERVER_ENABLE_JDBC_CONFIG=false
 - `GEOSERVER_ENABLE_JDBC_CONFIG=true` enables the advanced JDBCConfig catalog
   path.
 
-After services are running, apply GeoServer JDBC security/config files when the
-selected setup needs them:
-
-```bash
-make jdbc-settings-activation
-```
-
-For JDBC role/auth UI steps, see:
-
-- `docker/geoserver_docker/readme_jdbc.md`
+JDBC setup is part of the published GeoServer image. Configure it through the
+`GEOSERVER_ENABLE_JDBC_*` environment flags and consult the GeoServer image
+repository for its operational documentation.
 
 ## Tests
 
