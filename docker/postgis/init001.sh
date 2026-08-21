@@ -42,6 +42,9 @@ CREATE SCHEMA IF NOT EXISTS $SCHEMA_JDBCCONF;
 CREATE SCHEMA IF NOT EXISTS $SCHEMA_GIS;
 
 -- 2) Roles
+-- Passwords are deliberately set only when a role is first created. The
+-- database volume outlives containers, so rotations must be an explicit
+-- operation: make reconcile-postgis-service-passwords CONFIRM=1.
 DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$API_USER') THEN

@@ -171,6 +171,26 @@ uv sync --group dev
 uv run pre-commit install
 ```
 
+### Rotating persisted Postgres service-role passwords
+
+`PG_API_PASSWORD` and `PG_GS_PASSWORD` are used when the Postgres volume is
+first initialized. Changing either value later does not change the existing
+Postgres role, because the volume persists across container recreation.
+
+After intentionally changing either value in the selected environment file,
+apply it explicitly:
+
+```bash
+make reconcile-postgis-service-passwords CONFIRM=1
+make restart
+```
+
+The command updates the existing `tosca_api` and `tosca_gs` service roles from
+the selected environment and never prints their passwords. It fails if the
+database has not been initialized. It is deliberately not part of `make up` or
+container startup, so a stale or accidentally selected environment cannot
+silently rotate credentials.
+
 ## Keycloak OIDC Note
 
 When using Keycloak/OIDC, the Keycloak client's valid redirect URIs and the
