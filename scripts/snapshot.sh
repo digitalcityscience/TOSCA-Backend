@@ -299,7 +299,10 @@ free_bytes_for() {
 # together. No prior snapshot -> nothing to compare against, skip silently.
 check_disk_space() {
   local dir last_tar last_dump needed_bytes free
-  for dir in $(ls -1dt "${BACKUPS_DIR}"/*/ 2>/dev/null || true); do
+  # IFS= read -r (not `for dir in $(...)`) so a snapshot dir name containing
+  # spaces (e.g. from an unquoted-looking --label) isn't word-split apart.
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
     last_tar="${dir}geoserver_data.tar.gz"
     last_dump="${dir}postgres.dump"
     [ -f "$last_tar" ] && [ -f "$last_dump" ] || continue
@@ -310,7 +313,7 @@ check_disk_space() {
       die "create: not enough free space under ${BACKUPS_DIR} (need ~${needed_bytes} bytes, have ${free}). Aborting before writing any artifacts."
     fi
     return 0
-  done
+  done < <(ls -1dt "${BACKUPS_DIR}"/*/ 2>/dev/null || true)
   # No prior snapshot with both artifacts present -> nothing to compare
   # against, skip silently.
   return 0
@@ -325,12 +328,16 @@ mark_suspect() {
   warn "suspect: ${reason}"
 }
 
-# Runs $2 (a command string, via eval) with stderr captured to a shared temp
-# file; on failure, marks $1 suspect with "$3: <captured stderr>" and returns
-# 1. Used by run_verify_checks so each §6.1 check is a single call.
+# Runs "$@" (from $3 onward — a real argv, no shell re-parsing) with stderr
+# captured to a shared temp file; on failure, marks $1 suspect with
+# "$2: <captured stderr>" and returns 1. Used by run_verify_checks so each
+# §6.1 check is a single call. Takes argv rather than a command string
+# specifically so a snapshot id/label containing shell metacharacters (e.g.
+# a stray quote in --label) can't be reinterpreted as shell syntax.
 run_check() {
-  local snapshot_dir="$1" cmd="$2" label="$3" errfile="${1}/.verify.err"
-  if ! eval "$cmd" >/dev/null 2>"$errfile"; then
+  local snapshot_dir="$1" label="$2" errfile="${1}/.verify.err"
+  shift 2
+  if ! "$@" >/dev/null 2>"$errfile"; then
     mark_suspect "$snapshot_dir" "${label}: $(cat "$errfile" 2>/dev/null)"
     rm -f "$errfile"
     return 1
@@ -368,10 +375,12 @@ run_verify_checks() {
   done
 
   # --- Dump openability: pg_restore -l lists a TOC ------------------------
-  run_check "$snapshot_dir" "pg_restore -l '${snapshot_dir}/postgres.dump'" "pg_restore -l failed on postgres.dump" || return 1
+  run_check "$snapshot_dir" "pg_restore -l failed on postgres.dump" \
+    pg_restore -l "${snapshot_dir}/postgres.dump" || return 1
 
   # --- Tar integrity ------------------------------------------------------
-  run_check "$snapshot_dir" "tar tzf '${snapshot_dir}/geoserver_data.tar.gz'" "tar tzf failed on geoserver_data.tar.gz" || return 1
+  run_check "$snapshot_dir" "tar tzf failed on geoserver_data.tar.gz" \
+    tar tzf "${snapshot_dir}/geoserver_data.tar.gz" || return 1
 
   # A previous failed run may have left a stale flag around; a clean pass
   # clears it.
