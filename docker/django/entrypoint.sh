@@ -26,5 +26,10 @@ uv run python manage.py migrate --noinput
 echo "🔧 Setting up default GeoServer engine..."
 uv run python manage.py setup_default_engine
 
+if [ "${RUN_DEFAULT_GEODATA_PROVIDER_SYNC_ON_STARTUP:-true}" = "true" ]; then
+  echo "🔄 Syncing the default GeoData provider..."
+  uv run python manage.py sync_geoserver --default
+fi
+
 echo "�🚀 Starting application..."
 exec "$@"
