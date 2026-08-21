@@ -7,6 +7,13 @@ set -euo pipefail
 
 MODE="${1:-apply}"
 
+# In normal container startup these are POSTGRES_USER and POSTGRES_DB. The
+# explicit Make operation forwards the source environment's PG_* values so it
+# remains correct even if an existing container was created from another
+# worktree.
+POSTGRES_USER="${POSTGRES_USER:-${PG_SUPERUSER:-}}"
+POSTGRES_DB="${POSTGRES_DB:-${PG_DATABASE:-}}"
+
 if [[ "$MODE" != "apply" && "$MODE" != "--dry-run" ]]; then
   echo "Usage: $0 [--dry-run]" >&2
   exit 64

@@ -191,6 +191,10 @@ database has not been initialized. It is deliberately not part of `make up` or
 container startup, so a stale or accidentally selected environment cannot
 silently rotate credentials.
 
+The operation streams its script from the checkout where `make` is run and
+forwards the selected environment explicitly. It therefore does not depend on
+which worktree originally created an already-running `db` container.
+
 ## Keycloak OIDC Note
 
 When using Keycloak/OIDC, the Keycloak client's valid redirect URIs and the

@@ -116,6 +116,7 @@ help:
 	@echo "  make initialize-project - Build, start all services, run migrations, restart Django"
 	@echo "  make jdbc-settings-activation - Run GeoServer JDBC settings activation script"
 	@echo "  make reconcile-postgis-service-passwords CONFIRM=1 - Apply PG_API_PASSWORD and PG_GS_PASSWORD to existing DB roles"
+	@echo "  make reconcile-postgis-service-passwords CONFIRM=1 DRY_RUN=1 - Validate the roles without changing passwords"
 	@echo ""
 	@echo "$(COLOR_GREEN)Environment Selection:$(COLOR_RESET)"
 	@echo "  make set-env ENV=dev    - Persist dev environment for future make commands"
@@ -178,6 +179,8 @@ which-env:
 # Postgres init scripts run only when its data volume is first created. This
 # explicit operation keeps an existing volume's service-role passwords aligned
 # with the selected environment without changing them on every container boot.
+RECONCILE_MODE := $(if $(filter 1,$(DRY_RUN)),--dry-run,)
+
 reconcile-postgis-service-passwords: which-env
 	@if [ "$(CONFIRM)" != "1" ]; then \
 		echo "$(COLOR_RED)❌ This changes passwords in the existing Postgres volume.$(COLOR_RESET)"; \
@@ -185,9 +188,19 @@ reconcile-postgis-service-passwords: which-env
 		exit 1; \
 	fi
 	@echo "$(COLOR_YELLOW)🔐 Reconciling persisted Postgres service-role passwords for $(ENV).$(COLOR_RESET)"
-	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T db \
-		bash /docker-entrypoint-initdb.d/operations/reconcile_service_role_passwords.sh
-	@echo "$(COLOR_GREEN)✅ Passwords reconciled. Restart dependent services to load the selected environment.$(COLOR_RESET)"
+	@docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T \
+		-e PG_SUPERUSER \
+		-e PG_DATABASE \
+		-e PG_API_USER \
+		-e PG_API_PASSWORD \
+		-e PG_GS_USER \
+		-e PG_GS_PASSWORD \
+		db bash -s -- $(RECONCILE_MODE) < docker/postgis/operations/reconcile_service_role_passwords.sh
+	@if [ "$(DRY_RUN)" = "1" ]; then \
+		echo "$(COLOR_GREEN)✅ Roles validated; no passwords changed.$(COLOR_RESET)"; \
+	else \
+		echo "$(COLOR_GREEN)✅ Passwords reconciled. Restart dependent services to load the selected environment.$(COLOR_RESET)"; \
+	fi
 
 list:
 	@if [ "$(filter media,$(MAKECMDGOALS))" = "media" ]; then \
