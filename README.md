@@ -341,6 +341,56 @@ The API may return media paths such as `/media/geocontext/editorjs/image.png`.
 In same-domain deployments those paths work directly. In separate SPA/API host
 deployments, the SPA should prepend the public API or asset host.
 
+## Snapshot / Restore
+
+Single-command, same-host restore point taken before a deploy, upgrade, or
+GeoServer/config change — a fast rollback mechanism, not disaster recovery
+(no PITR/WAL, no off-host copy by default). Scope is Postgres
+(`pg_dump -Fc`) + the `geoserver_data` volume (GeoServer's catalog/config and
+file-based layers live there, since `GEOSERVER_ENABLE_JDBC_CONFIG=false`) +
+a manifest with checksums. Local and prod use the same mechanism, only
+`ENV`/volumes differ (`which-env`). All logic lives in `scripts/snapshot.sh`;
+`make snapshot`/`make restore`/`make snapshots` are thin wrappers.
+
+```bash
+make snapshot [ENV=dev|prod] [LABEL=pre-epic12]
+# -> creates backups/<snapshot_id>/{postgres.dump,geoserver_data.tar.gz,manifest.json,snapshot.log}
+# django + geoserver stop for the duration (db stays up); lightweight
+# verify (checksums, dump TOC, tar integrity) runs automatically.
+
+make snapshots [ENV=dev|prod]
+# -> lists snapshots with kind/created_at/env/label, flags any marked suspect
+
+make restore SNAPSHOT=<snapshot_id> [ENV=dev|prod] [YES=1] [ONLY=postgres|geoserver]
+# -> DESTRUCTIVE. Verifies the snapshot, takes an automatic full
+#    pre-restore-safety snapshot (always both artifacts, even with ONLY=),
+#    restores, restarts services in order, runs a post-restore smoke test.
+```
+
+Restore preflight warns (and asks for confirmation, skippable with `YES=1`)
+on two mismatches between the snapshot's manifest and the active stack:
+
+- `geoserver_version` mismatch — restoring `geoserver_data` under a different
+  GeoServer image/version is a config/image incompatibility risk.
+- `git_sha` mismatch — `entrypoint.sh`/`entrypoint.prod.sh` run
+  `migrate --noinput` on every Django start, so restoring a DB behind the
+  checked-out code's migrations means the next Django start silently
+  re-applies those migrations against the restored DB.
+
+`ONLY=postgres` or `ONLY=geoserver` restores just one artifact instead of
+both (the other is left as-is, which can now diverge from the snapshot —
+restore prints a DB↔GeoServer-catalog drift warning in that case). Use it
+when only one side needs rolling back; the safety snapshot before it is
+still full either way.
+
+Run a full restore rehearsal (snapshot → break something → restore → verify
+by eye) periodically and before every GeoServer upgrade — local and prod
+share one mechanism, so a local rehearsal validates prod too. `backups/` is
+gitignored; if you copy a snapshot off-host, encrypt it first
+(`gpg -c backups/<id>/*.dump`) — it contains prod data. `.env.$ENV` config
+itself is out of scope for snapshot content; only code (`git_sha`) and data
+(Postgres/GeoServer) are covered.
+
 ## Destructive Reset
 
 To intentionally remove local database and GeoServer volumes:

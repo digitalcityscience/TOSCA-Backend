@@ -116,6 +116,7 @@ help:
 	@echo "  make snapshot [ENV=dev|prod] [LABEL=pre-epic12] - Create a Postgres+GeoServer restore point"
 	@echo "  make snapshots [ENV=dev|prod]                   - List existing snapshots"
 	@echo "  make restore SNAPSHOT=<id> [ENV=dev|prod] [YES=1] [ONLY=postgres|geoserver] - Restore a snapshot (destructive)"
+	@echo "    Warns + asks to confirm on geoserver_version or git_sha mismatch vs. the active stack (YES=1 skips the prompt)."
 	@echo ""
 	@echo "$(COLOR_GREEN)Project Initialization:$(COLOR_RESET)"
 	@echo "  make initialize-project - Build, start all services, run migrations, restart Django"

@@ -393,6 +393,32 @@ run_check() {
   rm -f "$errfile"
 }
 
+# TOC-list a dump's -l output without printing it. Prefers the db
+# container's pg_restore (same major version as the pg_dump that produced
+# the file) when resolve_env has run and `compose` is usable — falls back
+# to the host's pg_restore for standalone `verify`, which intentionally
+# skips resolve_env. A host pg_restore older than the dump's server version
+# fails with "unsupported version in file header" on a perfectly good dump,
+# so preferring the container avoids false suspect flags during
+# create/restore's own self-verify. pg_restore -l doesn't accept "-"/stdin
+# for a custom-format archive, and backups/ isn't a mounted volume in db's
+# container, so the file is `docker cp`'d in and cleaned up afterwards.
+verify_pg_restore_toc() {
+  local path="$1" cid tmp rc
+  if [ -n "${COMPOSE_FILE:-}" ] && [ -n "${ENV_FILE:-}" ]; then
+    cid="$(compose ps -aq db)"
+    if [ -n "$cid" ]; then
+      tmp="/tmp/.verify-toc-$$.dump"
+      docker cp "$path" "${cid}:${tmp}" || return 1
+      compose exec -T db pg_restore -l "$tmp" >/dev/null
+      rc=$?
+      docker exec "$cid" rm -f "$tmp" 2>/dev/null || true
+      return "$rc"
+    fi
+  fi
+  pg_restore -l "$path" >/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # Lightweight verify (§6.1) — used standalone (`verify` subcommand) and as
 # create step 8. Read-only checks against backups/<id>/. On any failure,
@@ -424,7 +450,7 @@ run_verify_checks() {
 
   # --- Dump openability: pg_restore -l lists a TOC ------------------------
   run_check "$snapshot_dir" "pg_restore -l failed on postgres.dump" \
-    pg_restore -l "${snapshot_dir}/postgres.dump" || return 1
+    verify_pg_restore_toc "${snapshot_dir}/postgres.dump" || return 1
 
   # --- Tar integrity ------------------------------------------------------
   run_check "$snapshot_dir" "tar tzf failed on geoserver_data.tar.gz" \
