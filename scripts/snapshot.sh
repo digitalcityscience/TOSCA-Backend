@@ -30,6 +30,13 @@ TOOLING_VERSION="p0-snapshot/1"
 QUIESCE_DEV="django geoserver"
 QUIESCE_PROD="django geoserver web nginx"
 
+# Seconds to wait for a restarted service to become ready (see wait_ready).
+HEALTH_TIMEOUT=300
+
+# Services this run has stopped but not yet restarted. Read by cleanup_on_exit
+# so a failure mid-flight doesn't leave django/geoserver stopped.
+QUIESCED_SERVICES=""
+
 # ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
@@ -106,16 +113,179 @@ acquire_lock() {
   if ! ( set -o noclobber; printf '%s\n' "$$" > "$LOCK_FILE" ) 2>/dev/null; then
     die "Another snapshot/restore is in progress (lock: $LOCK_FILE, pid $(cat "$LOCK_FILE" 2>/dev/null || echo '?')). Remove it if stale."
   fi
-  trap release_lock EXIT INT TERM
+  trap cleanup_on_exit EXIT
+  trap 'cleanup_on_exit; exit 130' INT
+  trap 'cleanup_on_exit; exit 143' TERM
 }
 
 release_lock() {
   rm -f "$LOCK_FILE"
 }
 
+# EXIT/INT/TERM trap: on a non-zero exit, best-effort restart any services
+# this run quiesced but never got around to restarting, then release the
+# lock. QUIESCED_SERVICES is cleared once unquiesce completes normally.
+# INT/TERM run this via an explicit `exit` (see acquire_lock) — a signal
+# trap alone does not terminate the script, it would resume after the trap.
+cleanup_on_exit() {
+  local exit_code=$?
+  if [ "$exit_code" -ne 0 ] && [ -n "$QUIESCED_SERVICES" ]; then
+    warn "create/restore failed mid-flight — restarting quiesced services: $QUIESCED_SERVICES"
+    # shellcheck disable=SC2086
+    compose start $QUIESCED_SERVICES >/dev/null 2>&1 \
+      || warn "Could not restart all quiesced services ($QUIESCED_SERVICES) — check manually."
+  fi
+  release_lock
+}
+
+# ---------------------------------------------------------------------------
+# Portable helpers (macOS + Linux)
+# ---------------------------------------------------------------------------
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+file_bytes() {
+  stat -f%z "$1" 2>/dev/null || stat -c%s "$1"
+}
+
+# "healthy" if $1's container declares a healthcheck, else "true"/"false" for
+# plain running state (e.g. dev django has no healthcheck). Empty if the
+# container doesn't exist.
+container_status() {
+  local cid
+  cid="$(compose ps -aq "$1")"
+  [ -n "$cid" ] || return 0
+  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Running}}{{end}}' "$cid" 2>/dev/null || true
+}
+
+# Blocks until $1's container is ready (see container_status). Dies after $2
+# seconds (default HEALTH_TIMEOUT). `docker compose start` does not block on
+# healthchecks the way `up --wait` does, so callers need this poll loop.
+wait_ready() {
+  local service="$1" timeout="${2:-$HEALTH_TIMEOUT}" waited=0 status
+  status="$(container_status "$service")"
+  [ -n "$status" ] || die "$service: container not found while waiting for it to become ready."
+  while :; do
+    case "$status" in
+      healthy|true) return 0 ;;
+    esac
+    [ "$waited" -lt "$timeout" ] || die "$service: did not become ready within ${timeout}s (last status: '${status}')."
+    sleep 2
+    waited=$((waited + 2))
+    status="$(container_status "$service")"
+  done
+}
+
+# Preflight check: is $1's container up and (if it declares one) healthy,
+# right now — no waiting.
+is_ready_now() {
+  local status
+  status="$(container_status "$1")"
+  [ "$status" = "healthy" ] || [ "$status" = "true" ]
+}
+
+# Was $1 in the space-separated $QUIESCED_SERVICES list this run stopped?
+was_quiesced() {
+  case " $QUIESCED_SERVICES " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
+# One psql -tA call against $PG_DATABASE as $PG_SUPERUSER, trailing \r stripped.
+psql_query() {
+  compose exec -T db psql -tA -U "$PG_SUPERUSER" -d "$PG_DATABASE" -c "$1" | tr -d '\r'
+}
+
+# Best-effort GeoServer layer count via the REST API (called while geoserver
+# is still up, before quiesce). Prints nothing on any failure — it's
+# optional. Credentials go through a curl config file on stdin (-K -) rather
+# than -u, so they don't show up in the container's process list.
+geoserver_layer_count() {
+  printf 'user = "%s:%s"\n' "${GEOSERVER_ADMIN_USER}" "${GEOSERVER_ADMIN_PASSWORD}" \
+    | compose exec -T geoserver curl -sf -K - "http://localhost:8080/geoserver/rest/layers.json" 2>/dev/null \
+    | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    layers = (d.get("layers") or {}).get("layer") or []
+    print(len(layers))
+except Exception:
+    pass
+' 2>/dev/null || true
+}
+
+# Writes manifest.json atomically (tmp -> mv). Reads its fields from the
+# M_* environment variables the caller sets up.
+write_manifest() {
+  local snapshot_dir="$1" tmp
+  tmp="${snapshot_dir}/manifest.json.tmp"
+  python3 - "$tmp" <<'PY'
+import json, os, sys
+
+def opt_int(key):
+    v = os.environ.get(key, "")
+    return int(v) if v.strip() else None
+
+def opt_str(key):
+    v = os.environ.get(key, "")
+    return v if v.strip() else None
+
+env = os.environ
+manifest = {
+    "snapshot_id": env["M_SNAPSHOT_ID"],
+    "kind": env["M_KIND"],
+    "created_at_utc": env["M_CREATED_AT"],
+    "env": env["M_ENV"],
+    "label": opt_str("M_LABEL"),
+    "git_sha": env["M_GIT_SHA"],
+    "geoserver_version": env["M_GEOSERVER_VERSION"],
+    "geoserver_image": env["M_GEOSERVER_IMAGE"],
+    "postgres": {
+        "database": env["M_PG_DATABASE"],
+        "dump_format": "custom",
+        "server_version": opt_str("M_SERVER_VERSION"),
+        "postgis_version": opt_str("M_POSTGIS_VERSION"),
+        "migration_head": {
+            "app": opt_str("M_MIGRATION_APP"),
+            "name": opt_str("M_MIGRATION_NAME"),
+        },
+        "row_counts": {
+            "django_migrations": opt_int("M_ROW_COUNT_MIGRATIONS"),
+        },
+    },
+    "geoserver": {
+        "data_dir": "/geoserver_data/data",
+        "layer_count": opt_int("M_LAYER_COUNT"),
+    },
+    "artifacts": {
+        "postgres.dump": {
+            "sha256": env["M_DUMP_SHA256"],
+            "bytes": int(env["M_DUMP_BYTES"]),
+        },
+        "geoserver_data.tar.gz": {
+            "sha256": env["M_TAR_SHA256"],
+            "bytes": int(env["M_TAR_BYTES"]),
+        },
+    },
+    "tooling_version": env["M_TOOLING_VERSION"],
+}
+
+with open(sys.argv[1], "w") as f:
+    json.dump(manifest, f, indent=2)
+    f.write("\n")
+PY
+  mv -f "$tmp" "${snapshot_dir}/manifest.json"
+}
+
 cmd_create() {
   local label=""
   while [ $# -gt 0 ]; do
@@ -127,9 +297,116 @@ cmd_create() {
   done
   resolve_env
   acquire_lock
-  # TODO(ticket 02): preflight, snapshot_id, metadata, quiesce, pg_dump,
-  # geoserver tar, unquiesce, manifest. TODO(ticket 03): verify + suspect flag.
-  die "create: not yet implemented (ticket 02). ENV=$ENV label='${label}'"
+
+  # --- Preflight -------------------------------------------------------
+  is_ready_now db || die "create: db container is not up/healthy. Aborting."
+
+  # --- snapshot_id -------------------------------------------------------
+  local git_sha
+  git_sha="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  git -C "$REPO_ROOT" diff --quiet 2>/dev/null || git_sha="${git_sha}-dirty"
+
+  local created_at snapshot_id snapshot_dir log_file
+  created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  snapshot_id="$(date -u +%Y%m%dT%H%M%SZ)_${git_sha}"
+  [ -n "$label" ] && snapshot_id="${snapshot_id}_${label}"
+  snapshot_dir="${BACKUPS_DIR}/${snapshot_id}"
+  log_file="${snapshot_dir}/snapshot.log"
+
+  mkdir -p "$snapshot_dir"
+  exec > >(tee -a "$log_file") 2> >(tee -a "$log_file" >&2)
+
+  log "Creating snapshot ${snapshot_id} (env=${ENV})…"
+
+  # --- Metadata while db is up, before quiesce --------------------------
+  local migrations_table="${PG_SCHEMA_API}.django_migrations"
+  local psql_head server_version postgis_version migration_app migration_name row_count_migrations layer_count
+  psql_head="$(psql_query "SELECT app,name FROM ${migrations_table} ORDER BY id DESC LIMIT 1")"
+  migration_app="${psql_head%%|*}"
+  migration_name="${psql_head#*|}"
+  server_version="$(psql_query "SELECT version()")"
+  postgis_version="$(psql_query "SELECT postgis_full_version()")"
+  row_count_migrations="$(psql_query "SELECT count(*) FROM ${migrations_table}")"
+  layer_count="$(geoserver_layer_count)"
+
+  local gs_cid geoserver_image
+  gs_cid="$(compose ps -aq geoserver)"
+  [ -n "$gs_cid" ] || die "create: geoserver container not found."
+  geoserver_image="$(docker inspect -f '{{.Config.Image}}' "$gs_cid")"
+
+  # --- Quiesce -----------------------------------------------------------
+  # Only stop (and later restart) services that are actually running now —
+  # if e.g. geoserver was already down for an unrelated reason, this run
+  # must not resurrect it on a mid-flight failure.
+  QUIESCED_SERVICES=""
+  local svc
+  for svc in $QUIESCE_SERVICES; do
+    is_ready_now "$svc" && QUIESCED_SERVICES="${QUIESCED_SERVICES:+$QUIESCED_SERVICES }$svc"
+  done
+  log "Quiescing: ${QUIESCED_SERVICES:-<none running>} (db stays up)…"
+  if [ -n "$QUIESCED_SERVICES" ]; then
+    # shellcheck disable=SC2086
+    compose stop $QUIESCED_SERVICES
+  fi
+
+  # --- Postgres dump --------------------------------------------------
+  log "Dumping Postgres…"
+  compose exec -T -e PGPASSWORD="$PG_SUPERPASS" db \
+    pg_dump -Fc -U "$PG_SUPERUSER" -d "$PG_DATABASE" > "${snapshot_dir}/postgres.dump"
+
+  # --- GeoServer volume tar (geoserver stopped -> consistent) -----------
+  log "Archiving geoserver_data…"
+  docker run --rm --volumes-from "$gs_cid" -v "${snapshot_dir}:/backup" alpine:3.20 \
+    tar czf /backup/geoserver_data.tar.gz -C /geoserver_data/data .
+
+  # --- Unquiesce in order: geoserver -> (healthy) -> django -> (prod) web nginx.
+  # Only restart services this run actually quiesced above.
+  if was_quiesced geoserver; then
+    log "Restarting geoserver…"
+    compose start geoserver
+    wait_ready geoserver
+  fi
+  if was_quiesced django; then
+    log "Restarting django…"
+    compose start django
+    wait_ready django
+  fi
+  if [ "$ENV" = "prod" ]; then
+    if was_quiesced web; then compose start web && wait_ready web; fi
+    if was_quiesced nginx; then compose start nginx && wait_ready nginx; fi
+  fi
+  QUIESCED_SERVICES=""
+
+  # --- Manifest ------------------------------------------------------
+  local dump_sha256 dump_bytes tar_sha256 tar_bytes
+  dump_sha256="$(sha256_of "${snapshot_dir}/postgres.dump")"
+  dump_bytes="$(file_bytes "${snapshot_dir}/postgres.dump")"
+  tar_sha256="$(sha256_of "${snapshot_dir}/geoserver_data.tar.gz")"
+  tar_bytes="$(file_bytes "${snapshot_dir}/geoserver_data.tar.gz")"
+
+  M_SNAPSHOT_ID="$snapshot_id" \
+  M_KIND="manual" \
+  M_CREATED_AT="$created_at" \
+  M_ENV="$ENV" \
+  M_LABEL="$label" \
+  M_GIT_SHA="$git_sha" \
+  M_GEOSERVER_VERSION="$GEOSERVER_VERSION" \
+  M_GEOSERVER_IMAGE="$geoserver_image" \
+  M_PG_DATABASE="$PG_DATABASE" \
+  M_SERVER_VERSION="$server_version" \
+  M_POSTGIS_VERSION="$postgis_version" \
+  M_MIGRATION_APP="$migration_app" \
+  M_MIGRATION_NAME="$migration_name" \
+  M_ROW_COUNT_MIGRATIONS="$row_count_migrations" \
+  M_LAYER_COUNT="$layer_count" \
+  M_DUMP_SHA256="$dump_sha256" \
+  M_DUMP_BYTES="$dump_bytes" \
+  M_TAR_SHA256="$tar_sha256" \
+  M_TAR_BYTES="$tar_bytes" \
+  M_TOOLING_VERSION="$TOOLING_VERSION" \
+    write_manifest "$snapshot_dir"
+
+  printf '✅ snapshot %s hazır\n' "$snapshot_id"
 }
 
 cmd_restore() {
