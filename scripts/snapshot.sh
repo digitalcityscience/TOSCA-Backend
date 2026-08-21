@@ -675,12 +675,22 @@ SQL
 
   # --- Post-restore verify (§6.1) ------------------------------------------
   log "Running post-restore verify (geoengine_smoke_test)…"
+  local verify_result=0
   if compose exec -T django uv run python manage.py geoengine_smoke_test; then
     printf '✅ restore %s tamamlandı, verify OK (safety snapshot: %s)\n' "$id" "$safety_id"
   else
     printf '⚠️ restore tamam ama verify FAIL — safety snapshot: %s\n' "$safety_id"
-    return 1
+    verify_result=1
   fi
+
+  # --- Garage reference check (§6.2, Q11) — warning-only, never affects the
+  # restore's outcome/exit status: report it and move on regardless of what
+  # geoengine_smoke_test did above.
+  log "Running Garage reference check (warning-only)…"
+  compose exec -T django uv run python manage.py check_garage_references \
+    || warn "check_garage_references itself failed to run — treated as informational only, does not affect restore outcome."
+
+  return "$verify_result"
 }
 
 cmd_verify() {
