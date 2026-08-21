@@ -12,8 +12,10 @@
 # concurrency lock, and a working `list`. Ticket 02: `create`. Ticket 03:
 # `verify` + disk-space preflight + suspect flagging. Ticket 04: `restore`
 # happy path (pre-restore safety snapshot, fresh-DB pg_restore, geoserver
-# volume restore, ordered restart, post-restore verify). Selective restore
-# (`--only`) is ticket 06; Garage reference check is ticket 05.
+# volume restore, ordered restart, post-restore verify). Ticket 05: Garage
+# reference check (warning-only). Ticket 06: selective restore (`--only
+# postgres|geoserver`) — the pre-restore safety snapshot always covers both
+# artifacts regardless of `--only`.
 #
 # Invoked by the Makefile, which passes ENV_FILE / COMPOSE_FILE / ENV:
 #   ENV_FILE=.env.dev COMPOSE_FILE=docker-compose-dev.yml ENV=dev \
@@ -588,10 +590,10 @@ cmd_restore() {
     esac
   done
   [ -n "$id" ] || die "restore: --id <snapshot_id> is required."
-  # Selective restore is ticket 06 — keep the flag recognized (so the Makefile
-  # ONLY= plumbing doesn't blow up) but reject it explicitly rather than
-  # silently ignoring it.
-  [ -z "$only" ] || die "restore: --only is not yet implemented (ticket 06). Run restore without --only to restore both artifacts."
+  case "$only" in
+    ""|postgres|geoserver) : ;;
+    *) die "restore: --only must be 'postgres' or 'geoserver' (got '${only}')." ;;
+  esac
 
   resolve_env
   acquire_lock
@@ -620,19 +622,26 @@ print(d.get('git_sha') or '')
   active_git_sha="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   git -C "$REPO_ROOT" diff --quiet 2>/dev/null || active_git_sha="${active_git_sha}-dirty"
 
-  if [ -n "$m_geoserver_version" ] && [ "$m_geoserver_version" != "${GEOSERVER_VERSION:-}" ]; then
+  # Each guard only applies to the artifact it concerns, so a selective
+  # restore isn't blocked by a mismatch in the artifact it isn't touching.
+  if [ "$only" != "postgres" ] && [ -n "$m_geoserver_version" ] && [ "$m_geoserver_version" != "${GEOSERVER_VERSION:-}" ]; then
     warn "⚠️⚠️  GEOSERVER_VERSION MISMATCH: snapshot=${m_geoserver_version} active=${GEOSERVER_VERSION:-<unset>}"
     warn "Restoring geoserver_data under a mismatched GeoServer image/version is exactly the config/image incompatibility that caused the lost-Shapefile incident."
     confirm_or_abort "$yes" "Continue restoring ${id} despite the GEOSERVER_VERSION mismatch?"
   fi
 
-  if [ -n "$m_git_sha" ] && [ "$m_git_sha" != "$active_git_sha" ]; then
+  if [ "$only" != "geoserver" ] && [ -n "$m_git_sha" ] && [ "$m_git_sha" != "$active_git_sha" ]; then
     warn "git_sha mismatch: snapshot=${m_git_sha} active=${active_git_sha}"
     warn "entrypoint.sh/entrypoint.prod.sh run 'migrate --noinput' on every django start — if the checked-out code is ahead of the snapshot, django will silently re-apply those migrations against the restored DB right after restore."
     confirm_or_abort "$yes" "Continue restoring ${id} despite the git_sha mismatch?"
   fi
 
-  confirm_or_abort "$yes" "This is DESTRUCTIVE: ${id} will be restored, overwriting the current db and geoserver_data. Continue?"
+  local scope_desc="the current db and geoserver_data"
+  case "$only" in
+    postgres)  scope_desc="the current db (geoserver_data is left untouched)" ;;
+    geoserver) scope_desc="geoserver_data (the current db is left untouched)" ;;
+  esac
+  confirm_or_abort "$yes" "This is DESTRUCTIVE: ${id} will be restored, overwriting ${scope_desc}. Continue?"
 
   # --- Pre-restore safety snapshot (Q9) — never restore without one -------
   log "Taking pre-restore safety snapshot before restoring ${id}…"
@@ -641,37 +650,60 @@ print(d.get('git_sha') or '')
   local safety_id="$LAST_SNAPSHOT_ID"
   log "Pre-restore safety snapshot: ${safety_id}"
 
-  # --- Quiesce (db stays up — pg_restore writes to a live db) -------------
+  # --- Quiesce: only the services the selected artifact affects. `--only
+  # postgres` drops geoserver from the (env-resolved) quiesce set but keeps
+  # django, and web/nginx on prod — they front django, which is the write
+  # target, so they stay down with it just like ticket 04's full restore.
+  # `--only geoserver` needs only geoserver stopped. No `--only` = full
+  # restore = quiesce everything, as before. db never stops, in any case.
+  case "$only" in
+    postgres)
+      local svc filtered=""
+      for svc in $QUIESCE_SERVICES; do
+        [ "$svc" = "geoserver" ] || filtered="${filtered:+$filtered }$svc"
+      done
+      QUIESCE_SERVICES="$filtered"
+      ;;
+    geoserver) QUIESCE_SERVICES="geoserver" ;;
+  esac
   quiesce_now
 
-  # --- Postgres restore (fresh-DB method — avoids --clean cascade fragility) ---
-  log "Recreating ${PG_DATABASE}…"
-  compose exec -T -e PGPASSWORD="$PG_SUPERPASS" db \
-    psql -U "$PG_SUPERUSER" -d postgres -v ON_ERROR_STOP=1 <<SQL
+  if [ "$only" != "geoserver" ]; then
+    # --- Postgres restore (fresh-DB method — avoids --clean cascade fragility) ---
+    log "Recreating ${PG_DATABASE}…"
+    compose exec -T -e PGPASSWORD="$PG_SUPERPASS" db \
+      psql -U "$PG_SUPERUSER" -d postgres -v ON_ERROR_STOP=1 <<SQL
 DROP DATABASE IF EXISTS "$PG_DATABASE" WITH (FORCE);
 CREATE DATABASE "$PG_DATABASE" OWNER "$PG_SUPERUSER";
 SQL
 
-  log "Restoring Postgres from ${id}/postgres.dump…"
-  # No --exit-on-error: PostGIS extension notices on a fresh DB are normal.
-  # No --no-owner: a superuser connection already applies the dump's
-  # ownership/ACLs correctly.
-  if ! compose exec -T -e PGPASSWORD="$PG_SUPERPASS" db \
-      pg_restore -U "$PG_SUPERUSER" -d "$PG_DATABASE" < "${snapshot_dir}/postgres.dump"; then
-    warn "pg_restore reported errors — often normal (PostGIS extension notices); review the output above."
+    log "Restoring Postgres from ${id}/postgres.dump…"
+    # No --exit-on-error: PostGIS extension notices on a fresh DB are normal.
+    # No --no-owner: a superuser connection already applies the dump's
+    # ownership/ACLs correctly.
+    if ! compose exec -T -e PGPASSWORD="$PG_SUPERPASS" db \
+        pg_restore -U "$PG_SUPERUSER" -d "$PG_DATABASE" < "${snapshot_dir}/postgres.dump"; then
+      warn "pg_restore reported errors — often normal (PostGIS extension notices); review the output above."
+    fi
   fi
 
-  # --- GeoServer volume restore (geoserver stopped) ------------------------
-  log "Restoring geoserver_data from ${id}/geoserver_data.tar.gz…"
-  local gs_cid
-  gs_cid="$(compose ps -aq geoserver)"
-  [ -n "$gs_cid" ] || die "restore: geoserver container not found."
-  docker run --rm --volumes-from "$gs_cid" -v "${snapshot_dir}:/backup" alpine:3.20 sh -c '
-    find /geoserver_data/data -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-    tar xzf /backup/geoserver_data.tar.gz -C /geoserver_data/data'
+  if [ "$only" != "postgres" ]; then
+    # --- GeoServer volume restore (geoserver stopped) ------------------------
+    log "Restoring geoserver_data from ${id}/geoserver_data.tar.gz…"
+    local gs_cid
+    gs_cid="$(compose ps -aq geoserver)"
+    [ -n "$gs_cid" ] || die "restore: geoserver container not found."
+    docker run --rm --volumes-from "$gs_cid" -v "${snapshot_dir}:/backup" alpine:3.20 sh -c '
+      find /geoserver_data/data -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+      tar xzf /backup/geoserver_data.tar.gz -C /geoserver_data/data'
+  fi
 
   # --- Restart in order: geoserver -> (healthy) -> django -> (prod) web nginx ---
   restart_quiesced
+
+  if [ -n "$only" ]; then
+    warn "Selective restore (--only ${only}): the other artifact was left at its current state, which can now diverge from snapshot ${id}. DB↔GeoServer-catalog drift is possible — verify before trusting cross-artifact consistency."
+  fi
 
   # --- Post-restore verify (§6.1) ------------------------------------------
   log "Running post-restore verify (geoengine_smoke_test)…"
