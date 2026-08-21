@@ -2,7 +2,8 @@
 	django-restart django-logs django-cmd django-shell django-migrate django-makemigrations \
 	django-test django-test-unit django-test-integration test-geoserver \
 	django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean \
-	sync-django-geoengine smoke-test list list-media list-test-media list-static media test-media static test test-integration
+	sync-django-geoengine smoke-test list list-media list-test-media list-static media test-media static test test-integration \
+	reconcile-postgis-service-passwords
 
 # -------------------------------------------------
 # ENV selection (DEFAULT = dev) or prod
@@ -114,6 +115,7 @@ help:
 	@echo "$(COLOR_GREEN)Project Initialization:$(COLOR_RESET)"
 	@echo "  make initialize-project - Build, start all services, run migrations, restart Django"
 	@echo "  make jdbc-settings-activation - Run GeoServer JDBC settings activation script"
+	@echo "  make reconcile-postgis-service-passwords CONFIRM=1 - Apply PG_API_PASSWORD and PG_GS_PASSWORD to existing DB roles"
 	@echo ""
 	@echo "$(COLOR_GREEN)Environment Selection:$(COLOR_RESET)"
 	@echo "  make set-env ENV=dev    - Persist dev environment for future make commands"
@@ -169,6 +171,23 @@ which-env:
 	@echo "🔧 ENV=$(ENV)"
 	@echo "📄 ENV_FILE=$(ENV_FILE)"
 	@echo "🐳 COMPOSE_FILE=$(COMPOSE_FILE)"
+
+# -------------------------------------------------
+# Persisted database role password reconciliation
+# -------------------------------------------------
+# Postgres init scripts run only when its data volume is first created. This
+# explicit operation keeps an existing volume's service-role passwords aligned
+# with the selected environment without changing them on every container boot.
+reconcile-postgis-service-passwords: which-env
+	@if [ "$(CONFIRM)" != "1" ]; then \
+		echo "$(COLOR_RED)❌ This changes passwords in the existing Postgres volume.$(COLOR_RESET)"; \
+		echo "Run: make reconcile-postgis-service-passwords CONFIRM=1 [ENV=dev|prod]"; \
+		exit 1; \
+	fi
+	@echo "$(COLOR_YELLOW)🔐 Reconciling persisted Postgres service-role passwords for $(ENV).$(COLOR_RESET)"
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T db \
+		bash /docker-entrypoint-initdb.d/operations/reconcile_service_role_passwords.sh
+	@echo "$(COLOR_GREEN)✅ Passwords reconciled. Restart dependent services to load the selected environment.$(COLOR_RESET)"
 
 list:
 	@if [ "$(filter media,$(MAKECMDGOALS))" = "media" ]; then \
