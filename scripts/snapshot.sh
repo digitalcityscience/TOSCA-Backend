@@ -10,8 +10,10 @@
 #
 # Ticket 01 (scaffold): subcommand dispatch, env resolution, compose helper,
 # concurrency lock, and a working `list`. Ticket 02: `create`. Ticket 03:
-# `verify` + disk-space preflight + suspect flagging. `restore` is still a
-# stub that a later ticket fills in.
+# `verify` + disk-space preflight + suspect flagging. Ticket 04: `restore`
+# happy path (pre-restore safety snapshot, fresh-DB pg_restore, geoserver
+# volume restore, ordered restart, post-restore verify). Selective restore
+# (`--only`) is ticket 06; Garage reference check is ticket 05.
 #
 # Invoked by the Makefile, which passes ENV_FILE / COMPOSE_FILE / ENV:
 #   ENV_FILE=.env.dev COMPOSE_FILE=docker-compose-dev.yml ENV=dev \
@@ -37,6 +39,11 @@ HEALTH_TIMEOUT=300
 # Services this run has stopped but not yet restarted. Read by cleanup_on_exit
 # so a failure mid-flight doesn't leave django/geoserver stopped.
 QUIESCED_SERVICES=""
+
+# Set by do_snapshot on success — read by cmd_restore after taking the
+# mandatory pre-restore safety snapshot (Q9).
+LAST_SNAPSHOT_ID=""
+LAST_SNAPSHOT_DIR=""
 
 # ---------------------------------------------------------------------------
 # Logging helpers
@@ -198,6 +205,45 @@ was_quiesced() {
   esac
 }
 
+# Stops the services in $QUIESCE_SERVICES that are actually running right now
+# (skips ones already down, so a mid-flight failure doesn't resurrect
+# something that wasn't this run's doing) and records them in
+# $QUIESCED_SERVICES for restart_quiesced / cleanup_on_exit. db is never in
+# $QUIESCE_SERVICES — it stays up through create and restore alike.
+quiesce_now() {
+  QUIESCED_SERVICES=""
+  local svc
+  for svc in $QUIESCE_SERVICES; do
+    is_ready_now "$svc" && QUIESCED_SERVICES="${QUIESCED_SERVICES:+$QUIESCED_SERVICES }$svc"
+  done
+  log "Quiescing: ${QUIESCED_SERVICES:-<none running>} (db stays up)…"
+  if [ -n "$QUIESCED_SERVICES" ]; then
+    # shellcheck disable=SC2086
+    compose stop $QUIESCED_SERVICES
+  fi
+}
+
+# Restarts, in the required order, whatever quiesce_now stopped this run:
+# geoserver -> (healthy) -> django -> (healthy) -> (prod only) web -> nginx.
+# Clears $QUIESCED_SERVICES on completion.
+restart_quiesced() {
+  if was_quiesced geoserver; then
+    log "Restarting geoserver…"
+    compose start geoserver
+    wait_ready geoserver
+  fi
+  if was_quiesced django; then
+    log "Restarting django…"
+    compose start django
+    wait_ready django
+  fi
+  if [ "$ENV" = "prod" ]; then
+    if was_quiesced web; then compose start web && wait_ready web; fi
+    if was_quiesced nginx; then compose start nginx && wait_ready nginx; fi
+  fi
+  QUIESCED_SERVICES=""
+}
+
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
@@ -310,7 +356,7 @@ check_disk_space() {
     needed_bytes=$(( $(file_bytes "$last_tar") + $(file_bytes "$last_dump") ))
     free="$(free_bytes_for "$BACKUPS_DIR")"
     if [ "$free" -lt "$needed_bytes" ]; then
-      die "create: not enough free space under ${BACKUPS_DIR} (need ~${needed_bytes} bytes, have ${free}). Aborting before writing any artifacts."
+      die "snapshot: not enough free space under ${BACKUPS_DIR} (need ~${needed_bytes} bytes, have ${free}). Aborting before writing any artifacts."
     fi
     return 0
   done < <(ls -1dt "${BACKUPS_DIR}"/*/ 2>/dev/null || true)
@@ -399,9 +445,20 @@ cmd_create() {
   done
   resolve_env
   acquire_lock
+  do_snapshot manual "$label"
+}
+
+# Does the actual snapshot work: preflight, metadata capture, quiesce, dump,
+# tar, unquiesce, manifest, lightweight verify. Shared by `create` (kind=manual)
+# and `restore`'s mandatory pre-restore safety snapshot (kind=safety, Q9) — the
+# caller must already hold the lock and have called resolve_env. Sets
+# LAST_SNAPSHOT_ID/LAST_SNAPSHOT_DIR on success; returns non-zero if the
+# snapshot ends up suspect (verify failed) — artifacts are still on disk.
+do_snapshot() {
+  local kind="$1" label="$2"
 
   # --- Preflight -------------------------------------------------------
-  is_ready_now db || die "create: db container is not up/healthy. Aborting."
+  is_ready_now db || die "${kind}: db container is not up/healthy. Aborting."
   check_disk_space
 
   # --- snapshot_id -------------------------------------------------------
@@ -417,9 +474,13 @@ cmd_create() {
   log_file="${snapshot_dir}/snapshot.log"
 
   mkdir -p "$snapshot_dir"
+  # Scope the tee redirection to this function — a caller that keeps running
+  # after this (restore, after its pre-restore safety snapshot) must get its
+  # own stdout/stderr back, not this snapshot's log file.
+  exec 3>&1 4>&2
   exec > >(tee -a "$log_file") 2> >(tee -a "$log_file" >&2)
 
-  log "Creating snapshot ${snapshot_id} (env=${ENV})…"
+  log "Creating snapshot ${snapshot_id} (env=${ENV}, kind=${kind})…"
 
   # --- Metadata while db is up, before quiesce --------------------------
   local migrations_table="${PG_SCHEMA_API}.django_migrations"
@@ -434,23 +495,11 @@ cmd_create() {
 
   local gs_cid geoserver_image
   gs_cid="$(compose ps -aq geoserver)"
-  [ -n "$gs_cid" ] || die "create: geoserver container not found."
+  [ -n "$gs_cid" ] || die "${kind}: geoserver container not found."
   geoserver_image="$(docker inspect -f '{{.Config.Image}}' "$gs_cid")"
 
-  # --- Quiesce -----------------------------------------------------------
-  # Only stop (and later restart) services that are actually running now —
-  # if e.g. geoserver was already down for an unrelated reason, this run
-  # must not resurrect it on a mid-flight failure.
-  QUIESCED_SERVICES=""
-  local svc
-  for svc in $QUIESCE_SERVICES; do
-    is_ready_now "$svc" && QUIESCED_SERVICES="${QUIESCED_SERVICES:+$QUIESCED_SERVICES }$svc"
-  done
-  log "Quiescing: ${QUIESCED_SERVICES:-<none running>} (db stays up)…"
-  if [ -n "$QUIESCED_SERVICES" ]; then
-    # shellcheck disable=SC2086
-    compose stop $QUIESCED_SERVICES
-  fi
+  # --- Quiesce -------------------------------------------------------------
+  quiesce_now
 
   # --- Postgres dump --------------------------------------------------
   log "Dumping Postgres…"
@@ -463,22 +512,7 @@ cmd_create() {
     tar czf /backup/geoserver_data.tar.gz -C /geoserver_data/data .
 
   # --- Unquiesce in order: geoserver -> (healthy) -> django -> (prod) web nginx.
-  # Only restart services this run actually quiesced above.
-  if was_quiesced geoserver; then
-    log "Restarting geoserver…"
-    compose start geoserver
-    wait_ready geoserver
-  fi
-  if was_quiesced django; then
-    log "Restarting django…"
-    compose start django
-    wait_ready django
-  fi
-  if [ "$ENV" = "prod" ]; then
-    if was_quiesced web; then compose start web && wait_ready web; fi
-    if was_quiesced nginx; then compose start nginx && wait_ready nginx; fi
-  fi
-  QUIESCED_SERVICES=""
+  restart_quiesced
 
   # --- Manifest ------------------------------------------------------
   local dump_sha256 dump_bytes tar_sha256 tar_bytes
@@ -488,7 +522,7 @@ cmd_create() {
   tar_bytes="$(file_bytes "${snapshot_dir}/geoserver_data.tar.gz")"
 
   M_SNAPSHOT_ID="$snapshot_id" \
-  M_KIND="manual" \
+  M_KIND="$kind" \
   M_CREATED_AT="$created_at" \
   M_ENV="$ENV" \
   M_LABEL="$label" \
@@ -512,12 +546,33 @@ cmd_create() {
   # --- Step 8: lightweight verify (§6.1, §9) ------------------------------
   # A failure here does not undo the artifacts already written — it marks
   # them suspect so `list`/callers know not to trust this snapshot.
+  local result=0
   if run_verify_checks "$snapshot_dir"; then
     printf '✅ snapshot %s hazır\n' "$snapshot_id"
   else
     printf '⚠️  snapshot %s SUSPECT — see %s/suspect.flag\n' "$snapshot_id" "$snapshot_dir"
-    return 1
+    result=1
   fi
+
+  # Restore the caller's original stdout/stderr (see the exec above).
+  exec 1>&3 2>&4
+  exec 3>&- 4>&-
+
+  LAST_SNAPSHOT_ID="$snapshot_id"
+  LAST_SNAPSHOT_DIR="$snapshot_dir"
+  return "$result"
+}
+
+# Prompts "$2 [y/N]" and dies if the answer isn't y/yes, unless $1 ("yes"
+# flag, i.e. --yes/YES=1) is "1", in which case it returns immediately.
+confirm_or_abort() {
+  local yes="$1" prompt="$2" ans=""
+  [ "$yes" = "1" ] && return 0
+  read -r -p "${prompt} [y/N] " ans || true
+  case "$ans" in
+    y|Y|yes|YES) return 0 ;;
+    *) die "restore: aborted by user." ;;
+  esac
 }
 
 cmd_restore() {
@@ -533,12 +588,99 @@ cmd_restore() {
     esac
   done
   [ -n "$id" ] || die "restore: --id <snapshot_id> is required."
+  # Selective restore is ticket 06 — keep the flag recognized (so the Makefile
+  # ONLY= plumbing doesn't blow up) but reject it explicitly rather than
+  # silently ignoring it.
+  [ -z "$only" ] || die "restore: --only is not yet implemented (ticket 06). Run restore without --only to restore both artifacts."
+
   resolve_env
   acquire_lock
-  # TODO(ticket 04): preflight+checksum, version guard, pre-restore safety
-  # snapshot, quiesce, pg fresh-DB restore, geoserver volume restore, ordered
-  # restart, post-restore verify. TODO(ticket 06): --only. TODO(05): garage.
-  die "restore: not yet implemented (ticket 04). id=$id yes='${yes}' only='${only}'"
+
+  local snapshot_dir="${BACKUPS_DIR}/${id}"
+  local manifest="${snapshot_dir}/manifest.json"
+  [ -d "$snapshot_dir" ] || die "restore: no such snapshot '${id}' (looked in ${snapshot_dir})."
+
+  is_ready_now db || die "restore: db container is not up/healthy. Aborting."
+
+  # --- Preflight: checksum verify — a corrupt artifact is never restored ---
+  log "Verifying snapshot ${id} before restore…"
+  run_verify_checks "$snapshot_dir" \
+    || die "restore: snapshot ${id} is SUSPECT (corrupt/missing artifact) — aborting before any destructive step. See ${snapshot_dir}/suspect.flag"
+
+  # --- Version/git_sha guards (warn + explicit confirm, does not abort) ---
+  local m_geoserver_version m_git_sha active_git_sha manifest_fields
+  manifest_fields="$(python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d.get('geoserver_version') or '')
+print(d.get('git_sha') or '')
+" "$manifest")"
+  m_geoserver_version="$(sed -n '1p' <<<"$manifest_fields")"
+  m_git_sha="$(sed -n '2p' <<<"$manifest_fields")"
+  active_git_sha="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  git -C "$REPO_ROOT" diff --quiet 2>/dev/null || active_git_sha="${active_git_sha}-dirty"
+
+  if [ -n "$m_geoserver_version" ] && [ "$m_geoserver_version" != "${GEOSERVER_VERSION:-}" ]; then
+    warn "⚠️⚠️  GEOSERVER_VERSION MISMATCH: snapshot=${m_geoserver_version} active=${GEOSERVER_VERSION:-<unset>}"
+    warn "Restoring geoserver_data under a mismatched GeoServer image/version is exactly the config/image incompatibility that caused the lost-Shapefile incident."
+    confirm_or_abort "$yes" "Continue restoring ${id} despite the GEOSERVER_VERSION mismatch?"
+  fi
+
+  if [ -n "$m_git_sha" ] && [ "$m_git_sha" != "$active_git_sha" ]; then
+    warn "git_sha mismatch: snapshot=${m_git_sha} active=${active_git_sha}"
+    warn "entrypoint.sh/entrypoint.prod.sh run 'migrate --noinput' on every django start — if the checked-out code is ahead of the snapshot, django will silently re-apply those migrations against the restored DB right after restore."
+    confirm_or_abort "$yes" "Continue restoring ${id} despite the git_sha mismatch?"
+  fi
+
+  confirm_or_abort "$yes" "This is DESTRUCTIVE: ${id} will be restored, overwriting the current db and geoserver_data. Continue?"
+
+  # --- Pre-restore safety snapshot (Q9) — never restore without one -------
+  log "Taking pre-restore safety snapshot before restoring ${id}…"
+  do_snapshot safety pre-restore-safety \
+    || die "restore: pre-restore safety snapshot failed or is suspect — aborting restore without a safety net."
+  local safety_id="$LAST_SNAPSHOT_ID"
+  log "Pre-restore safety snapshot: ${safety_id}"
+
+  # --- Quiesce (db stays up — pg_restore writes to a live db) -------------
+  quiesce_now
+
+  # --- Postgres restore (fresh-DB method — avoids --clean cascade fragility) ---
+  log "Recreating ${PG_DATABASE}…"
+  compose exec -T -e PGPASSWORD="$PG_SUPERPASS" db \
+    psql -U "$PG_SUPERUSER" -d postgres -v ON_ERROR_STOP=1 <<SQL
+DROP DATABASE IF EXISTS "$PG_DATABASE" WITH (FORCE);
+CREATE DATABASE "$PG_DATABASE" OWNER "$PG_SUPERUSER";
+SQL
+
+  log "Restoring Postgres from ${id}/postgres.dump…"
+  # No --exit-on-error: PostGIS extension notices on a fresh DB are normal.
+  # No --no-owner: a superuser connection already applies the dump's
+  # ownership/ACLs correctly.
+  if ! compose exec -T -e PGPASSWORD="$PG_SUPERPASS" db \
+      pg_restore -U "$PG_SUPERUSER" -d "$PG_DATABASE" < "${snapshot_dir}/postgres.dump"; then
+    warn "pg_restore reported errors — often normal (PostGIS extension notices); review the output above."
+  fi
+
+  # --- GeoServer volume restore (geoserver stopped) ------------------------
+  log "Restoring geoserver_data from ${id}/geoserver_data.tar.gz…"
+  local gs_cid
+  gs_cid="$(compose ps -aq geoserver)"
+  [ -n "$gs_cid" ] || die "restore: geoserver container not found."
+  docker run --rm --volumes-from "$gs_cid" -v "${snapshot_dir}:/backup" alpine:3.20 sh -c '
+    find /geoserver_data/data -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    tar xzf /backup/geoserver_data.tar.gz -C /geoserver_data/data'
+
+  # --- Restart in order: geoserver -> (healthy) -> django -> (prod) web nginx ---
+  restart_quiesced
+
+  # --- Post-restore verify (§6.1) ------------------------------------------
+  log "Running post-restore verify (geoengine_smoke_test)…"
+  if compose exec -T django uv run python manage.py geoengine_smoke_test; then
+    printf '✅ restore %s tamamlandı, verify OK (safety snapshot: %s)\n' "$id" "$safety_id"
+  else
+    printf '⚠️ restore tamam ama verify FAIL — safety snapshot: %s\n' "$safety_id"
+    return 1
+  fi
 }
 
 cmd_verify() {
