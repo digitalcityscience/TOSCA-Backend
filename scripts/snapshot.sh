@@ -9,8 +9,9 @@
 # docs/development/p0-snapshot-restore/issues/.
 #
 # Ticket 01 (scaffold): subcommand dispatch, env resolution, compose helper,
-# concurrency lock, and a working `list`. create/restore/verify are stubs that
-# later tickets fill in.
+# concurrency lock, and a working `list`. Ticket 02: `create`. Ticket 03:
+# `verify` + disk-space preflight + suspect flagging. `restore` is still a
+# stub that a later ticket fills in.
 #
 # Invoked by the Makefile, which passes ENV_FILE / COMPOSE_FILE / ENV:
 #   ENV_FILE=.env.dev COMPOSE_FILE=docker-compose-dev.yml ENV=dev \
@@ -286,6 +287,98 @@ PY
   mv -f "$tmp" "${snapshot_dir}/manifest.json"
 }
 
+# Free bytes available on the filesystem holding $1 (creates the dir first
+# if missing, so a not-yet-existing backups/ can still be statted).
+free_bytes_for() {
+  mkdir -p "$1"
+  df -Pk "$1" | awk 'NR==2 {print $4 * 1024}'
+}
+
+# Disk-space preflight for create (§9): require at least as much free space
+# under backups/ as the last snapshot's geoserver_data.tar.gz + postgres.dump
+# together. No prior snapshot -> nothing to compare against, skip silently.
+check_disk_space() {
+  local dir last_tar last_dump needed_bytes free
+  for dir in $(ls -1dt "${BACKUPS_DIR}"/*/ 2>/dev/null || true); do
+    last_tar="${dir}geoserver_data.tar.gz"
+    last_dump="${dir}postgres.dump"
+    [ -f "$last_tar" ] && [ -f "$last_dump" ] || continue
+
+    needed_bytes=$(( $(file_bytes "$last_tar") + $(file_bytes "$last_dump") ))
+    free="$(free_bytes_for "$BACKUPS_DIR")"
+    if [ "$free" -lt "$needed_bytes" ]; then
+      die "create: not enough free space under ${BACKUPS_DIR} (need ~${needed_bytes} bytes, have ${free}). Aborting before writing any artifacts."
+    fi
+    return 0
+  done
+  # No prior snapshot with both artifacts present -> nothing to compare
+  # against, skip silently.
+  return 0
+}
+
+mark_suspect() {
+  local snapshot_dir="$1" reason="$2"
+  {
+    printf 'reason: %s\n' "$reason"
+    printf 'flagged_at_utc: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "${snapshot_dir}/suspect.flag"
+  warn "suspect: ${reason}"
+}
+
+# Runs $2 (a command string, via eval) with stderr captured to a shared temp
+# file; on failure, marks $1 suspect with "$3: <captured stderr>" and returns
+# 1. Used by run_verify_checks so each §6.1 check is a single call.
+run_check() {
+  local snapshot_dir="$1" cmd="$2" label="$3" errfile="${1}/.verify.err"
+  if ! eval "$cmd" >/dev/null 2>"$errfile"; then
+    mark_suspect "$snapshot_dir" "${label}: $(cat "$errfile" 2>/dev/null)"
+    rm -f "$errfile"
+    return 1
+  fi
+  rm -f "$errfile"
+}
+
+# ---------------------------------------------------------------------------
+# Lightweight verify (§6.1) — used standalone (`verify` subcommand) and as
+# create step 8. Read-only checks against backups/<id>/. On any failure,
+# writes suspect.flag with the reason and returns non-zero; the caller
+# decides what that means (non-zero exit for standalone, "suspect" summary
+# for create).
+# ---------------------------------------------------------------------------
+run_verify_checks() {
+  local snapshot_dir="$1" manifest="${1}/manifest.json"
+
+  [ -f "$manifest" ] || { mark_suspect "$snapshot_dir" "manifest.json missing"; return 1; }
+
+  # --- Artifact integrity: sha256sum of each artifact == manifest value ---
+  local artifact expected actual
+  for artifact in postgres.dump geoserver_data.tar.gz; do
+    local path="${snapshot_dir}/${artifact}"
+    if [ ! -f "$path" ]; then
+      mark_suspect "$snapshot_dir" "missing artifact: ${artifact}"
+      return 1
+    fi
+    expected="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['artifacts']['${artifact}']['sha256'])" "$manifest" 2>/dev/null || true)"
+    [ -n "$expected" ] || { mark_suspect "$snapshot_dir" "manifest missing sha256 for ${artifact}"; return 1; }
+    actual="$(sha256_of "$path")"
+    if [ "$actual" != "$expected" ]; then
+      mark_suspect "$snapshot_dir" "checksum mismatch for ${artifact} (expected ${expected}, got ${actual})"
+      return 1
+    fi
+  done
+
+  # --- Dump openability: pg_restore -l lists a TOC ------------------------
+  run_check "$snapshot_dir" "pg_restore -l '${snapshot_dir}/postgres.dump'" "pg_restore -l failed on postgres.dump" || return 1
+
+  # --- Tar integrity ------------------------------------------------------
+  run_check "$snapshot_dir" "tar tzf '${snapshot_dir}/geoserver_data.tar.gz'" "tar tzf failed on geoserver_data.tar.gz" || return 1
+
+  # A previous failed run may have left a stale flag around; a clean pass
+  # clears it.
+  rm -f "${snapshot_dir}/suspect.flag"
+  return 0
+}
+
 cmd_create() {
   local label=""
   while [ $# -gt 0 ]; do
@@ -300,6 +393,7 @@ cmd_create() {
 
   # --- Preflight -------------------------------------------------------
   is_ready_now db || die "create: db container is not up/healthy. Aborting."
+  check_disk_space
 
   # --- snapshot_id -------------------------------------------------------
   local git_sha
@@ -406,7 +500,15 @@ cmd_create() {
   M_TOOLING_VERSION="$TOOLING_VERSION" \
     write_manifest "$snapshot_dir"
 
-  printf '✅ snapshot %s hazır\n' "$snapshot_id"
+  # --- Step 8: lightweight verify (§6.1, §9) ------------------------------
+  # A failure here does not undo the artifacts already written — it marks
+  # them suspect so `list`/callers know not to trust this snapshot.
+  if run_verify_checks "$snapshot_dir"; then
+    printf '✅ snapshot %s hazır\n' "$snapshot_id"
+  else
+    printf '⚠️  snapshot %s SUSPECT — see %s/suspect.flag\n' "$snapshot_id" "$snapshot_dir"
+    return 1
+  fi
 }
 
 cmd_restore() {
@@ -441,8 +543,14 @@ cmd_verify() {
   done
   [ -n "$id" ] || die "verify: --id <snapshot_id> is required."
   # verify is read-only: no env resolution / lock needed.
-  # TODO(ticket 03): sha256 vs manifest, pg_restore -l, tar tzf, suspect.flag.
-  die "verify: not yet implemented (ticket 03). id=$id"
+  local snapshot_dir="${BACKUPS_DIR}/${id}"
+  [ -d "$snapshot_dir" ] || die "verify: no such snapshot '${id}' (looked in ${snapshot_dir})."
+
+  if run_verify_checks "$snapshot_dir"; then
+    printf '✅ %s: artifact checksums OK, dump TOC OK, tar OK\n' "$id"
+  else
+    die "verify: ${id} is SUSPECT — see ${snapshot_dir}/suspect.flag"
+  fi
 }
 
 # Read-only listing of existing snapshots (manifest summaries).
