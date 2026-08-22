@@ -47,6 +47,17 @@ QUIESCED_SERVICES=""
 LAST_SNAPSHOT_ID=""
 LAST_SNAPSHOT_DIR=""
 
+# Snapshot directory do_snapshot is currently writing into, or "" when no
+# snapshot is in flight. cleanup_on_exit reads it so a failure *before* the
+# step-8 verify (e.g. pg_dump or the geoserver tar dying under `set -e`) still
+# leaves suspect.flag behind — §9 requires any failed create step to mark the
+# directory, not just a failed verify.
+IN_FLIGHT_SNAPSHOT_DIR=""
+
+# Guards cleanup_on_exit against running twice: the INT/TERM traps call it
+# explicitly and then `exit`, which re-fires the EXIT trap.
+CLEANUP_DONE=""
+
 # ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
@@ -132,13 +143,24 @@ release_lock() {
   rm -f "$LOCK_FILE"
 }
 
-# EXIT/INT/TERM trap: on a non-zero exit, best-effort restart any services
-# this run quiesced but never got around to restarting, then release the
-# lock. QUIESCED_SERVICES is cleared once unquiesce completes normally.
-# INT/TERM run this via an explicit `exit` (see acquire_lock) — a signal
-# trap alone does not terminate the script, it would resume after the trap.
+# EXIT/INT/TERM trap: on a non-zero exit, flag any half-written snapshot as
+# suspect, best-effort restart any services this run quiesced but never got
+# around to restarting, then release the lock. QUIESCED_SERVICES is cleared
+# once unquiesce completes normally. INT/TERM run this via an explicit `exit`
+# (see acquire_lock) — a signal trap alone does not terminate the script, it
+# would resume after the trap — so it is guarded to run only once.
 cleanup_on_exit() {
   local exit_code=$?
+  [ -z "$CLEANUP_DONE" ] || return 0
+  CLEANUP_DONE=1
+
+  # §9 requires any failed create step to mark backups/<id>/ with
+  # suspect.flag. A dump/tar failure aborts under `set -e` long before the
+  # step-8 verify, so the marker has to be written from here too.
+  if [ "$exit_code" -ne 0 ] && [ -n "$IN_FLIGHT_SNAPSHOT_DIR" ] && [ -d "$IN_FLIGHT_SNAPSHOT_DIR" ]; then
+    mark_suspect "$IN_FLIGHT_SNAPSHOT_DIR" "snapshot aborted mid-flight (exit ${exit_code}) — artifacts are incomplete"
+  fi
+
   if [ "$exit_code" -ne 0 ] && [ -n "$QUIESCED_SERVICES" ]; then
     warn "create/restore failed mid-flight — restarting quiesced services: $QUIESCED_SERVICES"
     # shellcheck disable=SC2086
@@ -277,18 +299,34 @@ except Exception:
 write_manifest() {
   local snapshot_dir="$1" tmp
   tmp="${snapshot_dir}/manifest.json.tmp"
-  python3 - "$tmp" <<'PY'
+  # Explicit `|| { ...; die; }` rather than relying on `set -e`: the mv below
+  # must never publish a half-written (or absent) tmp file as manifest.json.
+  if ! python3 - "$tmp" <<'PY'
 import json, os, sys
 
+env = os.environ
+
+# Required M_* keys are listed once, up front, so a caller that renames or
+# drops one fails here naming every offender at once -- rather than dying on
+# whichever KeyError happens to be evaluated first, or (for the optional
+# fields) writing a manifest with a silently-null value.
+REQUIRED = (
+    "M_SNAPSHOT_ID", "M_KIND", "M_CREATED_AT", "M_ENV", "M_GIT_SHA",
+    "M_GEOSERVER_VERSION", "M_GEOSERVER_IMAGE", "M_PG_DATABASE",
+    "M_DUMP_SHA256", "M_DUMP_BYTES", "M_TAR_SHA256", "M_TAR_BYTES",
+    "M_TOOLING_VERSION",
+)
+missing = [k for k in REQUIRED if not env.get(k, "").strip()]
+if missing:
+    sys.exit("write_manifest: missing required value(s): " + ", ".join(missing))
+
 def opt_int(key):
-    v = os.environ.get(key, "")
+    v = env.get(key, "")
     return int(v) if v.strip() else None
 
 def opt_str(key):
-    v = os.environ.get(key, "")
+    v = env.get(key, "")
     return v if v.strip() else None
-
-env = os.environ
 manifest = {
     "snapshot_id": env["M_SNAPSHOT_ID"],
     "kind": env["M_KIND"],
@@ -309,6 +347,10 @@ manifest = {
         },
         "row_counts": {
             "django_migrations": opt_int("M_ROW_COUNT_MIGRATIONS"),
+            # §3's second, GIS-schema sanity counter: the number of tables
+            # present in the GIS schema. A restore that silently lost the
+            # schema shows up here as a collapsed count.
+            "gis_tables": opt_int("M_ROW_COUNT_GIS_TABLES"),
         },
     },
     "geoserver": {
@@ -332,7 +374,34 @@ with open(sys.argv[1], "w") as f:
     json.dump(manifest, f, indent=2)
     f.write("\n")
 PY
+  then
+    rm -f "$tmp"
+    die "write_manifest: failed to build manifest for ${snapshot_dir} (see error above)."
+  fi
   mv -f "$tmp" "${snapshot_dir}/manifest.json"
+}
+
+# Prints one manifest value per requested path, one line each, in the order
+# asked for; a missing path prints an empty line. Paths are slash-separated
+# ("artifacts/postgres.dump/sha256") rather than dot-separated because the
+# manifest's own keys contain dots. Single reader for every "pull a field out
+# of manifest.json" site in this script.
+manifest_get() {
+  local manifest="$1"; shift
+  python3 - "$manifest" "$@" <<'PY'
+import json, sys
+
+with open(sys.argv[1]) as f:
+    doc = json.load(f)
+
+for path in sys.argv[2:]:
+    node = doc
+    for part in path.split("/"):
+        node = node.get(part) if isinstance(node, dict) else None
+        if node is None:
+            break
+    print("" if node is None else node)
+PY
 }
 
 # Free bytes available on the filesystem holding $1 (creates the dir first
@@ -439,7 +508,7 @@ run_verify_checks() {
       mark_suspect "$snapshot_dir" "missing artifact: ${artifact}"
       return 1
     fi
-    expected="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['artifacts']['${artifact}']['sha256'])" "$manifest" 2>/dev/null || true)"
+    expected="$(manifest_get "$manifest" "artifacts/${artifact}/sha256" 2>/dev/null || true)"
     [ -n "$expected" ] || { mark_suspect "$snapshot_dir" "manifest missing sha256 for ${artifact}"; return 1; }
     actual="$(sha256_of "$path")"
     if [ "$actual" != "$expected" ]; then
@@ -502,6 +571,9 @@ do_snapshot() {
   log_file="${snapshot_dir}/snapshot.log"
 
   mkdir -p "$snapshot_dir"
+  # From here until the step-8 verify decides the outcome, an abort must
+  # leave suspect.flag behind (§9) — see cleanup_on_exit.
+  IN_FLIGHT_SNAPSHOT_DIR="$snapshot_dir"
   # Scope the tee redirection to this function — a caller that keeps running
   # after this (restore, after its pre-restore safety snapshot) must get its
   # own stdout/stderr back, not this snapshot's log file.
@@ -512,13 +584,20 @@ do_snapshot() {
 
   # --- Metadata while db is up, before quiesce --------------------------
   local migrations_table="${PG_SCHEMA_API}.django_migrations"
-  local psql_head server_version postgis_version migration_app migration_name row_count_migrations layer_count
+  local psql_head server_version postgis_version migration_app migration_name
+  local row_count_migrations row_count_gis_tables layer_count
   psql_head="$(psql_query "SELECT app,name FROM ${migrations_table} ORDER BY id DESC LIMIT 1")"
   migration_app="${psql_head%%|*}"
   migration_name="${psql_head#*|}"
   server_version="$(psql_query "SELECT version()")"
   postgis_version="$(psql_query "SELECT postgis_full_version()")"
   row_count_migrations="$(psql_query "SELECT count(*) FROM ${migrations_table}")"
+  # Optional (empty if PG_SCHEMA_GIS is unset or the query fails) — it is a
+  # sanity counter, not a gate, so it must never abort the snapshot.
+  row_count_gis_tables=""
+  if [ -n "${PG_SCHEMA_GIS:-}" ]; then
+    row_count_gis_tables="$(psql_query "SELECT count(*) FROM information_schema.tables WHERE table_schema='${PG_SCHEMA_GIS}'" 2>/dev/null || true)"
+  fi
   layer_count="$(geoserver_layer_count)"
 
   local gs_cid geoserver_image
@@ -563,6 +642,7 @@ do_snapshot() {
   M_MIGRATION_APP="$migration_app" \
   M_MIGRATION_NAME="$migration_name" \
   M_ROW_COUNT_MIGRATIONS="$row_count_migrations" \
+  M_ROW_COUNT_GIS_TABLES="$row_count_gis_tables" \
   M_LAYER_COUNT="$layer_count" \
   M_DUMP_SHA256="$dump_sha256" \
   M_DUMP_BYTES="$dump_bytes" \
@@ -576,11 +656,14 @@ do_snapshot() {
   # them suspect so `list`/callers know not to trust this snapshot.
   local result=0
   if run_verify_checks "$snapshot_dir"; then
-    printf '✅ snapshot %s hazır\n' "$snapshot_id"
+    printf '✅ snapshot %s ready\n' "$snapshot_id"
   else
     printf '⚠️  snapshot %s SUSPECT — see %s/suspect.flag\n' "$snapshot_id" "$snapshot_dir"
     result=1
   fi
+  # run_verify_checks has now recorded the outcome (flag written or cleared),
+  # so cleanup_on_exit must not overwrite it with a mid-flight marker.
+  IN_FLIGHT_SNAPSHOT_DIR=""
 
   # Restore the caller's original stdout/stderr (see the exec above).
   exec 1>&3 2>&4
@@ -636,15 +719,11 @@ cmd_restore() {
     || die "restore: snapshot ${id} is SUSPECT (corrupt/missing artifact) — aborting before any destructive step. See ${snapshot_dir}/suspect.flag"
 
   # --- Version/git_sha guards (warn + explicit confirm, does not abort) ---
-  local m_geoserver_version m_git_sha active_git_sha manifest_fields
-  manifest_fields="$(python3 -c "
-import json, sys
-d = json.load(open(sys.argv[1]))
-print(d.get('geoserver_version') or '')
-print(d.get('git_sha') or '')
-" "$manifest")"
-  m_geoserver_version="$(sed -n '1p' <<<"$manifest_fields")"
-  m_git_sha="$(sed -n '2p' <<<"$manifest_fields")"
+  local m_geoserver_version="" m_git_sha="" active_git_sha
+  # Read positionally in the order requested, so neither field can silently
+  # end up holding the other's value.
+  { read -r m_geoserver_version; read -r m_git_sha; } \
+    < <(manifest_get "$manifest" geoserver_version git_sha)
   active_git_sha="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   git -C "$REPO_ROOT" diff --quiet 2>/dev/null || active_git_sha="${active_git_sha}-dirty"
 
@@ -735,9 +814,9 @@ SQL
   log "Running post-restore verify (geoengine_smoke_test)…"
   local verify_result=0
   if compose exec -T django uv run python manage.py geoengine_smoke_test; then
-    printf '✅ restore %s tamamlandı, verify OK (safety snapshot: %s)\n' "$id" "$safety_id"
+    printf '✅ restore %s complete, verify OK (safety snapshot: %s)\n' "$id" "$safety_id"
   else
-    printf '⚠️ restore tamam ama verify FAIL — safety snapshot: %s\n' "$safety_id"
+    printf '⚠️  restore complete but verify FAILED — safety snapshot: %s\n' "$safety_id"
     verify_result=1
   fi
 
@@ -792,15 +871,11 @@ cmd_list() {
             printf '%-40s  %-7s  %-21s  %-5s  %s%s\n' "$sid" "$kind" "$created" "$env" "$label" "$suspect"
           done
     else
-      python3 - "$manifest" "$suspect" <<'PY'
-import json, sys
-m = json.load(open(sys.argv[1]))
-suspect = sys.argv[2]
-print("%-40s  %-7s  %-21s  %-5s  %s%s" % (
-    m.get("snapshot_id", "-"), m.get("kind", "-"),
-    m.get("created_at_utc", "-"), m.get("env", "-"),
-    m.get("label", "-"), suspect))
-PY
+      local sid kind created env_name label
+      { read -r sid; read -r kind; read -r created; read -r env_name; read -r label; } \
+        < <(manifest_get "$manifest" snapshot_id kind created_at_utc env label)
+      printf '%-40s  %-7s  %-21s  %-5s  %s%s\n' \
+        "${sid:--}" "${kind:--}" "${created:--}" "${env_name:--}" "${label:--}" "$suspect"
     fi
   done
   if [ "$found" -eq 0 ]; then

@@ -62,6 +62,8 @@ backups/
   "postgres": {
     "database": "<PG_DATABASE>",
     "dump_format": "custom",
+    "server_version": "<SELECT version()>",
+    "postgis_version": "<SELECT postgis_full_version()>",
     "migration_head": {"app": "...", "name": "...."},   // django_migrations son satır
     "row_counts": {                     // sanity sayaçları (kilit tablolar)
       "django_migrations": 123,
@@ -96,7 +98,9 @@ Ortam çözümü mevcut `which-env` ile: `ENV_FILE=.env.$(ENV)`, `COMPOSE_FILE=d
    - db container UP + healthy mi? (değilse abort)
    - backups/<id>/ oluştur, snapshot.log'a yönlendir
 
-1. snapshot_id üret:  <UTC>_<git rev-parse --short HEAD>[_<LABEL>]
+1. snapshot_id üret:  <UTC>_<git rev-parse --short HEAD>[-dirty][_<LABEL>]
+   # `git diff --quiet || echo -dirty` eklenir — commit'lenmemiş deploy'lar
+   # snapshot_id ve manifest.git_sha'da görünür kalır (aksi halde sessizce kaybolur).
 
 2. Metadata topla (SERVİSLER DURMADAN ÖNCE, db açıkken):
    - migration_head:  exec -T db psql -tA -U $PG_SUPERUSER -d $PG_DATABASE \
@@ -114,12 +118,16 @@ Ortam çözümü mevcut `which-env` ile: `ENV_FILE=.env.$(ENV)`, `COMPOSE_FILE=d
 5. GeoServer volume tar (geoserver STOP durumda, tutarlı):
    GS_CID=$(docker compose ... ps -aq geoserver)      # stopped container da gelir
    docker run --rm --volumes-from $GS_CID \
-     -v "$PWD/backups/<id>:/backup" alpine:3 \
+     -v "$PWD/backups/<id>:/backup" alpine:3.20 \
      tar czf /backup/geoserver_data.tar.gz -C /geoserver_data/data .
 
 6. UNQUIESCE:
    docker compose ... start geoserver
-   # geoserver healthy bekle (compose healthcheck)
+   # `docker compose start` healthcheck'i BEKLEMEZ (yalnızca `up --wait` bekler).
+   # Script kendi poll-loop'unu kurar:
+   #   until [ "$(docker inspect -f '{{.State.Health.Status}}' $CID)" = healthy ]; do sleep 2; done
+   #   (+ timeout). Compose dosyalarında geoserver/django/db için gerçek healthcheck
+   #   tanımlı olduğu için bu döngü anlamlı bir sinyal okur.
    docker compose ... start django
 
 7. Manifest yaz:
@@ -144,6 +152,12 @@ Ortam çözümü mevcut `which-env` ile: `ENV_FILE=.env.$(ENV)`, `COMPOSE_FILE=d
    - backups/<SNAPSHOT>/manifest.json var mı, artefakt sha256'ları manifest ile eşleşiyor mu (checksum verify) → değilse ABORT
    - manifest.geoserver_version vs aktif $GEOSERVER_VERSION karşılaştır:
        farklıysa BÜYÜK UYARI + onay iste (config/image uyumu riski)
+   - manifest.git_sha vs aktif `git rev-parse --short HEAD` (+ dirty suffix) karşılaştır:
+       farklıysa UYARI + onay iste. Neden: django entrypoint her başlangıçta
+       `migrate --noinput` koşturuyor (doğrulandı: entrypoint.sh + entrypoint.prod.sh) —
+       kod snapshot'tan ileri migration içeriyorsa, restore sonrası django başlar
+       başlamaz bunları eski DB'ye uygular ve restore'u sessizce kısmen geri alır.
+       ABORT etmez (P0 kapsamı kod deploy'unu yönetmiyor), sadece bilinçli onay ister.
    - İnteraktif onay: "Bu YIKICI bir işlem. <SNAPSHOT> geri yüklenecek." (--yes ile atlanır)
 
 1. PRE-RESTORE SAFETY SNAPSHOT (Q9):
@@ -151,22 +165,28 @@ Ortam çözümü mevcut `which-env` ile: `ENV_FILE=.env.$(ENV)`, `COMPOSE_FILE=d
    # başarısızsa restore'u ABORT et (güvenlik ağı olmadan devam etme)
 
 2. QUIESCE:
-   docker compose ... stop django geoserver web nginx
+   docker compose ... stop django geoserver   # (+ web nginx, prod — §4'teki ENV-bazlı
+                                                #  quiesce listesiyle aynı: dev → django
+                                                #  geoserver, prod → + web nginx)
    # db AÇIK kalır — pg_restore ona bağlanacak (DB HİÇ DURMAZ)
 
 3. Postgres restore (fresh-DB yöntemi; --clean cascade kırılganlığını önler):
-   a. Diğer bağlantıları düşür + DB'yi yeniden yarat (maintenance db 'postgres' üzerinden):
+   a. DB'yi yeniden yarat (maintenance db 'postgres' üzerinden):
       exec -T -e PGPASSWORD=$PG_SUPERPASS db psql -U $PG_SUPERUSER -d postgres -v ON_ERROR_STOP=1 <<SQL
-        SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-          WHERE datname='$PG_DATABASE' AND pid<>pg_backend_pid();
-        DROP DATABASE IF EXISTS "$PG_DATABASE";
+        DROP DATABASE IF EXISTS "$PG_DATABASE" WITH (FORCE);
         CREATE DATABASE "$PG_DATABASE" OWNER "$PG_SUPERUSER";
       SQL
+      # `WITH (FORCE)` PG13+'ta var (db image: postgis/postgis:16-3.4 → destekli).
+      # Ayrı bir `pg_terminate_backend` adımına gerek bırakmaz, race'e kapalıdır.
       # Global roller (api_user, gs_user...) volume'da yaşıyor, DROP DATABASE onları silmez.
    b. Dump'ı geri yükle (ownership + schema ACL'leri dump içinde):
       exec -T -e PGPASSWORD=$PG_SUPERPASS db \
-        pg_restore -U $PG_SUPERUSER -d $PG_DATABASE --no-owner=false \
+        pg_restore -U $PG_SUPERUSER -d $PG_DATABASE \
         < backups/<SNAPSHOT>/postgres.dump
+      # `--no-owner=false` DEĞİL — bu geçersiz bir pg_restore çağrısı (option doesn't
+      # allow an argument), restore'u komut daha başlamadan kırar. Flag tamamen
+      # kaldırıldı: superuser bağlantısıyla varsayılan davranış zaten dump'taki
+      # ownership/ACL'leri kurar.
       # (--exit-on-error yerine hataları logla; PostGIS extension notice'ları normal)
 
 4. GeoServer volume restore (geoserver STOP durumda):
@@ -178,9 +198,10 @@ Ortam çözümü mevcut `which-env` ile: `ENV_FILE=.env.$(ENV)`, `COMPOSE_FILE=d
 
 5. RESTART (doğru sıra — senin düzelttiğin):
    docker compose ... start geoserver
-   → geoserver healthy bekle (healthcheck: /geoserver/web)
+   → geoserver healthy bekle: explicit poll-loop (docker inspect Health.Status),
+     `docker compose start` healthcheck'i beklemediği için (healthcheck: /geoserver/web)
    docker compose ... start django
-   → django healthy bekle (/readyz)
+   → django healthy bekle: aynı poll-loop (/readyz)
    docker compose ... start web nginx   (prod)
 
 6. POST-RESTORE VERIFY (§6):
@@ -262,12 +283,17 @@ snapshots: which-env         ## mevcut snapshot'ları listele (manifest özetler
 - **db healthy değilse** snapshot/restore ABORT.
 - **Checksum uyuşmazsa** restore ABORT (bozuk artefakt geri yüklenmez).
 - **`GEOSERVER_VERSION` manifest ≠ aktif** → restore uyarır, açık onay ister.
+- **`git_sha` manifest ≠ aktif checkout** → restore uyarır, açık onay ister (django entrypoint
+  her başlangıçta `migrate --noinput` koşturuyor — ileri kod restore'u sessizce bozabilir).
 - **Pre-restore safety snapshot başarısızsa** restore devam etmez.
 - **Restore yıkıcıdır:** interaktif onay (`--yes`/`YES=1` ile CI/otomasyon atlar).
 - **Kısmi başarısızlık:** create'te herhangi adım fail → `backups/<id>/` `suspect.flag` ile işaretlenir, "başarılı" sayılmaz.
+- **Hata yolunda unquiesce:** create/restore ortasında fail olursa quiesce edilen servisler
+  stopped kalmasın diye `trap` ile hata durumunda yeniden başlatılır (mevcut lock-release
+  trap'in yanına eklenir).
 - **Disk alanı:** create öncesi `backups/` altında yeterli boş alan kontrolü (en az son geoserver_data + dump boyutu kadar).
-- **Concurrency:** aynı anda iki snapshot/restore engellenir (basit lock dosyası `backups/.lock`).
-- **Seçici restore (Q1):** `--only postgres` / `--only geoserver` flag'leri ile tek artefakt restore (varsayılan ikisi birden). Pre-restore safety yine tam alınır.
+- **Concurrency:** aynı anda iki snapshot/restore engellenir (basit lock dosyası `backups/.lock`, PID + stale-lock kontrolü).
+- **Seçici restore (Q1):** `--only postgres` / `--only geoserver` flag'leri ile tek artefakt restore (varsayılan ikisi birden). Pre-restore safety yine tam alınır. Tek artefakt restore edildiğinde DB↔katalog sapması olabileceği için uyarı basılır.
 
 ---
 
@@ -277,6 +303,7 @@ snapshots: which-env         ## mevcut snapshot'ları listele (manifest özetler
 - [ ] `make snapshot ENV=prod` aynısını prod compose ile yapar (web/nginx dahil quiesce).
 - [ ] `make restore SNAPSHOT=<id> ENV=dev` → pre-restore safety snapshot alır, DB'yi ve geoserver_data'yı geri yükler, servisleri doğru sırada başlatır, smoke-test geçer.
 - [ ] Manifest `git_sha` + `geoserver_version` içerir; restore uyumsuz version'da uyarır.
+- [ ] Full restore provası sırasında gerçek RTO ölçülür ve DoD/README'ye yazılır (RTO<1h şu an varsayım, kanıt değil).
 - [ ] Garage referans kontrolü warning-only çalışır, restore'u bloklamaz.
 - [ ] En az **bir kez local'de tam restore provası** yapılıp gözle doğrulanır (kaybolan-Shapefile senaryosu: bir shapefile'ı sil → restore → geri geldi).
 - [ ] `README`/`Makefile help`'e kullanım eklenir; `backups/` `.gitignore`'da.
@@ -288,6 +315,10 @@ snapshots: which-env         ## mevcut snapshot'ları listele (manifest özetler
 - Garage full backup / versioning / lifecycle (ayrı iş; P0 sadece warning-only referans kontrolü).
 - PITR / WAL archiving.
 - Otomatik scheduled/nightly backup + retention.
+- **`.env.$ENV` config-rollback'i snapshot'a dahil etmek.** P0 sadece kod (`git_sha`) +
+  veri (Postgres/GeoServer) rollback'ini kapsar. `.env` prod secret'ları içerdiği için
+  ekstra kopyalar disk üzerinde çoğaltmak ayrı bir güvenlik kararı gerektirir — P1'e
+  bırakıldı, README'de not düşülür.
 - Offsite kopyalama otomasyonu (kullanıcı manuel kopyalayacak).
 - GeoServer REST Backup/Restore eklentisi.
 - Raw pg_data physical volume tar.

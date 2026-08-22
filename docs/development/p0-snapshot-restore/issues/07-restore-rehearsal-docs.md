@@ -56,7 +56,7 @@ by eye. Plus the user-facing docs and the final Definition-of-Done checkout for 
       content (§11) — only code (`git_sha`) and data (Postgres/GeoServer) are covered. Document that
       any manual copies of `backups/` off-host contain prod data/dumps and should be encrypted
       (`gpg -c`) before leaving the host.
-- [x] **DoD checkout (§10):** confirm every box — snapshot on dev + prod produces dump+tar+manifest
+- [ ] **DoD checkout (§10) — dev complete, prod outstanding:** confirm every box — snapshot on dev + prod produces dump+tar+manifest
       with passing lightweight verify and downtime only during dump+tar; restore takes a safety
       snapshot, restores both, restarts in order, smoke test passes; manifest carries
       `git_sha` + `geoserver_version` + `server_version`/`postgis_version` and restore warns on
@@ -67,7 +67,12 @@ by eye. Plus the user-facing docs and the final Definition-of-Done checkout for 
       `ENV_FILE`/`COMPOSE_FILE`/quiesced-service-list differ, so the dev rehearsal is the intended
       stand-in per §6.3, but a prod-environment run is still recommended before the first real
       production use.
+      **Therefore this box stays unticked.** Two §10 items are not yet evidenced:
+      (1) `make snapshot ENV=prod` (§10 item 2) has never been run; (2) the measured RTO (§10 item 5)
+      comes from a ~1MB dev dataset, so `RTO<1h` remains an assumption at production data volume.
+      Tick this box — and the §10 checkboxes in `docs/development/p0-snapshot-restore-spec.md`,
+      which are still unticked — only after a prod run supplies that evidence.
 
 **Verify:** the deleted shapefile layer renders again after restore; `make help` and README show the
-commands; the §10 DoD checklist is fully ticked. **Rollback risk:** none (rehearsal + docs; no
-production code paths changed).
+commands; every §10 DoD box is either ticked or carries an explicit note saying what evidence is
+still missing. **Rollback risk:** none (rehearsal + docs; no production code paths changed).

@@ -47,7 +47,7 @@ dump+tar window (services quiesced for that window, `db` stays up).
       are **mandatory**. `server_version`/`postgis_version` mirror the existing `geoserver_version`
       compatibility check pattern and cost one extra `psql` query while `db` is already up (step
       "Metadata while db is up").
-- [x] Success prints `✅ snapshot <id> hazır`. (Verify + suspect handling arrives in 03.)
+- [x] Success prints `✅ snapshot <id> ready`. (Verify + suspect handling arrives in 03.)
 
 **Verify:** `make snapshot ENV=dev` yields `backups/<id>/` containing `postgres.dump`,
 `geoserver_data.tar.gz`, `manifest.json`, `snapshot.log`; services are back up and healthy

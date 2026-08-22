@@ -28,7 +28,7 @@ here so tickets 02–07 only add business logic.
       	@ENV_FILE=$(ENV_FILE) COMPOSE_FILE=$(COMPOSE_FILE) ENV=$(ENV) \
       	  scripts/snapshot.sh create --label "$(LABEL)"
       restore: which-env
-      	@test -n "$(SNAPSHOT)" || { echo "SNAPSHOT=<id> gerekli"; exit 1; }
+      	@test -n "$(SNAPSHOT)" || { echo "SNAPSHOT=<id> required"; exit 1; }
       	@ENV_FILE=$(ENV_FILE) COMPOSE_FILE=$(COMPOSE_FILE) ENV=$(ENV) \
       	  scripts/snapshot.sh restore --id "$(SNAPSHOT)" $(if $(YES),--yes,)
       snapshots: which-env

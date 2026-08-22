@@ -61,6 +61,12 @@ def iter_db_media_references() -> Iterable[GarageReference]:
             )
 
 
+def _default_storage_for_alias(alias: str):
+    from django.core.files.storage import storages
+
+    return storages[alias]
+
+
 def run_reference_check(
     references: Iterable[GarageReference] | None = None,
     *,
@@ -68,9 +74,7 @@ def run_reference_check(
 ) -> GarageReferenceCheckResult:
     """HEAD every reference; never raises -- a lookup error counts as missing."""
     if storage_for_alias is None:
-        from django.core.files.storage import storages
-
-        storage_for_alias = lambda alias: storages[alias]  # noqa: E731
+        storage_for_alias = _default_storage_for_alias
 
     result = GarageReferenceCheckResult()
     refs = list(references) if references is not None else list(iter_db_media_references())
@@ -81,5 +85,8 @@ def run_reference_check(
         except Exception:
             exists = False
         if not exists:
-            result.missing.append(f"{ref.alias}:{ref.path}")
+            # Lead with the label (the DB row that points here) so an operator
+            # reading the report can go straight to the offending record
+            # instead of grepping for the path.
+            result.missing.append(f"{ref.label} -> {ref.alias}:{ref.path}")
     return result

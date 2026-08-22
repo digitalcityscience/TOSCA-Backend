@@ -18,7 +18,7 @@ P0 scope; this is just a heads-up that some media may be absent).
       content-addressed cache keyed off the original — nothing in the DB references a specific
       derivative key and a missing one regenerates transparently on next request, so they're
       intentionally excluded from the "missing" count; only DB-referenced originals are checked.
-- [x] Output `N referans kontrol edildi, M eksik` and list the missing keys.
+- [x] Output `N references checked, M missing` and list the missing keys.
 - [x] **Warning-only:** missing references are reported but the restore is **not** blocked and its
       exit status is unaffected — this check can never turn a successful restore into a failure.
       The command itself never raises (a lookup error counts as missing, not a crash), and

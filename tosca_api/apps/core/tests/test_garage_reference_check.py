@@ -78,7 +78,7 @@ def test_run_reference_check_counts_and_reports_missing():
     result = run_reference_check(refs, storage_for_alias=resolver)
 
     assert result.checked == 3
-    assert result.missing == ["default:orgs/1/missing.png"]
+    assert result.missing == ["b -> default:orgs/1/missing.png"]
     assert result.missing_count == 1
 
 
@@ -91,7 +91,7 @@ def test_run_reference_check_treats_lookup_error_as_missing():
     result = run_reference_check(refs, storage_for_alias=resolver)
 
     assert result.checked == 1
-    assert result.missing == ["default:x.png"]
+    assert result.missing == ["a -> default:x.png"]
 
 
 def test_run_reference_check_never_raises_for_missing_objects():
@@ -143,12 +143,14 @@ def test_command_prints_checked_and_missing_line():
     call_command("check_garage_references", stdout=out)
 
     output = out.getvalue()
-    assert "1 referans kontrol edildi, 1 eksik" in output
+    assert "1 references checked, 1 missing" in output
     assert "default:orgs/1/campaigns/1/misc/a.png" in output
+    # The report leads with the DB row that owns the reference.
+    assert "MediaAsset:" in output
 
 
 def test_command_reports_zero_missing_when_nothing_to_check():
     out = io.StringIO()
     call_command("check_garage_references", stdout=out)
 
-    assert "0 referans kontrol edildi, 0 eksik" in out.getvalue()
+    assert "0 references checked, 0 missing" in out.getvalue()

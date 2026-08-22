@@ -22,7 +22,7 @@ class Command(BaseCommand):
     def handle(self, *args: Any, **options: Any) -> None:
         result = run_reference_check()
         self.stdout.write(
-            f"{result.checked} referans kontrol edildi, {result.missing_count} eksik"
+            f"{result.checked} references checked, {result.missing_count} missing"
         )
         if result.missing:
             self.stdout.write(self.style.WARNING("Missing:"))
