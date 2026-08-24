@@ -24,7 +24,6 @@ from tosca_api.apps.core.media_paths import (
 )
 from tosca_api.apps.core.models import MediaAsset
 from tosca_api.apps.events.models import Event
-from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geostories.models import GeoStory
 from tosca_api.apps.organizations.models import Organization
 
@@ -32,7 +31,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _png_bytes() -> bytes:
-    """Real PNG bytes -- GeoContext validates image blocks via PIL on save."""
+    """Real PNG bytes because feature content validates images on save."""
     import io
 
     from PIL import Image
@@ -89,9 +88,7 @@ def test_canonical_storage_path_for_event():
 
 def test_canonical_storage_path_for_misc_has_no_entity_segment():
     resolved = ResolvedEntity("acme", "camp-1", KIND_MISC, None)
-    assert (
-        canonical_storage_path(resolved, "img.png") == "orgs/acme/campaigns/camp-1/misc/img.png"
-    )
+    assert canonical_storage_path(resolved, "img.png") == "orgs/acme/campaigns/camp-1/misc/img.png"
 
 
 def test_resolve_entity_returns_none_for_unassigned_asset():
@@ -105,7 +102,9 @@ def test_resolve_entity_matches_hero_image(campaign, django_user_model):
     story = GeoStory(title="Story", campaign=campaign, author=author, hero_image_alt="alt")
     story.hero_image.name = "geostories/x/hero/img.png"
     story.save()
-    asset = _make_asset("geostories/x/hero/img.png", campaign=campaign, owner_org=campaign.organization)
+    asset = _make_asset(
+        "geostories/x/hero/img.png", campaign=campaign, owner_org=campaign.organization
+    )
 
     resolved = resolve_entity(asset)
 
@@ -116,27 +115,26 @@ def test_resolve_entity_matches_hero_image(campaign, django_user_model):
     assert resolved.org_slug == campaign.organization.slug
 
 
-def test_resolve_entity_matches_editorjs_content_via_geostory(campaign, django_user_model, tmp_path):
+def test_resolve_entity_matches_editorjs_content_via_geostory(
+    campaign, django_user_model, tmp_path
+):
     author = django_user_model.objects.create_user(username="author2")
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         default_storage.save("geocontext/editorjs/z/pic.png", ContentFile(_png_bytes()))
-        context = GeoContext.objects.create(
-            content={
-                "blocks": [
-                    {
-                        "type": "image",
-                        "data": {
-                            "file": {"url": "https://cdn.test/media/geocontext/editorjs/z/pic.png"},
-                            "caption": "",
-                            "alt": "a pic",
-                        },
-                    }
-                ]
-            },
-            created_by=author,
-        )
+        content = {
+            "blocks": [
+                {
+                    "type": "image",
+                    "data": {
+                        "file": {"url": "https://cdn.test/media/geocontext/editorjs/z/pic.png"},
+                        "caption": "",
+                        "alt": "a pic",
+                    },
+                }
+            ]
+        }
         story = GeoStory.objects.create(
-            title="Story2", campaign=campaign, author=author, context=context
+            title="Story2", campaign=campaign, author=author, content=content
         )
         asset = _make_asset(
             "geocontext/editorjs/z/pic.png", campaign=campaign, owner_org=campaign.organization
@@ -156,21 +154,18 @@ def test_resolve_entity_matches_editorjs_content_via_event(campaign, django_user
     author = django_user_model.objects.create_user(username="author3")
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         default_storage.save("geocontext/editorjs/e/evt.png", ContentFile(_png_bytes()))
-        context = GeoContext.objects.create(
-            content={
-                "blocks": [
-                    {
-                        "type": "image",
-                        "data": {
-                            "file": {"url": "/media/geocontext/editorjs/e/evt.png"},
-                            "caption": "",
-                            "alt": "event pic",
-                        },
-                    }
-                ]
-            },
-            created_by=author,
-        )
+        content = {
+            "blocks": [
+                {
+                    "type": "image",
+                    "data": {
+                        "file": {"url": "/media/geocontext/editorjs/e/evt.png"},
+                        "caption": "",
+                        "alt": "event pic",
+                    },
+                }
+            ]
+        }
         now = timezone.now()
         event = Event.objects.create(
             campaign=campaign,
@@ -178,7 +173,7 @@ def test_resolve_entity_matches_editorjs_content_via_event(campaign, django_user
             start_datetime=now,
             end_datetime=now + timedelta(hours=1),
             organizer=author,
-            context=context,
+            content_override=content,
             location_mode="online",
             online_url="https://example.test",
         )
@@ -197,7 +192,7 @@ def test_resolve_entity_falls_back_to_misc_when_campaign_known_but_no_entity(
     campaign, django_user_model
 ):
     # Campaign linked directly (as PR1 backfill / normal upload flow would
-    # set it) but no GeoStory/Event/GeoContext ties this asset to a
+    # set it) but no story, event, or feedback ties this asset to a
     # specific entity.
     asset = _make_asset(
         "some/unrelated/path.png", campaign=campaign, owner_org=campaign.organization

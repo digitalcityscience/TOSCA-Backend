@@ -22,7 +22,6 @@ from tosca_api.apps.events.models import (
     TaxonomyDimension,
     TaxonomyTerm,
 )
-from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
 User = get_user_model()
@@ -40,7 +39,9 @@ def build_series_kwargs(user, campaign, event_type, **overrides):
         "series_mode": EventSeries.SeriesMode.MANUAL_BATCH,
         "start_date": now.date(),
         "start_time": now.time().replace(tzinfo=None, microsecond=0),
-        "end_time": (now + timedelta(hours=1)).time().replace(
+        "end_time": (now + timedelta(hours=1))
+        .time()
+        .replace(
             tzinfo=None,
             microsecond=0,
         ),
@@ -66,11 +67,8 @@ def layer_ref(user):
 
 
 @pytest.fixture
-def geocontext(user):
-    return GeoContext.objects.create(
-        content={"blocks": [{"type": "paragraph", "data": {"text": "Shared event context"}}]},
-        created_by=user,
-    )
+def shared_content():
+    return {"blocks": [{"type": "paragraph", "data": {"text": "Shared event content"}}]}
 
 
 @pytest.fixture
@@ -463,8 +461,8 @@ def test_exception_requires_series(user, campaign):
 
 
 @pytest.mark.django_db
-def test_standalone_event_without_context_is_valid(user, campaign):
-    """Standalone events remain valid without a context."""
+def test_standalone_event_without_content_override_is_valid(user, campaign):
+    """Standalone events remain valid without a content override."""
     now = timezone.now()
     event = Event.objects.create(
         campaign=campaign,
@@ -473,15 +471,15 @@ def test_standalone_event_without_context_is_valid(user, campaign):
         end_datetime=now + timedelta(hours=1),
         location=Point(10.0, 53.5, srid=4326),
         organizer=user,
-        context=None,
+        content_override=None,
     )
 
-    assert event.context is None
+    assert event.content_override is None
 
 
 @pytest.mark.django_db
-def test_event_without_series_and_without_context_resolves_no_context(user, campaign):
-    """Standalone events without overrides resolve no effective context."""
+def test_event_without_series_and_without_override_resolves_empty_content(user, campaign):
+    """Standalone events without overrides resolve canonical empty content."""
     now = timezone.now()
     event = Event.objects.create(
         campaign=campaign,
@@ -490,15 +488,16 @@ def test_event_without_series_and_without_context_resolves_no_context(user, camp
         end_datetime=now + timedelta(hours=1),
         location=Point(10.0, 53.5, srid=4326),
         organizer=user,
-        context=None,
+        content_override=None,
     )
 
-    assert event.effective_context is None
+    assert event.effective_content == {"blocks": []}
+    assert event.content_source == "empty"
 
 
 @pytest.mark.django_db
-def test_event_resolves_series_default_context(user, campaign, geocontext, event_type):
-    """Series default context is used when an event override is absent."""
+def test_event_resolves_series_default_content(user, campaign, shared_content, event_type):
+    """Series default content is used when an event override is absent."""
     now = timezone.now()
     series = EventSeries.objects.create(
         **build_series_kwargs(
@@ -507,7 +506,7 @@ def test_event_resolves_series_default_context(user, campaign, geocontext, event
             event_type,
             name="Series With Shared Context",
         ),
-        default_context=geocontext,
+        default_content=shared_content,
     )
     event = Event.objects.create(
         campaign=campaign,
@@ -519,20 +518,44 @@ def test_event_resolves_series_default_context(user, campaign, geocontext, event
         organizer=user,
         series=series,
         occurrence_index=1,
-        context=None,
+        content_override=None,
     )
 
-    assert event.effective_context == geocontext
+    assert event.effective_content == shared_content
+    assert event.content_source == "series"
 
 
 @pytest.mark.django_db
-def test_event_override_context_wins_over_series_default(user, campaign, geocontext, event_type):
+def test_event_reports_series_source_when_inherited_content_is_empty(user, campaign, event_type):
+    """Inheritance remains visible even when the series document is empty."""
+    now = timezone.now()
+    series = EventSeries.objects.create(
+        **build_series_kwargs(user, campaign, event_type, name="Empty Content Series")
+    )
+    event = Event.objects.create(
+        campaign=campaign,
+        event_type=event_type,
+        title="Empty Inherited Content",
+        start_datetime=now,
+        end_datetime=now + timedelta(hours=1),
+        location=Point(10.0, 53.5, srid=4326),
+        organizer=user,
+        series=series,
+        occurrence_index=1,
+        content_override=None,
+    )
+
+    assert event.effective_content == {"blocks": []}
+    assert event.content_source == "series"
+
+
+@pytest.mark.django_db
+def test_event_content_override_wins_over_series_default(
+    user, campaign, shared_content, event_type
+):
     """A direct event override takes precedence over the series default."""
     now = timezone.now()
-    override_context = GeoContext.objects.create(
-        content={"blocks": [{"type": "paragraph", "data": {"text": "Occurrence override"}}]},
-        created_by=user,
-    )
+    override_content = {"blocks": [{"type": "paragraph", "data": {"text": "Occurrence override"}}]}
     series = EventSeries.objects.create(
         **build_series_kwargs(
             user,
@@ -540,7 +563,7 @@ def test_event_override_context_wins_over_series_default(user, campaign, geocont
             event_type,
             name="Series With Shared Context",
         ),
-        default_context=geocontext,
+        default_content=shared_content,
     )
     event = Event.objects.create(
         campaign=campaign,
@@ -552,15 +575,18 @@ def test_event_override_context_wins_over_series_default(user, campaign, geocont
         organizer=user,
         series=series,
         occurrence_index=1,
-        context=override_context,
+        content_override=override_content,
     )
 
-    assert event.effective_context == override_context
+    assert event.effective_content == override_content
+    assert event.content_source == "event"
 
 
 @pytest.mark.django_db
-def test_editing_event_override_does_not_change_series_default(user, campaign, geocontext, event_type):
-    """Changing one event override must not mutate the series default context."""
+def test_editing_event_override_does_not_change_series_default(
+    user, campaign, shared_content, event_type
+):
+    """Changing one event override must not mutate the series default content."""
     now = timezone.now()
     series = EventSeries.objects.create(
         **build_series_kwargs(
@@ -569,16 +595,10 @@ def test_editing_event_override_does_not_change_series_default(user, campaign, g
             event_type,
             name="Series With Shared Context",
         ),
-        default_context=geocontext,
+        default_content=shared_content,
     )
-    first_override = GeoContext.objects.create(
-        content={"blocks": [{"type": "paragraph", "data": {"text": "Override A"}}]},
-        created_by=user,
-    )
-    second_override = GeoContext.objects.create(
-        content={"blocks": [{"type": "paragraph", "data": {"text": "Override B"}}]},
-        created_by=user,
-    )
+    first_override = {"blocks": [{"type": "paragraph", "data": {"text": "Override A"}}]}
+    second_override = {"blocks": [{"type": "paragraph", "data": {"text": "Override B"}}]}
     event = Event.objects.create(
         campaign=campaign,
         event_type=event_type,
@@ -589,20 +609,20 @@ def test_editing_event_override_does_not_change_series_default(user, campaign, g
         organizer=user,
         series=series,
         occurrence_index=1,
-        context=first_override,
+        content_override=first_override,
     )
 
-    event.context = second_override
+    event.content_override = second_override
     event.save()
     series.refresh_from_db()
 
-    assert series.default_context == geocontext
-    assert event.effective_context == second_override
+    assert series.default_content == shared_content
+    assert event.effective_content == second_override
 
 
 @pytest.mark.django_db
-def test_published_event_without_any_effective_context_is_valid(user, campaign):
-    """Published events remain valid even when no effective context exists."""
+def test_published_event_without_any_effective_content_is_valid(user, campaign):
+    """Published events remain valid even when effective content is empty."""
     now = timezone.now()
     event = Event.objects.create(
         campaign=campaign,
@@ -612,10 +632,10 @@ def test_published_event_without_any_effective_context_is_valid(user, campaign):
         location=Point(10.0, 53.5, srid=4326),
         organizer=user,
         status=Event.Status.PUBLISHED,
-        context=None,
+        content_override=None,
     )
 
-    assert event.effective_context is None
+    assert event.effective_content == {"blocks": []}
 
 
 @pytest.mark.django_db
@@ -1204,7 +1224,7 @@ def test_taxonomy_dimension_auto_assigns_sort_order():
     against a freshly migrated database (e.g. in CI), and hardcoded values
     of 1/2 do not hold there.
     """
-    baseline = TaxonomyDimension.objects.order_by('-sort_order').first()
+    baseline = TaxonomyDimension.objects.order_by("-sort_order").first()
     baseline_sort_order = baseline.sort_order if baseline else 0
 
     first = TaxonomyDimension.objects.create(code="audience", label="Audience")
@@ -1419,9 +1439,7 @@ def test_event_layer_rejects_unpublished_layer(user, campaign):
         location=Point(10.0, 53.5, srid=4326),
         organizer=user,
     )
-    layer = make_layer(
-        "workspace:evt_draft", user=user, publishing_state="DRAFT"
-    )
+    layer = make_layer("workspace:evt_draft", user=user, publishing_state="DRAFT")
 
     with pytest.raises(ValidationError):
         EventLayer.objects.create(event=event, layer=layer)

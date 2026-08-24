@@ -1,9 +1,9 @@
 """
-Editor.js validation and normalization layer for GeoContext content.
+Editor.js validation and normalization for feature-owned content.
 
 This module owns block-schema validation, deterministic normalization, and
 inline HTML sanitization for Editor.js documents stored in
-``GeoContext.content``. It is intentionally separate from the legacy HTML
+feature content fields. It is intentionally separate from the legacy HTML
 sanitizer in :mod:`tosca_api.apps.core.sanitization`, which serves freeform
 text fields on other models.
 
@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 import nh3
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.files.storage import default_storage
+from django.core.files.storage import InvalidStorageError, default_storage, storages
 
 _ALLOWED_BLOCK_TYPES = {
     "paragraph",
@@ -92,10 +92,10 @@ def validate_and_normalize(value: Any) -> dict:
         return empty_document()
 
     if not isinstance(value, dict):
-        raise ValidationError("GeoContext content must be a JSON object.")
+        raise ValidationError("Content must be a JSON object.")
 
     if "blocks" not in value:
-        raise ValidationError("GeoContext content must contain a 'blocks' array.")
+        raise ValidationError("Content must contain a 'blocks' array.")
 
     blocks = value["blocks"]
     if not isinstance(blocks, list):
@@ -132,8 +132,7 @@ def description_document_from_text(value: str | None) -> dict:
                 "type": "paragraph",
                 "data": {
                     "text": "<br>".join(
-                        html.escape(line, quote=False)
-                        for line in paragraph.split("\n")
+                        html.escape(line, quote=False) for line in paragraph.split("\n")
                     ),
                 },
             }
@@ -229,7 +228,9 @@ def _normalize_list(data: dict, idx: int) -> dict:
         raise ValidationError(f"list block at {idx} requires an 'items' array.")
     meta = data.get("meta", {})
     normalized_meta = _normalize_list_meta(meta, style, idx)
-    normalized_items = [_normalize_list_item(item, idx, path=str(i)) for i, item in enumerate(items)]
+    normalized_items = [
+        _normalize_list_item(item, idx, path=str(i)) for i, item in enumerate(items)
+    ]
     return {"style": style, "items": normalized_items, "meta": normalized_meta}
 
 
@@ -292,9 +293,7 @@ def _normalize_list_item(item: Any, block_idx: int, path: str) -> dict:
                 for i, child in enumerate(nested)
             ],
         }
-    raise ValidationError(
-        f"list item {path} in block {block_idx} must be a string or object."
-    )
+    raise ValidationError(f"list item {path} in block {block_idx} must be a string or object.")
 
 
 def _normalize_quote(data: dict, idx: int) -> dict:
@@ -336,33 +335,63 @@ def _media_url_path_prefix() -> str:
     return path
 
 
-def _resolve_storage_path(url: str, idx: int) -> str:
-    """Reject unsafe / non-storage URLs, return the storage-relative path."""
+def _s3_storage_and_key(parsed) -> tuple[Any, str] | None:
+    """Match a parsed URL against a configured S3 storage alias' bucket.
+
+    Under the S3 backend, ``storage.url(name)`` returns a presigned URL
+    shaped ``{endpoint}/{bucket}/{location}/{name}?{signature}`` (path-style
+    addressing) rather than a ``MEDIA_URL``-relative path, and the object may
+    live in any of the three buckets (default/media_public/media_archive)
+    depending on the owning entity's publication state. Recover ``(storage,
+    name)`` by checking each configured alias' bucket/location against the
+    URL's path.
+    """
+    for alias in ("default", "media_public", "media_archive"):
+        try:
+            storage = storages[alias]
+        except InvalidStorageError:
+            continue
+        bucket_name = getattr(storage, "bucket_name", None)
+        if not bucket_name:
+            continue
+        prefix = f"/{bucket_name}/"
+        if not parsed.path.startswith(prefix):
+            continue
+        key = parsed.path[len(prefix) :]
+        location = (getattr(storage, "location", "") or "").strip("/")
+        if location and key.startswith(f"{location}/"):
+            key = key[len(location) + 1 :]
+        return storage, key
+    return None
+
+
+def _resolve_storage(url: str, idx: int) -> tuple[Any, str]:
+    """Reject unsafe / non-storage URLs, return the (storage, storage-relative path)."""
     parsed = urlparse(url)
     if parsed.scheme and parsed.scheme not in ("http", "https"):
-        raise ValidationError(
-            f"image block at {idx} rejects URL scheme '{parsed.scheme}:'."
-        )
+        raise ValidationError(f"image block at {idx} rejects URL scheme '{parsed.scheme}:'.")
+
+    matched = _s3_storage_and_key(parsed)
+    if matched is not None:
+        return matched
+
     media_url = _media_url_path_prefix()
     path = parsed.path
     if not path.startswith(media_url):
         raise ValidationError(
-            f"image block at {idx} 'data.file.url' must be a storage URL "
-            f"under '{media_url}'."
+            f"image block at {idx} 'data.file.url' must be a storage URL under '{media_url}'."
         )
-    return path[len(media_url):]
+    return default_storage, path[len(media_url) :]
 
 
-def _read_storage_image_metadata(storage_path: str, idx: int) -> dict:
+def _read_storage_image_metadata(storage: Any, storage_path: str, idx: int) -> dict:
     """Open the file via Django storage and derive (mime, width, height)."""
-    if not default_storage.exists(storage_path):
-        raise ValidationError(
-            f"image block at {idx} references missing file '{storage_path}'."
-        )
+    if not storage.exists(storage_path):
+        raise ValidationError(f"image block at {idx} references missing file '{storage_path}'.")
     from PIL import Image, UnidentifiedImageError
 
     try:
-        with default_storage.open(storage_path, "rb") as fh:
+        with storage.open(storage_path, "rb") as fh:
             with Image.open(fh) as img:
                 fmt = (img.format or "").upper()
                 width, height = img.size
@@ -382,33 +411,25 @@ def _read_storage_image_metadata(storage_path: str, idx: int) -> dict:
 def _normalize_image(data: dict, idx: int) -> dict:
     file_in = data.get("file")
     if not isinstance(file_in, dict):
-        raise ValidationError(
-            f"image block at {idx} requires a 'data.file' object."
-        )
+        raise ValidationError(f"image block at {idx} requires a 'data.file' object.")
 
     url = file_in.get("url")
     if not isinstance(url, str) or not url.strip():
-        raise ValidationError(
-            f"image block at {idx} requires a non-empty 'data.file.url'."
-        )
+        raise ValidationError(f"image block at {idx} requires a non-empty 'data.file.url'.")
 
-    storage_path = _resolve_storage_path(url, idx)
-    derived = _read_storage_image_metadata(storage_path, idx)
+    storage, storage_path = _resolve_storage(url, idx)
+    derived = _read_storage_image_metadata(storage, storage_path, idx)
 
     caption_raw = data.get("caption", "")
     if not isinstance(caption_raw, str):
-        raise ValidationError(
-            f"image block at {idx} 'data.caption' must be a string."
-        )
+        raise ValidationError(f"image block at {idx} 'data.caption' must be a string.")
 
     # Alt is required for accessibility, but the upstream @editorjs/image
     # tool exposes only a caption field. Fall back to the caption (stripped
     # of all tags) when an explicit data.alt is not provided.
     alt_raw = data.get("alt")
     if alt_raw is not None and not isinstance(alt_raw, str):
-        raise ValidationError(
-            f"image block at {idx} 'data.alt' must be a string when set."
-        )
+        raise ValidationError(f"image block at {idx} 'data.alt' must be a string when set.")
     alt_source = alt_raw if alt_raw else caption_raw
     alt_clean = nh3.clean(alt_source or "", tags=set(), attributes={}).strip()
     if not alt_clean:

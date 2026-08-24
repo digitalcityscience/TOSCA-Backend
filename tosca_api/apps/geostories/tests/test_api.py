@@ -5,7 +5,6 @@ from rest_framework.test import APIClient
 from tosca_api.apps.authentication.role_sync import AuthClaims
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.featurelinks.models import FeatureLink
-from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geostories.models import GeoStory, GeoStoryLayer
 from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
@@ -35,9 +34,7 @@ def _authenticate_org_writer(api_client, user, *roles, org="dcs"):
     """
     level = roles[0].rsplit("_", 1)[-1] if roles else None
     if level:
-        user._auth_claims = AuthClaims(
-            org_roles={org: level}, default_org=org, authoritative=True
-        )
+        user._auth_claims = AuthClaims(org_roles={org: level}, default_org=org, authoritative=True)
     api_client.force_authenticate(user=user, token=_org_token(*roles, org=org))
 
 
@@ -57,15 +54,12 @@ def campaign(user):
 
 
 @pytest.fixture
-def geocontext(user):
-    return GeoContext.objects.create(
-        content={
-            "blocks": [
-                {"type": "paragraph", "data": {"text": "This is the story content."}},
-            ]
-        },
-        created_by=user,
-    )
+def story_content():
+    return {
+        "blocks": [
+            {"type": "paragraph", "data": {"text": "This is the story content."}},
+        ]
+    }
 
 
 @pytest.fixture
@@ -74,15 +68,15 @@ def layer_ref(user):
 
 
 @pytest.fixture
-def geostory(user, campaign, geocontext):
-    """Create a published story with context."""
+def geostory(user, campaign, story_content):
+    """Create a published story with feature-owned content."""
     return GeoStory.objects.create(
         title="Existing Story",
         summary="Story summary",
         status=GeoStory.Status.PUBLISHED,
         campaign=campaign,
         author=user,
-        context=geocontext,
+        content=story_content,
     )
 
 
@@ -149,10 +143,10 @@ def test_geostory_list_staff_sees_all(api_client, staff_user, geostory, draft_st
     _authenticate_org_writer(api_client, staff_user, "ROLE_DCS_WRITER")
     response = api_client.get("/api/v1/stories/")
     assert response.status_code == 200
-    
+
     results = response.data["results"]
     titles = [r["title"] for r in results]
-    
+
     # Staff should see both
     assert "Existing Story" in titles
     assert "Draft Story" in titles
@@ -204,9 +198,9 @@ def test_geostory_list_payload_fields(api_client, user, geostory):
     _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get("/api/v1/stories/")
     assert response.status_code == 200
-    
+
     story_data = response.data["results"][0]
-    
+
     # Required fields in list
     assert "id" in story_data
     assert "title" in story_data
@@ -217,7 +211,7 @@ def test_geostory_list_payload_fields(api_client, user, geostory):
     assert "created_at" in story_data
 
     # These should NOT be in list (detail only)
-    assert "context" not in story_data
+    assert "content" not in story_data
     assert "layers" not in story_data
     assert "feature_links" not in story_data
 
@@ -251,22 +245,19 @@ def test_geostory_filter_by_campaign(api_client, user, campaign):
 
 
 @pytest.mark.django_db
-def test_geostory_detail_has_nested_context(api_client, user, geostory):
-    """Test that detail view returns nested context object (not just UUID)."""
+def test_geostory_detail_has_owned_content(api_client, user, geostory):
+    """Test that detail returns the story content directly."""
     _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get(f"/api/v1/stories/{geostory.id}/")
     assert response.status_code == 200
-    
-    context = response.data["context"]
-    assert context is not None
-    assert "content" in context
-    assert isinstance(context["content"], dict)
-    assert context["content"] == {
+
+    assert isinstance(response.data["content"], dict)
+    assert response.data["content"] == {
         "blocks": [
             {"type": "paragraph", "data": {"text": "This is the story content."}},
         ]
     }
-    assert "content_type" not in context
+    assert "context" not in response.data
 
 
 @pytest.mark.django_db
@@ -274,11 +265,11 @@ def test_geostory_detail_has_layers(api_client, user, geostory, layer_ref):
     """Test that detail view returns layers with display_order."""
     # Add layer to story
     GeoStoryLayer.objects.create(geostory=geostory, layer=layer_ref, display_order=1)
-    
+
     _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get(f"/api/v1/stories/{geostory.id}/")
     assert response.status_code == 200
-    
+
     layers = response.data["layers"]
     assert len(layers) == 1
     layer_payload = layers[0]["layer"]
@@ -307,9 +298,7 @@ def test_geostory_detail_layers_no_n_plus_one(api_client, user, geostory):
 
     for i in range(2):
         layer = make_layer(f"workspace:n1_a_{i}", user=user)
-        GeoStoryLayer.objects.create(
-            geostory=geostory, layer=layer, display_order=i
-        )
+        GeoStoryLayer.objects.create(geostory=geostory, layer=layer, display_order=i)
 
     with CaptureQueriesContext(connection) as ctx_2:
         response = api_client.get(url)
@@ -318,9 +307,7 @@ def test_geostory_detail_layers_no_n_plus_one(api_client, user, geostory):
 
     for i in range(2, 8):
         layer = make_layer(f"workspace:n1_a_{i}", user=user)
-        GeoStoryLayer.objects.create(
-            geostory=geostory, layer=layer, display_order=i
-        )
+        GeoStoryLayer.objects.create(geostory=geostory, layer=layer, display_order=i)
 
     with CaptureQueriesContext(connection) as ctx_8:
         response = api_client.get(url)
@@ -417,7 +404,7 @@ def test_geostory_detail_has_feature_links(api_client, user, geostory, campaign)
         author=user,
         status=GeoStory.Status.PUBLISHED,
     )
-    
+
     # Create a feature link
     FeatureLink.objects.create(
         campaign=campaign,
@@ -426,11 +413,11 @@ def test_geostory_detail_has_feature_links(api_client, user, geostory, campaign)
         link_type=FeatureLink.LinkType.READ_MORE,
         created_by=user,
     )
-    
+
     _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get(f"/api/v1/stories/{geostory.id}/")
     assert response.status_code == 200
-    
+
     links = response.data["feature_links"]
     assert len(links) == 1
     assert links[0]["target_object_id"] == str(target_story.id)
@@ -444,16 +431,16 @@ def test_geostory_detail_full_payload(api_client, user, geostory):
     _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.get(f"/api/v1/stories/{geostory.id}/")
     assert response.status_code == 200
-    
+
     data = response.data
-    
+
     # All required fields
     assert "id" in data
     assert "title" in data
     assert "summary" in data
     assert "status" in data
     assert "campaign" in data
-    assert "context" in data
+    assert "content" in data
     assert "layers" in data
     assert "feature_links" in data
     assert "created_at" in data
@@ -616,9 +603,7 @@ def test_geostory_create_rejects_disallowed_mime(api_client, user, campaign):
 
     buf = io.BytesIO()
     Image.new("RGB", (1200, 800)).save(buf, format="GIF")
-    upload = SimpleUploadedFile(
-        "fake.png", buf.getvalue(), content_type="image/png"
-    )
+    upload = SimpleUploadedFile("fake.png", buf.getvalue(), content_type="image/png")
 
     _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
@@ -688,9 +673,7 @@ def test_geostory_patch_replaces_hero_image(api_client, user, campaign):
 
     buf2 = io.BytesIO()
     Image.new("RGB", (1600, 900), color=(9, 8, 7)).save(buf2, format="PNG")
-    replacement = SimpleUploadedFile(
-        "b.png", buf2.getvalue(), content_type="image/png"
-    )
+    replacement = SimpleUploadedFile("b.png", buf2.getvalue(), content_type="image/png")
     patch_response = api_client.patch(
         f"/api/v1/stories/{story_id}/",
         {"hero_image": replacement, "hero_image_alt": "second"},

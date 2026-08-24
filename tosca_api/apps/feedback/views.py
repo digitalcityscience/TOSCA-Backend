@@ -72,7 +72,7 @@ class GeoFeedbackViewSet(viewsets.ModelViewSet):
         qs = super().get_queryset()
 
         if self.action == "retrieve":
-            qs = qs.select_related("context", "campaign", "created_by", "custom_form")
+            qs = qs.select_related("campaign", "created_by", "custom_form")
             qs = qs.prefetch_related(
                 "feedbacklayer_set__layer__workspace"
             )

@@ -76,7 +76,7 @@ EVENT_TEMPLATE_FIELDS = frozenset({
     "external_url",
     "status",
     "visibility",
-    "context",
+    "content_override",
 })
 
 WEEKDAY_TO_INDEX = {

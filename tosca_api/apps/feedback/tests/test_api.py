@@ -66,6 +66,7 @@ def feedback(admin_user, campaign, custom_form):
         allow_drawings=True,
         status=GeoFeedback.Status.PUBLISHED,
         visibility=GeoFeedback.Visibility.PUBLIC,
+        content={"blocks": [{"type": "paragraph", "data": {"text": "Tell us what you think."}}]},
     )
 
 
@@ -82,6 +83,7 @@ def feedback_no_drawings(admin_user, campaign):
         status=GeoFeedback.Status.PUBLISHED,
         visibility=GeoFeedback.Visibility.PUBLIC,
     )
+
 
 @pytest.fixture
 def feedback_draft_private(admin_user, campaign):
@@ -134,6 +136,8 @@ class TestGeoFeedbackAPI:
         assert resp.status_code == status.HTTP_200_OK
         assert resp.data["custom_form_slug"] == "test-form"
         assert resp.data["rating_enabled"] is True
+        assert resp.data["content"]["blocks"][0]["data"]["text"] == ("Tell us what you think.")
+        assert "context" not in resp.data
 
     def test_anonymous_create_fails(self, api_client, campaign):
         """Anonymous user cannot create feedback."""
@@ -154,10 +158,13 @@ class TestGeoFeedbackAPI:
             "campaign": str(campaign.id),
             "rating_enabled": True,
             "form_enabled": False,
+            "content": {"blocks": [{"type": "paragraph", "data": {"text": "Feedback body"}}]},
         }
-        resp = admin_client.post(url, data)
+        resp = admin_client.post(url, data, format="json")
         assert resp.status_code == status.HTTP_201_CREATED
         assert resp.data["title"] == "New Feedback"
+        created = GeoFeedback.objects.get(pk=resp.data["id"])
+        assert created.content == data["content"]
 
 
 @pytest.mark.django_db
@@ -168,12 +175,7 @@ class TestFeedbackSubmissionAPI:
         """Anonymous submit with both rating and form matches criteria."""
         url = f"/api/v1/feedback/{feedback.id}/submit/"
         resp = api_client.post(
-            url,
-            {
-                "rating": 5,
-                "form_data": {"test_field": "test_answer"}
-            },
-            format="json"
+            url, {"rating": 5, "form_data": {"test_field": "test_answer"}}, format="json"
         )
         assert resp.status_code == status.HTTP_201_CREATED
         assert resp.data["rating"] == 5
@@ -183,33 +185,21 @@ class TestFeedbackSubmissionAPI:
     def test_submit_fails_when_missing_required_rating(self, api_client, feedback):
         """Should fail if rating_enabled=True but rating is missing."""
         url = f"/api/v1/feedback/{feedback.id}/submit/"
-        resp = api_client.post(
-            url,
-            {"form_data": {"comment": "Hi"}},
-            format="json"
-        )
+        resp = api_client.post(url, {"form_data": {"comment": "Hi"}}, format="json")
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
         assert "rating" in resp.data
 
     def test_submit_fails_when_missing_required_form(self, api_client, feedback):
         """Should fail if form_enabled=True but form_data is missing."""
         url = f"/api/v1/feedback/{feedback.id}/submit/"
-        resp = api_client.post(
-            url,
-            {"rating": 3},
-            format="json"
-        )
+        resp = api_client.post(url, {"rating": 3}, format="json")
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
         assert "form_data" in resp.data
 
     def test_submit_authenticated_user(self, user_client, regular_user, feedback):
         """Authenticated user's ID should be saved as submitted_by."""
         url = f"/api/v1/feedback/{feedback.id}/submit/"
-        resp = user_client.post(
-            url,
-            {"rating": 4, "form_data": {"q": "a"}},
-            format="json"
-        )
+        resp = user_client.post(url, {"rating": 4, "form_data": {"q": "a"}}, format="json")
         assert resp.status_code == status.HTTP_201_CREATED
         assert resp.data["submitted_by"] == regular_user.id
 
@@ -221,12 +211,9 @@ class TestFeedbackSubmissionAPI:
             {
                 "rating": 5,
                 "form_data": {"any": "val"},
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [10.0, 53.5]
-                }
+                "geometry": {"type": "Point", "coordinates": [10.0, 53.5]},
             },
-            format="json"
+            format="json",
         )
         assert resp.status_code == status.HTTP_201_CREATED
         assert "geometry" in resp.data
@@ -236,14 +223,8 @@ class TestFeedbackSubmissionAPI:
         url = f"/api/v1/feedback/{feedback_no_drawings.id}/submit/"
         resp = api_client.post(
             url,
-            {
-                "rating": 4,
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [10.0, 53.5]
-                }
-            },
-            format="json"
+            {"rating": 4, "geometry": {"type": "Point", "coordinates": [10.0, 53.5]}},
+            format="json",
         )
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
         assert "geometry" in resp.data
@@ -258,9 +239,7 @@ class TestFeedbackDetailLayers:
         from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
         layer = make_layer("workspace:fb_detail_layer", user=admin_user)
-        FeedbackLayer.objects.create(
-            feedback=feedback, layer=layer, display_order=1
-        )
+        FeedbackLayer.objects.create(feedback=feedback, layer=layer, display_order=1)
 
         resp = api_client.get(f"/api/v1/feedback/{feedback.id}/")
         assert resp.status_code == 200
@@ -299,18 +278,14 @@ class TestFeedbackLayerWrites:
         assert resp.status_code == 201, resp.data
 
         fb = GeoFeedback.objects.get(id=resp.data["id"])
-        rows = list(
-            FeedbackLayer.objects.filter(feedback=fb).order_by("display_order")
-        )
+        rows = list(FeedbackLayer.objects.filter(feedback=fb).order_by("display_order"))
         assert [r.layer_id for r in rows] == [l1.id, l2.id]
         assert [r.display_order for r in rows] == [0, 1]
 
     def test_create_rejects_non_public_layer(self, admin_client, admin_user, campaign):
         from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
-        private = make_layer(
-            "workspace:fb_w_private", user=admin_user, is_public=False
-        )
+        private = make_layer("workspace:fb_w_private", user=admin_user, is_public=False)
         payload = {
             "title": "FB",
             "campaign": str(campaign.id),

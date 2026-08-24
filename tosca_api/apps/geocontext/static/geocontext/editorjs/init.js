@@ -222,7 +222,7 @@
         panel.querySelector(".geocontext-editorjs-library-close")
             .addEventListener("click", close);
 
-        fetch("/api/v1/geocontext/editorjs/media/", {
+        fetch("/api/v1/content/editorjs/media/", {
             credentials: "same-origin",
             headers: { "X-CSRFToken": getCSRFToken() },
         })
@@ -312,8 +312,8 @@
                 class: ImageTool,
                 config: {
                     endpoints: {
-                        byFile: "/api/v1/geocontext/editorjs/upload-by-file/",
-                        byUrl: "/api/v1/geocontext/editorjs/upload-by-url/",
+                        byFile: "/api/v1/content/editorjs/upload-by-file/",
+                        byUrl: "/api/v1/content/editorjs/upload-by-url/",
                     },
                     field: "image",
                     additionalRequestHeaders: {

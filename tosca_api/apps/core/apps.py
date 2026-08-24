@@ -7,4 +7,5 @@ class CoreConfig(AppConfig):
 
     def ready(self):
         from . import checks  # noqa: F401
+        from . import content_asset_signals  # noqa: F401
         from . import media_lifecycle_signals  # noqa: F401

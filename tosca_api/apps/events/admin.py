@@ -51,14 +51,9 @@ def build_admin_taxonomy_form_class(
 
 def taxonomy_dimension_fieldset_classes(dimensions):
     classes = ["events-taxonomy-section"]
-    profile_keys = {
-        dimension.profile_key
-        for dimension in dimensions
-        if dimension.profile_key
-    }
+    profile_keys = {dimension.profile_key for dimension in dimensions if dimension.profile_key}
     classes.extend(
-        f"events-taxonomy-{profile_key.replace('_', '-')}"
-        for profile_key in sorted(profile_keys)
+        f"events-taxonomy-{profile_key.replace('_', '-')}" for profile_key in sorted(profile_keys)
     )
     if any(not dimension.profile_key for dimension in dimensions):
         classes.append("events-taxonomy-unscoped")
@@ -105,6 +100,7 @@ class EventTypeAdmin(PlatformOnlyChangeDeleteMixin, admin.ModelAdmin):
     fully designed yet. This will be revisited once product decides whether
     taxonomy data is platform-managed, org-owned, or shared-with-limited-
     self-service-curation -- see epic-11-canonical.md §10a."""
+
     list_display = ["label", "code", "profile_mode", "profile_key", "is_active"]
     list_filter = ["profile_mode", "is_active"]
     search_fields = ["label", "code", "profile_key"]
@@ -128,7 +124,9 @@ class EventTypeAdmin(PlatformOnlyChangeDeleteMixin, admin.ModelAdmin):
 
 
 @admin.register(TaxonomyDimension)
-class TaxonomyDimensionAdmin(PlatformOnlyChangeDeleteMixin, SortOrderHelpTextMixin, admin.ModelAdmin):
+class TaxonomyDimensionAdmin(
+    PlatformOnlyChangeDeleteMixin, SortOrderHelpTextMixin, admin.ModelAdmin
+):
     """Shared reference data, no owning org -- change/delete are
     superuser-only (security tickets ticket 05).
 
@@ -136,6 +134,7 @@ class TaxonomyDimensionAdmin(PlatformOnlyChangeDeleteMixin, SortOrderHelpTextMix
     fully designed yet. This will be revisited once product decides whether
     taxonomy data is platform-managed, org-owned, or shared-with-limited-
     self-service-curation -- see epic-11-canonical.md §10a."""
+
     form = TaxonomyDimensionAdminForm
     list_display = [
         "label",
@@ -178,6 +177,7 @@ class TaxonomyTermAdmin(PlatformOnlyChangeDeleteMixin, SortOrderHelpTextMixin, a
     fully designed yet. This will be revisited once product decides whether
     taxonomy data is platform-managed, org-owned, or shared-with-limited-
     self-service-curation -- see epic-11-canonical.md §10a."""
+
     list_display = ["label", "code", "dimension", "parent", "is_active", "sort_order"]
     list_filter = ["dimension", "is_active"]
     search_fields = ["label", "code", "description", "dimension__label", "parent__label"]
@@ -217,7 +217,7 @@ class EventSeriesAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     ]
     search_fields = ["name"]
     readonly_fields = ["id", "created_by", "created_at", "updated_at"]
-    autocomplete_fields = ["campaign", "default_context"]
+    autocomplete_fields = ["campaign"]
     inlines = [EventSeriesDateInline]
 
     def get_form(self, request, obj=None, change=False, **kwargs):
@@ -246,8 +246,7 @@ class EventSeriesAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
             include_all_profile_dimensions=include_all_profile_dimensions,
         )
         taxonomy_fields = tuple(
-            taxonomy_dimension_field_name(dimension)
-            for dimension in taxonomy_dimensions
+            taxonomy_dimension_field_name(dimension) for dimension in taxonomy_dimensions
         )
         fieldsets = [
             (
@@ -257,9 +256,17 @@ class EventSeriesAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
                         "campaign",
                         "event_type",
                         "name",
-                        "default_context",
                         "series_mode",
                     )
+                },
+            ),
+            (
+                "Series default content",
+                {
+                    "description": (
+                        "Occurrences inherit this content unless they define an override."
+                    ),
+                    "fields": ("default_content",),
                 },
             ),
             (
@@ -369,11 +376,12 @@ class EventSeriesAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
                 },
             ),
             (
-                "Content & Taxonomy",
+                "Occurrence content & taxonomy",
                 {
                     "classes": taxonomy_dimension_fieldset_classes(taxonomy_dimensions),
                     "fields": (
-                        "context",
+                        "inherit_series_content",
+                        "content_override",
                         *taxonomy_fields,
                     ),
                 },
@@ -441,7 +449,14 @@ class EventAdmin(OrgScopedAdminMixin, GISModelAdmin):
         "visibility",
         "organizer",
     ]
-    list_filter = ["campaign", "event_type", "location_mode", "status", "visibility", "start_datetime"]
+    list_filter = [
+        "campaign",
+        "event_type",
+        "location_mode",
+        "status",
+        "visibility",
+        "start_datetime",
+    ]
     search_fields = ["title", "summary"]
     readonly_fields = [
         "id",
@@ -451,7 +466,7 @@ class EventAdmin(OrgScopedAdminMixin, GISModelAdmin):
         "created_at",
         "updated_at",
     ]
-    autocomplete_fields = ["campaign", "organizer", "context", "series"]
+    autocomplete_fields = ["campaign", "organizer", "series"]
     inlines = [EventLayerInline]
     date_hierarchy = "start_datetime"
 
@@ -474,8 +489,7 @@ class EventAdmin(OrgScopedAdminMixin, GISModelAdmin):
             include_all_profile_dimensions=include_all_profile_dimensions,
         )
         taxonomy_fields = tuple(
-            taxonomy_dimension_field_name(dimension)
-            for dimension in taxonomy_dimensions
+            taxonomy_dimension_field_name(dimension) for dimension in taxonomy_dimensions
         )
         fieldsets = [
             (
@@ -560,7 +574,10 @@ class EventAdmin(OrgScopedAdminMixin, GISModelAdmin):
                     ),
                 },
             ),
-            ("Content", {"fields": ("context",)}),
+            (
+                "Event content",
+                {"fields": ("inherit_series_content", "content_override")},
+            ),
             ("Settings", {"fields": ("status", "visibility", "organizer")}),
         ]
         if taxonomy_fields:
@@ -587,11 +604,15 @@ class EventAdmin(OrgScopedAdminMixin, GISModelAdmin):
         return fieldsets
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related(
-            "campaign",
-            "event_type",
-            "series",
-            "organizer",
+        return (
+            super()
+            .get_queryset(request)
+            .select_related(
+                "campaign",
+                "event_type",
+                "series",
+                "organizer",
+            )
         )
 
     def save_model(self, request, obj, form, change):

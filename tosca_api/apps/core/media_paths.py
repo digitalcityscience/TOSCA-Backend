@@ -10,11 +10,12 @@ buckets by prefix alone, without a database join per object:
 
     orgs/<org-slug>/campaigns/<campaign-id>/stories/<story-id>/<filename>
     orgs/<org-slug>/campaigns/<campaign-id>/events/<event-id>/<filename>
+    orgs/<org-slug>/campaigns/<campaign-id>/feedback/<feedback-id>/<filename>
     orgs/<org-slug>/campaigns/<campaign-id>/misc/<filename>
 
 ``misc/`` is the fallback for assets that resolve to a Campaign (via PR1's
-``MediaAsset.campaign``) but not to one specific GeoStory/Event -- e.g. an
-EditorJS image embedded in an ``EventSeries.default_context`` rather than a
+``MediaAsset.campaign``) but not to one specific feature -- e.g. an
+EditorJS image embedded in an ``EventSeries.default_content`` rather than a
 single Event. Assets with no resolvable campaign (``MediaAsset.campaign is
 None``, a real and expected state per PR1 §6.1) have no canonical path at
 all: they are left at their current location, unassigned/orphan uploads have
@@ -34,11 +35,13 @@ from typing import Iterator
 # priority order (checked top to bottom by ``resolve_entity``).
 KIND_STORY = "story"
 KIND_EVENT = "event"
+KIND_FEEDBACK = "feedback"
 KIND_MISC = "misc"
 
 _ENTITY_SEGMENT = {
     KIND_STORY: "stories",
     KIND_EVENT: "events",
+    KIND_FEEDBACK: "feedback",
     KIND_MISC: "misc",
 }
 
@@ -49,8 +52,8 @@ class ResolvedEntity:
 
     org_slug: str
     campaign_id: str
-    kind: str  # KIND_STORY | KIND_EVENT | KIND_MISC
-    entity_id: str | None  # story/event id, or None for KIND_MISC
+    kind: str  # KIND_STORY | KIND_EVENT | KIND_FEEDBACK | KIND_MISC
+    entity_id: str | None  # feature id, or None for KIND_MISC
 
 
 def canonical_storage_path(resolved: ResolvedEntity, filename: str) -> str:
@@ -100,9 +103,8 @@ def resolve_entity(asset) -> ResolvedEntity | None:
 
     1. **Hero image** -- a ``GeoStory.hero_image`` matching the asset's
        current ``storage_path`` exactly -> ``KIND_STORY``.
-    2. **EditorJS content reference** -- the asset's path is embedded in a
-       ``GeoContext.content`` block that belongs to a GeoStory or Event ->
-       ``KIND_STORY``/``KIND_EVENT`` respectively.
+    2. **EditorJS content reference** -- the asset's path is embedded directly
+       in a story, event override, or feedback feature.
     3. **Campaign fallback** -- campaign is known but no single entity is ->
        ``KIND_MISC``.
     """
@@ -111,7 +113,7 @@ def resolve_entity(asset) -> ResolvedEntity | None:
 
     from tosca_api.apps.geostories.models import GeoStory
     from tosca_api.apps.events.models import Event
-    from tosca_api.apps.geocontext.models import GeoContext
+    from tosca_api.apps.feedback.models import GeoFeedback
 
     org_slug = asset.campaign.organization.slug
     campaign_id = str(asset.campaign_id)
@@ -120,21 +122,32 @@ def resolve_entity(asset) -> ResolvedEntity | None:
     if story is not None:
         return ResolvedEntity(org_slug, campaign_id, KIND_STORY, str(story.id))
 
-    for context in GeoContext.objects.only("id", "content").iterator():
-        if not any(
-            _url_references_storage_path(url, asset.storage_path)
-            for url in _iter_storage_paths_in_content(context.content)
-        ):
-            continue
-
-        story = GeoStory.objects.filter(context_id=context.id).first()
-        if story is not None:
-            return ResolvedEntity(org_slug, campaign_id, KIND_STORY, str(story.id))
-
-        event = Event.objects.filter(context_id=context.id).first()
-        if event is not None:
-            return ResolvedEntity(org_slug, campaign_id, KIND_EVENT, str(event.id))
-
-        break  # matched a GeoContext but not to a story/event -> fall through to misc
+    owned_sources = (
+        (
+            KIND_STORY,
+            GeoStory.objects.filter(campaign_id=asset.campaign_id).only("id", "content"),
+            "content",
+        ),
+        (
+            KIND_EVENT,
+            Event.objects.filter(
+                campaign_id=asset.campaign_id,
+                content_override__isnull=False,
+            ).only("id", "content_override"),
+            "content_override",
+        ),
+        (
+            KIND_FEEDBACK,
+            GeoFeedback.objects.filter(campaign_id=asset.campaign_id).only("id", "content"),
+            "content",
+        ),
+    )
+    for kind, queryset, field_name in owned_sources:
+        for feature in queryset.iterator():
+            if any(
+                _url_references_storage_path(url, asset.storage_path)
+                for url in _iter_storage_paths_in_content(getattr(feature, field_name))
+            ):
+                return ResolvedEntity(org_slug, campaign_id, kind, str(feature.id))
 
     return ResolvedEntity(org_slug, campaign_id, KIND_MISC, None)

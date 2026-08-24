@@ -1,10 +1,19 @@
+from django import forms
 from django.contrib import admin
 from django.utils.html import format_html
 
 from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin
+from tosca_api.apps.geocontext.widgets import EditorJsWidget
 
 from .forms import GeoStoryLayerFormSet
 from .models import GeoStory, GeoStoryLayer
+
+
+class GeoStoryAdminForm(forms.ModelForm):
+    class Meta:
+        model = GeoStory
+        fields = "__all__"
+        widgets = {"content": EditorJsWidget()}
 
 
 class GeoStoryLayerInline(admin.TabularInline):
@@ -24,11 +33,13 @@ class GeoStoryAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     list_display = ("title", "hero_image_thumbnail", "status", "campaign", "author", "created_at")
     list_filter = ("status", "created_at", "campaign")
     search_fields = ("title", "summary")
-    autocomplete_fields = ["campaign", "author", "context"]
+    form = GeoStoryAdminForm
+    autocomplete_fields = ["campaign", "author"]
     inlines = [GeoStoryLayerInline]
     readonly_fields = ("hero_image_preview",)
     fieldsets = (
-        (None, {"fields": ("title", "summary", "status", "campaign", "author", "context")}),
+        (None, {"fields": ("title", "summary", "status", "campaign", "author")}),
+        ("Story", {"fields": ("content",)}),
         (
             "Hero image",
             {

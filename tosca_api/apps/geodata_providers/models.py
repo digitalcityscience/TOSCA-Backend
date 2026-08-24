@@ -1576,12 +1576,13 @@ class LayerGroupMember(TimeStampedModel):
         self.full_clean()
         super().save(*args, **kwargs)
 
-    def _next_source_alias(self) -> str:
+    def _next_source_alias(self, *, existing_aliases: set[str] | None = None) -> str:
         """Return a stable, unique manifest source key derived from the layer name."""
         base_alias = self.layer.name[:100]
-        existing_aliases = set(
-            self.group.members.exclude(pk=self.pk).values_list("source_alias", flat=True)
-        )
+        if existing_aliases is None:
+            existing_aliases = set(
+                self.group.members.exclude(pk=self.pk).values_list("source_alias", flat=True)
+            )
         if base_alias not in existing_aliases:
             return base_alias
         suffix = 2

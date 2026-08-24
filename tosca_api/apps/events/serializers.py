@@ -9,8 +9,8 @@ from django.db import transaction
 from rest_framework import serializers
 from rest_framework_gis.serializers import GeoFeatureModelSerializer
 
+from tosca_api.apps.core.editorjs import validate_and_normalize
 from tosca_api.apps.featurelinks.models import FeatureLink
-from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geodata_providers.api.serializers import (
     LayerSummarySerializer,
     LayerUUIDListField,
@@ -48,7 +48,7 @@ EVENT_SERIES_FIELDS = {
     "campaign",
     "event_type",
     "name",
-    "default_context",
+    "default_content",
     "series_mode",
     "recurrence_type",
     "start_date",
@@ -96,15 +96,6 @@ EXCEPTION_TRIGGER_FIELDS = {
 # =============================================================================
 # Nested Serializers
 # =============================================================================
-
-
-class EventGeoContextSerializer(serializers.ModelSerializer):
-    """Nested serializer for event's GeoContext."""
-
-    class Meta:
-        model = GeoContext
-        fields = ["id", "title", "content"]
-        read_only_fields = fields
 
 
 PROFILE_KEY_PUBLIC_HEALTH = "public_health"
@@ -219,9 +210,7 @@ class EventTaxonomyDimensionRegistrySerializer(serializers.ModelSerializer):
 def _compact_taxonomy_assignments(obj) -> list[dict]:
     """Return list/map taxonomy chips without UUID/edit-only metadata."""
     taxonomy_terms = [
-        event_term.term
-        for event_term in obj.event_terms.all()
-        if event_term.term is not None
+        event_term.term for event_term in obj.event_terms.all() if event_term.term is not None
     ]
     assignments = serialize_taxonomy_assignments(taxonomy_terms)
     return [
@@ -301,10 +290,11 @@ class EventListSerializer(serializers.ModelSerializer):
 class EventDetailSerializer(serializers.ModelSerializer):
     """
     Full serializer for event detail view.
-    Includes nested context and layers.
+    Includes effective feature-owned content and layers.
     """
 
-    context = serializers.SerializerMethodField()
+    content = serializers.SerializerMethodField()
+    content_source = serializers.CharField(read_only=True)
     layers = serializers.SerializerMethodField()
     taxonomy_assignments = serializers.SerializerMethodField()
     series = serializers.SerializerMethodField()
@@ -345,7 +335,9 @@ class EventDetailSerializer(serializers.ModelSerializer):
             "visibility",
             "effective_visibility",
             "organizer",
-            "context",
+            "content",
+            "content_override",
+            "content_source",
             "profile_key",
             "profile",
             "taxonomy_assignments",
@@ -382,17 +374,12 @@ class EventDetailSerializer(serializers.ModelSerializer):
 
     def get_layers(self, obj) -> list:
         """Return layers ordered by display_order with full Layer summary."""
-        through_qs = EventLayer.objects.filter(event=obj).select_related(
-            "layer__workspace"
-        )
+        through_qs = EventLayer.objects.filter(event=obj).select_related("layer__workspace")
         return EventLayerSerializer(through_qs, many=True).data
 
-    def get_context(self, obj):
-        """Return the resolved event context."""
-        context = obj.effective_context
-        if context is None:
-            return None
-        return EventGeoContextSerializer(context).data
+    def get_content(self, obj) -> dict:
+        """Return the effective event or inherited series content."""
+        return obj.effective_content
 
     def get_taxonomy_assignments(self, obj):
         assignments = get_event_taxonomy_assignments(obj)
@@ -577,6 +564,14 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
     visibility = serializers.CharField(read_only=True)
     effective_visibility = serializers.CharField(read_only=True)
 
+    def validate_content_override(self, value):
+        if value is None:
+            return None
+        try:
+            return validate_and_normalize(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages) from exc
+
     class Meta:
         model = Event
         fields = [
@@ -612,7 +607,7 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
             "visibility",
             "effective_visibility",
             "organizer",
-            "context",
+            "content_override",
             "taxonomy_assignments",
             "layers",
             "profile",
@@ -729,9 +724,8 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
         if should_mark_exception:
             validated_data["is_exception"] = True
             if (
-                ("start_datetime" in validated_data or "end_datetime" in validated_data)
-                and instance.original_start_datetime is None
-            ):
+                "start_datetime" in validated_data or "end_datetime" in validated_data
+            ) and instance.original_start_datetime is None:
                 validated_data["original_start_datetime"] = instance.start_datetime
 
         event = super().update(instance, validated_data)
@@ -755,9 +749,7 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
         """Replace the event's EventLayer rows with the supplied list."""
         EventLayer.objects.filter(event=event).delete()
         for index, layer in enumerate(layers):
-            EventLayer.objects.create(
-                event=event, layer=layer, display_order=index
-            )
+            EventLayer.objects.create(event=event, layer=layer, display_order=index)
 
     def _should_mark_exception(self, instance, validated_data, taxonomy_terms) -> bool:
         if not instance.series_id:
@@ -767,12 +759,11 @@ class EventWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.ModelS
             if field in validated_data and validated_data[field] != getattr(instance, field):
                 return True
 
-        if "context" in validated_data:
-            incoming_context = validated_data["context"]
-            incoming_context_id = (
-                incoming_context.id if incoming_context is not None else None
-            )
-            if incoming_context_id != instance.context_id:
+        if "content_override" in validated_data:
+            incoming_content = validated_data["content_override"]
+            if incoming_content is not None:
+                incoming_content = validate_and_normalize(incoming_content)
+            if incoming_content != instance.content_override:
                 return True
 
         if taxonomy_terms is not serializers.empty:
@@ -812,6 +803,7 @@ class EventSeriesResponseSerializer(serializers.ModelSerializer):
             "campaign",
             "event_type",
             "name",
+            "default_content",
             "series_mode",
             "recurrence_type",
             "start_date",
@@ -856,10 +848,8 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
         required=False,
     )
     name = serializers.CharField(required=False, allow_blank=True, allow_null=False)
-    default_context = serializers.PrimaryKeyRelatedField(
-        queryset=GeoContext.objects.all(),
+    default_content = serializers.JSONField(
         required=False,
-        allow_null=True,
     )
     series_mode = serializers.ChoiceField(
         choices=EventSeries.SeriesMode.choices,
@@ -882,8 +872,12 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
         required=False,
         allow_blank=True,
     )
-    day_of_month = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=31)
-    week_of_month = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=5)
+    day_of_month = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1, max_value=31
+    )
+    week_of_month = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1, max_value=5
+    )
     weekday_of_month = serializers.CharField(required=False, allow_blank=True)
     by_weekday = serializers.ListField(
         child=serializers.ChoiceField(choices=sorted(VALID_WEEKDAYS)),
@@ -926,11 +920,24 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
     external_url = serializers.URLField(required=False, allow_blank=True)
     status = serializers.ChoiceField(choices=Event.Status.choices, required=False)
     visibility = serializers.ChoiceField(choices=Event.Visibility.choices, required=False)
-    context = serializers.PrimaryKeyRelatedField(
-        queryset=GeoContext.objects.all(),
+    content_override = serializers.JSONField(
         required=False,
         allow_null=True,
     )
+
+    def validate_default_content(self, value):
+        try:
+            return validate_and_normalize(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages) from exc
+
+    def validate_content_override(self, value):
+        if value is None:
+            return None
+        try:
+            return validate_and_normalize(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages) from exc
 
     def validate_location(self, value):
         """Validate and normalize series template location input as a GeoJSON point."""
@@ -940,9 +947,7 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
         try:
             geometry = GEOSGeometry(json.dumps(value))
         except Exception as exc:
-            raise serializers.ValidationError(
-                f"Invalid GeoJSON point: {exc}"
-            ) from exc
+            raise serializers.ValidationError(f"Invalid GeoJSON point: {exc}") from exc
 
         if geometry.geom_type != "Point":
             raise serializers.ValidationError("Location must be a GeoJSON Point.")
@@ -1010,9 +1015,7 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
                 explicit_dates=explicit_dates,
             )
         except ZoneInfoNotFoundError as exc:
-            raise serializers.ValidationError(
-                {"timezone": f"Unknown timezone: {exc}"}
-            ) from exc
+            raise serializers.ValidationError({"timezone": f"Unknown timezone: {exc}"}) from exc
         if not occurrences:
             raise serializers.ValidationError(
                 {"explicit_dates": "This series definition produces no occurrences."}
@@ -1101,11 +1104,7 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
             "timezone",
             "series_mode",
         }
-        missing = [
-            field
-            for field in required_fields
-            if source.get(field) in (None, "")
-        ]
+        missing = [field for field in required_fields if source.get(field) in (None, "")]
         if missing:
             raise serializers.ValidationError(
                 {field: "This field is required." for field in missing}
@@ -1122,7 +1121,9 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
             if explicit_dates is serializers.empty:
                 if self.instance:
                     explicit_dates = list(
-                        self.instance.dates.order_by("display_order", "occurrence_date").values_list(
+                        self.instance.dates.order_by(
+                            "display_order", "occurrence_date"
+                        ).values_list(
                             "occurrence_date",
                             flat=True,
                         )
@@ -1133,14 +1134,12 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
                 raise serializers.ValidationError(
                     {"explicit_dates": "Manual batch series require at least one explicit date."}
                 )
-            duplicates = [
-                str(item)
-                for item, count in Counter(explicit_dates).items()
-                if count > 1
-            ]
+            duplicates = [str(item) for item, count in Counter(explicit_dates).items() if count > 1]
             if duplicates:
                 raise serializers.ValidationError(
-                    {"explicit_dates": f"Duplicate explicit dates are not allowed: {', '.join(duplicates)}"}
+                    {
+                        "explicit_dates": f"Duplicate explicit dates are not allowed: {', '.join(duplicates)}"
+                    }
                 )
             return explicit_dates
 
@@ -1163,11 +1162,7 @@ class EventSeriesWriteSerializer(TaxonomyAssignmentResolutionMixin, serializers.
                 source[field] = attrs[field]
 
         required_fields = {"title", "location_mode"}
-        missing = [
-            field
-            for field in required_fields
-            if source.get(field) in (None, "")
-        ]
+        missing = [field for field in required_fields if source.get(field) in (None, "")]
         if missing:
             raise serializers.ValidationError(
                 {field: "This field is required." for field in missing}

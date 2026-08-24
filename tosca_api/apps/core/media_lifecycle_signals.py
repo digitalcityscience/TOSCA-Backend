@@ -1,5 +1,5 @@
 """
-Campaign/GeoStory/Event status & visibility -> media lifecycle sync
+Campaign/GeoStory/Event/Feedback status & visibility -> media lifecycle sync
 (epic-11 PR3; Event coverage added for security ticket 14).
 
 Fires on ``Campaign``/``GeoStory``/``Event`` post_save, but only performs the
@@ -25,6 +25,7 @@ from django.dispatch import receiver
 
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.events.models import Event
+from tosca_api.apps.feedback.models import GeoFeedback
 from tosca_api.apps.geostories.models import GeoStory
 
 from .media_lifecycle import MediaLifecycleService, summarize
@@ -136,6 +137,41 @@ def _sync_event_media_lifecycle(sender, instance, created, **kwargs):
             instance.pk,
             prior_status,
             instance.status,
+            summarize(entries),
+            f" -- {len(failures)} failure(s)" if failures else "",
+        )
+
+
+@receiver(pre_save, sender=GeoFeedback)
+def _capture_feedback_prior_state(sender, instance, **kwargs):
+    if instance.pk is None:
+        setattr(instance, _PRIOR_STATE_ATTR, None)
+        return
+    try:
+        prior = sender.objects.get(pk=instance.pk)
+    except sender.DoesNotExist:
+        setattr(instance, _PRIOR_STATE_ATTR, None)
+    else:
+        setattr(instance, _PRIOR_STATE_ATTR, (prior.status, prior.visibility))
+
+
+@receiver(post_save, sender=GeoFeedback)
+def _sync_feedback_media_lifecycle(sender, instance, created, **kwargs):
+    if created:
+        return
+    prior_state = getattr(instance, _PRIOR_STATE_ATTR, None)
+    current_state = (instance.status, instance.visibility)
+    if prior_state == current_state:
+        return
+
+    entries = _lifecycle_service().sync_feedback_assets(instance)
+    failures = [entry for entry in entries if entry.status != "ok"]
+    if entries:
+        logger.info(
+            "GeoFeedback %s lifecycle sync (%r -> %r): %s%s",
+            instance.pk,
+            prior_state,
+            current_state,
             summarize(entries),
             f" -- {len(failures)} failure(s)" if failures else "",
         )

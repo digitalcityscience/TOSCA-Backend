@@ -24,7 +24,6 @@ class FeatureLink(TimeStampedModel):
     Polymorphic link between two features (e.g. GeoStory -> GeoStory).
     
     Only GeoStory, Event, and GeoFeedback can be linked.
-    GeoContext is NOT linkable (it's a submodule of features).
     """
 
     class LinkType(models.TextChoices):

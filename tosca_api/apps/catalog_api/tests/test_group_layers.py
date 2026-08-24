@@ -655,6 +655,82 @@ class LayerGroupCatalogTests(TestCase):
         self.assertEqual(duplicate.order, 2)
         self.assertEqual(duplicate.source_alias, "stations-2")
 
+    def test_inline_new_repeated_layers_get_unique_source_aliases(self):
+        self.group.members.all().delete()
+        FormSet = inlineformset_factory(
+            LayerGroup,
+            LayerGroupMember,
+            form=LayerGroupMemberInlineForm,
+            formset=LayerGroupMemberInlineFormSet,
+            fields=("layer", "style_assignment", "order"),
+            extra=0,
+        )
+        data = {
+            "members-TOTAL_FORMS": "2",
+            "members-INITIAL_FORMS": "0",
+            "members-MIN_NUM_FORMS": "0",
+            "members-MAX_NUM_FORMS": "1000",
+            "members-0-layer": str(self.layers[0].id),
+            "members-0-style_assignment": str(self.assignments[0].id),
+            "members-0-order": "0",
+            "members-1-layer": str(self.layers[0].id),
+            "members-1-style_assignment": str(self.assignments[0].id),
+            "members-1-order": "1",
+        }
+
+        formset = FormSet(data=data, instance=self.group, prefix="members")
+
+        self.assertTrue(formset.is_valid(), formset.errors)
+        formset.save()
+        self.assertEqual(
+            list(self.group.members.order_by("order").values_list("source_alias", flat=True)),
+            ["roads", "roads-2"],
+        )
+
+    def test_inline_delete_and_readd_members_reclaims_source_aliases(self):
+        members = list(self.group.members.order_by("order"))
+        FormSet = inlineformset_factory(
+            LayerGroup,
+            LayerGroupMember,
+            form=LayerGroupMemberInlineForm,
+            formset=LayerGroupMemberInlineFormSet,
+            fields=("layer", "style_assignment", "order"),
+            extra=0,
+            can_delete=True,
+        )
+        data = {
+            "members-TOTAL_FORMS": "4",
+            "members-INITIAL_FORMS": "2",
+            "members-MIN_NUM_FORMS": "0",
+            "members-MAX_NUM_FORMS": "1000",
+        }
+        for index, member in enumerate(members):
+            data.update({
+                f"members-{index}-id": str(member.id),
+                f"members-{index}-layer": str(member.layer_id),
+                f"members-{index}-style_assignment": str(member.style_assignment_id),
+                f"members-{index}-order": str(member.order),
+                f"members-{index}-DELETE": "on",
+            })
+        for index, (layer, assignment) in enumerate(
+            zip(self.layers, self.assignments, strict=True),
+            start=2,
+        ):
+            data.update({
+                f"members-{index}-layer": str(layer.id),
+                f"members-{index}-style_assignment": str(assignment.id),
+                f"members-{index}-order": str(index - 2),
+            })
+
+        formset = FormSet(data=data, instance=self.group, prefix="members")
+
+        self.assertTrue(formset.is_valid(), formset.errors)
+        formset.save()
+        self.assertEqual(
+            list(self.group.members.order_by("order").values_list("source_alias", flat=True)),
+            ["roads", "stations"],
+        )
+
     def test_inline_style_choices_show_styles_instead_of_assignment_relations(self):
         form = LayerGroupMemberInlineForm(instance=self.group.members.first())
         labels = [label for value, label in form.fields["style_assignment"].choices if value]

@@ -1,10 +1,19 @@
+from django import forms
 from django.contrib import admin
 from django.contrib.gis.admin import GISModelAdmin
 
 from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin, get_request_org_context
+from tosca_api.apps.geocontext.widgets import EditorJsWidget
 
 from .forms import FeedbackLayerFormSet
 from .models import FeedbackLayer, FeedbackSubmission, GeoFeedback
+
+
+class GeoFeedbackAdminForm(forms.ModelForm):
+    class Meta:
+        model = GeoFeedback
+        fields = "__all__"
+        widgets = {"content": EditorJsWidget()}
 
 
 class FeedbackLayerInline(admin.TabularInline):
@@ -54,6 +63,7 @@ class GeoFeedbackAdmin(admin.ModelAdmin):
     piecemeal fix here.
     """
 
+    form = GeoFeedbackAdminForm
     list_display = [
         "title",
         "campaign",
@@ -68,12 +78,12 @@ class GeoFeedbackAdmin(admin.ModelAdmin):
     list_filter = ["campaign", "status", "visibility", "rating_enabled", "form_enabled"]
     search_fields = ["title", "description"]
     readonly_fields = ["id", "created_at", "updated_at"]
-    autocomplete_fields = ["campaign", "created_by", "context", "custom_form"]
+    autocomplete_fields = ["campaign", "created_by", "custom_form"]
     inlines = [FeedbackLayerInline, FeedbackSubmissionInline]
 
     fieldsets = (
         (None, {"fields": ("id", "campaign", "title", "description")}),
-        ("Content", {"fields": ("context",)}),
+        ("Feedback", {"fields": ("content",)}),
         (
             "Feedback Configuration",
             {
@@ -90,9 +100,7 @@ class GeoFeedbackAdmin(admin.ModelAdmin):
     )
 
     def get_queryset(self, request):
-        qs = super().get_queryset(request).select_related(
-            "campaign", "created_by", "custom_form"
-        )
+        qs = super().get_queryset(request).select_related("campaign", "created_by", "custom_form")
         if request.user.is_superuser:
             return qs
         _roles, org_slug, exempt = get_request_org_context(request)
@@ -131,6 +139,4 @@ class FeedbackSubmissionAdmin(OrgScopedAdminMixin, GISModelAdmin):
     )
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related(
-            "feedback", "submitted_by"
-        )
+        return super().get_queryset(request).select_related("feedback", "submitted_by")

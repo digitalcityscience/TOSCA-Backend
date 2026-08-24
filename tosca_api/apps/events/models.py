@@ -4,7 +4,7 @@ Event model - Time-bound spatial events.
 
 Events represent scheduled activities (workshops, discussions, meetings)
 that occur at a specific time and optionally at a specific location. They belong
-to a Campaign and can have associated map layers and rich content (GeoContext).
+to a Campaign and can have associated map layers and feature-owned rich content.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
 
+from tosca_api.apps.core.editorjs import empty_document, validate_and_normalize
 from tosca_api.apps.core.models import TimeStampedModel
 from tosca_api.apps.core.sanitization import sanitize_simple
 
@@ -126,9 +127,9 @@ class TaxonomyDimension(TimeStampedModel):
 
     def save(self, *args, **kwargs) -> None:
         if self._state.adding and self.sort_order == 0:
-            max_order = TaxonomyDimension.objects.aggregate(
-                models.Max("sort_order")
-            )["sort_order__max"]
+            max_order = TaxonomyDimension.objects.aggregate(models.Max("sort_order"))[
+                "sort_order__max"
+            ]
             self.sort_order = (max_order or 0) + 1
         self.full_clean()
         super().save(*args, **kwargs)
@@ -210,7 +211,6 @@ class EventSeries(TimeStampedModel):
     if TYPE_CHECKING:
         campaign_id: uuid.UUID
         created_by_id: int | None
-        default_context_id: uuid.UUID | None
         event_type_id: uuid.UUID | None
 
     class SeriesMode(models.TextChoices):
@@ -247,12 +247,10 @@ class EventSeries(TimeStampedModel):
         null=True,
         blank=True,
     )
-    default_context = models.ForeignKey(
-        "geocontext.GeoContext",
-        on_delete=models.SET_NULL,
-        null=True,
+    default_content = models.JSONField(
+        default=empty_document,
         blank=True,
-        related_name="default_for_event_series",
+        help_text="Content inherited by occurrences without an override.",
     )
     series_mode = models.CharField(
         max_length=20,
@@ -298,6 +296,11 @@ class EventSeries(TimeStampedModel):
     def clean(self) -> None:
         errors = {}
 
+        try:
+            self.default_content = validate_and_normalize(self.default_content)
+        except ValidationError as exc:
+            errors["default_content"] = exc.messages
+
         if self.created_by_id is None:
             errors["created_by"] = "Event series require a creator."
         if self.start_date is None:
@@ -321,9 +324,7 @@ class EventSeries(TimeStampedModel):
                     self.start_time,
                 )
                 if same_or_before:
-                    errors["end_date"] = (
-                        "Series end date/time must be after the start date/time."
-                    )
+                    errors["end_date"] = "Series end date/time must be after the start date/time."
             elif self.end_time <= self.start_time:
                 errors["end_time"] = (
                     "End time must be after start time for same-day events. "
@@ -341,29 +342,22 @@ class EventSeries(TimeStampedModel):
                 and self.end_time <= self.start_time
             ):
                 errors["end_time"] = (
-                    "Recurring generation currently requires same-day end times "
-                    "after start_time."
+                    "Recurring generation currently requires same-day end times after start_time."
                 )
 
             invalid_weekdays = set(self.by_weekday) - VALID_WEEKDAYS
             if invalid_weekdays:
-                errors["by_weekday"] = (
-                    f"Invalid weekday values: {sorted(invalid_weekdays)}."
-                )
+                errors["by_weekday"] = f"Invalid weekday values: {sorted(invalid_weekdays)}."
 
             if self.recurrence_type == self.RecurrenceType.WEEKLY and not self.by_weekday:
                 errors["by_weekday"] = "Weekly recurrence requires at least one weekday."
 
             if self.recurrence_type == self.RecurrenceType.MONTHLY:
                 if not self.monthly_rule_type:
-                    errors["monthly_rule_type"] = (
-                        "Monthly recurrence requires a monthly rule type."
-                    )
+                    errors["monthly_rule_type"] = "Monthly recurrence requires a monthly rule type."
                 elif self.monthly_rule_type == self.MonthlyRuleType.DAY_OF_MONTH:
                     if not self.day_of_month:
-                        errors["day_of_month"] = (
-                            "Day-of-month rule requires day_of_month."
-                        )
+                        errors["day_of_month"] = "Day-of-month rule requires day_of_month."
                     elif not 1 <= self.day_of_month <= 31:
                         errors["day_of_month"] = "day_of_month must be between 1 and 31."
                 elif self.monthly_rule_type == self.MonthlyRuleType.NTH_WEEKDAY:
@@ -373,9 +367,7 @@ class EventSeries(TimeStampedModel):
                         )
                     else:
                         if not 1 <= self.week_of_month <= 5:
-                            errors["week_of_month"] = (
-                                "week_of_month must be between 1 and 5."
-                            )
+                            errors["week_of_month"] = "week_of_month must be between 1 and 5."
                         if self.weekday_of_month not in VALID_WEEKDAYS:
                             errors["weekday_of_month"] = (
                                 "weekday_of_month must be a valid weekday name."
@@ -383,20 +375,19 @@ class EventSeries(TimeStampedModel):
 
         if self.series_mode == self.SeriesMode.MANUAL_BATCH:
             if self.recurrence_type:
-                errors["recurrence_type"] = (
-                    "Manual batches must not define a recurrence type."
-                )
+                errors["recurrence_type"] = "Manual batches must not define a recurrence type."
             if self.end_date:
                 errors["end_date"] = "Manual batches must not define an end date."
             if self.occurrence_count is not None:
-                errors["occurrence_count"] = (
-                    "Manual batches must not define an occurrence count."
-                )
+                errors["occurrence_count"] = "Manual batches must not define an occurrence count."
             if self.by_weekday:
-                errors["by_weekday"] = (
-                    "Manual batches must not define recurring weekdays."
-                )
-            if self.monthly_rule_type or self.day_of_month or self.week_of_month or self.weekday_of_month:
+                errors["by_weekday"] = "Manual batches must not define recurring weekdays."
+            if (
+                self.monthly_rule_type
+                or self.day_of_month
+                or self.week_of_month
+                or self.weekday_of_month
+            ):
                 errors["monthly_rule_type"] = (
                     "Manual batches must not define monthly recurrence rules."
                 )
@@ -407,8 +398,12 @@ class EventSeries(TimeStampedModel):
         super().clean()
 
     def save(self, *args, **kwargs) -> None:
+        # default_content normalization happens in clean(), which
+        # full_clean() below always invokes -- doing it again here would
+        # just repeat the same Editor.js image-decode work.
         self.full_clean()
         super().save(*args, **kwargs)
+
 
 class EventSeriesDate(TimeStampedModel):
     """Explicit occurrence date for manual batch event series."""
@@ -438,11 +433,9 @@ class EventSeriesDate(TimeStampedModel):
 
     def save(self, *args, **kwargs) -> None:
         if self._state.adding and self.display_order is None:
-            max_order = (
-                EventSeriesDate.objects.filter(series=self.series).aggregate(
-                    models.Max("display_order")
-                )["display_order__max"]
-            )
+            max_order = EventSeriesDate.objects.filter(series=self.series).aggregate(
+                models.Max("display_order")
+            )["display_order__max"]
             self.display_order = (max_order or 0) + 1
         self.full_clean()
         super().save(*args, **kwargs)
@@ -463,7 +456,7 @@ class Event(TimeStampedModel):
         campaign: Parent campaign
         title: Event title (sanitized)
         description: Brief description (sanitized)
-        context: Optional per-event context override
+        content_override: Optional per-event content override
         start_datetime: When the event starts
         end_datetime: When the event ends
         location: Optional point location (SRID 4326)
@@ -475,7 +468,6 @@ class Event(TimeStampedModel):
 
     if TYPE_CHECKING:
         campaign_id: uuid.UUID
-        context_id: uuid.UUID | None
         event_type_id: uuid.UUID | None
         series_id: uuid.UUID | None
 
@@ -524,12 +516,14 @@ class Event(TimeStampedModel):
     title = models.CharField(max_length=255)
     summary = models.CharField(max_length=100, blank=True, default="")
 
-    context = models.ForeignKey(
-        "geocontext.GeoContext",
-        on_delete=models.SET_NULL,
+    content_override = models.JSONField(
+        default=None,
         null=True,
         blank=True,
-        related_name="events",
+        help_text=(
+            "Occurrence-specific Editor.js content. Null inherits the series default; "
+            "an empty document explicitly suppresses inherited content."
+        ),
     )
 
     start_datetime = models.DateTimeField()
@@ -664,22 +658,31 @@ class Event(TimeStampedModel):
         return f"{self.title} ({self.start_datetime.date()})"
 
     @property
-    def effective_context(self):
+    def effective_content(self) -> dict:
         """
         Resolve content precedence for an event occurrence.
 
         Resolution order:
-        1. Event.context override
-        2. EventSeries.default_context
-        3. None
+        1. Event.content_override (including an explicit empty document)
+        2. EventSeries.default_content
+        3. Canonical empty document
         """
-        if self.context_id is not None:
-            return self.context
+        if self.content_override is not None:
+            return self.content_override
         if self.series_id is not None:
             series = self.series
-            if series is not None and series.default_context_id is not None:
-                return series.default_context
-        return None
+            if series is not None:
+                return series.default_content
+        return empty_document()
+
+    @property
+    def content_source(self) -> str:
+        """Identify whether effective content comes from the event or series."""
+        if self.content_override is not None:
+            return "event"
+        if self.series_id is not None and self.series is not None:
+            return "series"
+        return "empty"
 
     @property
     def effective_visibility(self) -> str:
@@ -701,6 +704,11 @@ class Event(TimeStampedModel):
     def clean(self) -> None:
         """Validate the event."""
         errors = {}
+        if self.content_override is not None:
+            try:
+                self.content_override = validate_and_normalize(self.content_override)
+            except ValidationError as exc:
+                errors["content_override"] = exc.messages
         has_online_access = bool(self.online_url or self.online_platform)
 
         # Validate end >= start at application level too
@@ -724,20 +732,15 @@ class Event(TimeStampedModel):
                 errors["online_url"] = "Hybrid events require an online URL or platform."
 
         if (
-            self.location_mode
-            in (self.LocationMode.BY_ARRANGEMENT, self.LocationMode.HOME_VISIT)
+            self.location_mode in (self.LocationMode.BY_ARRANGEMENT, self.LocationMode.HOME_VISIT)
             and self.location is not None
         ):
-            errors["location"] = (
-                "By-arrangement and home-visit events cannot include geometry."
-            )
+            errors["location"] = "By-arrangement and home-visit events cannot include geometry."
 
         if self.language:
             invalid_codes = [code for code in self.language if code not in LANGUAGE_CODES]
             if invalid_codes:
-                errors["language"] = (
-                    f"Unknown language codes: {sorted(set(invalid_codes))}"
-                )
+                errors["language"] = f"Unknown language codes: {sorted(set(invalid_codes))}"
 
         if self.language_note and "other" not in (self.language or []):
             errors["language_note"] = (
@@ -777,6 +780,9 @@ class Event(TimeStampedModel):
         """Override save to sanitize inputs and validate."""
         self.title = sanitize_simple(self.title)
         self.summary = sanitize_simple(self.summary)
+        # content_override normalization happens in clean(), which
+        # full_clean() below always invokes -- doing it again here would
+        # just repeat the same Editor.js image-decode work.
         self.full_clean()
         super().save(*args, **kwargs)
 
@@ -829,11 +835,9 @@ class EventLayer(TimeStampedModel):
     def save(self, *args, **kwargs) -> None:
         """Auto-increment display_order and enforce layer validation."""
         if self._state.adding and self.display_order == 0:
-            max_order = (
-                EventLayer.objects.filter(event=self.event).aggregate(
-                    models.Max("display_order")
-                )["display_order__max"]
-            )
+            max_order = EventLayer.objects.filter(event=self.event).aggregate(
+                models.Max("display_order")
+            )["display_order__max"]
             if max_order is not None:
                 self.display_order = max_order + 1
         self.full_clean()
@@ -887,17 +891,11 @@ class EventTerm(TimeStampedModel):
                     term__dimension_id=self.term.dimension_id,
                 ).exclude(pk=self.pk)
                 if conflicting_terms.exclude(term_id=self.term_id).exists():
-                    errors["term"] = (
-                        "Single-select dimensions allow only one term per event."
-                    )
+                    errors["term"] = "Single-select dimensions allow only one term per event."
 
             if dimension.profile_key:
                 event_type = self.event.event_type if self.event.event_type_id else None
-                event_profile_key = (
-                    (event_type.profile_key or "")
-                    if event_type is not None
-                    else ""
-                )
+                event_profile_key = (event_type.profile_key or "") if event_type is not None else ""
                 if event_profile_key != dimension.profile_key:
                     errors["term"] = (
                         f"Dimension '{dimension.code}' is restricted to events with "
@@ -939,8 +937,7 @@ class BaseEventProfile(TimeStampedModel):
                 errors["event"] = "Core event types cannot have extension profiles."
             elif event_type.profile_key != self.expected_profile_key:
                 errors["event"] = (
-                    f"This profile requires event_type.profile_key="
-                    f"'{self.expected_profile_key}'."
+                    f"This profile requires event_type.profile_key='{self.expected_profile_key}'."
                 )
 
         if errors:
@@ -1012,9 +1009,7 @@ class PublicHealthEventProfile(BaseEventProfile):
             and self.reduced_amount_eur is not None
             and self.reduced_amount_eur > self.cost_amount_eur
         ):
-            errors["reduced_amount_eur"] = (
-                "reduced_amount_eur cannot exceed cost_amount_eur."
-            )
+            errors["reduced_amount_eur"] = "reduced_amount_eur cannot exceed cost_amount_eur."
         if errors:
             raise ValidationError(errors)
         super().clean()

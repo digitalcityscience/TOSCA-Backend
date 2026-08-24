@@ -22,6 +22,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
+from tosca_api.apps.core.editorjs import empty_document, validate_and_normalize
 from tosca_api.apps.core.models import TimeStampedModel
 from tosca_api.apps.core.sanitization import sanitize_simple
 
@@ -29,7 +30,9 @@ from tosca_api.apps.core.sanitization import sanitize_simple
 class GeoFeedbackQuerySet(models.QuerySet):
     def published_public(self):
         """Feedback visible to an anonymous/non-staff reader: published + public."""
-        return self.filter(status=GeoFeedback.Status.PUBLISHED, visibility=GeoFeedback.Visibility.PUBLIC)
+        return self.filter(
+            status=GeoFeedback.Status.PUBLISHED, visibility=GeoFeedback.Visibility.PUBLIC
+        )
 
 
 class GeoFeedback(TimeStampedModel):
@@ -41,7 +44,7 @@ class GeoFeedback(TimeStampedModel):
         campaign: Parent campaign
         title: Feedback title (sanitized)
         description: Brief description (sanitized)
-        context: 1:1 link to rich content block (optional)
+        content: Main authored content shown with the feedback feature
         custom_form: Optional link to a formbuilder CustomForm
         rating_enabled: Whether star ratings are collected
         form_enabled: Whether form submissions are collected
@@ -73,13 +76,10 @@ class GeoFeedback(TimeStampedModel):
 
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True, default="")
-
-    context = models.OneToOneField(
-        "geocontext.GeoContext",
-        on_delete=models.SET_NULL,
-        null=True,
+    content = models.JSONField(
+        default=empty_document,
         blank=True,
-        related_name="feedback",
+        help_text="Main feedback content as a canonical Editor.js document.",
     )
 
     custom_form = models.ForeignKey(
@@ -134,13 +134,13 @@ class GeoFeedback(TimeStampedModel):
         "featurelinks.FeatureLink",
         content_type_field="source_content_type",
         object_id_field="source_object_id",
-        related_query_name="geofeedback_source"
+        related_query_name="geofeedback_source",
     )
     feature_links_target = GenericRelation(
         "featurelinks.FeatureLink",
         content_type_field="target_content_type",
         object_id_field="target_object_id",
-        related_query_name="geofeedback_target"
+        related_query_name="geofeedback_target",
     )
 
     class Meta:
@@ -165,20 +165,19 @@ class GeoFeedback(TimeStampedModel):
         """Validate the feedback configuration."""
         errors = {}
 
+        try:
+            self.content = validate_and_normalize(self.content)
+        except ValidationError as exc:
+            errors["content"] = exc.messages
+
         # At least one of rating_enabled or form_enabled must be True
         if not self.rating_enabled and not self.form_enabled:
-            errors["rating_enabled"] = (
-                "At least one of rating or form must be enabled."
-            )
-            errors["form_enabled"] = (
-                "At least one of rating or form must be enabled."
-            )
+            errors["rating_enabled"] = "At least one of rating or form must be enabled."
+            errors["form_enabled"] = "At least one of rating or form must be enabled."
 
         # If form is enabled, custom_form must be set
         if self.form_enabled and not self.custom_form_id:
-            errors["custom_form"] = (
-                "A custom form must be linked when form submission is enabled."
-            )
+            errors["custom_form"] = "A custom form must be linked when form submission is enabled."
 
         if errors:
             raise ValidationError(errors)
@@ -189,6 +188,9 @@ class GeoFeedback(TimeStampedModel):
         """Override save to sanitize inputs and validate."""
         self.title = sanitize_simple(self.title)
         self.description = sanitize_simple(self.description)
+        # content normalization happens in clean(), which full_clean()
+        # below always invokes -- doing it again here would just repeat
+        # the same Editor.js image-decode work.
         self.full_clean()
         super().save(*args, **kwargs)
 
@@ -236,11 +238,9 @@ class FeedbackLayer(TimeStampedModel):
     def save(self, *args, **kwargs) -> None:
         """Auto-increment display_order and enforce layer validation."""
         if self._state.adding and self.display_order == 0:
-            max_order = (
-                FeedbackLayer.objects.filter(feedback=self.feedback).aggregate(
-                    models.Max("display_order")
-                )["display_order__max"]
-            )
+            max_order = FeedbackLayer.objects.filter(feedback=self.feedback).aggregate(
+                models.Max("display_order")
+            )["display_order__max"]
             if max_order is not None:
                 self.display_order = max_order + 1
         self.full_clean()
@@ -330,9 +330,7 @@ class FeedbackSubmission(TimeStampedModel):
         if self.geometry and self.feedback_id:
             try:
                 if not self.feedback.allow_drawings:
-                    errors["geometry"] = (
-                        "This feedback does not accept spatial drawings."
-                    )
+                    errors["geometry"] = "This feedback does not accept spatial drawings."
             except GeoFeedback.DoesNotExist:
                 pass  # FK will be validated by Django
 

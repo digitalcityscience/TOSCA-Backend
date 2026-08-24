@@ -23,7 +23,7 @@ Desired-bucket resolution, in priority order, for a given ``MediaAsset``
    -- an asset with a known, unpublished entity stays private under a
    public campaign (this is the S2 gap: a public campaign alone used to be
    enough). A ``KIND_MISC`` asset (campaign-level, no single owning entity --
-   e.g. ``EventSeries.default_context``) has no entity-publication axis to
+   e.g. ``EventSeries.default_content``) has no entity-publication axis to
    check, so campaign visibility alone decides it. Anything not public by
    this rule is ``default`` (private).
 
@@ -51,7 +51,12 @@ from typing import Callable, Iterable
 from django.core.files.base import ContentFile
 from django.db import transaction
 
-from tosca_api.apps.core.media_paths import KIND_EVENT, KIND_STORY, resolve_entity
+from tosca_api.apps.core.media_paths import (
+    KIND_EVENT,
+    KIND_FEEDBACK,
+    KIND_STORY,
+    resolve_entity,
+)
 
 # Planned/observed actions.
 ACTION_MOVED = "moved"
@@ -118,6 +123,17 @@ def desired_alias_for_asset(asset) -> str | None:
         event = Event.objects.filter(id=resolved.entity_id).only("status").first()
         if event is not None:
             entity_published = event.status == Event.Status.PUBLISHED
+    elif resolved is not None and resolved.kind == KIND_FEEDBACK:
+        from tosca_api.apps.feedback.models import GeoFeedback
+
+        feedback = (
+            GeoFeedback.objects.filter(id=resolved.entity_id).only("status", "visibility").first()
+        )
+        if feedback is not None:
+            entity_published = (
+                feedback.status == GeoFeedback.Status.PUBLISHED
+                and feedback.visibility == GeoFeedback.Visibility.PUBLIC
+            )
 
     if campaign.visibility == campaign.Visibility.PUBLIC and entity_published:
         return asset.__class__.StorageAlias.PUBLIC
@@ -152,7 +168,9 @@ class MediaLifecycleService:
                 return self.move_hero_image(story, target_alias, dry_run=dry_run)
 
         if old_alias == target_alias:
-            return LifecycleEntry(str(asset.id), old_alias, target_alias, ACTION_NO_CHANGE, STATUS_OK)
+            return LifecycleEntry(
+                str(asset.id), old_alias, target_alias, ACTION_NO_CHANGE, STATUS_OK
+            )
 
         try:
             source_storage = self._storage_for_alias(old_alias)
@@ -160,7 +178,11 @@ class MediaLifecycleService:
 
             if not source_storage.exists(path):
                 return LifecycleEntry(
-                    str(asset.id), old_alias, target_alias, ACTION_FAILED, STATUS_FAILED,
+                    str(asset.id),
+                    old_alias,
+                    target_alias,
+                    ACTION_FAILED,
+                    STATUS_FAILED,
                     "source object missing at old_alias",
                 )
             source_size = source_storage.size(path)
@@ -169,7 +191,11 @@ class MediaLifecycleService:
                 dest_size = dest_storage.size(path)
                 if dest_size != source_size:
                     return LifecycleEntry(
-                        str(asset.id), old_alias, target_alias, ACTION_FAILED, STATUS_FAILED,
+                        str(asset.id),
+                        old_alias,
+                        target_alias,
+                        ACTION_FAILED,
+                        STATUS_FAILED,
                         f"destination already exists with mismatched size "
                         f"({dest_size} != {source_size})",
                     )
@@ -178,7 +204,9 @@ class MediaLifecycleService:
             elif dry_run:
                 # Source verified, no pre-existing destination conflict --
                 # this move would succeed, but stop before writing.
-                return LifecycleEntry(str(asset.id), old_alias, target_alias, ACTION_WOULD_MOVE, STATUS_OK)
+                return LifecycleEntry(
+                    str(asset.id), old_alias, target_alias, ACTION_WOULD_MOVE, STATUS_OK
+                )
             else:
                 with source_storage.open(path, "rb") as handle:
                     data = handle.read()
@@ -186,12 +214,18 @@ class MediaLifecycleService:
                 dest_size = dest_storage.size(path)
                 if dest_size != source_size:
                     return LifecycleEntry(
-                        str(asset.id), old_alias, target_alias, ACTION_FAILED, STATUS_FAILED,
+                        str(asset.id),
+                        old_alias,
+                        target_alias,
+                        ACTION_FAILED,
+                        STATUS_FAILED,
                         f"post-copy size {dest_size} != source {source_size}",
                     )
 
             if dry_run:
-                return LifecycleEntry(str(asset.id), old_alias, target_alias, ACTION_WOULD_MOVE, STATUS_OK)
+                return LifecycleEntry(
+                    str(asset.id), old_alias, target_alias, ACTION_WOULD_MOVE, STATUS_OK
+                )
 
             with transaction.atomic():
                 asset.storage_alias = target_alias
@@ -213,18 +247,28 @@ class MediaLifecycleService:
         old_alias = story.hero_image_storage_alias
         if not path:
             return LifecycleEntry(
-                f"hero:{story.id}", old_alias, target_alias, ACTION_NO_CHANGE, STATUS_OK,
+                f"hero:{story.id}",
+                old_alias,
+                target_alias,
+                ACTION_NO_CHANGE,
+                STATUS_OK,
                 "story has no hero image",
             )
         if old_alias == target_alias:
-            return LifecycleEntry(f"hero:{story.id}", old_alias, target_alias, ACTION_NO_CHANGE, STATUS_OK)
+            return LifecycleEntry(
+                f"hero:{story.id}", old_alias, target_alias, ACTION_NO_CHANGE, STATUS_OK
+            )
 
         try:
             source_storage = self._storage_for_alias(old_alias)
             dest_storage = self._storage_for_alias(target_alias)
             if not source_storage.exists(path):
                 return LifecycleEntry(
-                    f"hero:{story.id}", old_alias, target_alias, ACTION_FAILED, STATUS_FAILED,
+                    f"hero:{story.id}",
+                    old_alias,
+                    target_alias,
+                    ACTION_FAILED,
+                    STATUS_FAILED,
                     "source hero image missing at old_alias",
                 )
             source_size = source_storage.size(path)
@@ -233,22 +277,34 @@ class MediaLifecycleService:
                 dest_size = dest_storage.size(path)
                 if dest_size != source_size:
                     return LifecycleEntry(
-                        f"hero:{story.id}", old_alias, target_alias, ACTION_FAILED, STATUS_FAILED,
+                        f"hero:{story.id}",
+                        old_alias,
+                        target_alias,
+                        ACTION_FAILED,
+                        STATUS_FAILED,
                         f"destination already exists with mismatched size ({dest_size} != {source_size})",
                     )
             elif dry_run:
-                return LifecycleEntry(f"hero:{story.id}", old_alias, target_alias, ACTION_WOULD_MOVE, STATUS_OK)
+                return LifecycleEntry(
+                    f"hero:{story.id}", old_alias, target_alias, ACTION_WOULD_MOVE, STATUS_OK
+                )
             else:
                 with source_storage.open(path, "rb") as handle:
                     dest_storage.save(path, ContentFile(handle.read(), name=path))
                 if dest_storage.size(path) != source_size:
                     return LifecycleEntry(
-                        f"hero:{story.id}", old_alias, target_alias, ACTION_FAILED, STATUS_FAILED,
+                        f"hero:{story.id}",
+                        old_alias,
+                        target_alias,
+                        ACTION_FAILED,
+                        STATUS_FAILED,
                         "post-copy hero image size does not match source",
                     )
 
             if dry_run:
-                return LifecycleEntry(f"hero:{story.id}", old_alias, target_alias, ACTION_WOULD_MOVE, STATUS_OK)
+                return LifecycleEntry(
+                    f"hero:{story.id}", old_alias, target_alias, ACTION_WOULD_MOVE, STATUS_OK
+                )
 
             with transaction.atomic():
                 story.hero_image_storage_alias = target_alias
@@ -256,7 +312,9 @@ class MediaLifecycleService:
                 MediaAsset.objects.filter(storage_path=path).update(storage_alias=target_alias)
 
             source_storage.delete(path)
-            return LifecycleEntry(f"hero:{story.id}", old_alias, target_alias, ACTION_MOVED, STATUS_OK)
+            return LifecycleEntry(
+                f"hero:{story.id}", old_alias, target_alias, ACTION_MOVED, STATUS_OK
+            )
         except Exception as exc:
             return LifecycleEntry(
                 f"hero:{story.id}", old_alias, target_alias, ACTION_FAILED, STATUS_FAILED, repr(exc)
@@ -323,6 +381,16 @@ class MediaLifecycleService:
         if event.campaign_id is None:
             return []
         return self._sync_entity_assets(event.campaign, KIND_EVENT, event.id)
+
+    def sync_feedback_assets(self, feedback) -> list[LifecycleEntry]:
+        """Re-evaluate assets embedded in one feedback feature's content."""
+        if feedback.campaign_id is None:
+            return []
+        return self._sync_entity_assets(
+            feedback.campaign,
+            KIND_FEEDBACK,
+            feedback.id,
+        )
 
 
 def summarize(entries: list[LifecycleEntry]) -> dict[str, int]:

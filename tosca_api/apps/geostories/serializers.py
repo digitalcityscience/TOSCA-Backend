@@ -7,7 +7,6 @@ from rest_framework import serializers
 
 from tosca_api.apps.core.image_policy import validate_hero_image
 from tosca_api.apps.featurelinks.models import FeatureLink
-from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geodata_providers.api.serializers import (
     LayerSummarySerializer,
     LayerUUIDListField,
@@ -29,15 +28,6 @@ def _absolute_hero_image_url(obj: GeoStory, request) -> str | None:
 # =============================================================================
 # Nested Serializers (for Detail view)
 # =============================================================================
-
-
-class GeoContextSerializer(serializers.ModelSerializer):
-    """Serializer for GeoContext - exposes content for reading."""
-
-    class Meta:
-        model = GeoContext
-        fields = ["id", "title", "content"]
-        read_only_fields = fields
 
 
 class GeoStoryLayerSerializer(serializers.ModelSerializer):
@@ -108,10 +98,9 @@ class GeoStoryListSerializer(serializers.ModelSerializer):
 class GeoStoryDetailSerializer(serializers.ModelSerializer):
     """
     Full serializer for GeoStory detail view.
-    Includes nested context, layers, and feature links.
+    Includes owned story content, layers, and feature links.
     """
 
-    context = GeoContextSerializer(read_only=True)
     layers = serializers.SerializerMethodField()
     feature_links = serializers.SerializerMethodField()
     hero_image_url = serializers.SerializerMethodField()
@@ -122,11 +111,11 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "summary",
+            "content",
             "hero_image_url",
             "hero_image_alt",
             "status",
             "campaign",
-            "context",
             "layers",
             "feature_links",
             "created_at",
@@ -142,9 +131,7 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
         Return layers ordered by display_order.
         Uses the through model to get ordering.
         """
-        through_qs = GeoStoryLayer.objects.filter(geostory=obj).select_related(
-            "layer__workspace"
-        )
+        through_qs = GeoStoryLayer.objects.filter(geostory=obj).select_related("layer__workspace")
         return GeoStoryLayerSerializer(through_qs, many=True).data
 
     def get_feature_links(self, obj) -> list:
@@ -177,17 +164,17 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "summary",
+            "content",
             "hero_image",
             "hero_image_alt",
             "status",
             "campaign",
             "author",
-            "context",
             "layers",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "author", "context", "created_at", "updated_at"]
+        read_only_fields = ["id", "author", "created_at", "updated_at"]
 
     def validate(self, attrs):
         """Invoke model clean() for DB-level validation."""
@@ -257,6 +244,4 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
         """Replace the story's GeoStoryLayer rows with the supplied list."""
         GeoStoryLayer.objects.filter(geostory=story).delete()
         for index, layer in enumerate(layers):
-            GeoStoryLayer.objects.create(
-                geostory=story, layer=layer, display_order=index
-            )
+            GeoStoryLayer.objects.create(geostory=story, layer=layer, display_order=index)

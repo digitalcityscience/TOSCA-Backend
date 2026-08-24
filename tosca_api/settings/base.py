@@ -118,7 +118,6 @@ TOSCA_PERMISSION_MODELS = {
     # OrgScopedAdminMixin, deliberately not touched here. FeedbackSubmission
     # reaches its org through feedback__campaign__organization.
     "feedback": {"geofeedback", "feedbacksubmission"},
-    "geocontext": {"geocontext"},
     # A9 (security tickets ticket 11): Store/Layer/LayerGroup/Style/SpriteAsset
     # reach their organization only through their owning Workspace (no direct
     # FK) -- their admin classes use org_lookup="workspace__organization__slug"
@@ -330,7 +329,7 @@ def build_storage_config(
     # Garage has no public-website exposure configured for it, so the only
     # way to fetch an object here is a presigned URL Django issues after
     # checking the asset/entity is actually public/published (see
-    # geocontext/views.py::_absolute_url). "Public" therefore means publicly
+    # the shared content upload view). "Public" therefore means publicly
     # reachable through TOSCA's application logic, not anonymously readable
     # from the bucket itself.
     config["media_public"] = {

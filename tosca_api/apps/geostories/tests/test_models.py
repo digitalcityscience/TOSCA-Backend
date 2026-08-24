@@ -7,7 +7,6 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 
 from tosca_api.apps.campaigns.models import Campaign
-from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geostories.models import (
     GeoStory,
     GeoStoryLayer,
@@ -166,20 +165,38 @@ def test_geostory_hero_image_alt_sanitization(user, campaign):
 
 
 @pytest.mark.django_db
-def test_geostory_context_linking(user, campaign):
-    """Test linking a GeoContext."""
-    context = GeoContext.objects.create(
-        content={"blocks": [{"type": "paragraph", "data": {"text": "Rich"}}]},
-        created_by=user,
-    )
+def test_geostory_owns_content(user, campaign):
+    """Story content is stored directly on its owner."""
+    content = {"blocks": [{"type": "paragraph", "data": {"text": "Rich"}}]}
     story = GeoStory.objects.create(
         title="Context Story",
         campaign=campaign,
         author=user,
-        context=context,
+        content=content,
     )
-    assert story.context == context
-    assert context.geostory == story  # Reverse relation
+    assert story.content == content
+    assert not hasattr(story, "context")
+
+
+@pytest.mark.django_db
+def test_geostory_clean_rejects_malformed_content_with_dict_error(user, campaign):
+    """clean() must raise a field-keyed error, not let a bare message escape.
+
+    A plain-message ValidationError from validate_and_normalize would make
+    callers that read exc.message_dict (e.g. GeoStoryWriteSerializer) crash
+    with AttributeError instead of surfacing a normal validation error.
+    """
+    story = GeoStory(
+        title="Bad content",
+        campaign=campaign,
+        author=user,
+        content={"blocks": "not-a-list"},
+    )
+
+    with pytest.raises(ValidationError) as excinfo:
+        story.clean()
+
+    assert "content" in excinfo.value.message_dict
 
 
 @pytest.mark.django_db
@@ -198,7 +215,7 @@ def test_geostory_layers(user, campaign):
     GeoStoryLayer.objects.create(geostory=story, layer=layer2, display_order=1)
 
     assert story.layers.count() == 2
-    
+
     # Check ordering
     refs = story.layers.all().order_by("geostory_uses__display_order")
     assert refs[0] == layer2  # order 1
@@ -246,7 +263,7 @@ def test_geostory_layer_auto_increment(user, campaign):
     # Initially max_order is None (empty). So defaults to 0. Correct.
     # Second one: max order is 0. So becomes 1.
     # Third one: max order is 1. So becomes 2.
-    
+
     assert gsl1.display_order == 0
     assert gsl2.display_order == 1
     assert gsl3.display_order == 2
@@ -270,9 +287,7 @@ def test_geostory_layer_rejects_unpublished_layer(user, campaign):
     from django.core.exceptions import ValidationError
 
     story = GeoStory.objects.create(title="S", campaign=campaign, author=user)
-    layer = make_layer(
-        "workspace:draft_layer", user=user, publishing_state="DRAFT"
-    )
+    layer = make_layer("workspace:draft_layer", user=user, publishing_state="DRAFT")
 
     with pytest.raises(ValidationError):
         GeoStoryLayer.objects.create(geostory=story, layer=layer)

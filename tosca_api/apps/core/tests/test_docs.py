@@ -2,13 +2,14 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 import pytest
 
+
 @pytest.mark.django_db
 def test_swagger_docs_accessible():
     client = APIClient()
     # /api/schema/
     response = client.get(reverse("schema"))
     assert response.status_code == 200
-    assert "application/vnd.oai.openapi" in response['Content-Type']
+    assert "application/vnd.oai.openapi" in response["Content-Type"]
 
     # /api/docs/
     response = client.get(reverse("swagger-ui"))
@@ -22,8 +23,8 @@ def test_phase_image_schema_surfaces_are_documented(client):
     schema = response.content.decode()
     assert "hero_image_url" in schema
     assert "hero_image_alt" in schema
-    assert "/api/v1/geocontext/editorjs/upload-by-file/" in schema
-    assert "/api/v1/geocontext/editorjs/upload-by-url/" in schema
+    assert "/api/v1/content/editorjs/upload-by-file/" in schema
+    assert "/api/v1/content/editorjs/upload-by-url/" in schema
     assert "/api/v1/media/derivative/" in schema
 
 
