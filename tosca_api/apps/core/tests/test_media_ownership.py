@@ -7,8 +7,10 @@ matching, unmatched fallback, and the apply step's bulk write.
 from __future__ import annotations
 
 import io
+import importlib
 
 import pytest
+from django.apps import apps as django_apps
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from PIL import Image
@@ -112,9 +114,7 @@ def test_plan_backfill_matches_editorjs_content_via_geostory(campaign, django_us
             },
             created_by=author,
         )
-    GeoStory.objects.create(
-        title="Story2", campaign=campaign, author=author, context=context
-    )
+    GeoStory.objects.create(title="Story2", campaign=campaign, author=author, context=context)
     asset = _make_asset("geocontext/editorjs/z/pic.png")
 
     entries = plan_backfill(MediaAsset.objects.filter(id=asset.id))
@@ -248,7 +248,46 @@ def test_apply_backfill_writes_only_resolved_entries(campaign, django_user_model
     assert unmatched.owner_org_id is None
 
 
-def test_plan_backfill_only_considers_assets_missing_campaign_by_default(campaign, django_user_model):
+def test_migration_backfill_uses_historical_app_registry(campaign, django_user_model):
+    author = django_user_model.objects.create_user(username="migration-author")
+    story = GeoStory(
+        title="Migration story",
+        campaign=campaign,
+        author=author,
+        hero_image_alt="alt",
+    )
+    story.hero_image.name = "geostories/migration/hero.png"
+    story.save()
+    asset = _make_asset("geostories/migration/hero.png")
+
+    requested_models = []
+
+    class RecordingApps:
+        def get_model(self, app_label, model_name):
+            requested_models.append((app_label, model_name))
+            return django_apps.get_model(app_label, model_name)
+
+    migration = importlib.import_module(
+        "tosca_api.apps.core.migrations.0003_backfill_media_asset_ownership"
+    )
+    migration.backfill_media_asset_ownership(RecordingApps(), schema_editor=None)
+
+    asset.refresh_from_db()
+    assert asset.campaign_id == campaign.id
+    assert asset.owner_org_id == campaign.organization_id
+    assert set(requested_models) == {
+        ("campaigns", "Campaign"),
+        ("core", "MediaAsset"),
+        ("events", "Event"),
+        ("events", "EventSeries"),
+        ("geocontext", "GeoContext"),
+        ("geostories", "GeoStory"),
+    }
+
+
+def test_plan_backfill_only_considers_assets_missing_campaign_by_default(
+    campaign, django_user_model
+):
     author = django_user_model.objects.create_user(username="author6")
     other_campaign = Campaign.objects.create(
         title="Other", created_by=author, organization=campaign.organization

@@ -2312,6 +2312,34 @@ class LayerGroupMemberInlineFormSet(BaseInlineFormSet):
                     'member; the remaining members will be renumbered automatically.'
                 )
             used_orders.add(order)
+        self._assign_new_source_aliases()
+
+    def _assign_new_source_aliases(self):
+        """Reserve generated aliases across all new rows in this submission."""
+        deleted_ids = {
+            form.instance.pk
+            for form in self.initial_forms
+            if self._should_delete_form(form)
+        }
+        used_aliases = set()
+        if self.instance.pk:
+            used_aliases.update(
+                self.instance.members.exclude(pk__in=deleted_ids).values_list(
+                    'source_alias', flat=True
+                )
+            )
+
+        for form in self.forms:
+            if (
+                self._should_delete_form(form)
+                or not form.instance._state.adding
+                or not form.cleaned_data.get('layer')
+            ):
+                continue
+            form.instance.source_alias = form.instance._next_source_alias(
+                existing_aliases=used_aliases
+            )
+            used_aliases.add(form.instance.source_alias)
 
     def get_unique_error_message(self, unique_check):
         if 'order' in unique_check:
