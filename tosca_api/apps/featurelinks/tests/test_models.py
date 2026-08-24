@@ -5,10 +5,10 @@ from django.contrib.gis.geos import Point
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from datetime import timedelta
+import uuid
 
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.featurelinks.models import FeatureLink
-from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geostories.models import GeoStory
 from tosca_api.apps.events.models import Event
 from tosca_api.apps.feedback.models import GeoFeedback
@@ -44,14 +44,6 @@ def story2(user, campaign):
 @pytest.fixture
 def story_b(user, campaign_b):
     return GeoStory.objects.create(title="Story B", campaign=campaign_b, author=user)
-
-
-@pytest.fixture
-def geocontext(user):
-    return GeoContext.objects.create(
-        content={"blocks": [{"type": "paragraph", "data": {"text": "Test content"}}]},
-        created_by=user,
-    )
 
 
 @pytest.fixture
@@ -174,16 +166,16 @@ def test_featurelink_rejects_self_link(user, story1, campaign):
 
 
 @pytest.mark.django_db
-def test_featurelink_rejects_geocontext_as_source(user, geocontext, story1, campaign):
-    """Test that GeoContext cannot be used as link source."""
-    geocontext_ct = ContentType.objects.get_for_model(GeoContext)
+def test_featurelink_rejects_unsupported_model_as_source(user, story1, campaign):
+    """Models outside the supported feature set cannot be link sources."""
+    campaign_ct = ContentType.objects.get_for_model(Campaign)
     geostory_ct = ContentType.objects.get_for_model(GeoStory)
-    
+
     with pytest.raises(ValidationError) as exc:
         FeatureLink.objects.create(
             campaign=campaign,
-            source_content_type=geocontext_ct,
-            source_object_id=geocontext.id,
+            source_content_type=campaign_ct,
+            source_object_id=campaign.id,
             target_content_type=geostory_ct,
             target_object_id=story1.id,
             created_by=user,
@@ -193,18 +185,18 @@ def test_featurelink_rejects_geocontext_as_source(user, geocontext, story1, camp
 
 
 @pytest.mark.django_db
-def test_featurelink_rejects_geocontext_as_target(user, geocontext, story1, campaign):
-    """Test that GeoContext cannot be used as link target."""
-    geocontext_ct = ContentType.objects.get_for_model(GeoContext)
+def test_featurelink_rejects_unsupported_model_as_target(user, story1, campaign):
+    """Models outside the supported feature set cannot be link targets."""
+    campaign_ct = ContentType.objects.get_for_model(Campaign)
     geostory_ct = ContentType.objects.get_for_model(GeoStory)
-    
+
     with pytest.raises(ValidationError) as exc:
         FeatureLink.objects.create(
             campaign=campaign,
             source_content_type=geostory_ct,
             source_object_id=story1.id,
-            target_content_type=geocontext_ct,
-            target_object_id=geocontext.id,
+            target_content_type=campaign_ct,
+            target_object_id=campaign.id,
             created_by=user,
         )
     assert "target_content_type" in exc.value.message_dict
@@ -220,7 +212,7 @@ def test_featurelink_prevents_duplicates(user, story1, story2, campaign):
         target_object=story2,
         created_by=user,
     )
-    
+
     # Attempt to create duplicate - caught at validation level
     with pytest.raises(ValidationError) as exc:
         FeatureLink.objects.create(
@@ -326,13 +318,15 @@ def test_featurelink_story_event_cross_campaign_rejected(user, story1, event_b, 
 # Object Existence Validation Tests
 # =============================================================================
 
+
 @pytest.mark.django_db
 def test_featurelink_rejects_nonexistent_source(user, story1, campaign):
     """Test that a non-existent source object ID is rejected."""
     import uuid
+
     fake_uuid = uuid.uuid4()
     geostory_ct = ContentType.objects.get_for_model(GeoStory)
-    
+
     with pytest.raises(ValidationError) as exc:
         FeatureLink.objects.create(
             campaign=campaign,
@@ -349,9 +343,10 @@ def test_featurelink_rejects_nonexistent_source(user, story1, campaign):
 def test_featurelink_rejects_nonexistent_target(user, story1, campaign):
     """Test that a non-existent target object ID is rejected."""
     import uuid
+
     fake_uuid = uuid.uuid4()
     event_ct = ContentType.objects.get_for_model(Event)
-    
+
     with pytest.raises(ValidationError) as exc:
         FeatureLink.objects.create(
             campaign=campaign,
@@ -365,22 +360,24 @@ def test_featurelink_rejects_nonexistent_target(user, story1, campaign):
 
 
 @pytest.mark.django_db
-def test_featurelink_rejects_wrong_type_uuid(user, campaign, geocontext):
-    """Test that using a GeoContext UUID for GeoStory content type is rejected."""
+def test_featurelink_rejects_wrong_type_uuid(user, campaign):
+    """A UUID that does not identify the declared feature type is rejected."""
     geostory_ct = ContentType.objects.get_for_model(GeoStory)
     event_ct = ContentType.objects.get_for_model(Event)
-    
-    # Use a GeoContext ID but claim it's a GeoStory
+    nonexistent_id = uuid.uuid4()
+
     with pytest.raises(ValidationError) as exc:
         FeatureLink.objects.create(
             campaign=campaign,
             source_content_type=geostory_ct,
-            source_object_id=geocontext.id,  # GeoContext ID, not GeoStory
+            source_object_id=nonexistent_id,
             target_content_type=event_ct,
-            target_object_id=geocontext.id,  # Also wrong
+            target_object_id=nonexistent_id,
             created_by=user,
         )
-    assert "source_object_id" in exc.value.message_dict or "target_object_id" in exc.value.message_dict
+    assert (
+        "source_object_id" in exc.value.message_dict or "target_object_id" in exc.value.message_dict
+    )
 
 
 # =============================================================================

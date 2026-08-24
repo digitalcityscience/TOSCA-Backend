@@ -1,15 +1,15 @@
 """
-EditorJS image authoring endpoints for GeoContext.
+EditorJS image authoring endpoints for feature-owned content.
 
 Two upload routes match the ``@editorjs/image`` contract:
 
-- ``POST /api/v1/geocontext/editorjs/upload-by-file/`` — multipart, field ``image``
-- ``POST /api/v1/geocontext/editorjs/upload-by-url/`` — JSON ``{"url": "..."}``
+- ``POST /api/v1/content/editorjs/upload-by-file/`` — multipart, field ``image``
+- ``POST /api/v1/content/editorjs/upload-by-url/`` — JSON ``{"url": "..."}``
 
 A third route lists previously uploaded images so the admin UI can offer a
 "select existing" picker:
 
-- ``GET /api/v1/geocontext/editorjs/media/``
+- ``GET /api/v1/content/editorjs/media/``
 
 All success bodies follow ``{"success": 1, "file": {"url", "mime", "width",
 "height"}}``; failure bodies use ``{"success": 0, "error": "<msg>"}`` so the
@@ -69,6 +69,7 @@ class EditorJSMediaThrottle(UserRateThrottle):
 
 def _storage_for_alias(alias: str):
     return storages[alias]
+
 
 _UPLOAD_SUCCESS_SERIALIZER = inline_serializer(
     name="EditorJSImageUploadSuccess",
@@ -146,13 +147,11 @@ def _validation_error_message(exc: DjangoValidationError) -> str:
     return "; ".join(exc.messages) or "Image rejected by validation policy."
 
 
-def _store_validated_upload(
-    file_obj, *, request, original_name: str | None = None
-) -> Response:
+def _store_validated_upload(file_obj, *, request, original_name: str | None = None) -> Response:
     """Validate, persist, and return the EditorJS success response.
 
     Security tickets S2: this upload has no owning Campaign/GeoStory yet --
-    the image isn't embedded in any saved GeoContext content until the
+    the image isn't embedded in any saved feature content until the
     author saves the story/event, so ``media_paths.resolve_entity`` has
     nothing to resolve against at this point (it matches on hero_image /
     embedded content references, neither of which exist yet). Every upload
@@ -221,8 +220,8 @@ class EditorJSImageUploadByFileView(APIView):
     throttle_classes = [EditorJSUploadThrottle]
 
     @extend_schema(
-        tags=["geocontext"],
-        operation_id="geocontext_editorjs_upload_by_file",
+        tags=["content"],
+        operation_id="content_editorjs_upload_by_file",
         summary="Upload an EditorJS image file",
         request=_UPLOAD_BY_FILE_REQUEST_SERIALIZER,
         responses={
@@ -252,9 +251,7 @@ class EditorJSImageUploadByFileView(APIView):
         upload = request.FILES.get("image") or request.FILES.get("file")
         if upload is None:
             return _failure("No file uploaded.")
-        return _store_validated_upload(
-            upload, request=request, original_name=upload.name
-        )
+        return _store_validated_upload(upload, request=request, original_name=upload.name)
 
 
 class EditorJSImageUploadByUrlView(APIView):
@@ -265,8 +262,8 @@ class EditorJSImageUploadByUrlView(APIView):
     throttle_classes = [EditorJSUploadThrottle]
 
     @extend_schema(
-        tags=["geocontext"],
-        operation_id="geocontext_editorjs_upload_by_url",
+        tags=["content"],
+        operation_id="content_editorjs_upload_by_url",
         summary="Upload an EditorJS image from a remote URL",
         request=_UPLOAD_BY_URL_REQUEST_SERIALIZER,
         responses={
@@ -320,9 +317,7 @@ class EditorJSImageUploadByUrlView(APIView):
             content=content,
             content_type="application/octet-stream",
         )
-        return _store_validated_upload(
-            wrapped, request=request, original_name=original_name
-        )
+        return _store_validated_upload(wrapped, request=request, original_name=original_name)
 
 
 class EditorJSImageLibraryView(APIView):
@@ -332,8 +327,8 @@ class EditorJSImageLibraryView(APIView):
     throttle_classes = [EditorJSMediaThrottle]
 
     @extend_schema(
-        tags=["geocontext"],
-        operation_id="geocontext_editorjs_media_library",
+        tags=["content"],
+        operation_id="content_editorjs_media_library",
         summary="List uploaded EditorJS images",
         responses={200: _MEDIA_LIBRARY_SERIALIZER},
     )
@@ -445,9 +440,7 @@ def _download_with_caps(url: str) -> Tuple[bytes, str]:
             continue
         received += len(chunk)
         if received > MAX_FILE_SIZE_BYTES:
-            raise _DownloadError(
-                f"Remote file exceeds {MAX_FILE_SIZE_BYTES} bytes."
-            )
+            raise _DownloadError(f"Remote file exceeds {MAX_FILE_SIZE_BYTES} bytes.")
         buf.write(chunk)
 
     name_guess = urlparse(url).path.rsplit("/", 1)[-1] or "remote-image"

@@ -52,10 +52,7 @@ def test_geostory_status_enum_and_published_semantics():
     from tosca_api.apps.geostories.models import GeoStory
 
     assert {c[0] for c in GeoStory.Status.choices} == {"draft", "published", "archived"}
-    assert (
-        GeoStory.objects.published().query.where.children[0].rhs
-        == GeoStory.Status.PUBLISHED
-    )
+    assert GeoStory.objects.published().query.where.children[0].rhs == GeoStory.Status.PUBLISHED
 
 
 def test_campaign_visibility_value_set():
@@ -102,10 +99,9 @@ def _png_upload():
 def test_s2_editorjs_upload_lands_private_by_default(api_client, uploader, private_campaign):
     """S2 fix (security tickets ticket 13).
 
-    An EditorJS upload has **no** owning-Campaign/GeoStory context at upload
-    time -- the image isn't embedded in any saved ``GeoContext.content``
-    until the author saves the story/event, so nothing is resolvable yet.
-    ``geocontext/views.py::_store_validated_upload`` therefore always writes
+    An EditorJS upload has no owning feature at upload time. The image is not
+    embedded in saved story/event/feedback content until the author saves the
+    feature, so nothing is resolvable yet. The upload view therefore writes
     through the private (``default``) alias regardless of any campaign's
     eventual visibility; ``core.media_lifecycle`` promotes it to the public
     alias later, once it's actually linked to a public+published entity
@@ -118,7 +114,7 @@ def test_s2_editorjs_upload_lands_private_by_default(api_client, uploader, priva
     """
     api_client.force_authenticate(user=uploader)
     response = api_client.post(
-        "/api/v1/geocontext/editorjs/upload-by-file/",
+        "/api/v1/content/editorjs/upload-by-file/",
         {"image": _png_upload()},
         format="multipart",
     )

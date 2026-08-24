@@ -1,7 +1,7 @@
 """
 GeoStory model - The core narrative unit.
 
-A GeoStory combines a rich text narrative (GeoContext) with map layers
+A GeoStory combines an owned rich-content document with map layers
 (geodata_providers.Layer) and is organized within a Campaign.
 """
 
@@ -16,6 +16,7 @@ from django.core.files.storage import storages
 from django.db.models.fields.files import ImageField, ImageFieldFile, ImageFileDescriptor
 from django.db import models
 
+from tosca_api.apps.core.editorjs import empty_document, validate_and_normalize
 from tosca_api.apps.core.models import TimeStampedModel
 from tosca_api.apps.core.sanitization import sanitize_simple
 
@@ -31,11 +32,14 @@ class HeroImageFieldFile(ImageFieldFile):
     """ImageField file whose backend follows GeoStory's storage alias."""
 
     def refresh_storage(self) -> None:
-        alias = getattr(
-            self.instance,
-            "hero_image_storage_alias",
-            GeoStory.StorageAlias.DEFAULT,
-        ) or GeoStory.StorageAlias.DEFAULT
+        alias = (
+            getattr(
+                self.instance,
+                "hero_image_storage_alias",
+                GeoStory.StorageAlias.DEFAULT,
+            )
+            or GeoStory.StorageAlias.DEFAULT
+        )
         self.storage = storages[alias]
 
     def __init__(self, instance, field, name):
@@ -81,7 +85,7 @@ class GeoStory(TimeStampedModel):
         status: Draft/Published/Archived
         campaign: The parent campaign this story belongs to
         author: The creator/owner
-        context: 1:1 link to the rich content content block
+        content: The canonical Editor.js document containing the story
         layers: M2M link to map layers
     """
 
@@ -95,6 +99,12 @@ class GeoStory(TimeStampedModel):
     objects = GeoStoryQuerySet.as_manager()
     title = models.CharField(max_length=255)
     summary = models.TextField(blank=True, default="")
+    content = models.JSONField(
+        default=empty_document,
+        blank=True,
+        help_text="The story body as a canonical Editor.js document.",
+    )
+
     class StorageAlias(models.TextChoices):
         DEFAULT = "default", "Private (default)"
         PUBLIC = "media_public", "Public"
@@ -129,32 +139,25 @@ class GeoStory(TimeStampedModel):
         on_delete=models.PROTECT,
         related_name="geostories",
     )
-    context = models.OneToOneField(
-        "geocontext.GeoContext",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="geostory",
-    )
     layers = models.ManyToManyField(
         "geodata_providers.Layer",
         through="GeoStoryLayer",
         related_name="geostories",
         blank=True,
     )
-    
+
     # Reverse generic relations for cascading deletes of FeatureLinks
     feature_links_source = GenericRelation(
         "featurelinks.FeatureLink",
         content_type_field="source_content_type",
         object_id_field="source_object_id",
-        related_query_name="geostory_source"
+        related_query_name="geostory_source",
     )
     feature_links_target = GenericRelation(
         "featurelinks.FeatureLink",
         content_type_field="target_content_type",
         object_id_field="target_object_id",
-        related_query_name="geostory_target"
+        related_query_name="geostory_target",
     )
 
     class Meta:
@@ -166,22 +169,24 @@ class GeoStory(TimeStampedModel):
         return self.title
 
     def clean(self) -> None:
-        """Require descriptive alt text whenever a hero image is present."""
+        """Validate owned content and require alt text for the hero image."""
         super().clean()
+        errors = {}
+        try:
+            self.content = validate_and_normalize(self.content)
+        except ValidationError as exc:
+            errors["content"] = exc.messages
         if self.hero_image and not (self.hero_image_alt or "").strip():
-            raise ValidationError(
-                {
-                    "hero_image_alt": (
-                        "Hero image alt text is required when a hero image is set."
-                    )
-                }
-            )
+            errors["hero_image_alt"] = "Hero image alt text is required when a hero image is set."
+        if errors:
+            raise ValidationError(errors)
 
     def save(self, *args, **kwargs) -> None:
         """Override save to enforce Zero Trust sanitization."""
         self.title = sanitize_simple(self.title)
         self.summary = sanitize_simple(self.summary)
         self.hero_image_alt = sanitize_simple(self.hero_image_alt)
+        self.content = validate_and_normalize(self.content)
 
         # New/replaced uploads must be written directly to the bucket dictated
         # by the current ownership state. Status/visibility-only saves are
@@ -209,10 +214,7 @@ class GeoStory(TimeStampedModel):
         if not self.campaign_id:
             return self.StorageAlias.DEFAULT
         campaign = self.campaign
-        if (
-            campaign.status == campaign.Status.ARCHIVED
-            or self.status == self.Status.ARCHIVED
-        ):
+        if campaign.status == campaign.Status.ARCHIVED or self.status == self.Status.ARCHIVED:
             return self.StorageAlias.ARCHIVE
         if (
             campaign.visibility == campaign.Visibility.PUBLIC
@@ -269,11 +271,9 @@ class GeoStoryLayer(TimeStampedModel):
         """
         if self._state.adding and self.display_order == 0:
             # Find the current maximum order for this story
-            max_order = (
-                GeoStoryLayer.objects.filter(geostory=self.geostory).aggregate(
-                    models.Max("display_order")
-                )["display_order__max"]
-            )
+            max_order = GeoStoryLayer.objects.filter(geostory=self.geostory).aggregate(
+                models.Max("display_order")
+            )["display_order__max"]
             if max_order is not None:
                 self.display_order = max_order + 1
         self.full_clean()

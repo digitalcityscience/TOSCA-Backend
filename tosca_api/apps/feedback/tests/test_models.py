@@ -369,9 +369,7 @@ class TestGeoFeedbackValidation:
             fb.clean()
         assert "custom_form" in exc_info.value.message_dict
 
-    def test_form_enabled_true_with_form_then_disable_form(
-        self, user, campaign, custom_form
-    ):
+    def test_form_enabled_true_with_form_then_disable_form(self, user, campaign, custom_form):
         """Create valid feedback, then update to invalid state should raise."""
         fb = GeoFeedback.objects.create(
             campaign=campaign,
@@ -387,9 +385,7 @@ class TestGeoFeedbackValidation:
         with pytest.raises(ValidationError):
             fb.save()
 
-    def test_update_remove_custom_form_while_form_enabled(
-        self, user, campaign, custom_form
-    ):
+    def test_update_remove_custom_form_while_form_enabled(self, user, campaign, custom_form):
         """Removing custom_form while form_enabled=True should fail."""
         fb = GeoFeedback.objects.create(
             campaign=campaign,
@@ -544,7 +540,9 @@ class TestFeedbackLayer:
         assert fl.display_order == 1
         assert feedback_rating_only.layers.count() == 1
 
-    def test_feedback_layer_has_updated_at_that_changes_on_save(self, feedback_rating_only, layer_ref):
+    def test_feedback_layer_has_updated_at_that_changes_on_save(
+        self, feedback_rating_only, layer_ref
+    ):
         """Regression test: through-tables were missing
         updated_at (created_at-only via manual field, not TimeStampedModel).
         """
@@ -575,14 +573,10 @@ class TestFeedbackLayer:
         layer1 = make_layer("workspace:layer_a", user=user)
         layer2 = make_layer("workspace:layer_b", user=user)
 
-        fl1 = FeedbackLayer.objects.create(
-            feedback=feedback_rating_only, layer=layer1
-        )
+        fl1 = FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer1)
         assert fl1.display_order == 0  # First layer keeps 0
 
-        fl2 = FeedbackLayer.objects.create(
-            feedback=feedback_rating_only, layer=layer2
-        )
+        fl2 = FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer2)
         assert fl2.display_order == 1  # Second auto-increments to 1
 
     def test_feedback_layer_auto_increment_third(self, feedback_rating_only, user):
@@ -593,9 +587,7 @@ class TestFeedbackLayer:
 
         FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer1)
         FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer2)
-        fl3 = FeedbackLayer.objects.create(
-            feedback=feedback_rating_only, layer=layer3
-        )
+        fl3 = FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer3)
         assert fl3.display_order == 2
 
     def test_feedback_layer_explicit_order_preserved(self, feedback_rating_only, layer_ref):
@@ -645,20 +637,14 @@ class TestFeedbackLayer:
         layer_b = make_layer("workspace:ordered_b", user=user)
         layer_c = make_layer("workspace:ordered_c", user=user)
 
-        FeedbackLayer.objects.create(
-            feedback=feedback_rating_only, layer=layer_c, display_order=3
-        )
-        FeedbackLayer.objects.create(
-            feedback=feedback_rating_only, layer=layer_a, display_order=1
-        )
-        FeedbackLayer.objects.create(
-            feedback=feedback_rating_only, layer=layer_b, display_order=2
-        )
+        FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer_c, display_order=3)
+        FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer_a, display_order=1)
+        FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer_b, display_order=2)
 
         ordered = list(
-            FeedbackLayer.objects.filter(
-                feedback=feedback_rating_only
-            ).values_list("layer__name", flat=True)
+            FeedbackLayer.objects.filter(feedback=feedback_rating_only).values_list(
+                "layer__name", flat=True
+            )
         )
         assert ordered == [
             "ordered_a",
@@ -668,9 +654,7 @@ class TestFeedbackLayer:
 
     def test_feedback_layer_cascade_delete(self, feedback_rating_only, layer_ref):
         """Deleting feedback should cascade-delete its layers."""
-        FeedbackLayer.objects.create(
-            feedback=feedback_rating_only, layer=layer_ref
-        )
+        FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer_ref)
         feedback_id = feedback_rating_only.id
         feedback_rating_only.delete()
 
@@ -688,9 +672,7 @@ class TestGeoFeedbackRelationships:
 
     def test_campaign_fk_cascade(self, user, campaign):
         """Deleting campaign should cascade-delete its feedbacks."""
-        GeoFeedback.objects.create(
-            campaign=campaign, title="Cascade test", created_by=user
-        )
+        GeoFeedback.objects.create(campaign=campaign, title="Cascade test", created_by=user)
         campaign_id = campaign.id
         campaign.delete()
         assert GeoFeedback.objects.filter(campaign_id=campaign_id).count() == 0
@@ -699,9 +681,7 @@ class TestGeoFeedbackRelationships:
         """Deleting a user who created feedback should be PROTECTED."""
         from django.db.models import ProtectedError
 
-        GeoFeedback.objects.create(
-            campaign=campaign, title="Protect test", created_by=user
-        )
+        GeoFeedback.objects.create(campaign=campaign, title="Protect test", created_by=user)
         with pytest.raises(ProtectedError):
             user.delete()
 
@@ -719,32 +699,23 @@ class TestGeoFeedbackRelationships:
         fb.refresh_from_db()
         assert fb.custom_form is None
 
-    def test_context_set_null_on_delete(self, user, campaign):
-        """Deleting a GeoContext should set FK to null (not cascade)."""
-        from tosca_api.apps.geocontext.models import GeoContext
-
-        ctx = GeoContext.objects.create(
-            content={"blocks": [{"type": "paragraph", "data": {"text": "Test content"}}]},
-            created_by=user,
-        )
+    def test_feedback_owns_its_content(self, user, campaign):
+        """Feedback content is stored directly on the feedback feature."""
+        content = {"blocks": [{"type": "paragraph", "data": {"text": "Test content"}}]}
         fb = GeoFeedback.objects.create(
             campaign=campaign,
-            title="Context Delete Test",
-            context=ctx,
+            title="Owned Content Test",
+            content=content,
             created_by=user,
         )
-        ctx.delete()
         fb.refresh_from_db()
-        assert fb.context is None
+        assert fb.content == content
+        assert not hasattr(fb, "context")
 
     def test_reverse_relation_campaign_feedbacks(self, user, campaign):
         """Campaign.feedbacks reverse relation should work."""
-        GeoFeedback.objects.create(
-            campaign=campaign, title="FB 1", created_by=user
-        )
-        GeoFeedback.objects.create(
-            campaign=campaign, title="FB 2", created_by=user
-        )
+        GeoFeedback.objects.create(campaign=campaign, title="FB 1", created_by=user)
+        GeoFeedback.objects.create(campaign=campaign, title="FB 2", created_by=user)
         assert campaign.feedbacks.count() == 2
 
     def test_reverse_relation_custom_form_feedbacks(self, user, campaign, custom_form):
@@ -771,28 +742,18 @@ class TestFeedbackLayerValidation:
     """Through-model clean() rejects non-public / non-published layers."""
 
     def test_rejects_non_public_layer(self, feedback_rating_only, user):
-        layer = make_layer(
-            "workspace:fb_private", user=user, is_public=False
-        )
+        layer = make_layer("workspace:fb_private", user=user, is_public=False)
         with pytest.raises(ValidationError):
-            FeedbackLayer.objects.create(
-                feedback=feedback_rating_only, layer=layer
-            )
+            FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer)
 
     def test_rejects_unpublished_layer(self, feedback_rating_only, user):
-        layer = make_layer(
-            "workspace:fb_draft", user=user, publishing_state="DRAFT"
-        )
+        layer = make_layer("workspace:fb_draft", user=user, publishing_state="DRAFT")
         with pytest.raises(ValidationError):
-            FeedbackLayer.objects.create(
-                feedback=feedback_rating_only, layer=layer
-            )
+            FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer)
 
     def test_accepts_public_published(self, feedback_rating_only, user):
         layer = make_layer("workspace:fb_ok", user=user)
-        fl = FeedbackLayer.objects.create(
-            feedback=feedback_rating_only, layer=layer
-        )
+        fl = FeedbackLayer.objects.create(feedback=feedback_rating_only, layer=layer)
         assert fl.id is not None
 
 
@@ -805,9 +766,7 @@ class TestGeoFeedbackIndexes:
     """
 
     def test_status_visibility_composite_index_declared(self):
-        index_field_sets = {
-            tuple(index.fields) for index in GeoFeedback._meta.indexes
-        }
+        index_field_sets = {tuple(index.fields) for index in GeoFeedback._meta.indexes}
         assert ("status", "visibility") in index_field_sets
 
     def test_status_field_relies_on_meta_index_not_field_level_db_index(self):
@@ -817,6 +776,4 @@ class TestGeoFeedbackIndexes:
         # remain.
         status_field = GeoFeedback._meta.get_field("status")
         assert status_field.db_index is False
-        assert ("status",) in {
-            tuple(index.fields) for index in GeoFeedback._meta.indexes
-        }
+        assert ("status",) in {tuple(index.fields) for index in GeoFeedback._meta.indexes}

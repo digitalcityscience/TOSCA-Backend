@@ -196,7 +196,6 @@ class EventViewSet(viewsets.ModelViewSet):
 
         if self.action == "retrieve":
             queryset = queryset.select_related(
-                "context",
                 "campaign",
                 "event_type",
                 "series",
@@ -318,7 +317,6 @@ class EventSeriesViewSet(
     queryset = EventSeries.objects.all().select_related(
         "campaign",
         "event_type",
-        "default_context",
         "created_by",
     )
     # security tickets ticket 04: was IsAuthenticatedOrReadOnly, which let any

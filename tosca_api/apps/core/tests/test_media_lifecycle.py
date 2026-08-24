@@ -87,9 +87,7 @@ def test_desired_alias_is_none_for_orphan_asset():
 def test_desired_alias_is_archive_when_campaign_archived(campaign):
     campaign.status = Campaign.Status.ARCHIVED
     campaign.save()
-    asset = _make_asset(
-        "misc/path.png", campaign=campaign, owner_org=campaign.organization
-    )
+    asset = _make_asset("misc/path.png", campaign=campaign, owner_org=campaign.organization)
 
     assert desired_alias_for_asset(asset) == MediaAsset.StorageAlias.ARCHIVE
 
@@ -97,17 +95,13 @@ def test_desired_alias_is_archive_when_campaign_archived(campaign):
 def test_desired_alias_is_public_when_campaign_active_and_public(campaign):
     campaign.visibility = Campaign.Visibility.PUBLIC
     campaign.save()
-    asset = _make_asset(
-        "misc/path.png", campaign=campaign, owner_org=campaign.organization
-    )
+    asset = _make_asset("misc/path.png", campaign=campaign, owner_org=campaign.organization)
 
     assert desired_alias_for_asset(asset) == MediaAsset.StorageAlias.PUBLIC
 
 
 def test_desired_alias_is_default_when_campaign_active_and_private(campaign):
-    asset = _make_asset(
-        "misc/path.png", campaign=campaign, owner_org=campaign.organization
-    )
+    asset = _make_asset("misc/path.png", campaign=campaign, owner_org=campaign.organization)
 
     assert desired_alias_for_asset(asset) == MediaAsset.StorageAlias.DEFAULT
 
@@ -122,27 +116,21 @@ def test_desired_alias_is_archive_when_owning_story_archived_but_campaign_active
         author=author,
         status=GeoStory.Status.ARCHIVED,
     )
-    # This asset resolves to the story via EditorJS content.
-    from tosca_api.apps.geocontext.models import GeoContext
-
+    # This asset resolves to the story via its EditorJS content.
     from django.core.files.storage import default_storage
 
     default_storage.save("geocontext/editorjs/z/pic.png", ContentFile(_png_bytes()))
-    context = GeoContext.objects.create(
-        content={
-            "blocks": [
-                {
-                    "type": "image",
-                    "data": {
-                        "file": {"url": "/media/geocontext/editorjs/z/pic.png"},
-                        "alt": "a pic",
-                    },
-                }
-            ]
-        },
-        created_by=author,
-    )
-    story.context = context
+    story.content = {
+        "blocks": [
+            {
+                "type": "image",
+                "data": {
+                    "file": {"url": "/media/geocontext/editorjs/z/pic.png"},
+                    "alt": "a pic",
+                },
+            }
+        ]
+    }
     story.save()
     asset = _make_asset(
         "geocontext/editorjs/z/pic.png", campaign=campaign, owner_org=campaign.organization
@@ -151,40 +139,36 @@ def test_desired_alias_is_archive_when_owning_story_archived_but_campaign_active
     assert desired_alias_for_asset(asset) == MediaAsset.StorageAlias.ARCHIVE
 
 
-def _story_with_context_asset(campaign, django_user_model, *, status, path):
-    """A GeoStory whose context embeds an EditorJS-uploaded asset at ``path``."""
+def _story_with_content_asset(campaign, django_user_model, *, status, path):
+    """A GeoStory whose content embeds an EditorJS asset at ``path``."""
     from django.core.files.storage import default_storage
-
-    from tosca_api.apps.geocontext.models import GeoContext
 
     author = django_user_model.objects.create_user(username=f"author-{path}")
     default_storage.save(path, ContentFile(_png_bytes()))
-    context = GeoContext.objects.create(
-        content={
-            "blocks": [
-                {
-                    "type": "image",
-                    "data": {"file": {"url": f"/media/{path}"}, "alt": "a pic"},
-                }
-            ]
-        },
-        created_by=author,
-    )
+    content = {
+        "blocks": [
+            {
+                "type": "image",
+                "data": {"file": {"url": f"/media/{path}"}, "alt": "a pic"},
+            }
+        ]
+    }
     story = GeoStory.objects.create(
-        title="Story", campaign=campaign, author=author, status=status, context=context
+        title="Story", campaign=campaign, author=author, status=status, content=content
     )
     return story
 
 
-def test_desired_alias_is_default_when_campaign_public_but_story_draft(
-    campaign, django_user_model
-):
+def test_desired_alias_is_default_when_campaign_public_but_story_draft(campaign, django_user_model):
     """S2 fix: public campaign alone is not enough -- the owning story must
     also be published, or the asset stays private (ticket 13 truth table)."""
     campaign.visibility = Campaign.Visibility.PUBLIC
     campaign.save()
-    _story_with_context_asset(
-        campaign, django_user_model, status=GeoStory.Status.DRAFT, path="geocontext/editorjs/draft/pic.png"
+    _story_with_content_asset(
+        campaign,
+        django_user_model,
+        status=GeoStory.Status.DRAFT,
+        path="geocontext/editorjs/draft/pic.png",
     )
     asset = _make_asset(
         "geocontext/editorjs/draft/pic.png", campaign=campaign, owner_org=campaign.organization
@@ -198,7 +182,7 @@ def test_desired_alias_is_public_when_campaign_public_and_story_published(
 ):
     campaign.visibility = Campaign.Visibility.PUBLIC
     campaign.save()
-    _story_with_context_asset(
+    _story_with_content_asset(
         campaign,
         django_user_model,
         status=GeoStory.Status.PUBLISHED,
@@ -211,9 +195,7 @@ def test_desired_alias_is_public_when_campaign_public_and_story_published(
     assert desired_alias_for_asset(asset) == MediaAsset.StorageAlias.PUBLIC
 
 
-def test_desired_alias_is_default_when_campaign_public_but_event_draft(
-    campaign, django_user_model
-):
+def test_desired_alias_is_default_when_campaign_public_but_event_draft(campaign, django_user_model):
     from django.contrib.gis.geos import Point
     from django.utils import timezone
     from datetime import timedelta
@@ -225,19 +207,17 @@ def test_desired_alias_is_default_when_campaign_public_but_event_draft(
 
     from django.core.files.storage import default_storage
 
-    from tosca_api.apps.geocontext.models import GeoContext
-
     author = django_user_model.objects.create_user(username="event-author")
     path = "geocontext/editorjs/evt/pic.png"
     default_storage.save(path, ContentFile(_png_bytes()))
-    context = GeoContext.objects.create(
-        content={
-            "blocks": [
-                {"type": "image", "data": {"file": {"url": f"/media/{path}"}, "alt": "a pic"}}
-            ]
-        },
-        created_by=author,
-    )
+    content = {
+        "blocks": [
+            {
+                "type": "image",
+                "data": {"file": {"url": f"/media/{path}"}, "alt": "a pic"},
+            }
+        ]
+    }
     Event.objects.create(
         campaign=campaign,
         title="Event",
@@ -246,7 +226,7 @@ def test_desired_alias_is_default_when_campaign_public_but_event_draft(
         location=Point(10.0, 53.5, srid=4326),
         organizer=author,
         status=Event.Status.DRAFT,
-        context=context,
+        content_override=content,
     )
     asset = _make_asset(path, campaign=campaign, owner_org=campaign.organization)
 
@@ -351,15 +331,11 @@ def test_move_one_dry_run_is_no_change_when_already_in_target_alias(campaign, tm
 
 def test_move_one_moves_hero_image_matched_asset(campaign, django_user_model, tmp_path):
     author = django_user_model.objects.create_user(username="author4")
-    story = GeoStory(
-        title="Story", campaign=campaign, author=author, hero_image_alt="alt"
-    )
+    story = GeoStory(title="Story", campaign=campaign, author=author, hero_image_alt="alt")
     story.hero_image.name = "geostories/x/hero/img.png"
     story.save()
     service, backends, storage_for_alias = _service(tmp_path)
-    storage_for_alias("default").save(
-        "geostories/x/hero/img.png", ContentFile(b"hero-bytes")
-    )
+    storage_for_alias("default").save("geostories/x/hero/img.png", ContentFile(b"hero-bytes"))
     asset = _make_asset(
         "geostories/x/hero/img.png",
         campaign=campaign,
@@ -382,15 +358,11 @@ def test_move_one_dry_run_reports_hero_image_would_move_without_touching_storage
     campaign, django_user_model, tmp_path
 ):
     author = django_user_model.objects.create_user(username="author4-dry")
-    story = GeoStory(
-        title="Story", campaign=campaign, author=author, hero_image_alt="alt"
-    )
+    story = GeoStory(title="Story", campaign=campaign, author=author, hero_image_alt="alt")
     story.hero_image.name = "geostories/x/hero/img.png"
     story.save()
     service, backends, storage_for_alias = _service(tmp_path)
-    storage_for_alias("default").save(
-        "geostories/x/hero/img.png", ContentFile(b"hero-bytes")
-    )
+    storage_for_alias("default").save("geostories/x/hero/img.png", ContentFile(b"hero-bytes"))
     asset = _make_asset(
         "geostories/x/hero/img.png",
         campaign=campaign,
@@ -512,11 +484,17 @@ def test_sync_campaign_assets_moves_every_owned_asset_to_archive(campaign, tmp_p
     default_backend.save("misc/a.png", ContentFile(b"a"))
     default_backend.save("misc/b.png", ContentFile(b"b"))
     a1 = _make_asset(
-        "misc/a.png", campaign=campaign, owner_org=campaign.organization, size=1,
+        "misc/a.png",
+        campaign=campaign,
+        owner_org=campaign.organization,
+        size=1,
         storage_alias=MediaAsset.StorageAlias.DEFAULT,
     )
     a2 = _make_asset(
-        "misc/b.png", campaign=campaign, owner_org=campaign.organization, size=1,
+        "misc/b.png",
+        campaign=campaign,
+        owner_org=campaign.organization,
+        size=1,
         storage_alias=MediaAsset.StorageAlias.DEFAULT,
     )
     campaign.status = Campaign.Status.ARCHIVED
@@ -547,25 +525,23 @@ def test_sync_campaign_assets_skips_orphan_assets(campaign, tmp_path):
 
 def test_sync_story_assets_moves_only_that_storys_assets(campaign, django_user_model, tmp_path):
     author = django_user_model.objects.create_user(username="author5")
-    from tosca_api.apps.geocontext.models import GeoContext
     from django.core.files.storage import default_storage
 
     default_storage.save("geocontext/editorjs/z/pic.png", ContentFile(_png_bytes()))
-    context = GeoContext.objects.create(
-        content={
-            "blocks": [
-                {
-                    "type": "image",
-                    "data": {
-                        "file": {"url": "/media/geocontext/editorjs/z/pic.png"},
-                        "alt": "a pic",
-                    },
-                }
-            ]
-        },
-        created_by=author,
+    content = {
+        "blocks": [
+            {
+                "type": "image",
+                "data": {
+                    "file": {"url": "/media/geocontext/editorjs/z/pic.png"},
+                    "alt": "a pic",
+                },
+            }
+        ]
+    }
+    story = GeoStory.objects.create(
+        title="Story", campaign=campaign, author=author, content=content
     )
-    story = GeoStory.objects.create(title="Story", campaign=campaign, author=author, context=context)
 
     service, backends, storage_for_alias = _service(tmp_path)
     default_backend = storage_for_alias("default")
@@ -629,23 +605,21 @@ def _make_event(campaign, author, **overrides):
     return Event.objects.create(**defaults)
 
 
-def _event_with_context_asset(campaign, django_user_model, *, status, path):
-    """An Event whose context embeds an EditorJS-uploaded asset at ``path``."""
+def _event_with_content_asset(campaign, django_user_model, *, status, path):
+    """An Event whose override embeds an EditorJS asset at ``path``."""
     from django.core.files.storage import default_storage
-
-    from tosca_api.apps.geocontext.models import GeoContext
 
     author = django_user_model.objects.create_user(username=f"event-author-{path}")
     default_storage.save(path, ContentFile(_png_bytes()))
-    context = GeoContext.objects.create(
-        content={
-            "blocks": [
-                {"type": "image", "data": {"file": {"url": f"/media/{path}"}, "alt": "a pic"}}
-            ]
-        },
-        created_by=author,
-    )
-    return _make_event(campaign, author, status=status, context=context)
+    content = {
+        "blocks": [
+            {
+                "type": "image",
+                "data": {"file": {"url": f"/media/{path}"}, "alt": "a pic"},
+            }
+        ]
+    }
+    return _make_event(campaign, author, status=status, content_override=content)
 
 
 def test_sync_event_assets_moves_only_that_events_assets(campaign, django_user_model, tmp_path):
@@ -654,7 +628,7 @@ def test_sync_event_assets_moves_only_that_events_assets(campaign, django_user_m
     campaign.visibility = Campaign.Visibility.PUBLIC
     campaign.save()
     path = "geocontext/editorjs/evt-scope/pic.png"
-    event = _event_with_context_asset(
+    event = _event_with_content_asset(
         campaign, django_user_model, status=Event.Status.DRAFT, path=path
     )
 
@@ -663,11 +637,17 @@ def test_sync_event_assets_moves_only_that_events_assets(campaign, django_user_m
     default_backend.save(path, ContentFile(b"x"))
     default_backend.save("misc/other.png", ContentFile(b"y"))
     event_asset = _make_asset(
-        path, campaign=campaign, owner_org=campaign.organization, size=1,
+        path,
+        campaign=campaign,
+        owner_org=campaign.organization,
+        size=1,
         storage_alias=MediaAsset.StorageAlias.DEFAULT,
     )
     other_asset = _make_asset(
-        "misc/other.png", campaign=campaign, owner_org=campaign.organization, size=1,
+        "misc/other.png",
+        campaign=campaign,
+        owner_org=campaign.organization,
+        size=1,
         storage_alias=MediaAsset.StorageAlias.DEFAULT,
     )
 
@@ -702,7 +682,10 @@ def test_sync_story_assets_promotes_hero_image_on_publish_under_public_campaign(
     campaign.save()
     author = django_user_model.objects.create_user(username="hero-promo-author")
     story = GeoStory(
-        title="Story", campaign=campaign, author=author, hero_image_alt="alt",
+        title="Story",
+        campaign=campaign,
+        author=author,
+        hero_image_alt="alt",
         status=GeoStory.Status.DRAFT,
     )
     story.hero_image.name = "geostories/promo/hero/image.png"
@@ -710,9 +693,7 @@ def test_sync_story_assets_promotes_hero_image_on_publish_under_public_campaign(
     assert story.hero_image_storage_alias == MediaAsset.StorageAlias.DEFAULT
 
     service, backends, storage_for_alias = _service(tmp_path)
-    storage_for_alias("default").save(
-        "geostories/promo/hero/image.png", ContentFile(b"hero-promo")
-    )
+    storage_for_alias("default").save("geostories/promo/hero/image.png", ContentFile(b"hero-promo"))
 
     GeoStory.objects.filter(pk=story.pk).update(status=GeoStory.Status.PUBLISHED)
     story.refresh_from_db()
@@ -733,7 +714,10 @@ def test_sync_story_assets_demotes_hero_image_on_unpublish_under_public_campaign
     campaign.save()
     author = django_user_model.objects.create_user(username="hero-demote-author")
     story = GeoStory(
-        title="Story", campaign=campaign, author=author, hero_image_alt="alt",
+        title="Story",
+        campaign=campaign,
+        author=author,
+        hero_image_alt="alt",
         status=GeoStory.Status.PUBLISHED,
     )
     story.hero_image.name = "geostories/demote/hero/image.png"
@@ -763,14 +747,16 @@ def test_sync_story_assets_promotes_editorjs_asset_on_publish_under_public_campa
     campaign.visibility = Campaign.Visibility.PUBLIC
     campaign.save()
     path = "geocontext/editorjs/story-promo/pic.png"
-    story = _story_with_context_asset(
+    story = _story_with_content_asset(
         campaign, django_user_model, status=GeoStory.Status.DRAFT, path=path
     )
 
     service, backends, storage_for_alias = _service(tmp_path)
     storage_for_alias("default").save(path, ContentFile(b"x"))
     asset = _make_asset(
-        path, campaign=campaign, owner_org=campaign.organization,
+        path,
+        campaign=campaign,
+        owner_org=campaign.organization,
         storage_alias=MediaAsset.StorageAlias.DEFAULT,
     )
 
@@ -791,14 +777,16 @@ def test_sync_story_assets_demotes_editorjs_asset_on_unpublish_under_public_camp
     campaign.visibility = Campaign.Visibility.PUBLIC
     campaign.save()
     path = "geocontext/editorjs/story-demote/pic.png"
-    story = _story_with_context_asset(
+    story = _story_with_content_asset(
         campaign, django_user_model, status=GeoStory.Status.PUBLISHED, path=path
     )
 
     service, backends, storage_for_alias = _service(tmp_path)
     storage_for_alias("media_public").save(path, ContentFile(b"x"))
     asset = _make_asset(
-        path, campaign=campaign, owner_org=campaign.organization,
+        path,
+        campaign=campaign,
+        owner_org=campaign.organization,
         storage_alias=MediaAsset.StorageAlias.PUBLIC,
     )
 
@@ -821,14 +809,16 @@ def test_sync_event_assets_promotes_editorjs_asset_on_publish_under_public_campa
     campaign.visibility = Campaign.Visibility.PUBLIC
     campaign.save()
     path = "geocontext/editorjs/event-promo/pic.png"
-    event = _event_with_context_asset(
+    event = _event_with_content_asset(
         campaign, django_user_model, status=Event.Status.DRAFT, path=path
     )
 
     service, backends, storage_for_alias = _service(tmp_path)
     storage_for_alias("default").save(path, ContentFile(b"x"))
     asset = _make_asset(
-        path, campaign=campaign, owner_org=campaign.organization,
+        path,
+        campaign=campaign,
+        owner_org=campaign.organization,
         storage_alias=MediaAsset.StorageAlias.DEFAULT,
     )
 
@@ -851,14 +841,16 @@ def test_sync_event_assets_demotes_editorjs_asset_on_unpublish_under_public_camp
     campaign.visibility = Campaign.Visibility.PUBLIC
     campaign.save()
     path = "geocontext/editorjs/event-demote/pic.png"
-    event = _event_with_context_asset(
+    event = _event_with_content_asset(
         campaign, django_user_model, status=Event.Status.PUBLISHED, path=path
     )
 
     service, backends, storage_for_alias = _service(tmp_path)
     storage_for_alias("media_public").save(path, ContentFile(b"x"))
     asset = _make_asset(
-        path, campaign=campaign, owner_org=campaign.organization,
+        path,
+        campaign=campaign,
+        owner_org=campaign.organization,
         storage_alias=MediaAsset.StorageAlias.PUBLIC,
     )
 

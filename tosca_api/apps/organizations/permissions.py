@@ -311,7 +311,7 @@ class PlatformOnlyChangeDeleteMixin:
     un-owned model (security tickets ticket 05).
 
     For models with no ownership path -- ``EventType``, ``TaxonomyDimension``/
-    ``TaxonomyTerm``, ``GeoContext`` -- the standard READER/WRITER/ADMIN
+    ``TaxonomyTerm`` -- the standard READER/WRITER/ADMIN
     ``has_perm()`` ladder would let a WRITER in *any* entitled org
     ``add``/``change`` these shared rows and an ADMIN ``delete`` them,
     including reference data other orgs' entities reference. There is no

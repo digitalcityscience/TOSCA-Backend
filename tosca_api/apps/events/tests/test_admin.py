@@ -11,7 +11,13 @@ from django.test import RequestFactory
 from django.utils import timezone
 
 from tosca_api.apps.campaigns.models import Campaign
-from tosca_api.apps.events.admin import EventAdmin, EventSeriesAdmin, EventTypeAdmin, TaxonomyDimensionAdmin, TaxonomyTermAdmin
+from tosca_api.apps.events.admin import (
+    EventAdmin,
+    EventSeriesAdmin,
+    EventTypeAdmin,
+    TaxonomyDimensionAdmin,
+    TaxonomyTermAdmin,
+)
 from tosca_api.apps.events.forms import (
     EventAdminForm,
     EventSeriesAdminForm,
@@ -128,9 +134,15 @@ def test_taxonomy_term_admin_form_exposes_expected_fields(admin_request):
     model_admin = admin.site._registry[TaxonomyTerm]
     form_class = model_admin.get_form(admin_request)
 
-    assert {"dimension", "parent", "code", "label", "description", "is_active", "sort_order"} <= set(
-        form_class.base_fields
-    )
+    assert {
+        "dimension",
+        "parent",
+        "code",
+        "label",
+        "description",
+        "is_active",
+        "sort_order",
+    } <= set(form_class.base_fields)
     assert "auto-append" in form_class.base_fields["sort_order"].help_text
 
 
@@ -200,7 +212,9 @@ def test_event_series_admin_assigns_creator_from_request(admin_request, admin_us
 
 
 @pytest.mark.django_db
-def test_event_series_admin_form_validation_uses_request_user_for_creator(admin_request, admin_user):
+def test_event_series_admin_form_validation_uses_request_user_for_creator(
+    admin_request, admin_user
+):
     """Add-form validation should not crash on missing created_by before save_model runs."""
     campaign = Campaign.objects.create(title="Series Validation Campaign", created_by=admin_user)
     event_type = EventType.objects.create(code="series-weekly", label="Series Weekly")
@@ -211,7 +225,7 @@ def test_event_series_admin_form_validation_uses_request_user_for_creator(admin_
             "campaign": str(campaign.id),
             "event_type": str(event_type.id),
             "name": "Weekly Sessions",
-            "default_context": "",
+            "default_content": '{"blocks": []}',
             "series_mode": EventSeries.SeriesMode.RECURRING,
             "recurrence_type": EventSeries.RecurrenceType.WEEKLY,
             "start_date": str(timezone.localdate() + timedelta(days=5)),
@@ -259,9 +273,7 @@ def test_event_admin_form_embeds_profile_fields(admin_request):
     } <= set(form_class.base_fields)
     assert taxonomy_dimension_field_name(dimension) in form_class.base_fields
     assert taxonomy_dimension_field_name(dimension) in form.fields
-    add_sections = {
-        title for title, _options in model_admin.get_fieldsets(admin_request, obj=None)
-    }
+    add_sections = {title for title, _options in model_admin.get_fieldsets(admin_request, obj=None)}
     assert "Series Metadata" not in add_sections
     assert "Taxonomy" in add_sections
     unsaved_sections = {
@@ -290,9 +302,7 @@ def test_event_admin_add_form_embeds_profile_scoped_taxonomy_fields(admin_reques
     form_class = model_admin.get_form(admin_request, obj=None)
     fieldsets = model_admin.get_fieldsets(admin_request, obj=None)
     fieldset_fields = {
-        field
-        for _title, options in fieldsets
-        for field in options.get("fields", ())
+        field for _title, options in fieldsets for field in options.get("fields", ())
     }
 
     assert taxonomy_field in form_class.base_fields
@@ -340,7 +350,7 @@ def test_event_admin_save_model_persists_selected_extension_profile(admin_reques
             "language_note": "",
             "lead_name": "",
             "external_url": "",
-            "context": "",
+            "content_override": '{"blocks": []}',
             "status": Event.Status.DRAFT,
             "visibility": Event.Visibility.PUBLIC,
             "organizer": str(admin_user.id),
@@ -378,7 +388,9 @@ def test_event_admin_save_model_persists_selected_extension_profile(admin_reques
 
 
 @pytest.mark.django_db
-def test_event_admin_save_model_replaces_old_profile_when_event_type_changes(admin_request, admin_user):
+def test_event_admin_save_model_replaces_old_profile_when_event_type_changes(
+    admin_request, admin_user
+):
     """Switching event type should remove stale extension rows from the event."""
     campaign = Campaign.objects.create(title="Profile Switch Campaign", created_by=admin_user)
     public_health_type = EventType.objects.create(
@@ -433,7 +445,7 @@ def test_event_admin_save_model_replaces_old_profile_when_event_type_changes(adm
             "language_note": "",
             "lead_name": "",
             "external_url": "",
-            "context": "",
+            "content_override": '{"blocks": []}',
             "status": event.status,
             "visibility": event.visibility,
             "organizer": str(admin_user.id),
@@ -502,7 +514,7 @@ def test_event_admin_save_model_persists_dimension_based_taxonomy(admin_request,
             "language_note": "",
             "lead_name": "",
             "external_url": "",
-            "context": "",
+            "content_override": '{"blocks": []}',
             taxonomy_field: [str(climate.id), str(mobility.id)],
             "status": Event.Status.DRAFT,
             "visibility": Event.Visibility.PUBLIC,
@@ -595,7 +607,7 @@ def _build_series_admin_form_data(
         "campaign": str(campaign.id),
         "event_type": str(event_type.id),
         "name": "Test Admin Series",
-        "default_context": "",
+        "default_content": '{"blocks": []}',
         "series_mode": series_mode,
         "recurrence_type": recurrence_type,
         "start_date": str(start_date),
@@ -624,7 +636,8 @@ def _build_series_admin_form_data(
         "provider_contact": "",
         "status": status,
         "visibility": Event.Visibility.PUBLIC,
-        "context": "",
+        "content_override": '{"blocks": []}',
+        "inherit_series_content": "on",
         # Profile fields
         "public_health_insurance_eligible": "",
         "public_health_referral_required": "",
@@ -689,6 +702,7 @@ def test_event_series_admin_manual_batch_create_generates_events(admin_request, 
     event_type = EventType.objects.create(code="admin-batch", label="Admin Batch")
 
     from tosca_api.apps.events.models import EventSeriesDate
+
     model_admin = admin.site._registry[EventSeries]
 
     start_date = timezone.localdate() + timedelta(days=5)
@@ -781,9 +795,7 @@ def test_event_series_admin_update_preserves_exceptions(admin_request, admin_use
     exception_event = Event.objects.filter(series=series).first()
     exception_event.title = "Exception Title"
     exception_event.is_exception = True
-    Event.objects.filter(pk=exception_event.pk).update(
-        title="Exception Title", is_exception=True
-    )
+    Event.objects.filter(pk=exception_event.pk).update(title="Exception Title", is_exception=True)
 
     # Update series
     data["title"] = "Bulk Updated Title"
@@ -836,7 +848,9 @@ def test_event_series_admin_resave_no_duplicate_occurrences(admin_request, admin
 @pytest.mark.django_db
 def test_event_series_admin_rejects_invalid_location_geojson(admin_request, admin_user):
     """Admin form rejects invalid GeoJSON in location field."""
-    campaign = Campaign.objects.create(title="Admin Invalid GeoJSON Campaign", created_by=admin_user)
+    campaign = Campaign.objects.create(
+        title="Admin Invalid GeoJSON Campaign", created_by=admin_user
+    )
     event_type = EventType.objects.create(code="admin-geojson", label="Admin GeoJSON")
     model_admin = admin.site._registry[EventSeries]
 
@@ -958,7 +972,8 @@ def test_event_series_admin_taxonomy_terms_applied(admin_request, admin_user):
     campaign = Campaign.objects.create(title="Admin Taxonomy Campaign", created_by=admin_user)
     event_type = EventType.objects.create(code="admin-tax", label="Admin Taxonomy")
     dimension = TaxonomyDimension.objects.create(
-        code="target-group", label="Target Group",
+        code="target-group",
+        label="Target Group",
         selection_mode=TaxonomyDimension.SelectionMode.MULTIPLE,
     )
     term1 = TaxonomyTerm.objects.create(dimension=dimension, code="youth", label="Youth")
@@ -983,7 +998,9 @@ def test_event_series_admin_taxonomy_terms_applied(admin_request, admin_user):
 
     events = Event.objects.filter(series=series)
     for event in events:
-        event_term_ids = set(EventTerm.objects.filter(event=event).values_list("term_id", flat=True))
+        event_term_ids = set(
+            EventTerm.objects.filter(event=event).values_list("term_id", flat=True)
+        )
         assert term1.id in event_term_ids
         assert term2.id in event_term_ids
 
@@ -1033,3 +1050,97 @@ def test_event_series_admin_profile_fields_applied(admin_request, admin_user):
         assert event.public_health_profile.reduced_amount_eur == Decimal("5.00")
         assert event.public_health_profile.subsidy_program == "Community grant"
         assert event.public_health_profile.transit_note == "Bus stop nearby"
+
+
+@pytest.mark.django_db
+def test_event_admin_add_form_defaults_to_inheriting_series_content():
+    """A brand-new Event's inherit checkbox must default checked.
+
+    self.instance.series_id is always None on the Add page since no series
+    has been submitted yet, so the checkbox must not be computed from it --
+    otherwise staff who pick a series and leave content untouched would
+    silently get an explicit empty content_override instead of inheriting
+    the series default (see events/models.py Event.effective_content).
+    """
+    form = EventAdminForm()
+
+    assert form.fields["inherit_series_content"].initial is True
+
+
+@pytest.mark.django_db
+def test_event_admin_add_form_new_event_with_series_inherits_content_by_default(
+    admin_request, admin_user
+):
+    """Submitting an Add form for a series event without touching the
+    inherit checkbox must inherit the series content, not override it."""
+    campaign = Campaign.objects.create(title="Inherit Campaign", created_by=admin_user)
+    event_type = EventType.objects.create(
+        code="inherit-check",
+        label="Inherit Check",
+        profile_mode=EventType.ProfileMode.EXTENSION,
+        profile_key="public_health",
+    )
+    now = timezone.now().replace(hour=10, minute=0, second=0, microsecond=0)
+    series = EventSeries.objects.create(
+        campaign=campaign,
+        event_type=event_type,
+        created_by=admin_user,
+        name="Inherit Series",
+        series_mode=EventSeries.SeriesMode.MANUAL_BATCH,
+        start_date=now.date(),
+        start_time=now.time(),
+        end_time=(now + timedelta(hours=1)).time(),
+        timezone="Europe/Berlin",
+        default_content={"blocks": [{"type": "paragraph", "data": {"text": "Series default"}}]},
+    )
+    model_admin = admin.site._registry[Event]
+
+    form = EventAdminForm(
+        data={
+            "campaign": str(campaign.id),
+            "event_type": str(event_type.id),
+            "series": str(series.id),
+            "occurrence_index": "1",
+            "title": "Inherits by default",
+            "summary": "",
+            "start_datetime": (timezone.now() + timedelta(days=1)).isoformat(),
+            "end_datetime": (timezone.now() + timedelta(days=1, hours=2)).isoformat(),
+            "location_mode": Event.LocationMode.ONLINE,
+            "location": "",
+            "online_url": "https://example.com/join",
+            "online_platform": "Zoom",
+            "access_notes": "",
+            "provider_name": "",
+            "provider_url": "",
+            "provider_address": "",
+            "provider_phone": "",
+            "provider_email": "",
+            "provider_social": "",
+            "venue_address": "",
+            "district": "",
+            "language": [],
+            "language_note": "",
+            "lead_name": "",
+            "external_url": "",
+            "content_override": '{"blocks": []}',
+            "inherit_series_content": "on",
+            "status": Event.Status.DRAFT,
+            "visibility": Event.Visibility.PUBLIC,
+            "organizer": str(admin_user.id),
+            "public_health_insurance_eligible": "",
+            "public_health_referral_required": "",
+            "sports_sport_name": "",
+            "sports_skill_level": "",
+            "culture_format_label": "",
+            "culture_age_rating": "",
+        }
+    )
+
+    assert form.is_valid(), form.errors
+    event = form.save(commit=False)
+    model_admin.save_model(admin_request, event, form, change=False)
+
+    event.refresh_from_db()
+    assert event.content_override is None
+    assert event.effective_content == series.default_content
+    assert event.content_source == "series"

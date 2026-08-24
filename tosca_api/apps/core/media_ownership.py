@@ -3,9 +3,8 @@ Backfill ``MediaAsset.owner_org`` / ``MediaAsset.campaign`` for existing rows.
 
 Epic 11 PR1 (§4/§6.1 of ``docs/development/epic-11-campaign-ownership-visibility-garage-lifecycle-14082026.md``)
 adds ownership fields to ``MediaAsset`` but the model previously had no link
-to a Campaign at all -- only a weak, implicit tie through EditorJS content
-(``GeoContext.content`` embeds ``<storage-url>`` references) or, for
-GeoStory hero images, a direct FK field. This module is the read-only
+to a Campaign at all -- only a weak, implicit tie through feature-owned
+Editor.js content or, for GeoStory hero images, a direct field. This module is the read-only
 matching logic that turns those implicit ties into an explicit FK, plus the
 apply step.
 
@@ -13,12 +12,10 @@ Matching strategy (best-effort, in priority order for each unmatched asset):
 
 1. **Hero image** -- a ``GeoStory.hero_image`` field whose stored name equals
    the asset's ``storage_path`` gets that GeoStory's campaign directly.
-2. **EditorJS content reference** -- scan every ``GeoContext.content`` block
+2. **EditorJS content reference** -- scan every feature-owned content block
    for embedded storage paths (image blocks store the browser-facing URL,
    see ``core.editorjs._normalize_image``) and match against
-   ``asset.storage_path``. Once a GeoContext is found, resolve its owning
-   Campaign through the *first* of: linked GeoStory, linked Event,
-   EventSeries.default_context.
+   ``asset.storage_path`` and use that feature's Campaign directly.
 
 Assets that don't match either path are left ``campaign=None`` --
 deliberately: per §6.1 of the ticket, whether unmatched assets should stay
@@ -76,39 +73,6 @@ def _url_references_storage_path(url: str, storage_path: str) -> bool:
     return url.rstrip("/").endswith(storage_path.lstrip("/"))
 
 
-def _campaign_for_geocontext(context_id) -> "object | None":
-    """Resolve the owning Campaign for a GeoContext, or ``None``.
-
-    Checked in order: GeoStory (1:1 ``context``), Event (nullable FK
-    ``context`` -- an explicit override), EventSeries
-    (``default_context``, the series-level fallback events without their
-    own override resolve to). First match wins; a GeoContext is expected to
-    be used by at most one of these in practice, but if it is used by more
-    than one, the first hit determines the asset's Campaign, this is a
-    best-effort backfill, not a guaranteed-unique assignment.
-    """
-    from tosca_api.apps.geostories.models import GeoStory
-    from tosca_api.apps.events.models import Event, EventSeries
-
-    story = GeoStory.objects.filter(context_id=context_id).select_related("campaign").first()
-    if story is not None:
-        return story.campaign
-
-    event = Event.objects.filter(context_id=context_id).select_related("campaign").first()
-    if event is not None:
-        return event.campaign
-
-    series = (
-        EventSeries.objects.filter(default_context_id=context_id)
-        .select_related("campaign")
-        .first()
-    )
-    if series is not None:
-        return series.campaign
-
-    return None
-
-
 def plan_backfill(assets: QuerySet | None = None) -> list[BackfillEntry]:
     """Compute (without writing) the campaign/org match for every asset.
 
@@ -118,8 +82,9 @@ def plan_backfill(assets: QuerySet | None = None) -> list[BackfillEntry]:
     are left untouched.
     """
     from tosca_api.apps.core.models import MediaAsset
+    from tosca_api.apps.events.models import Event, EventSeries
+    from tosca_api.apps.feedback.models import GeoFeedback
     from tosca_api.apps.geostories.models import GeoStory
-    from tosca_api.apps.geocontext.models import GeoContext
 
     if assets is None:
         assets = MediaAsset.objects.filter(campaign__isnull=True)
@@ -132,13 +97,24 @@ def plan_backfill(assets: QuerySet | None = None) -> list[BackfillEntry]:
         if story.hero_image
     }
 
-    # EditorJS content index: storage-path suffix -> GeoContext id. Built by
-    # scanning every GeoContext once rather than per-asset, since the asset
-    # count is typically >> GeoContext count.
-    content_index: list[tuple[str, "object"]] = []
-    for context in GeoContext.objects.only("id", "content").iterator():
-        for url in iter_storage_paths_in_content(context.content):
-            content_index.append((url, context.id))
+    # URL -> owning campaign/org. Model order preserves the historical
+    # story/event priority, then includes feedback and series defaults.
+    content_index: list[tuple[str, str, str]] = []
+    content_sources = (
+        (GeoStory.objects.all(), "content"),
+        (Event.objects.exclude(content_override=None), "content_override"),
+        (GeoFeedback.objects.all(), "content"),
+        (EventSeries.objects.all(), "default_content"),
+    )
+    for queryset, field_name in content_sources:
+        rows = queryset.select_related("campaign__organization").only(
+            field_name,
+            "campaign_id",
+            "campaign__organization_id",
+        )
+        for row in rows.iterator():
+            for url in iter_storage_paths_in_content(getattr(row, field_name)):
+                content_index.append((url, str(row.campaign_id), str(row.campaign.organization_id)))
 
     entries: list[BackfillEntry] = []
     for asset in assets.iterator():
@@ -155,27 +131,26 @@ def plan_backfill(assets: QuerySet | None = None) -> list[BackfillEntry]:
             )
             continue
 
-        matched_context_id = next(
+        matched_owner = next(
             (
-                context_id
-                for url, context_id in content_index
+                (campaign_id, organization_id)
+                for url, campaign_id, organization_id in content_index
                 if _url_references_storage_path(url, asset.storage_path)
             ),
             None,
         )
-        if matched_context_id is not None:
-            campaign = _campaign_for_geocontext(matched_context_id)
-            if campaign is not None:
-                entries.append(
-                    BackfillEntry(
-                        asset_id=str(asset.id),
-                        storage_path=asset.storage_path,
-                        matched_via="editorjs_content",
-                        campaign_id=str(campaign.id),
-                        organization_id=str(campaign.organization_id),
-                    )
+        if matched_owner is not None:
+            campaign_id, organization_id = matched_owner
+            entries.append(
+                BackfillEntry(
+                    asset_id=str(asset.id),
+                    storage_path=asset.storage_path,
+                    matched_via="editorjs_content",
+                    campaign_id=campaign_id,
+                    organization_id=organization_id,
                 )
-                continue
+            )
+            continue
 
         entries.append(
             BackfillEntry(
@@ -206,8 +181,7 @@ def apply_backfill(entries: Iterable[BackfillEntry]) -> int:
     for start in range(0, len(resolved), batch_size):
         batch = resolved[start : start + batch_size]
         assets_by_id = {
-            str(a.id): a
-            for a in MediaAsset.objects.filter(id__in=[e.asset_id for e in batch])
+            str(a.id): a for a in MediaAsset.objects.filter(id__in=[e.asset_id for e in batch])
         }
         to_update = []
         for entry in batch:
@@ -221,6 +195,34 @@ def apply_backfill(entries: Iterable[BackfillEntry]) -> int:
             MediaAsset.objects.bulk_update(to_update, ["campaign", "owner_org"])
             updated += len(to_update)
     return updated
+
+
+def claim_assets_referenced_by_content(*, content: dict, campaign) -> list:
+    """Assign newly embedded uploads to the feature's campaign and org.
+
+    Editor.js uploads are intentionally unowned while the author is editing.
+    Once a feature save embeds their storage URLs, this function closes that
+    ownership gap without changing assignments that are already established.
+    """
+    from tosca_api.apps.core.models import MediaAsset
+
+    urls = list(iter_storage_paths_in_content(content))
+    if not urls or campaign is None:
+        return []
+
+    matched = []
+    candidates = MediaAsset.objects.filter(campaign__isnull=True).iterator()
+    for asset in candidates:
+        if any(_url_references_storage_path(url, asset.storage_path) for url in urls):
+            asset.campaign_id = campaign.id
+            asset.owner_org_id = campaign.organization_id
+            matched.append(asset)
+
+    if matched:
+        MediaAsset.objects.bulk_update(matched, ["campaign", "owner_org"])
+        for asset in matched:
+            asset.campaign = campaign
+    return matched
 
 
 def summarize(entries: list[BackfillEntry]) -> dict[str, int]:

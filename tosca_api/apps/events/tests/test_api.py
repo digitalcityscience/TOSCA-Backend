@@ -17,7 +17,6 @@ from tosca_api.apps.events.models import (
     TaxonomyDimension,
     TaxonomyTerm,
 )
-from tosca_api.apps.geocontext.models import GeoContext
 
 User = get_user_model()
 
@@ -34,7 +33,9 @@ def build_series_kwargs(user, campaign, event_type, **overrides):
         "series_mode": EventSeries.SeriesMode.MANUAL_BATCH,
         "start_date": now.date(),
         "start_time": now.time().replace(tzinfo=None, microsecond=0),
-        "end_time": (now + timedelta(hours=1)).time().replace(
+        "end_time": (now + timedelta(hours=1))
+        .time()
+        .replace(
             tzinfo=None,
             microsecond=0,
         ),
@@ -95,9 +96,7 @@ def _authenticate_org_writer(api_client, user, *roles, org="dcs"):
     """
     level = roles[0].rsplit("_", 1)[-1] if roles else None
     if level:
-        user._auth_claims = AuthClaims(
-            org_roles={org: level}, default_org=org, authoritative=True
-        )
+        user._auth_claims = AuthClaims(org_roles={org: level}, default_org=org, authoritative=True)
     api_client.force_authenticate(user=user, token=_org_token(*roles, org=org))
 
 
@@ -108,9 +107,7 @@ def user():
 
 @pytest.fixture
 def staff_user():
-    return User.objects.create_user(
-        username="staffuser", password="password", is_staff=True
-    )
+    return User.objects.create_user(username="staffuser", password="password", is_staff=True)
 
 
 @pytest.fixture
@@ -119,11 +116,8 @@ def campaign(user):
 
 
 @pytest.fixture
-def geocontext(user):
-    return GeoContext.objects.create(
-        content={"blocks": [{"type": "paragraph", "data": {"text": "Shared API context"}}]},
-        created_by=user,
-    )
+def shared_content():
+    return {"blocks": [{"type": "paragraph", "data": {"text": "Shared API content"}}]}
 
 
 @pytest.fixture
@@ -333,9 +327,7 @@ def test_events_list_unauthenticated_is_public(api_client):
 
 
 @pytest.mark.django_db
-def test_events_list_returns_future_only_by_default(
-    api_client, user, future_event, past_event
-):
+def test_events_list_returns_future_only_by_default(api_client, user, future_event, past_event):
     """Test that list returns only future events by default."""
     api_client.force_authenticate(user=user)
     response = api_client.get("/api/v1/events/")
@@ -373,9 +365,7 @@ def test_events_list_includes_events_without_location(
 
 
 @pytest.mark.django_db
-def test_events_list_filters_by_published_status(
-    api_client, user, future_event, draft_event
-):
+def test_events_list_filters_by_published_status(api_client, user, future_event, draft_event):
     """Test that list returns only published events by default."""
     api_client.force_authenticate(user=user)
     response = api_client.get("/api/v1/events/")
@@ -475,9 +465,7 @@ def test_events_list_and_map_filter_by_profile_key(api_client, user, campaign):
 
     assert list_response.status_code == 200
     assert map_response.status_code == 200
-    assert [event["title"] for event in list_response.data["results"]] == [
-        "PH Filter Match"
-    ]
+    assert [event["title"] for event in list_response.data["results"]] == ["PH Filter Match"]
     assert [
         feature["properties"]["title"]
         for feature in map_response.data["spatial_events"]["features"]
@@ -517,9 +505,7 @@ def test_events_list_and_map_filter_by_taxonomy_codes(api_client, user, campaign
 
     assert list_response.status_code == 200
     assert map_response.status_code == 200
-    assert [event["title"] for event in list_response.data["results"]] == [
-        "Taxonomy Code Match"
-    ]
+    assert [event["title"] for event in list_response.data["results"]] == ["Taxonomy Code Match"]
     assert [
         feature["properties"]["title"]
         for feature in map_response.data["spatial_events"]["features"]
@@ -527,9 +513,7 @@ def test_events_list_and_map_filter_by_taxonomy_codes(api_client, user, campaign
 
 
 @pytest.mark.django_db
-def test_events_taxonomy_uuid_and_code_filter_mismatch_returns_empty(
-    api_client, user, campaign
-):
+def test_events_taxonomy_uuid_and_code_filter_mismatch_returns_empty(api_client, user, campaign):
     matching_dimension = TaxonomyDimension.objects.create(
         code="filter-mismatch-matching",
         label="Filter Mismatch Matching",
@@ -561,9 +545,7 @@ def test_events_taxonomy_uuid_and_code_filter_mismatch_returns_empty(
 
 
 @pytest.mark.django_db
-def test_events_list_and_map_include_profile_key_and_compact_taxonomy(
-    api_client, user, campaign
-):
+def test_events_list_and_map_include_profile_key_and_compact_taxonomy(api_client, user, campaign):
     ph_type = EventType.objects.create(
         code="shape-ph-type",
         label="Shape PH Type",
@@ -629,9 +611,7 @@ def test_events_list_and_map_include_profile_key_and_compact_taxonomy(
 
 
 @pytest.mark.django_db
-def test_events_list_v2_returns_mixed_modes_ordered_by_start_datetime(
-    api_client, user, campaign
-):
+def test_events_list_v2_returns_mixed_modes_ordered_by_start_datetime(api_client, user, campaign):
     """The dedicated list endpoint should return a chronological mixed stream."""
     Event.objects.create(
         campaign=campaign,
@@ -765,9 +745,7 @@ def test_events_list_ignores_bbox_query_param(api_client, user, campaign):
 
 
 @pytest.mark.django_db
-def test_events_list_staff_visibility_private_filter(
-    api_client, user, staff_user, campaign
-):
+def test_events_list_staff_visibility_private_filter(api_client, user, staff_user, campaign):
     """Staff can narrow the list to private events via the visibility filter."""
     Event.objects.create(
         campaign=campaign,
@@ -871,8 +849,7 @@ def test_events_map_v2_filters_by_event_type(api_client, user, campaign, event_t
 
     assert response.status_code == 200
     assert [
-        feature["properties"]["title"]
-        for feature in response.data["spatial_events"]["features"]
+        feature["properties"]["title"] for feature in response.data["spatial_events"]["features"]
     ] == ["Matching Spatial Event"]
 
 
@@ -918,8 +895,7 @@ def test_events_map_v2_spatial_bucket_contains_only_mapped_physical_or_hybrid_ev
 
     assert response.status_code == 200
     spatial_titles = [
-        feature["properties"]["title"]
-        for feature in response.data["spatial_events"]["features"]
+        feature["properties"]["title"] for feature in response.data["spatial_events"]["features"]
     ]
     assert spatial_titles == ["Physical Event", "Hybrid Event"]
     assert response.data["online_events"][0]["title"] == "Online Event"
@@ -964,8 +940,7 @@ def test_events_map_v2_area_filter_keeps_eligible_online_events_separately(
 
     assert response.status_code == 200
     spatial_titles = [
-        feature["properties"]["title"]
-        for feature in response.data["spatial_events"]["features"]
+        feature["properties"]["title"] for feature in response.data["spatial_events"]["features"]
     ]
     online_titles = [event["title"] for event in response.data["online_events"]]
     assert spatial_titles == ["Inside Physical Event"]
@@ -1119,7 +1094,9 @@ def test_events_within_excludes_past_events_by_default(api_client, user, campaig
 
 
 @pytest.mark.django_db
-def test_events_shared_filters_match_between_list_and_within(api_client, user, staff_user, campaign):
+def test_events_shared_filters_match_between_list_and_within(
+    api_client, user, staff_user, campaign
+):
     """List and within endpoints should apply the same non-spatial filter contract."""
     dimension = TaxonomyDimension.objects.create(code="topic", label="Topic")
     climate = TaxonomyTerm.objects.create(
@@ -1241,15 +1218,16 @@ def test_events_retrieve_detail(api_client, user, future_event):
     assert response.data["id"] == str(future_event.id)
     assert response.data["title"] == "Future Event"
     assert "layers" in response.data
-    assert "context" in response.data
+    assert "content" in response.data
+    assert "content_source" in response.data
     assert "taxonomy_assignments" in response.data
 
 
 @pytest.mark.django_db
-def test_events_retrieve_detail_uses_series_default_context(
-    api_client, user, campaign, geocontext, event_type
+def test_events_retrieve_detail_uses_series_default_content(
+    api_client, user, campaign, shared_content, event_type
 ):
-    """Detail responses should expose the resolved series default context."""
+    """Detail responses expose resolved content and its source."""
     series = EventSeries.objects.create(
         **build_series_kwargs(
             user,
@@ -1257,7 +1235,7 @@ def test_events_retrieve_detail_uses_series_default_context(
             event_type,
             name="API Series",
         ),
-        default_context=geocontext,
+        default_content=shared_content,
     )
     event = Event.objects.create(
         campaign=campaign,
@@ -1269,14 +1247,15 @@ def test_events_retrieve_detail_uses_series_default_context(
         organizer=user,
         series=series,
         occurrence_index=1,
-        context=None,
+        content_override=None,
         status=Event.Status.PUBLISHED,
     )
 
     api_client.force_authenticate(user=user)
     response = api_client.get(f"/api/v1/events/{event.id}/")
     assert response.status_code == 200
-    assert response.data["context"]["id"] == str(geocontext.id)
+    assert response.data["content"] == shared_content
+    assert response.data["content_source"] == "series"
 
 
 @pytest.mark.django_db
@@ -1320,8 +1299,7 @@ def test_events_retrieve_detail_returns_grouped_taxonomy_assignments(
     assignments = response.data["taxonomy_assignments"]
     assert len(assignments) == 2
     assert {
-        assignment["dimension_code"]: set(assignment["term_ids"])
-        for assignment in assignments
+        assignment["dimension_code"]: set(assignment["term_ids"]) for assignment in assignments
     } == {
         "topic": {str(climate.id)},
         "audience": {str(youth.id)},
@@ -1507,7 +1485,10 @@ def test_event_series_create_weekly_generates_occurrences_with_series_metadata(
     assert [event.occurrence_index for event in events] == [1, 2, 3]
     assert all(event.series_id == series.id for event in events)
     assert all(event.original_start_datetime == event.start_datetime for event in events)
-    assert [event.start_datetime.astimezone(ZoneInfo("Europe/Berlin")).date().isoformat() for event in events] == [
+    assert [
+        event.start_datetime.astimezone(ZoneInfo("Europe/Berlin")).date().isoformat()
+        for event in events
+    ] == [
         "2026-04-06",
         "2026-04-13",
         "2026-04-20",
@@ -1737,9 +1718,7 @@ def test_events_create_assigns_taxonomy_terms(api_client, user, campaign):
 
     assert response.status_code == 201
     event = Event.objects.get(id=response.data["id"])
-    assigned_term_ids = set(
-        EventTerm.objects.filter(event=event).values_list("term_id", flat=True)
-    )
+    assigned_term_ids = set(EventTerm.objects.filter(event=event).values_list("term_id", flat=True))
     assert assigned_term_ids == {climate.id, mobility.id, youth.id}
 
 
@@ -1833,9 +1812,7 @@ def test_events_create_rejects_non_leaf_taxonomy_term(api_client, user, campaign
         "location_mode": "online",
         "online_url": "https://example.org/live",
         "status": "published",
-        "taxonomy_assignments": [
-            {"dimension_id": str(dimension.id), "term_ids": [str(parent.id)]}
-        ],
+        "taxonomy_assignments": [{"dimension_id": str(dimension.id), "term_ids": [str(parent.id)]}],
     }
 
     response = api_client.post("/api/v1/events/", data, format="json")
@@ -2162,9 +2139,7 @@ def test_event_create_with_layer_uuids(api_client, user, campaign):
 def test_event_create_rejects_unpublished_layer(api_client, user, campaign):
     from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
-    draft_layer = make_layer(
-        "workspace:evt_w_draft", user=user, publishing_state="DRAFT"
-    )
+    draft_layer = make_layer("workspace:evt_w_draft", user=user, publishing_state="DRAFT")
     now = timezone.now()
     _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     payload = {

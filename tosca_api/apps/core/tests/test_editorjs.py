@@ -383,6 +383,35 @@ def test_image_block_normalizes_with_server_derived_metadata(stored_image):
 
 
 @pytest.mark.django_db
+def test_image_block_accepts_storage_generated_url():
+    """The URL a real upload returns (``storage.url(name)``) must validate.
+
+    ``stored_image`` hand-builds a ``MEDIA_URL``-relative path, which always
+    satisfies the filesystem-backend contract regardless of what backend is
+    actually configured. Under the S3 backend, ``storage.url(name)`` instead
+    returns a presigned URL shaped ``{endpoint}/{bucket}/{location}/{name}?
+    {signature}`` -- this must also validate, or every real image upload
+    saved through the admin/API fails with "must be a storage URL under
+    '/media/'" even though the file exists and was just uploaded.
+    """
+    path = default_storage.save(
+        "geocontext/editorjs/test/storage-url.png", ContentFile(_png_bytes(200, 100))
+    )
+    try:
+        url = default_storage.url(path)
+        out = validate_and_normalize(
+            {"blocks": [{"type": "image", "data": {"file": {"url": url}, "alt": "x"}}]}
+        )
+    finally:
+        default_storage.delete(path)
+
+    data = out["blocks"][0]["data"]
+    assert data["file"]["url"] == url
+    assert data["file"]["width"] == 200
+    assert data["file"]["height"] == 100
+
+
+@pytest.mark.django_db
 def test_image_block_rejects_non_storage_paths_and_unsafe_schemes(stored_image):
     cases = [
         "javascript:alert(1)",

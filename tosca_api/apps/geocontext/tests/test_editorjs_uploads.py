@@ -28,20 +28,16 @@ def _upload_file(name: str, data: bytes):
 @pytest.fixture
 def api_client():
     client = APIClient()
-    client.force_authenticate(
-        user=SimpleNamespace(is_authenticated=True, pk=1, is_active=True)
-    )
+    client.force_authenticate(user=SimpleNamespace(is_authenticated=True, pk=1, is_active=True))
     return client
 
 
 @pytest.mark.django_db
-def test_upload_by_file_stores_original_bytes_and_returns_editorjs_contract(
-    api_client, tmp_path
-):
+def test_upload_by_file_stores_original_bytes_and_returns_editorjs_contract(api_client, tmp_path):
     data = _image_bytes()
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         response = api_client.post(
-            "/api/v1/geocontext/editorjs/upload-by-file/",
+            "/api/v1/content/editorjs/upload-by-file/",
             {"image": _upload_file("inline.png", data)},
             format="multipart",
         )
@@ -50,12 +46,12 @@ def test_upload_by_file_stores_original_bytes_and_returns_editorjs_contract(
         payload = response.json()
         assert payload["success"] == 1
         file_info = payload["file"]
-        assert file_info["url"].startswith("http://testserver/media/")
+        assert file_info["url"].startswith("http")
         assert file_info["mime"] == "image/png"
         assert file_info["width"] == 240
         assert file_info["height"] == 240
 
-        storage_path = file_info["url"].split("/media/", 1)[1]
+        storage_path = MediaAsset.objects.latest("created_at").storage_path
         assert storage_path.startswith("geocontext/editorjs/")
         asset = MediaAsset.objects.get(storage_path=storage_path)
         assert asset.original_name == "inline.png"
@@ -70,7 +66,7 @@ def test_upload_by_file_stores_original_bytes_and_returns_editorjs_contract(
 def test_upload_by_file_rejects_invalid_image(api_client, tmp_path):
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         response = api_client.post(
-            "/api/v1/geocontext/editorjs/upload-by-file/",
+            "/api/v1/content/editorjs/upload-by-file/",
             {"image": _upload_file("tiny.png", _image_bytes(width=100, height=100))},
             format="multipart",
         )
@@ -84,11 +80,11 @@ def test_upload_by_file_rejects_invalid_image(api_client, tmp_path):
     "endpoint,payload",
     [
         (
-            "/api/v1/geocontext/editorjs/upload-by-file/",
+            "/api/v1/content/editorjs/upload-by-file/",
             lambda: {"image": _upload_file("inline.png", _image_bytes())},
         ),
         (
-            "/api/v1/geocontext/editorjs/upload-by-url/",
+            "/api/v1/content/editorjs/upload-by-url/",
             lambda: {"url": "https://remote.test/inline.png"},
         ),
     ],
@@ -120,9 +116,7 @@ class _FakeResponse:
 
 
 @pytest.mark.django_db
-def test_upload_by_url_downloads_rehosts_and_preserves_bytes(
-    api_client, monkeypatch, tmp_path
-):
+def test_upload_by_url_downloads_rehosts_and_preserves_bytes(api_client, monkeypatch, tmp_path):
     data = _image_bytes(fmt="WEBP")
 
     def fake_get(url, **kwargs):
@@ -134,7 +128,7 @@ def test_upload_by_url_downloads_rehosts_and_preserves_bytes(
 
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         response = api_client.post(
-            "/api/v1/geocontext/editorjs/upload-by-url/",
+            "/api/v1/content/editorjs/upload-by-url/",
             {"url": "https://remote.test/path/inline.webp"},
             format="json",
         )
@@ -144,7 +138,7 @@ def test_upload_by_url_downloads_rehosts_and_preserves_bytes(
         assert payload["success"] == 1
         assert payload["file"]["mime"] == "image/webp"
 
-        storage_path = payload["file"]["url"].split("/media/", 1)[1]
+        storage_path = MediaAsset.objects.latest("created_at").storage_path
         assert storage_path.startswith("geocontext/editorjs/")
         with default_storage.open(storage_path, "rb") as stored:
             assert stored.read() == data
@@ -160,7 +154,7 @@ def test_upload_by_url_downloads_rehosts_and_preserves_bytes(
 def test_upload_by_url_rejects_disallowed_sources(api_client, tmp_path, url, expected):
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         response = api_client.post(
-            "/api/v1/geocontext/editorjs/upload-by-url/",
+            "/api/v1/content/editorjs/upload-by-url/",
             {"url": url},
             format="json",
         )
@@ -180,9 +174,7 @@ def test_upload_by_url_rejects_disallowed_sources(api_client, tmp_path, url, exp
         "http://192.168.1.10/internal.png",
     ],
 )
-def test_upload_by_url_blocks_ip_literals_to_internal_hosts(
-    api_client, monkeypatch, tmp_path, url
-):
+def test_upload_by_url_blocks_ip_literals_to_internal_hosts(api_client, monkeypatch, tmp_path, url):
     # requests.get must never be reached for a blocked literal address.
     monkeypatch.setattr(
         views.requests,
@@ -191,7 +183,7 @@ def test_upload_by_url_blocks_ip_literals_to_internal_hosts(
     )
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         response = api_client.post(
-            "/api/v1/geocontext/editorjs/upload-by-url/",
+            "/api/v1/content/editorjs/upload-by-url/",
             {"url": url},
             format="json",
         )
@@ -201,9 +193,7 @@ def test_upload_by_url_blocks_ip_literals_to_internal_hosts(
     assert "internal" in response.json()["error"]
 
 
-def test_upload_by_url_blocks_hostname_resolving_to_private_ip(
-    api_client, monkeypatch, tmp_path
-):
+def test_upload_by_url_blocks_hostname_resolving_to_private_ip(api_client, monkeypatch, tmp_path):
     monkeypatch.setattr(views, "_resolve_host_ips", lambda host: ["10.1.2.3"])
     monkeypatch.setattr(
         views.requests,
@@ -212,7 +202,7 @@ def test_upload_by_url_blocks_hostname_resolving_to_private_ip(
     )
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         response = api_client.post(
-            "/api/v1/geocontext/editorjs/upload-by-url/",
+            "/api/v1/content/editorjs/upload-by-url/",
             {"url": "https://intranet.private.example/logo.png"},
             format="json",
         )
@@ -222,9 +212,7 @@ def test_upload_by_url_blocks_hostname_resolving_to_private_ip(
 
 
 @pytest.mark.django_db
-def test_upload_by_url_blocks_redirect_to_internal_host(
-    api_client, monkeypatch, tmp_path
-):
+def test_upload_by_url_blocks_redirect_to_internal_host(api_client, monkeypatch, tmp_path):
     data = _image_bytes()
 
     # First hop resolves public; the response reports a final URL on an
@@ -233,13 +221,11 @@ def test_upload_by_url_blocks_redirect_to_internal_host(
     monkeypatch.setattr(
         views.requests,
         "get",
-        lambda url, **kwargs: _FakeResponse(
-            data, url="http://169.254.169.254/latest/meta-data/"
-        ),
+        lambda url, **kwargs: _FakeResponse(data, url="http://169.254.169.254/latest/meta-data/"),
     )
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         response = api_client.post(
-            "/api/v1/geocontext/editorjs/upload-by-url/",
+            "/api/v1/content/editorjs/upload-by-url/",
             {"url": "https://public.example/inline.png"},
             format="json",
         )
@@ -254,15 +240,9 @@ def test_editorjs_endpoints_declare_scoped_throttles():
     rates = settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]
     assert "editorjs_upload" in rates
     assert "editorjs_media" in rates
-    assert views.EditorJSImageUploadByFileView.throttle_classes == [
-        views.EditorJSUploadThrottle
-    ]
-    assert views.EditorJSImageUploadByUrlView.throttle_classes == [
-        views.EditorJSUploadThrottle
-    ]
-    assert views.EditorJSImageLibraryView.throttle_classes == [
-        views.EditorJSMediaThrottle
-    ]
+    assert views.EditorJSImageUploadByFileView.throttle_classes == [views.EditorJSUploadThrottle]
+    assert views.EditorJSImageUploadByUrlView.throttle_classes == [views.EditorJSUploadThrottle]
+    assert views.EditorJSImageLibraryView.throttle_classes == [views.EditorJSMediaThrottle]
     assert views.EditorJSUploadThrottle.scope == "editorjs_upload"
     assert views.EditorJSMediaThrottle.scope == "editorjs_media"
 
@@ -278,7 +258,7 @@ def test_upload_by_url_rejects_oversized_download(api_client, monkeypatch, tmp_p
 
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         response = api_client.post(
-            "/api/v1/geocontext/editorjs/upload-by-url/",
+            "/api/v1/content/editorjs/upload-by-url/",
             {"url": "https://remote.test/large.png"},
             format="json",
         )
@@ -319,14 +299,14 @@ def test_media_library_lists_previous_editorjs_uploads(api_client, tmp_path, mon
             ),
         )
 
-        response = api_client.get("/api/v1/geocontext/editorjs/media/")
+        response = api_client.get("/api/v1/content/editorjs/media/")
 
     assert response.status_code == 200
     results = response.json()["results"]
     assert len(results) == 1
     assert results[0]["name"] == "library.png"
     assert results[0]["mime"] == "image/png"
-    assert results[0]["url"].endswith("/media/geocontext/editorjs/context-id/library.png")
+    assert storage_path in results[0]["url"]
 
 
 def test_openapi_schema_documents_editorjs_image_endpoints(client):
@@ -334,7 +314,7 @@ def test_openapi_schema_documents_editorjs_image_endpoints(client):
     assert response.status_code == 200
 
     schema = response.content.decode()
-    assert "/api/v1/geocontext/editorjs/upload-by-file/" in schema
-    assert "/api/v1/geocontext/editorjs/upload-by-url/" in schema
-    assert "/api/v1/geocontext/editorjs/media/" in schema
+    assert "/api/v1/content/editorjs/upload-by-file/" in schema
+    assert "/api/v1/content/editorjs/upload-by-url/" in schema
+    assert "/api/v1/content/editorjs/media/" in schema
     assert "EditorJSImageUploadSuccess" in schema

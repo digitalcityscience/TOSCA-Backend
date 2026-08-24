@@ -1,22 +1,12 @@
 from django.db import transaction
 from rest_framework import serializers
 from rest_framework_gis.fields import GeometryField
-from tosca_api.apps.geocontext.models import GeoContext
 from tosca_api.apps.geodata_providers.api.serializers import (
     LayerSummarySerializer,
     LayerUUIDListField,
 )
 
 from .models import FeedbackLayer, FeedbackSubmission, GeoFeedback
-
-
-class FeedbackGeoContextSerializer(serializers.ModelSerializer):
-    """Nested serializer for feedback's GeoContext."""
-
-    class Meta:
-        model = GeoContext
-        fields = ["id", "title", "content"]
-        read_only_fields = fields
 
 
 class FeedbackLayerSerializer(serializers.ModelSerializer):
@@ -60,7 +50,6 @@ class GeoFeedbackDetailSerializer(serializers.ModelSerializer):
     Includes form references and layers.
     """
 
-    context = FeedbackGeoContextSerializer(read_only=True)
     layers = serializers.SerializerMethodField()
     custom_form_slug = serializers.CharField(
         source="custom_form.slug", read_only=True, allow_null=True
@@ -72,8 +61,8 @@ class GeoFeedbackDetailSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "description",
+            "content",
             "campaign",
-            "context",
             "custom_form",
             "custom_form_slug",
             "rating_enabled",
@@ -90,9 +79,7 @@ class GeoFeedbackDetailSerializer(serializers.ModelSerializer):
 
     def get_layers(self, obj) -> list:
         """Return layers ordered by display_order with full Layer summary."""
-        through_qs = FeedbackLayer.objects.filter(feedback=obj).select_related(
-            "layer__workspace"
-        )
+        through_qs = FeedbackLayer.objects.filter(feedback=obj).select_related("layer__workspace")
         return FeedbackLayerSerializer(through_qs, many=True).data
 
 
@@ -113,8 +100,8 @@ class GeoFeedbackWriteSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "description",
+            "content",
             "campaign",
-            "context",
             "custom_form",
             "rating_enabled",
             "form_enabled",
@@ -157,15 +144,12 @@ class GeoFeedbackWriteSerializer(serializers.ModelSerializer):
         """Replace the feedback's FeedbackLayer rows with the supplied list."""
         FeedbackLayer.objects.filter(feedback=feedback).delete()
         for index, layer in enumerate(layers):
-            FeedbackLayer.objects.create(
-                feedback=feedback, layer=layer, display_order=index
-            )
-
+            FeedbackLayer.objects.create(feedback=feedback, layer=layer, display_order=index)
 
 
 class FeedbackSubmissionSerializer(serializers.ModelSerializer):
     """
-    Serializer for taking citizen submissions. 
+    Serializer for taking citizen submissions.
     It supports creating geometry via GeoJSON.
     """
 
@@ -190,8 +174,8 @@ class FeedbackSubmissionSerializer(serializers.ModelSerializer):
         """Invoke model clean() for submission-level validation."""
         instance = FeedbackSubmission(**attrs)
         # Inject the feedback instance from context (set by ViewSet)
-        if 'feedback' in self.context:
-            instance.feedback = self.context['feedback']
-            
+        if "feedback" in self.context:
+            instance.feedback = self.context["feedback"]
+
         instance.clean()
         return attrs

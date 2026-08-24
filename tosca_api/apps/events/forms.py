@@ -10,7 +10,8 @@ from django.contrib.gis.geos import GEOSGeometry
 from django.core.exceptions import ValidationError
 from django.forms.models import ModelChoiceIteratorValue
 
-from tosca_api.apps.geocontext.models import GeoContext
+from tosca_api.apps.core.editorjs import empty_document, validate_and_normalize
+from tosca_api.apps.geocontext.widgets import EditorJsWidget
 
 from .models import (
     CultureEventProfile,
@@ -32,7 +33,9 @@ from .services import (
     validate_publish_requirements,
 )
 
-TIMEZONE_CHOICES = [(timezone_name, timezone_name) for timezone_name in sorted(available_timezones())]
+TIMEZONE_CHOICES = [
+    (timezone_name, timezone_name) for timezone_name in sorted(available_timezones())
+]
 WEEKDAY_ORDER = (
     "monday",
     "tuesday",
@@ -42,7 +45,9 @@ WEEKDAY_ORDER = (
     "saturday",
     "sunday",
 )
-WEEKDAY_CHOICES = [(weekday, weekday.title()) for weekday in WEEKDAY_ORDER if weekday in VALID_WEEKDAYS]
+WEEKDAY_CHOICES = [
+    (weekday, weekday.title()) for weekday in WEEKDAY_ORDER if weekday in VALID_WEEKDAYS
+]
 
 
 def validate_public_health_admin_amounts(form: forms.BaseForm, cleaned_data: dict) -> None:
@@ -92,9 +97,7 @@ def get_taxonomy_dimensions_for_source(
     if source_event is not None and source_event.event_type_id:
         event_profile_key = source_event.event_type.profile_key or ""
 
-    active = TaxonomyDimension.objects.filter(is_active=True).order_by(
-        "sort_order", "label"
-    )
+    active = TaxonomyDimension.objects.filter(is_active=True).order_by("sort_order", "label")
     dimensions = [
         dimension
         for dimension in active
@@ -266,10 +269,7 @@ class TaxonomyAssignmentAdminMixin:
     @staticmethod
     def _event_profile_key_for_cleaned_data(cleaned_data: dict) -> str:
         event_type = cleaned_data.get("event_type")
-        if (
-            event_type is not None
-            and event_type.profile_mode == EventType.ProfileMode.EXTENSION
-        ):
+        if event_type is not None and event_type.profile_mode == EventType.ProfileMode.EXTENSION:
             return event_type.profile_key or ""
         return ""
 
@@ -321,7 +321,9 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
         widget=forms.CheckboxSelectMultiple,
     )
     timezone = forms.ChoiceField(choices=TIMEZONE_CHOICES, required=True)
-    weekday_of_month = forms.ChoiceField(choices=[("", "---------"), *WEEKDAY_CHOICES], required=False)
+    weekday_of_month = forms.ChoiceField(
+        choices=[("", "---------"), *WEEKDAY_CHOICES], required=False
+    )
 
     # --- Event template fields ---
     title = forms.CharField(max_length=255, required=False)
@@ -363,14 +365,21 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
         initial=Event.Visibility.PUBLIC,
         required=False,
     )
-    context = forms.ModelChoiceField(
-        queryset=GeoContext.objects.all(),
+    content_override = forms.JSONField(
         required=False,
-        label="Content override",
+        label="Occurrence content override",
+        widget=EditorJsWidget(),
+    )
+    inherit_series_content = forms.BooleanField(
+        required=False,
+        initial=True,
+        label="Use the series default content",
     )
 
     # --- Profile extension fields ---
-    public_health_insurance_eligible = forms.BooleanField(required=False, label="Insurance eligible")
+    public_health_insurance_eligible = forms.BooleanField(
+        required=False, label="Insurance eligible"
+    )
     public_health_referral_required = forms.BooleanField(required=False, label="Referral required")
     public_health_target_age_note = forms.CharField(
         required=False,
@@ -418,26 +427,29 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
     class Meta:
         model = EventSeries
         fields = "__all__"
+        widgets = {"default_content": EditorJsWidget()}
 
     def __init__(self, *args, **kwargs):
         created_by_user = kwargs.pop("created_by_user", None)
         super().__init__(*args, **kwargs)
-        self.fields["event_type"].widget = EventTypeSelect(choices=self.fields["event_type"].choices)
+        self.fields["event_type"].widget = EventTypeSelect(
+            choices=self.fields["event_type"].choices
+        )
         if created_by_user is not None and self.instance.created_by_id is None:
             self.instance.created_by = created_by_user
         self.fields["timezone"].initial = self.instance.timezone or settings.TIME_ZONE
         self.fields["by_weekday"].initial = list(self.instance.by_weekday or [])
         self.fields["weekday_of_month"].initial = self.instance.weekday_of_month or ""
         self.fields["by_weekday"].help_text = "Choose one or more weekdays for weekly recurrence."
-        self.fields["occurrence_count"].help_text = (
-            "Optional. Stop after this many occurrences instead of using an end date."
-        )
-        self.fields["interval"].help_text = (
-            "Repeat every N recurrence units. Example: weekly + 2 means every 2 weeks."
-        )
-        self.fields["weekday_of_month"].help_text = (
-            "Choose the weekday used for nth-weekday monthly recurrence."
-        )
+        self.fields[
+            "occurrence_count"
+        ].help_text = "Optional. Stop after this many occurrences instead of using an end date."
+        self.fields[
+            "interval"
+        ].help_text = "Repeat every N recurrence units. Example: weekly + 2 means every 2 weeks."
+        self.fields[
+            "weekday_of_month"
+        ].help_text = "Choose the weekday used for nth-weekday monthly recurrence."
 
         # Pre-populate template fields from the base occurrence on edit
         base_event = self._load_template_from_base_occurrence()
@@ -478,7 +490,8 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
         self.fields["external_url"].initial = base_event.external_url
         self.fields["status"].initial = base_event.status
         self.fields["visibility"].initial = base_event.visibility
-        self.fields["context"].initial = base_event.context_id
+        self.fields["content_override"].initial = base_event.content_override or empty_document()
+        self.fields["inherit_series_content"].initial = base_event.content_override is None
 
         # Profile extension fields
         self._load_profile_initials(base_event)
@@ -493,9 +506,9 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
             self.fields["public_health_referral_required"].initial = profile.referral_required
             self.fields["public_health_target_age_note"].initial = profile.target_age_note
             self.fields["public_health_registration"].initial = profile.registration
-            self.fields["public_health_short_notice_possible"].initial = (
-                profile.short_notice_possible
-            )
+            self.fields[
+                "public_health_short_notice_possible"
+            ].initial = profile.short_notice_possible
             self.fields["public_health_cost_amount_eur"].initial = profile.cost_amount_eur
             self.fields["public_health_reduced_amount_eur"].initial = profile.reduced_amount_eur
             self.fields["public_health_subsidy_program"].initial = profile.subsidy_program
@@ -543,6 +556,12 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
             cleaned_data["weekday_of_month"] = ""
 
         # --- Validate template fields ---
+        if cleaned_data.get("inherit_series_content"):
+            cleaned_data["content_override"] = None
+        else:
+            cleaned_data["content_override"] = validate_and_normalize(
+                cleaned_data.get("content_override")
+            )
         validate_public_health_admin_amounts(self, cleaned_data)
         self._clean_event_template(cleaned_data)
         self._taxonomy_terms = self.clean_taxonomy_assignments(cleaned_data)
@@ -605,7 +624,7 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
             "external_url": cleaned_data.get("external_url", ""),
             "status": cleaned_data.get("status", Event.Status.DRAFT),
             "visibility": cleaned_data.get("visibility", Event.Visibility.PUBLIC),
-            "context": cleaned_data.get("context"),
+            "content_override": cleaned_data.get("content_override"),
         }
 
         # Enforce campaign/event_type immutability after occurrences exist
@@ -631,7 +650,7 @@ class EventSeriesAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
             event_type=cleaned_data.get("event_type"),
             name=cleaned_data.get("name", ""),
             created_by=self.instance.created_by,
-            default_context=cleaned_data.get("default_context"),
+            default_content=cleaned_data.get("default_content") or empty_document(),
             series_mode=cleaned_data.get("series_mode", ""),
             recurrence_type=cleaned_data.get("recurrence_type", ""),
             start_date=cleaned_data.get("start_date"),
@@ -733,21 +752,28 @@ class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
     sports_skill_level = forms.CharField(required=False, max_length=100)
     culture_format_label = forms.CharField(required=False, max_length=255)
     culture_age_rating = forms.CharField(required=False, max_length=50)
+    inherit_series_content = forms.BooleanField(
+        required=False,
+        label="Use the series default content",
+    )
 
     class Meta:
         model = Event
         fields = "__all__"
+        widgets = {"content_override": EditorJsWidget()}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["event_type"].widget = EventTypeSelect(choices=self.fields["event_type"].choices)
+        self.fields["event_type"].widget = EventTypeSelect(
+            choices=self.fields["event_type"].choices
+        )
         self.fields["public_health_insurance_eligible"].label = "Insurance eligible"
         self.fields["public_health_referral_required"].label = "Referral required"
         self.fields["public_health_target_age_note"].label = "Target age note"
         self.fields["public_health_registration"].label = "Registration"
-        self.fields["public_health_short_notice_possible"].label = (
-            "Short-notice participation possible"
-        )
+        self.fields[
+            "public_health_short_notice_possible"
+        ].label = "Short-notice participation possible"
         self.fields["public_health_cost_amount_eur"].label = "Cost amount (EUR)"
         self.fields["public_health_reduced_amount_eur"].label = "Reduced amount (EUR)"
         self.fields["public_health_subsidy_program"].label = "Subsidy program"
@@ -756,6 +782,18 @@ class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
         self.fields["sports_skill_level"].label = "Skill level"
         self.fields["culture_format_label"].label = "Format label"
         self.fields["culture_age_rating"].label = "Age rating"
+        if self.instance._state.adding:
+            # A brand-new event's id is already populated (UUID pk default),
+            # so pk is not None here -- _state.adding is the reliable signal
+            # that this instance has no persisted series/content_override yet
+            # to inspect. Default to the inheriting stance the model itself
+            # treats as the default (a null content_override inherits the
+            # series). Staff who don't want inheritance must uncheck it.
+            self.fields["inherit_series_content"].initial = True
+        else:
+            self.fields["inherit_series_content"].initial = bool(
+                self.instance.series_id and self.instance.content_override is None
+            )
         source_event = self.instance if self.instance.pk else None
         self._initialize_taxonomy_dimension_fields(
             source_event=source_event,
@@ -765,6 +803,17 @@ class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
 
     def clean(self):
         cleaned_data = super().clean()
+        if cleaned_data.get("inherit_series_content"):
+            if cleaned_data.get("series") is None:
+                self.add_error(
+                    "inherit_series_content",
+                    "Only events in a series can inherit series content.",
+                )
+            cleaned_data["content_override"] = None
+        else:
+            cleaned_data["content_override"] = validate_and_normalize(
+                cleaned_data.get("content_override")
+            )
         validate_public_health_admin_amounts(self, cleaned_data)
         self._taxonomy_terms = self.clean_taxonomy_assignments(cleaned_data)
         publish_errors = validate_publish_requirements(cleaned_data)
@@ -778,17 +827,13 @@ class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
 
         try:
             profile = self.instance.public_health_profile
-            self.fields["public_health_insurance_eligible"].initial = (
-                profile.insurance_eligible
-            )
-            self.fields["public_health_referral_required"].initial = (
-                profile.referral_required
-            )
+            self.fields["public_health_insurance_eligible"].initial = profile.insurance_eligible
+            self.fields["public_health_referral_required"].initial = profile.referral_required
             self.fields["public_health_target_age_note"].initial = profile.target_age_note
             self.fields["public_health_registration"].initial = profile.registration
-            self.fields["public_health_short_notice_possible"].initial = (
-                profile.short_notice_possible
-            )
+            self.fields[
+                "public_health_short_notice_possible"
+            ].initial = profile.short_notice_possible
             self.fields["public_health_cost_amount_eur"].initial = profile.cost_amount_eur
             self.fields["public_health_reduced_amount_eur"].initial = profile.reduced_amount_eur
             self.fields["public_health_subsidy_program"].initial = profile.subsidy_program
@@ -834,9 +879,7 @@ class EventAdminForm(TaxonomyAssignmentAdminMixin, forms.ModelForm):
             profile.referral_required = self.cleaned_data["public_health_referral_required"]
             profile.target_age_note = self.cleaned_data["public_health_target_age_note"]
             profile.registration = self.cleaned_data["public_health_registration"]
-            profile.short_notice_possible = self.cleaned_data[
-                "public_health_short_notice_possible"
-            ]
+            profile.short_notice_possible = self.cleaned_data["public_health_short_notice_possible"]
             profile.cost_amount_eur = self.cleaned_data["public_health_cost_amount_eur"]
             profile.reduced_amount_eur = self.cleaned_data["public_health_reduced_amount_eur"]
             profile.subsidy_program = self.cleaned_data["public_health_subsidy_program"]
