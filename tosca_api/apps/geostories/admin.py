@@ -6,7 +6,7 @@ from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin
 from tosca_api.apps.geocontext.widgets import EditorJsWidget
 from tosca_api.apps.core.editorjs import render_content_media_urls
 
-from .forms import GeoStoryLayerFormSet
+from .forms import GeoStoryLayerForm, GeoStoryLayerFormSet
 from .models import GeoStory, GeoStoryLayer
 
 
@@ -24,6 +24,7 @@ class GeoStoryAdminForm(forms.ModelForm):
 
 class GeoStoryLayerInline(admin.TabularInline):
     model = GeoStoryLayer
+    form = GeoStoryLayerForm
     formset = GeoStoryLayerFormSet
     extra = 1
     autocomplete_fields = ["layer"]

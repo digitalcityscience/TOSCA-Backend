@@ -7,6 +7,7 @@ from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geostories.models import GeoStory, GeoStoryLayer
 from tosca_api.apps.geodata_providers.test_helpers import make_layer
+from tosca_api.apps.geodata_providers.models import LayerStyleAssignment, Style
 
 User = get_user_model()
 
@@ -339,6 +340,99 @@ def test_geostory_create_with_layer_uuids(api_client, user, campaign):
     rows = list(GeoStoryLayer.objects.filter(geostory=story).order_by("display_order"))
     assert [r.layer_id for r in rows] == [layer1.id, layer2.id]
     assert [r.display_order for r in rows] == [0, 1]
+
+
+@pytest.mark.django_db
+def test_geostory_create_with_selected_layer_style(api_client, user, campaign):
+    layer = make_layer("workspace:write_styled", user=user)
+    style = Style.objects.create(
+        geodata_engine=layer.workspace.geodata_engine,
+        workspace=layer.workspace,
+        name="selected-story-style",
+        title="Selected story style",
+        format=Style.StyleFormat.SLD,
+        validation_state=Style.ValidationState.VALID,
+        created_by=user,
+    )
+    assignment = LayerStyleAssignment.objects.create(
+        layer=layer,
+        style=style,
+        role=LayerStyleAssignment.Role.ALTERNATE,
+        created_by=user,
+    )
+
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
+    response = api_client.post(
+        "/api/v1/stories/",
+        {
+            "title": "Story With Selected Style",
+            "campaign": str(campaign.id),
+            "layers": [
+                {
+                    "layer": str(layer.id),
+                    "style_assignment": str(assignment.id),
+                    "display_order": 3,
+                }
+            ],
+        },
+        format="json",
+    )
+    assert response.status_code == 201
+
+    story_layer = GeoStoryLayer.objects.get(geostory_id=response.data["id"])
+    assert story_layer.style_assignment == assignment
+    assert story_layer.display_order == 3
+
+    detail = api_client.get(f"/api/v1/stories/{response.data['id']}/")
+    assert detail.status_code == 200
+    selected = detail.data["layers"][0]["style_assignment"]
+    assert selected == {
+        "id": str(assignment.id),
+        "style_id": str(style.id),
+        "name": style.name,
+        "qualified_name": style.qualified_name,
+        "role": assignment.role,
+        "format": style.format,
+        "style_layer_ids": [],
+    }
+
+
+@pytest.mark.django_db
+def test_geostory_create_rejects_style_from_another_layer(api_client, user, campaign):
+    layer = make_layer("workspace:write_target", user=user)
+    other_layer = make_layer("workspace:write_style_source", user=user)
+    style = Style.objects.create(
+        geodata_engine=layer.workspace.geodata_engine,
+        workspace=layer.workspace,
+        name="wrong-layer-style",
+        format=Style.StyleFormat.SLD,
+        validation_state=Style.ValidationState.VALID,
+        created_by=user,
+    )
+    assignment = LayerStyleAssignment.objects.create(
+        layer=other_layer,
+        style=style,
+        role=LayerStyleAssignment.Role.DEFAULT,
+        created_by=user,
+    )
+
+    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
+    response = api_client.post(
+        "/api/v1/stories/",
+        {
+            "title": "Bad Style",
+            "campaign": str(campaign.id),
+            "layers": [
+                {
+                    "layer": str(layer.id),
+                    "style_assignment": str(assignment.id),
+                }
+            ],
+        },
+        format="json",
+    )
+    assert response.status_code == 400
+    assert "must belong to the selected layer" in str(response.data["layers"])
 
 
 @pytest.mark.django_db

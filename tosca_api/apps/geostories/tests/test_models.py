@@ -13,6 +13,7 @@ from tosca_api.apps.geostories.models import (
     geostory_hero_image_upload_to,
 )
 from tosca_api.apps.geodata_providers.test_helpers import make_layer
+from tosca_api.apps.geodata_providers.models import LayerStyleAssignment, Style
 
 User = get_user_model()
 
@@ -300,3 +301,40 @@ def test_geostory_layer_accepts_public_published(user, campaign):
     layer = make_layer("workspace:ok_layer", user=user)
     gsl = GeoStoryLayer.objects.create(geostory=story, layer=layer)
     assert gsl.id is not None
+
+
+@pytest.mark.django_db
+def test_geostory_layer_pins_default_style_and_rejects_another_layers_style(user, campaign):
+    story = GeoStory.objects.create(title="S", campaign=campaign, author=user)
+    layer = make_layer("workspace:styled_layer", user=user)
+    other_layer = make_layer("workspace:other_styled_layer", user=user)
+    style = Style.objects.create(
+        geodata_engine=layer.workspace.geodata_engine,
+        workspace=layer.workspace,
+        name="story-style",
+        format=Style.StyleFormat.SLD,
+        validation_state=Style.ValidationState.VALID,
+        created_by=user,
+    )
+    default_assignment = LayerStyleAssignment.objects.create(
+        layer=layer,
+        style=style,
+        role=LayerStyleAssignment.Role.DEFAULT,
+        created_by=user,
+    )
+    other_assignment = LayerStyleAssignment.objects.create(
+        layer=other_layer,
+        style=style,
+        role=LayerStyleAssignment.Role.DEFAULT,
+        created_by=user,
+    )
+
+    story_layer = GeoStoryLayer.objects.create(geostory=story, layer=layer)
+    assert story_layer.style_assignment == default_assignment
+
+    with pytest.raises(ValidationError, match="must belong to the selected layer"):
+        GeoStoryLayer.objects.create(
+            geostory=story,
+            layer=layer,
+            style_assignment=other_assignment,
+        )

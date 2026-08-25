@@ -239,6 +239,14 @@ class GeoStoryLayer(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name="geostory_uses",
     )
+    style_assignment = models.ForeignKey(
+        "geodata_providers.LayerStyleAssignment",
+        on_delete=models.PROTECT,
+        related_name="geostory_uses",
+        null=True,
+        blank=True,
+        help_text="Pinned style assignment; defaults to the layer's active default assignment.",
+    )
     display_order = models.PositiveIntegerField(default=0)
 
     class Meta:
@@ -261,8 +269,24 @@ class GeoStoryLayer(TimeStampedModel):
         )
 
         super().clean()
+        errors = {}
         if self.layer_id is not None:
             validate_layer_is_public_and_published(self.layer)
+            if self.style_assignment_id is None:
+                from tosca_api.apps.geodata_providers.models import LayerStyleAssignment
+
+                self.style_assignment = self.layer.style_assignments.filter(
+                    role=LayerStyleAssignment.Role.DEFAULT,
+                    is_active=True,
+                ).first()
+        if (
+            self.layer_id
+            and self.style_assignment_id
+            and self.style_assignment.layer_id != self.layer_id
+        ):
+            errors["style_assignment"] = "Style assignment must belong to the selected layer."
+        if errors:
+            raise ValidationError(errors)
 
     def save(self, *args, **kwargs) -> None:
         """
