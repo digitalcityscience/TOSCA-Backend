@@ -6,6 +6,7 @@ from django.db import transaction
 from rest_framework import serializers
 
 from tosca_api.apps.core.image_policy import validate_hero_image
+from tosca_api.apps.core.editorjs import render_content_media_urls
 from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geodata_providers.api.serializers import (
     LayerSummarySerializer,
@@ -104,6 +105,7 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
     layers = serializers.SerializerMethodField()
     feature_links = serializers.SerializerMethodField()
     hero_image_url = serializers.SerializerMethodField()
+    content = serializers.SerializerMethodField()
 
     class Meta:
         model = GeoStory
@@ -125,6 +127,9 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
 
     def get_hero_image_url(self, obj) -> str | None:
         return _absolute_hero_image_url(obj, self.context.get("request"))
+
+    def get_content(self, obj) -> dict:
+        return render_content_media_urls(obj.content, self.context.get("request"))
 
     def get_layers(self, obj) -> list:
         """
@@ -238,6 +243,13 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
         if layers is not None:
             self._sync_layers(story, layers)
         return story
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["content"] = render_content_media_urls(
+            instance.content, self.context.get("request")
+        )
+        return data
 
     @staticmethod
     def _sync_layers(story: GeoStory, layers: list) -> None:

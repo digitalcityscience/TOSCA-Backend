@@ -16,9 +16,11 @@ from tosca_api.apps.core.editorjs import (
     description_document_from_text,
     description_document_to_text,
     empty_document,
+    render_content_media_urls,
     validate_and_normalize,
     validate_description_document,
 )
+from tosca_api.apps.core.models import MediaAsset
 
 
 def _png_bytes(width: int = 300, height: int = 300) -> bytes:
@@ -406,9 +408,70 @@ def test_image_block_accepts_storage_generated_url():
         default_storage.delete(path)
 
     data = out["blocks"][0]["data"]
-    assert data["file"]["url"] == url
+    assert data["file"]["url"] == settings.MEDIA_URL + path
     assert data["file"]["width"] == 200
     assert data["file"]["height"] == 100
+
+
+@pytest.mark.django_db
+def test_image_url_is_refreshed_from_current_media_asset_alias(tmp_path):
+    path = "geocontext/editorjs/moved/pic.png"
+    storage_settings = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+            "OPTIONS": {"location": str(tmp_path / "private"), "base_url": "/private/"},
+        },
+        "media_public": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+            "OPTIONS": {"location": str(tmp_path / "public"), "base_url": "/public/"},
+        },
+        "media_archive": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+            "OPTIONS": {"location": str(tmp_path / "archive"), "base_url": "/archive/"},
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+    with override_settings(STORAGES=storage_settings):
+        from django.core.files.storage import storages
+
+        storages["media_public"].save(path, ContentFile(_png_bytes()))
+        MediaAsset.objects.create(
+            storage_path=path,
+            mime="image/png",
+            width=300,
+            height=300,
+            size=len(_png_bytes()),
+            storage_alias=MediaAsset.StorageAlias.PUBLIC,
+        )
+        stored = {
+            "blocks": [{
+                "type": "image",
+                "data": {
+                    # Simulates an expired URL saved before canonical URLs.
+                    "file": {"url": f"/media/{path}?expired-signature"},
+                    "alt": "Kept caption",
+                    "caption": "Kept caption",
+                },
+            }]
+        }
+
+        rendered = render_content_media_urls(stored)
+        normalized = validate_and_normalize({
+            "blocks": [{
+                "type": "image",
+                "data": {
+                    "file": {"url": f"/media/{path}"},
+                    "alt": "Kept caption",
+                    "caption": "Kept caption",
+                },
+            }]
+        })
+
+    assert rendered["blocks"][0]["data"]["file"]["url"] == f"/public/{path}"
+    assert normalized["blocks"][0]["data"]["file"]["url"] == f"/media/{path}"
+    assert normalized["blocks"][0]["data"]["caption"] == "Kept caption"
 
 
 @pytest.mark.django_db
@@ -439,7 +502,7 @@ def test_image_block_allows_absolute_media_url(stored_image):
             {"blocks": [{"type": "image", "data": {"file": {"url": url}, "alt": "x"}}]}
         )
 
-    assert out["blocks"][0]["data"]["file"]["url"] == url
+    assert out["blocks"][0]["data"]["file"]["url"] == "/media/" + url.rsplit("/media/", 1)[-1]
 
 
 @pytest.mark.django_db

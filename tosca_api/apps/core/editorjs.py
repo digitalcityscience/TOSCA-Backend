@@ -22,6 +22,7 @@ schemes (anything outside ``http``, ``https``, ``mailto``) are rejected.
 
 from __future__ import annotations
 
+import copy
 import html
 import re
 from typing import Any
@@ -335,6 +336,17 @@ def _media_url_path_prefix() -> str:
     return path
 
 
+def _canonical_media_url(storage_path: str) -> str:
+    """Return the bucket-independent URL persisted in Editor.js content.
+
+    Storage-generated S3 URLs are signed and name a particular bucket. Both
+    properties make them unsuitable for durable JSON: signatures expire and
+    the media lifecycle moves objects between buckets. Persist a stable media
+    path instead and mint a current storage URL only when content is rendered.
+    """
+    return f"{_media_url_path_prefix()}{storage_path.lstrip('/')}"
+
+
 def _s3_storage_and_key(parsed) -> tuple[Any, str] | None:
     """Match a parsed URL against a configured S3 storage alias' bucket.
 
@@ -365,8 +377,8 @@ def _s3_storage_and_key(parsed) -> tuple[Any, str] | None:
     return None
 
 
-def _resolve_storage(url: str, idx: int) -> tuple[Any, str]:
-    """Reject unsafe / non-storage URLs, return the (storage, storage-relative path)."""
+def _storage_reference(url: str, idx: int) -> tuple[Any | None, str]:
+    """Reject unsafe/non-storage URLs and extract their storage path."""
     parsed = urlparse(url)
     if parsed.scheme and parsed.scheme not in ("http", "https"):
         raise ValidationError(f"image block at {idx} rejects URL scheme '{parsed.scheme}:'.")
@@ -381,7 +393,70 @@ def _resolve_storage(url: str, idx: int) -> tuple[Any, str]:
         raise ValidationError(
             f"image block at {idx} 'data.file.url' must be a storage URL under '{media_url}'."
         )
-    return default_storage, path[len(media_url) :]
+    return None, path[len(media_url) :]
+
+
+def _resolve_storage(url: str, idx: int) -> tuple[Any, str]:
+    """Return the current storage backend and storage-relative path."""
+    explicit_storage, storage_path = _storage_reference(url, idx)
+    if explicit_storage is not None and explicit_storage.exists(storage_path):
+        return explicit_storage, storage_path
+    if default_storage.exists(storage_path):
+        return default_storage, storage_path
+    # A canonical media URL deliberately carries no bucket name. Resolve the
+    # current bucket from MediaAsset so the same saved document remains valid
+    # after publish/unpublish/archive lifecycle moves.
+    from tosca_api.apps.core.models import MediaAsset
+
+    asset = MediaAsset.objects.filter(storage_path=storage_path).only("storage_alias").first()
+    storage = storages[asset.storage_alias] if asset is not None else default_storage
+    return storage, storage_path
+
+
+def render_content_media_urls(content: dict, request=None) -> dict:
+    """Copy content and replace canonical/legacy image URLs with fresh URLs.
+
+    Legacy rows may contain an expired signed URL or a URL for a bucket the
+    lifecycle has since moved away from. The MediaAsset row is authoritative
+    for both the storage path and current alias.
+    """
+    rendered = copy.deepcopy(content or {"blocks": []})
+    references: list[tuple[dict, str]] = []
+    for idx, block in enumerate(rendered.get("blocks") or []):
+        if not isinstance(block, dict) or block.get("type") != "image":
+            continue
+        file_data = (block.get("data") or {}).get("file")
+        if not isinstance(file_data, dict):
+            continue
+        url = file_data.get("url")
+        if not isinstance(url, str) or not url:
+            continue
+        try:
+            _, storage_path = _storage_reference(url, idx)
+        except ValidationError:
+            continue
+        references.append((file_data, storage_path))
+
+    if not references:
+        return rendered
+
+    from tosca_api.apps.core.models import MediaAsset
+
+    assets = {
+        asset.storage_path: asset
+        for asset in MediaAsset.objects.filter(
+            storage_path__in={storage_path for _, storage_path in references}
+        ).only("storage_path", "storage_alias")
+    }
+    for file_data, storage_path in references:
+        asset = assets.get(storage_path)
+        if asset is None:
+            continue
+        fresh_url = storages[asset.storage_alias].url(storage_path)
+        file_data["url"] = (
+            request.build_absolute_uri(fresh_url) if request is not None else fresh_url
+        )
+    return rendered
 
 
 def _read_storage_image_metadata(storage: Any, storage_path: str, idx: int) -> dict:
@@ -439,7 +514,7 @@ def _normalize_image(data: dict, idx: int) -> dict:
 
     return {
         "file": {
-            "url": url,
+            "url": _canonical_media_url(storage_path),
             "mime": derived["mime"],
             "width": derived["width"],
             "height": derived["height"],
