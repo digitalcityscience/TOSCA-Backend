@@ -4,12 +4,18 @@ from django.utils.html import format_html
 
 from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin
 from tosca_api.apps.geocontext.widgets import EditorJsWidget
+from tosca_api.apps.core.editorjs import render_content_media_urls
 
-from .forms import GeoStoryLayerFormSet
+from .forms import GeoStoryLayerForm, GeoStoryLayerFormSet
 from .models import GeoStory, GeoStoryLayer
 
 
 class GeoStoryAdminForm(forms.ModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk and not self.is_bound:
+            self.initial["content"] = render_content_media_urls(self.instance.content)
+
     class Meta:
         model = GeoStory
         fields = "__all__"
@@ -18,6 +24,7 @@ class GeoStoryAdminForm(forms.ModelForm):
 
 class GeoStoryLayerInline(admin.TabularInline):
     model = GeoStoryLayer
+    form = GeoStoryLayerForm
     formset = GeoStoryLayerFormSet
     extra = 1
     autocomplete_fields = ["layer"]
