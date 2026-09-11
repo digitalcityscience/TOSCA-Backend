@@ -81,6 +81,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
+    networks:
+      default:
+        aliases:
+          - garage.localhost
     restart: unless-stopped
 
   garage-bootstrap:
@@ -119,7 +123,9 @@ services:
       DJANGO_SETTINGS_MODULE: tosca_api.settings.${ENV_TYPE}
       DATABASE_URL: postgresql://${PG_API_USER}:${PG_API_PASSWORD}@db:5432/${PG_DATABASE}
       DJANGO_STORAGE_BACKEND: s3
-      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://garage:3900}
+      # One hostname must work both inside Docker (for S3 calls/signing) and
+      # in the host browser (for presigned media URLs).
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://garage.localhost:3900}
       S3_REGION_NAME: ${S3_REGION_NAME:-garage}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-GKtosca-local-django}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-tosca-local-django-secret-change-me}

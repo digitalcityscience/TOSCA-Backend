@@ -4,6 +4,7 @@ import io
 from types import SimpleNamespace
 
 import pytest
+from django.db import DatabaseError
 from django.core.files.storage import default_storage
 from django.test import override_settings
 from PIL import Image
@@ -61,6 +62,31 @@ def test_upload_by_file_stores_original_bytes_and_returns_editorjs_contract(api_
         assert asset.size == len(data)
         with default_storage.open(storage_path, "rb") as stored:
             assert stored.read() == data
+
+
+@pytest.mark.django_db
+def test_upload_deletes_object_when_metadata_write_fails(
+    tmp_path, monkeypatch
+):
+    def fail_create(**kwargs):
+        raise DatabaseError("metadata unavailable")
+
+    storage_settings = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+            "OPTIONS": {"location": str(tmp_path), "base_url": "/media/"},
+        }
+    }
+    monkeypatch.setattr(views.MediaAsset.objects, "create", fail_create)
+    with override_settings(STORAGES=storage_settings):
+        with pytest.raises(DatabaseError, match="metadata unavailable"):
+            views._store_validated_upload(
+                _upload_file("inline.png", _image_bytes()),
+                request=SimpleNamespace(user=SimpleNamespace()),
+                original_name="inline.png",
+            )
+
+    assert not any(path.is_file() for path in tmp_path.rglob("*"))
 
 
 def test_upload_by_file_rejects_invalid_image(api_client, tmp_path):
@@ -307,6 +333,35 @@ def test_media_library_lists_previous_editorjs_uploads(api_client, tmp_path, mon
     assert results[0]["name"] == "library.png"
     assert results[0]["mime"] == "image/png"
     assert storage_path in results[0]["url"]
+
+
+@pytest.mark.django_db
+def test_media_library_paginates_beyond_first_hundred(api_client, tmp_path):
+    MediaAsset.objects.bulk_create(
+        [
+            MediaAsset(
+                storage_path=f"geocontext/editorjs/context-id/{index}.png",
+                original_name=f"{index}.png",
+                mime="image/png",
+                width=240,
+                height=240,
+                size=100,
+            )
+            for index in range(101)
+        ]
+    )
+
+    with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
+        first = api_client.get("/api/v1/content/editorjs/media/")
+        second = api_client.get("/api/v1/content/editorjs/media/?limit=100&offset=100")
+
+    assert first.status_code == 200
+    assert first.json()["count"] == 101
+    assert len(first.json()["results"]) == 100
+    assert first.json()["next"] is not None
+    assert second.status_code == 200
+    assert len(second.json()["results"]) == 1
+    assert second.json()["next"] is None
 
 
 def test_openapi_schema_documents_editorjs_image_endpoints(client):

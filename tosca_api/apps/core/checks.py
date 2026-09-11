@@ -9,6 +9,8 @@ from cryptography.fernet import Fernet
 from django.conf import settings
 from django.core.checks import Error, Tags, register
 
+from tosca_api.apps.core.models import MediaAsset
+
 DEFAULT_SECRET_KEY = "change-me-in-production"
 DEFAULT_GEOSERVER_ADMIN_PASSWORD = "geoserver2"
 DEFAULT_KEYCLOAK_CLIENT_ID = "django-dev"
@@ -99,3 +101,32 @@ def check_static_and_media_roots(app_configs, **kwargs):
             Error("MEDIA_ROOT is not configured.", id="tosca.settings.E009")
         )
     return errors
+
+
+@register(Tags.security, deploy=True)
+def check_production_media_uses_s3(app_configs, **kwargs):
+    """Reject production deployments whose media aliases use local disk."""
+    required_aliases = (
+        MediaAsset.StorageAlias.DEFAULT,
+        MediaAsset.StorageAlias.PUBLIC,
+        MediaAsset.StorageAlias.ARCHIVE,
+    )
+    expected_backend = "storages.backends.s3.S3Storage"
+    invalid_aliases = [
+        alias
+        for alias in required_aliases
+        if settings.STORAGES.get(alias, {}).get("BACKEND") != expected_backend
+    ]
+    if invalid_aliases:
+        return [
+            Error(
+                "Production media storage must use S3 for every media alias; "
+                f"invalid aliases: {', '.join(invalid_aliases)}.",
+                hint=(
+                    "Set DJANGO_STORAGE_BACKEND=s3 and configure the private, "
+                    "public, and archive Garage buckets."
+                ),
+                id="tosca.settings.E010",
+            )
+        ]
+    return []

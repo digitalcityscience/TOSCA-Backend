@@ -222,15 +222,25 @@
         panel.querySelector(".geocontext-editorjs-library-close")
             .addEventListener("click", close);
 
-        fetch("/api/v1/content/editorjs/media/", {
-            credentials: "same-origin",
-            headers: { "X-CSRFToken": getCSRFToken() },
-        })
-            .then(function (r) { return r.json(); })
-            .then(function (payload) {
+        function fetchLibraryPages(url, items) {
+            return fetch(url, {
+                credentials: "same-origin",
+                headers: { "X-CSRFToken": getCSRFToken() },
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Media library request failed");
+                return response.json();
+            }).then(function (payload) {
+                const accumulated = items.concat((payload && payload.results) || []);
+                return payload && payload.next
+                    ? fetchLibraryPages(payload.next, accumulated)
+                    : accumulated;
+            });
+        }
+
+        fetchLibraryPages("/api/v1/content/editorjs/media/", [])
+            .then(function (items) {
                 const grid = panel.querySelector(".geocontext-editorjs-library-grid");
                 grid.innerHTML = "";
-                const items = (payload && payload.results) || [];
                 if (items.length === 0) {
                     grid.textContent = "No uploaded images yet.";
                     return;
