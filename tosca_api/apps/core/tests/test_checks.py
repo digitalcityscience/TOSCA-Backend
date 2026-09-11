@@ -8,6 +8,7 @@ from tosca_api.apps.core.checks import (
     check_field_encryption_key,
     check_geoserver_admin_password,
     check_keycloak_settings,
+    check_production_media_uses_s3,
     check_secret_key,
     check_static_and_media_roots,
 )
@@ -82,6 +83,29 @@ class CheckStaticAndMediaRootsTests(SimpleTestCase):
 
     def test_passes_with_default_settings(self):
         self.assertEqual(check_static_and_media_roots(None), [])
+
+
+class CheckProductionMediaStorageTests(SimpleTestCase):
+    @override_settings(
+        STORAGES={
+            "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+            "media_public": {"BACKEND": "storages.backends.s3.S3Storage"},
+            "media_archive": {"BACKEND": "storages.backends.s3.S3Storage"},
+        }
+    )
+    def test_rejects_any_non_s3_media_alias(self):
+        errors = check_production_media_uses_s3(None)
+        self.assertEqual([error.id for error in errors], ["tosca.settings.E010"])
+        self.assertIn("default", errors[0].msg)
+
+    @override_settings(
+        STORAGES={
+            alias: {"BACKEND": "storages.backends.s3.S3Storage"}
+            for alias in ("default", "media_public", "media_archive")
+        }
+    )
+    def test_accepts_s3_for_all_media_aliases(self):
+        self.assertEqual(check_production_media_uses_s3(None), [])
 
 
 class DeployCheckCommandTests(SimpleTestCase):

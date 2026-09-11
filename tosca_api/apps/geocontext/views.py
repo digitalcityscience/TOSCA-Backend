@@ -34,6 +34,7 @@ from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema
 from rest_framework import serializers
 from rest_framework import status
 from rest_framework.parsers import JSONParser, MultiPartParser
+from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
@@ -65,6 +66,11 @@ class EditorJSMediaThrottle(UserRateThrottle):
     """Rate-limit the EditorJS media picker listing per user."""
 
     scope = "editorjs_media"
+
+
+class EditorJSMediaPagination(LimitOffsetPagination):
+    default_limit = 100
+    max_limit = 100
 
 
 def _storage_for_alias(alias: str):
@@ -104,6 +110,9 @@ _UPLOAD_BY_URL_REQUEST_SERIALIZER = inline_serializer(
 _MEDIA_LIBRARY_SERIALIZER = inline_serializer(
     name="EditorJSImageMediaLibrary",
     fields={
+        "count": serializers.IntegerField(),
+        "next": serializers.URLField(allow_null=True),
+        "previous": serializers.URLField(allow_null=True),
         "results": serializers.ListField(
             child=inline_serializer(
                 name="EditorJSImageMediaItem",
@@ -180,17 +189,30 @@ def _store_validated_upload(file_obj, *, request, original_name: str | None = No
     alias = MediaAsset.StorageAlias.DEFAULT
     storage = _storage_for_alias(alias)
     storage_path = storage.save(relative_path, file_obj)
-    uploader = request.user if getattr(request.user, "_meta", None) else None
-    MediaAsset.objects.create(
-        storage_path=storage_path,
-        original_name=original_name or "",
-        mime=mime,
-        width=width,
-        height=height,
-        size=storage.size(storage_path),
-        uploader=uploader,
-        storage_alias=alias,
-    )
+    try:
+        uploader = request.user if getattr(request.user, "_meta", None) else None
+        MediaAsset.objects.create(
+            storage_path=storage_path,
+            original_name=original_name or "",
+            mime=mime,
+            width=width,
+            height=height,
+            size=storage.size(storage_path),
+            uploader=uploader,
+            storage_alias=alias,
+        )
+    except Exception:
+        # Object storage and the database cannot share a transaction. Compensate
+        # a failed metadata write so an upload never leaves an invisible S3
+        # object behind. Preserve the original exception if cleanup also fails;
+        # the reconciliation command can report and recover that rare case.
+        try:
+            storage.delete(storage_path)
+        except Exception:
+            logger.exception(
+                "media_upload.rollback_failed alias=%s path=%s", alias, storage_path
+            )
+        raise
 
     return Response(
         {
@@ -325,6 +347,7 @@ class EditorJSImageLibraryView(APIView):
 
     permission_classes = [IsAuthenticated]
     throttle_classes = [EditorJSMediaThrottle]
+    pagination_class = EditorJSMediaPagination
 
     @extend_schema(
         tags=["content"],
@@ -333,13 +356,15 @@ class EditorJSImageLibraryView(APIView):
         responses={200: _MEDIA_LIBRARY_SERIALIZER},
     )
     def get(self, request, *args, **kwargs):
-        items = list(_list_existing_uploads(request, limit=100))
-        return Response({"results": items})
+        prefix = f"{_UPLOAD_SUBDIR}/"
+        assets = MediaAsset.objects.filter(storage_path__startswith=prefix)
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(assets, request, view=self)
+        items = list(_list_existing_uploads(request, assets=page))
+        return paginator.get_paginated_response(items)
 
 
-def _list_existing_uploads(request, *, limit: int) -> Iterable[dict]:
-    prefix = f"{_UPLOAD_SUBDIR}/"
-    assets = MediaAsset.objects.filter(storage_path__startswith=prefix)[:limit]
+def _list_existing_uploads(request, *, assets: Iterable[MediaAsset]) -> Iterable[dict]:
     for asset in assets:
         yield {
             "url": _absolute_url(request, asset.storage_path, alias=asset.storage_alias),
