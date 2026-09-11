@@ -22,6 +22,9 @@ fi
 echo "🔄 Syncing production dependencies..."
 run_as_appuser uv sync --no-dev
 
+echo "🔒 Validating production settings..."
+run_as_appuser uv run python manage.py check --deploy
+
 echo "📦 Running database migrations..."
 run_as_appuser uv run python manage.py migrate --noinput
 
