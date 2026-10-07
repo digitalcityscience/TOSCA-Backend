@@ -105,7 +105,9 @@ INSTALLED_APPS = [
 # derived from the keys, never maintained twice.
 TOSCA_PERMISSION_MODELS = {
     "campaigns": {"campaign"},
-    "geostories": {"geostory"},
+    # Scenes and their layers are edited on their own admin page (nested
+    # under a story), so they need the same role ladder as the story itself.
+    "geostories": {"geostory", "geostoryscene", "geostoryscenelayer"},
     # EventType/TaxonomyDimension/TaxonomyTerm are shared reference data with
     # no owning org (no FK path to Organization at all) -- unlike
     # EventSeries/EventTerm, which reach one through campaign, there is

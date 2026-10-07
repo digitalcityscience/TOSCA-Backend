@@ -1,4 +1,4 @@
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema, extend_schema_view
 from rest_framework import permissions, viewsets
 from rest_framework.pagination import CursorPagination
@@ -9,7 +9,7 @@ from tosca_api.apps.organizations.permissions import (
     get_request_org_context,
 )
 
-from .models import GeoStory
+from .models import GeoStory, GeoStorySceneLayer
 from .serializers import (
     GeoStoryDetailSerializer,
     GeoStoryListSerializer,
@@ -122,7 +122,12 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
         if self.action == "retrieve":
             queryset = queryset.select_related("campaign", "author")
             queryset = queryset.prefetch_related(
-                "geostorylayer_set__layer__workspace"
+                Prefetch(
+                    "scenes__scene_layers",
+                    queryset=GeoStorySceneLayer.objects.select_related(
+                        "layer__workspace", "style_assignment__style__workspace"
+                    ),
+                )
             )
 
         # Optimize queries for list view

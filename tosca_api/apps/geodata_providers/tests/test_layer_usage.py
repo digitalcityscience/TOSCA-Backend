@@ -24,8 +24,8 @@ def _call_destroy(user, layer, *, confirm: bool = False):
 from tosca_api.apps.events.models import Event, EventLayer
 from tosca_api.apps.feedback.models import FeedbackLayer, GeoFeedback
 from tosca_api.apps.geodata_providers.models import Layer
-from tosca_api.apps.geodata_providers.test_helpers import make_layer
-from tosca_api.apps.geostories.models import GeoStory, GeoStoryLayer
+from tosca_api.apps.geostories.models import GeoStory, GeoStoryScene, GeoStorySceneLayer
+from tosca_api.apps.geostories.tests.scene_helpers import make_vector_layer
 
 User = get_user_model()
 
@@ -52,7 +52,13 @@ def campaign(admin_user):
 
 @pytest.fixture
 def layer(admin_user):
-    return make_layer("workspace:usage_layer", user=admin_user)
+    return make_vector_layer("workspace:usage_layer", user=admin_user)
+
+
+def _use_in_story(layer, story, *, scenes=1):
+    for index in range(scenes):
+        scene = GeoStoryScene.objects.create(geostory=story, title=f"Scene {index}")
+        GeoStorySceneLayer.objects.create(scene=scene, layer=layer)
 
 
 @pytest.mark.django_db
@@ -69,7 +75,7 @@ def test_usage_summary_counts_each_consumer(layer, admin_user, campaign):
     story = GeoStory.objects.create(
         title="S", campaign=campaign, author=admin_user
     )
-    GeoStoryLayer.objects.create(geostory=story, layer=layer)
+    _use_in_story(layer, story)
 
     now = timezone.now()
     event = Event.objects.create(
@@ -99,6 +105,14 @@ def test_usage_summary_counts_each_consumer(layer, admin_user, campaign):
 
 
 @pytest.mark.django_db
+def test_usage_summary_counts_a_story_once_across_scenes(layer, admin_user, campaign):
+    story = GeoStory.objects.create(title="S", campaign=campaign, author=admin_user)
+    _use_in_story(layer, story, scenes=3)
+
+    assert layer.usage_summary()["geostories"] == 1
+
+
+@pytest.mark.django_db
 def test_destroy_returns_409_when_layer_in_use(
     admin_user, layer, campaign, monkeypatch
 ):
@@ -106,7 +120,7 @@ def test_destroy_returns_409_when_layer_in_use(
     story = GeoStory.objects.create(
         title="S", campaign=campaign, author=admin_user
     )
-    GeoStoryLayer.objects.create(geostory=story, layer=layer)
+    _use_in_story(layer, story)
 
     # Block any real engine call — we should not reach the service.
     from tosca_api.apps.geodata_providers.services.commands import layer_service
@@ -132,7 +146,7 @@ def test_destroy_with_confirm_true_runs_delete(
     story = GeoStory.objects.create(
         title="S", campaign=campaign, author=admin_user
     )
-    GeoStoryLayer.objects.create(geostory=story, layer=layer)
+    _use_in_story(layer, story)
 
     from tosca_api.apps.geodata_providers.services.commands import layer_service
 

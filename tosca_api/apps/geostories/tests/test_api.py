@@ -5,9 +5,8 @@ from rest_framework.test import APIClient
 from tosca_api.apps.authentication.role_sync import AuthClaims
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.featurelinks.models import FeatureLink
-from tosca_api.apps.geostories.models import GeoStory, GeoStoryLayer
-from tosca_api.apps.geodata_providers.test_helpers import make_layer
-from tosca_api.apps.geodata_providers.models import LayerStyleAssignment, Style
+from tosca_api.apps.geostories.models import GeoStory, GeoStoryScene, GeoStorySceneLayer
+from tosca_api.apps.geostories.tests.scene_helpers import make_raster_layer, make_vector_layer
 
 User = get_user_model()
 
@@ -61,11 +60,6 @@ def story_content():
             {"type": "paragraph", "data": {"text": "This is the story content."}},
         ]
     }
-
-
-@pytest.fixture
-def layer_ref(user):
-    return make_layer("workspace:test_layer", user=user)
 
 
 @pytest.fixture
@@ -262,35 +256,125 @@ def test_geostory_detail_has_owned_content(api_client, user, geostory):
     assert "context" not in response.data
 
 
-@pytest.mark.django_db
-def test_geostory_detail_has_layers(api_client, user, geostory, layer_ref):
-    """Test that detail view returns layers with display_order."""
-    # Add layer to story
-    GeoStoryLayer.objects.create(geostory=geostory, layer=layer_ref, display_order=1)
+def _scene_with_layers(story, *layers, **scene_attrs):
+    scene = GeoStoryScene.objects.create(geostory=story, title="Scene", **scene_attrs)
+    for layer in layers:
+        GeoStorySceneLayer.objects.create(scene=scene, layer=layer)
+    return scene
 
-    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
+
+@pytest.mark.django_db
+def test_geostory_detail_has_scenes(api_client, user, geostory):
+    layer = make_vector_layer("workspace:scene_parks", user=user)
+    scene = GeoStoryScene.objects.create(
+        geostory=geostory,
+        title="Harbour",
+        caption="Look east",
+        center_lng=9.99,
+        center_lat=53.55,
+        zoom=13.5,
+        bearing=-20,
+        pitch=45,
+        bounds=[9.9, 53.5, 10.1, 53.6],
+        transition=GeoStoryScene.Transition.EASE,
+        duration_ms=800,
+    )
+    scene_layer = GeoStorySceneLayer.objects.create(
+        scene=scene,
+        layer=layer,
+        opacity=0.5,
+        feature_mode=GeoStorySceneLayer.FeatureMode.HIGHLIGHT,
+        feature_id_attribute="name",
+        feature_ids=["Stadtpark"],
+    )
+
     response = api_client.get(f"/api/v1/stories/{geostory.id}/")
     assert response.status_code == 200
 
-    layers = response.data["layers"]
-    assert len(layers) == 1
-    layer_payload = layers[0]["layer"]
-    assert layer_payload["name"] == "test_layer"
-    assert layer_payload["workspace"]["name"] == "workspace"
-    assert layer_payload["geometry_type"] == "Point"
-    assert layer_payload["srid"] == 4326
-    assert layer_payload["is_public"] is True
-    assert layer_payload["publishing_state"] == "PUBLISHED"
-    assert layers[0]["display_order"] == 1
+    [scene_payload] = response.data["scenes"]
+    assert scene_payload["id"] == str(scene.id)
+    assert scene_payload["order"] == 0
+    assert scene_payload["title"] == "Harbour"
+    assert scene_payload["caption"] == "Look east"
+    assert scene_payload["camera"] == {
+        "center": [9.99, 53.55],
+        "zoom": 13.5,
+        "bearing": -20,
+        "pitch": 45,
+        "bounds": [9.9, 53.5, 10.1, 53.6],
+    }
+    assert scene_payload["transition"] == {"type": "ease", "duration_ms": 800}
+
+    [layer_payload] = scene_payload["layers"]
+    assert layer_payload["id"] == str(scene_layer.id)
+    assert layer_payload["layer"]["name"] == "scene_parks"
+    assert layer_payload["layer"]["workspace"]["name"] == "workspace"
+    assert layer_payload["layer"]["publishing_state"] == "PUBLISHED"
+    assert layer_payload["style_assignment"]["id"] == str(scene_layer.style_assignment_id)
+    assert layer_payload["style_assignment"]["format"] == "mbstyle"
+    assert layer_payload["render_layer_ids"] == ["parks-fill", "parks-line"]
+    assert layer_payload["opacity"] == 0.5
+    assert layer_payload["features"] == {
+        "mode": "highlight",
+        "attribute": "name",
+        "ids": ["Stadtpark"],
+    }
 
 
 @pytest.mark.django_db
-def test_geostory_detail_layers_no_n_plus_one(api_client, user, geostory):
-    """Detail endpoint query count must not scale with linked layer count."""
+def test_geostory_detail_scene_without_camera_fits_layers(api_client, user, geostory):
+    _scene_with_layers(geostory, make_vector_layer("workspace:fit", user=user))
+
+    response = api_client.get(f"/api/v1/stories/{geostory.id}/")
+
+    camera = response.data["scenes"][0]["camera"]
+    assert camera["center"] is None
+    assert camera["zoom"] is None
+    assert camera["bounds"] is None
+
+
+@pytest.mark.django_db
+def test_geostory_detail_deprecated_layers_are_distinct_across_scenes(
+    api_client, user, geostory
+):
+    shared = make_vector_layer("workspace:shared", user=user)
+    ortho = make_raster_layer("workspace:ortho", user=user)
+    _scene_with_layers(geostory, shared)
+    _scene_with_layers(geostory, ortho, shared)
+
+    response = api_client.get(f"/api/v1/stories/{geostory.id}/")
+
+    layers = response.data["layers"]
+    assert [item["layer"]["name"] for item in layers] == ["shared", "ortho"]
+    assert [item["display_order"] for item in layers] == [0, 1]
+    assert layers[1]["style_assignment"]["format"] == "sld"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "change",
+    [{"is_public": False}, {"publishing_state": "DRAFT"}],
+)
+def test_geostory_detail_skips_layers_no_longer_public(api_client, user, geostory, change):
+    from tosca_api.apps.geodata_providers.models import Layer
+
+    visible = make_vector_layer("workspace:still_public", user=user)
+    hidden = make_vector_layer("workspace:went_private", user=user)
+    _scene_with_layers(geostory, visible, hidden)
+    Layer.objects.filter(pk=hidden.pk).update(**change)
+
+    response = api_client.get(f"/api/v1/stories/{geostory.id}/")
+
+    scene_layers = response.data["scenes"][0]["layers"]
+    assert [item["layer"]["name"] for item in scene_layers] == ["still_public"]
+    assert [item["layer"]["name"] for item in response.data["layers"]] == ["still_public"]
+
+
+@pytest.mark.django_db
+def test_geostory_detail_scenes_no_n_plus_one(api_client, user, geostory):
+    """Detail query count must not scale with scene or scene layer count."""
     from django.db import connection
     from django.test.utils import CaptureQueriesContext
-
-    from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
     _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     url = f"/api/v1/stories/{geostory.id}/"
@@ -298,195 +382,48 @@ def test_geostory_detail_layers_no_n_plus_one(api_client, user, geostory):
     # Warm caches (auth, content types) so they don't pollute the count.
     api_client.get(url)
 
-    for i in range(2):
-        layer = make_layer(f"workspace:n1_a_{i}", user=user)
-        GeoStoryLayer.objects.create(geostory=geostory, layer=layer, display_order=i)
+    _scene_with_layers(
+        geostory, *(make_vector_layer(f"workspace:n1_a_{i}", user=user) for i in range(2))
+    )
 
-    with CaptureQueriesContext(connection) as ctx_2:
+    with CaptureQueriesContext(connection) as ctx_small:
         response = api_client.get(url)
     assert response.status_code == 200
     assert len(response.data["layers"]) == 2
 
-    for i in range(2, 8):
-        layer = make_layer(f"workspace:n1_a_{i}", user=user)
-        GeoStoryLayer.objects.create(geostory=geostory, layer=layer, display_order=i)
+    for scene_index in range(2):
+        _scene_with_layers(
+            geostory,
+            *(
+                make_vector_layer(f"workspace:n1_{scene_index}_{i}", user=user)
+                for i in range(3)
+            ),
+        )
 
-    with CaptureQueriesContext(connection) as ctx_8:
+    with CaptureQueriesContext(connection) as ctx_large:
         response = api_client.get(url)
     assert response.status_code == 200
+    assert len(response.data["scenes"]) == 3
     assert len(response.data["layers"]) == 8
 
-    # Query count must be the same regardless of how many layers are linked.
-    assert len(ctx_8) == len(ctx_2)
+    assert len(ctx_large) == len(ctx_small)
 
 
 @pytest.mark.django_db
-def test_geostory_create_with_layer_uuids(api_client, user, campaign):
-    """POST with layers=[uuid1, uuid2] must persist GeoStoryLayer rows."""
-    from tosca_api.apps.geodata_providers.test_helpers import make_layer
-
-    layer1 = make_layer("workspace:write_a", user=user)
-    layer2 = make_layer("workspace:write_b", user=user)
-
-    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
-    payload = {
-        "title": "Story With Layers",
-        "campaign": str(campaign.id),
-        "layers": [str(layer1.id), str(layer2.id)],
-    }
-    response = api_client.post("/api/v1/stories/", payload, format="json")
-    assert response.status_code == 201
-
-    story = GeoStory.objects.get(id=response.data["id"])
-    rows = list(GeoStoryLayer.objects.filter(geostory=story).order_by("display_order"))
-    assert [r.layer_id for r in rows] == [layer1.id, layer2.id]
-    assert [r.display_order for r in rows] == [0, 1]
-
-
-@pytest.mark.django_db
-def test_geostory_create_with_selected_layer_style(api_client, user, campaign):
-    layer = make_layer("workspace:write_styled", user=user)
-    style = Style.objects.create(
-        geodata_engine=layer.workspace.geodata_engine,
-        workspace=layer.workspace,
-        name="selected-story-style",
-        title="Selected story style",
-        format=Style.StyleFormat.SLD,
-        validation_state=Style.ValidationState.VALID,
-        created_by=user,
-    )
-    assignment = LayerStyleAssignment.objects.create(
-        layer=layer,
-        style=style,
-        role=LayerStyleAssignment.Role.ALTERNATE,
-        created_by=user,
-    )
+def test_geostory_write_does_not_accept_layers(api_client, user, campaign):
+    """Scenes are authored in the admin; the API ignores legacy ``layers``."""
+    layer = make_vector_layer("workspace:write_ignored", user=user)
 
     _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
     response = api_client.post(
         "/api/v1/stories/",
-        {
-            "title": "Story With Selected Style",
-            "campaign": str(campaign.id),
-            "layers": [
-                {
-                    "layer": str(layer.id),
-                    "style_assignment": str(assignment.id),
-                    "display_order": 3,
-                }
-            ],
-        },
+        {"title": "Story", "campaign": str(campaign.id), "layers": [str(layer.id)]},
         format="json",
     )
+
     assert response.status_code == 201
-
-    story_layer = GeoStoryLayer.objects.get(geostory_id=response.data["id"])
-    assert story_layer.style_assignment == assignment
-    assert story_layer.display_order == 3
-
-    detail = api_client.get(f"/api/v1/stories/{response.data['id']}/")
-    assert detail.status_code == 200
-    selected = detail.data["layers"][0]["style_assignment"]
-    assert selected == {
-        "id": str(assignment.id),
-        "style_id": str(style.id),
-        "name": style.name,
-        "qualified_name": style.qualified_name,
-        "role": assignment.role,
-        "format": style.format,
-        "style_layer_ids": [],
-    }
-
-
-@pytest.mark.django_db
-def test_geostory_create_rejects_style_from_another_layer(api_client, user, campaign):
-    layer = make_layer("workspace:write_target", user=user)
-    other_layer = make_layer("workspace:write_style_source", user=user)
-    style = Style.objects.create(
-        geodata_engine=layer.workspace.geodata_engine,
-        workspace=layer.workspace,
-        name="wrong-layer-style",
-        format=Style.StyleFormat.SLD,
-        validation_state=Style.ValidationState.VALID,
-        created_by=user,
-    )
-    assignment = LayerStyleAssignment.objects.create(
-        layer=other_layer,
-        style=style,
-        role=LayerStyleAssignment.Role.DEFAULT,
-        created_by=user,
-    )
-
-    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
-    response = api_client.post(
-        "/api/v1/stories/",
-        {
-            "title": "Bad Style",
-            "campaign": str(campaign.id),
-            "layers": [
-                {
-                    "layer": str(layer.id),
-                    "style_assignment": str(assignment.id),
-                }
-            ],
-        },
-        format="json",
-    )
-    assert response.status_code == 400
-    assert "must belong to the selected layer" in str(response.data["layers"])
-
-
-@pytest.mark.django_db
-def test_geostory_create_rejects_unknown_layer_uuid(api_client, user, campaign):
-    import uuid as uuid_module
-
-    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
-    payload = {
-        "title": "Story",
-        "campaign": str(campaign.id),
-        "layers": [str(uuid_module.uuid4())],
-    }
-    response = api_client.post("/api/v1/stories/", payload, format="json")
-    assert response.status_code == 400
-    assert "layers" in response.data
-
-
-@pytest.mark.django_db
-def test_geostory_create_rejects_non_public_layer(api_client, user, campaign):
-    from tosca_api.apps.geodata_providers.test_helpers import make_layer
-
-    private = make_layer("workspace:write_private", user=user, is_public=False)
-
-    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
-    payload = {
-        "title": "Story",
-        "campaign": str(campaign.id),
-        "layers": [str(private.id)],
-    }
-    response = api_client.post("/api/v1/stories/", payload, format="json")
-    assert response.status_code == 400
-    assert "layers" in response.data
-
-
-@pytest.mark.django_db
-def test_geostory_update_replaces_layers(api_client, user, geostory):
-    from tosca_api.apps.geodata_providers.test_helpers import make_layer
-
-    initial = make_layer("workspace:upd_initial", user=user)
-    GeoStoryLayer.objects.create(geostory=geostory, layer=initial, display_order=0)
-
-    replacement = make_layer("workspace:upd_replacement", user=user)
-    _authenticate_org_writer(api_client, user, "ROLE_DCS_WRITER")
-    response = api_client.patch(
-        f"/api/v1/stories/{geostory.id}/",
-        {"layers": [str(replacement.id)]},
-        format="json",
-    )
-    assert response.status_code == 200
-
-    rows = list(GeoStoryLayer.objects.filter(geostory=geostory))
-    assert len(rows) == 1
-    assert rows[0].layer_id == replacement.id
+    assert "layers" not in response.data
+    assert not GeoStoryScene.objects.filter(geostory_id=response.data["id"]).exists()
 
 
 @pytest.mark.django_db
@@ -537,6 +474,7 @@ def test_geostory_detail_full_payload(api_client, user, geostory):
     assert "status" in data
     assert "campaign" in data
     assert "content" in data
+    assert "scenes" in data
     assert "layers" in data
     assert "feature_links" in data
     assert "created_at" in data

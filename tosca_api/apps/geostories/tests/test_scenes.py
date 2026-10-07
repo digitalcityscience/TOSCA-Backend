@@ -2,14 +2,12 @@
 Tests for GeoStory scene models.
 """
 
-import json
-
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 
 from tosca_api.apps.campaigns.models import Campaign
-from tosca_api.apps.geodata_providers.models import LayerStyleAssignment, Store, Style
+from tosca_api.apps.geodata_providers.models import LayerStyleAssignment, Style
 from tosca_api.apps.geodata_providers.test_helpers import make_layer
 from tosca_api.apps.geostories.models import (
     MAX_SCENE_FEATURE_IDS,
@@ -17,19 +15,13 @@ from tosca_api.apps.geostories.models import (
     GeoStoryScene,
     GeoStorySceneLayer,
 )
+from tosca_api.apps.geostories.tests.scene_helpers import (
+    assign_style,
+    make_raster_layer,
+    make_vector_layer,
+)
 
 User = get_user_model()
-
-MBSTYLE = json.dumps(
-    {
-        "version": 8,
-        "layers": [
-            {"id": "parks-fill", "type": "fill", "source": "parks", "source-layer": "parks"},
-            {"id": "parks-line", "type": "line", "source": "parks", "source-layer": "parks"},
-            {"id": "bg", "type": "background"},
-        ],
-    }
-)
 
 
 @pytest.fixture
@@ -48,47 +40,14 @@ def scene(story):
     return GeoStoryScene.objects.create(geostory=story, title="Scene")
 
 
-def _assign(layer, user, *, fmt, name, style_layer_ids=None, role="default"):
-    style = Style.objects.create(
-        geodata_engine=layer.workspace.geodata_engine,
-        workspace=layer.workspace,
-        name=name,
-        format=fmt,
-        file_content=MBSTYLE if fmt == Style.StyleFormat.MBSTYLE else "",
-        validation_state=Style.ValidationState.VALID,
-        created_by=user,
-    )
-    return LayerStyleAssignment.objects.create(
-        layer=layer,
-        style=style,
-        role=role,
-        style_layer_ids=style_layer_ids or [],
-        created_by=user,
-    )
-
-
 @pytest.fixture
 def vector_layer(user):
-    layer = make_layer("vec:parks", user=user, geometry_type="Polygon")
-    _assign(
-        layer,
-        user,
-        fmt=Style.StyleFormat.MBSTYLE,
-        name="parks-style",
-        style_layer_ids=["parks-fill", "parks-line"],
-    )
-    return layer
+    return make_vector_layer("vec:parks", user=user, geometry_type="Polygon")
 
 
 @pytest.fixture
 def raster_layer(user):
-    layer = make_layer("ras:ortho", user=user)
-    Store.objects.filter(pk=layer.store_id).update(
-        store_type=Store.StoreType.GEOTIFF, file_path="/data/ortho.tif"
-    )
-    layer.refresh_from_db()
-    _assign(layer, user, fmt=Style.StyleFormat.SLD, name="ortho-style")
-    return layer
+    return make_raster_layer("ras:ortho", user=user)
 
 
 # --- GeoStoryScene ---------------------------------------------------------
@@ -239,7 +198,7 @@ def test_scene_layer_rejects_another_layers_style(scene, vector_layer, raster_la
 
 @pytest.mark.django_db
 def test_scene_layer_accepts_alternate_style(scene, vector_layer, user):
-    alternate = _assign(
+    alternate = assign_style(
         vector_layer,
         user,
         fmt=Style.StyleFormat.MBSTYLE,
@@ -258,7 +217,7 @@ def test_scene_layer_accepts_alternate_style(scene, vector_layer, user):
 @pytest.mark.django_db
 def test_vector_layer_rejects_sld_style(scene, user):
     layer = make_layer("vec:roads", user=user)
-    _assign(layer, user, fmt=Style.StyleFormat.SLD, name="roads-sld")
+    assign_style(layer, user, fmt=Style.StyleFormat.SLD, name="roads-sld")
 
     with pytest.raises(ValidationError) as exc:
         GeoStorySceneLayer.objects.create(scene=scene, layer=layer)
@@ -387,3 +346,22 @@ def test_deleting_story_cascades_scenes(story, scene, vector_layer):
 
     assert not GeoStoryScene.objects.exists()
     assert not GeoStorySceneLayer.objects.exists()
+
+
+@pytest.mark.django_db
+def test_style_in_use_cannot_be_deleted_alone(scene, vector_layer):
+    from django.db.models import RestrictedError
+
+    scene_layer = GeoStorySceneLayer.objects.create(scene=scene, layer=vector_layer)
+
+    with pytest.raises(RestrictedError):
+        scene_layer.style_assignment.delete()
+
+
+@pytest.mark.django_db
+def test_deleting_layer_removes_it_from_scenes(scene, vector_layer):
+    GeoStorySceneLayer.objects.create(scene=scene, layer=vector_layer)
+
+    vector_layer.delete()
+
+    assert not scene.scene_layers.exists()
