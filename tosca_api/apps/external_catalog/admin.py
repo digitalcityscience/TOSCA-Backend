@@ -32,7 +32,7 @@ from tosca_api.apps.organizations.permissions import (
     resolve_write_organization,
 )
 
-from . import harvest, remote
+from . import harvest, health, remote
 from .models import Category, CategoryItem, ExternalService, ServiceSource, Visibility
 
 VISIBILITY_NOTE = (
@@ -91,7 +91,7 @@ class ExternalServiceAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
     prepopulated_fields = {"slug": ("name",)}
     readonly_fields = ("id", "created_by", "created_at", "updated_at", "catalog_status")
     ordering = ("title",)
-    actions = ("load_catalog",)
+    actions = ("load_catalog", "check_availability")
 
     fieldsets = (
         (None, {"fields": ("id", "organization", "name", "slug", "title")}),
@@ -210,6 +210,10 @@ class ExternalServiceAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
         if skipped:
             self.message_user(request, f"{skipped} service(s) skipped: a load is already running.", messages.WARNING)
 
+    @admin.action(description="Check availability of their category items (background)", permissions=["change"])
+    def check_availability(self, request, queryset):
+        _start_check(self, request, health.items_for(services=queryset))
+
     @admin.display(description="Catalog")
     def catalog_status(self, obj):
         info = harvest.state(obj)
@@ -221,6 +225,18 @@ class ExternalServiceAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
             text = f"{obj.sources.count()} sources, loaded {date_format(obj.catalog_loaded_at, 'DATETIME_FORMAT')}"
             return f"{text}. {info['note']}" if info["note"] else text
         return "Not loaded yet"
+
+
+def _start_check(model_admin, request, items) -> None:
+    count = health.start_in_background(items.values_list("pk", flat=True))
+    if count:
+        model_admin.message_user(
+            request,
+            f"Checking {count} item(s) in the background (about half a second each). "
+            "Reload the item list later to see the results.",
+        )
+    else:
+        model_admin.message_user(request, "No items to check.", messages.WARNING)
 
 
 def _services_for(request):
@@ -423,6 +439,7 @@ class CategoryAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
     prepopulated_fields = {"slug": ("title",)}
     readonly_fields = ("id", "created_by", "created_at", "updated_at")
     ordering = ("display_order", "title")
+    actions = ("check_availability",)
 
     fieldsets = (
         (None, {"fields": ("id", "organization", "title", "slug", "description", "display_order")}),
@@ -448,6 +465,10 @@ class CategoryAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
     @admin.display(description="Items", ordering="_item_count")
     def item_count(self, obj):
         return obj._item_count
+
+    @admin.action(description="Check availability of their items (background)", permissions=["change"])
+    def check_availability(self, request, queryset):
+        _start_check(self, request, health.items_for(categories=queryset))
 
     def save_related(self, request, form, formsets, change):
         super().save_related(request, form, formsets, change)
@@ -617,6 +638,7 @@ class CategoryItemAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     search_fields = ("title", "dataset_title", "ogc_collection_id", "sta_service_name", "sta_layer_name")
     list_select_related = ("category", "service")
     ordering = ("category__display_order", "category__title", "display_order", "title")
+    actions = ("check_availability",)
     readonly_fields = (
         "category",
         "service",
@@ -661,6 +683,10 @@ class CategoryItemAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         if obj.ogc_dataset_id:
             return f"{obj.ogc_dataset_id} / {obj.ogc_collection_id}"
         return obj.ogc_collection_id
+
+    @admin.action(description="Check availability (background)", permissions=["change"])
+    def check_availability(self, request, queryset):
+        _start_check(self, request, health.items_for(item_ids=queryset.values_list("pk", flat=True)))
 
     def has_add_permission(self, request):
         return False

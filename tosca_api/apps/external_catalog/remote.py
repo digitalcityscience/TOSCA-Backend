@@ -68,7 +68,14 @@ _KEYWORD = re.compile(r"<gmd:keyword>\s*<(?:gco:CharacterString|gmx:Anchor)[^>]*
 
 
 class RemoteServiceError(Exception):
-    """A remote read failed; the message is safe to show to admins."""
+    """A remote read failed; the message is safe to show to admins.
+
+    ``status`` is the HTTP status when the service answered with one.
+    """
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +137,9 @@ def _fetch(allowed_host: str | None, url: str, params: dict | None, accept: str)
                 current_params = None  # already part of the redirect target
                 continue
             if response.status_code != 200:
-                raise RemoteServiceError(f"The service answered HTTP {response.status_code}.")
+                raise RemoteServiceError(
+                    f"The service answered HTTP {response.status_code}.", status=response.status_code
+                )
             body = bytearray()
             for chunk in response.iter_content(chunk_size=64 * 1024):
                 body.extend(chunk)
@@ -312,7 +321,7 @@ def _landing_page_url(service: ExternalService, dataset_id: str, refresh: bool) 
     for dataset in ogc_datasets(service, refresh=refresh):
         if dataset["id"] == dataset_id:
             return dataset["landing_page_url"]
-    raise RemoteServiceError(f"Dataset '{dataset_id}' was not found at the service.")
+    raise RemoteServiceError(f"Dataset '{dataset_id}' was not found at the service.", status=404)
 
 
 def _has_geojson_items(links) -> bool:
