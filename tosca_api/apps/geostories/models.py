@@ -413,6 +413,10 @@ class GeoStoryScene(TimeStampedModel):
 
     def clean(self) -> None:
         super().clean()
+        # Number new scenes after their siblings here, not in save(): the
+        # unique (geostory, order) check runs right after clean().
+        if self._state.adding and self.order == 0 and self.geostory_id:
+            self.order = self.next_order_for(self.geostory_id)
         errors = {}
         camera = (self.center_lng, self.center_lat, self.zoom)
         if any(value is not None for value in camera) and any(value is None for value in camera):
@@ -427,14 +431,15 @@ class GeoStoryScene(TimeStampedModel):
     def save(self, *args, **kwargs) -> None:
         self.title = sanitize_simple(self.title)
         self.caption = sanitize_simple(self.caption)
-        if self._state.adding and self.order == 0 and self.geostory_id:
-            max_order = GeoStoryScene.objects.filter(geostory_id=self.geostory_id).aggregate(
-                models.Max("order")
-            )["order__max"]
-            if max_order is not None:
-                self.order = max_order + 1
         self.full_clean()
         super().save(*args, **kwargs)
+
+    @staticmethod
+    def next_order_for(geostory_id) -> int:
+        max_order = GeoStoryScene.objects.filter(geostory_id=geostory_id).aggregate(
+            models.Max("order")
+        )["order__max"]
+        return 0 if max_order is None else max_order + 1
 
 
 def _validate_bounds(bounds) -> str | None:

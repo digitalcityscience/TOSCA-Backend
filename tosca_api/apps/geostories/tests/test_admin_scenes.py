@@ -146,6 +146,25 @@ def test_scene_add_saves_layers_and_returns_to_story(client, story, layer):
 
 
 @pytest.mark.django_db
+def test_second_scene_can_be_added_with_default_order(client, story, layer):
+    GeoStoryScene.objects.create(geostory=story, title="First")
+
+    page = client.get(f"{ADD_URL}?geostory={story.pk}")
+    response = client.post(ADD_URL, _scene_post(story, {"layer": str(layer.pk)}))
+
+    assert page.context["adminform"].form.initial["order"] == 1
+    assert response.status_code == 302
+    assert list(story.scenes.values_list("title", "order")) == [("First", 0), ("Harbour", 1)]
+
+
+@pytest.mark.django_db
+def test_scene_add_ignores_malformed_story_param(client):
+    response = client.get(f"{ADD_URL}?geostory=not-a-uuid")
+
+    assert response.status_code == 200
+
+
+@pytest.mark.django_db
 def test_scene_add_save_and_continue_stays_on_scene(client, story, layer):
     data = {**_scene_post(story, {"layer": str(layer.pk)}), "_continue": "1"}
 

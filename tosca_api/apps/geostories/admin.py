@@ -3,6 +3,7 @@ import json
 from django import forms
 from django.contrib import admin
 from django.contrib.admin.options import IS_POPUP_VAR
+from django.core.exceptions import ValidationError
 from django.http import HttpResponseRedirect
 from django.urls import path, reverse
 from django.utils.html import format_html
@@ -219,6 +220,16 @@ class GeoStorySceneAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     def get_model_perms(self, request):
         # Scenes are reached through their story, not the admin index.
         return {}
+
+    def get_changeform_initial_data(self, request):
+        initial = super().get_changeform_initial_data(request)
+        if initial.get("geostory"):
+            try:
+                initial["order"] = GeoStoryScene.next_order_for(initial["geostory"])
+            except ValidationError:
+                # A malformed ?geostory= would otherwise crash the autocomplete widget.
+                del initial["geostory"]
+        return initial
 
     def get_deleted_objects(self, objs, request):
         deleted, model_count, perms_needed, protected = super().get_deleted_objects(objs, request)
