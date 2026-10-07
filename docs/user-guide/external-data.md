@@ -114,6 +114,13 @@ still exists and records how many features (OGC) or datastreams (SensorThings) i
 | Missing at the service | The dataset, collection or layer is gone. | Remove the item, or find its replacement after **Update catalog**. |
 | Check failed | The service did not answer or the collection cannot be drawn. Often temporary. | Check again later; read the error on the item. |
 
+## Demo data (development)
+
+Developers can create the two Hamburg services and ten demo categories (traffic, bike,
+energy, …) in one step:
+`manage.py seed_external_catalog_hamburg --organization <slug>` (add `--dry-run` to preview).
+Everything it creates is private; running it again only adds what is missing.
+
 ## Who can do what
 
 | Task | Needed |
