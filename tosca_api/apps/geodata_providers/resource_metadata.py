@@ -1,4 +1,4 @@
-"""Normalize GeoServer feature-type attribute descriptors."""
+"""Normalize GeoServer resource metadata (feature attributes, extents)."""
 
 from __future__ import annotations
 
@@ -45,3 +45,22 @@ def normalize_feature_attributes(raw_attributes) -> list[dict]:
         seen.add(name)
         attributes.append({"name": name, "type": attribute_type})
     return attributes
+
+
+def normalize_lat_lon_bounds(raw_bbox) -> list[float] | None:
+    """Return ``[west, south, east, north]`` from a GeoServer ``latLonBoundingBox``.
+
+    Returns ``None`` for missing, non-numeric or degenerate boxes so callers
+    can keep their previous value instead of storing garbage.
+    """
+    if not isinstance(raw_bbox, dict):
+        return None
+    try:
+        west, south, east, north = (
+            float(raw_bbox[key]) for key in ("minx", "miny", "maxx", "maxy")
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (-180 <= west <= east <= 180 and -90 <= south <= north <= 90):
+        return None
+    return [west, south, east, north]

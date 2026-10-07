@@ -11,7 +11,7 @@ from tosca_api.apps.core.editorjs import (
 
 from ...engine_factory import EngineClientFactory
 from ...exceptions import GeodataEngineError
-from ...feature_attributes import normalize_feature_attributes
+from ...resource_metadata import normalize_feature_attributes
 from ...models import Layer, Store, Workspace
 from ...postgis_inspector import PostGISInspectorError, get_table_bbox
 
@@ -146,7 +146,7 @@ class LayerService:
                 )
                 layer.refresh_from_db()
 
-        cls.refresh_attributes(layer, client=client)
+        cls.refresh_resource_metadata(layer, client=client)
         return {
             'success': True,
             'verified': True,
@@ -192,7 +192,7 @@ class LayerService:
                 published_at=timezone.now(),
             )
             layer.refresh_from_db()
-            cls.refresh_attributes(layer, client=client)
+            cls.refresh_resource_metadata(layer, client=client)
             return {
                 'success': True,
                 'already_exists': True,
@@ -245,7 +245,7 @@ class LayerService:
             published_url='',
         )
         layer.refresh_from_db()
-        cls.refresh_attributes(layer, client=client)
+        cls.refresh_resource_metadata(layer, client=client)
         return {
             'success': True,
             'verified': True,
@@ -255,40 +255,46 @@ class LayerService:
         }
 
     @classmethod
-    def refresh_attributes(cls, layer: Layer, *, client=None) -> dict:
-        """Re-read the layer's feature attributes from its engine.
+    def refresh_resource_metadata(cls, layer: Layer, *, client=None) -> dict:
+        """Re-read the layer's feature attributes and WGS84 extent from its engine.
 
-        Raster layers have no feature attributes and are cleared without a
-        remote call. On engine errors the stored attributes are left as-is and
-        a failure result is returned instead of raising.
+        Raster layers have no feature attributes; only their extent is read.
+        On engine errors the stored values are left as-is and a failure result
+        is returned instead of raising, so callers such as a finished publish
+        never fail because of it.
         """
-        if layer.store.store_type == Store.StoreType.GEOTIFF:
-            Layer.objects.filter(pk=layer.pk).update(attributes=[])
-            layer.attributes = []
-            return {'success': True, 'attributes': []}
-
         engine = layer.workspace.geodata_engine if layer.workspace else None
         if not engine:
             return {'success': False, 'error': f"Layer '{layer.name}' has no engine."}
 
+        raster = layer.store.store_type == Store.StoreType.GEOTIFF
+        qualified_name = f"{layer.workspace.name}:{layer.name}"
         try:
             client = client or EngineClientFactory.create_client(engine)
-            detail = client.get_featuretype_detail(
-                layer.workspace.name, layer.store.name, layer.name
-            )
-        except Exception as exc:  # never fail the caller (e.g. a finished publish)
-            error = f"Could not read attributes for '{layer.workspace.name}:{layer.name}': {exc}"
+            fetch = client.get_coverage_detail if raster else client.get_featuretype_detail
+            detail = fetch(layer.workspace.name, layer.store.name, layer.name)
+        except Exception as exc:
+            error = f"Could not read metadata for '{qualified_name}': {exc}"
             logger.warning(error)
             return {'success': False, 'error': error}
-        if not isinstance(detail, dict) or 'attributes' not in detail:
-            error = f"GeoServer did not return attributes for '{layer.workspace.name}:{layer.name}'."
+        if not isinstance(detail, dict) or (not raster and 'attributes' not in detail):
+            error = f"GeoServer did not return attributes for '{qualified_name}'."
             logger.warning(error)
             return {'success': False, 'error': error}
 
-        attributes = normalize_feature_attributes(detail['attributes'])
-        Layer.objects.filter(pk=layer.pk).update(attributes=attributes)
-        layer.attributes = attributes
-        return {'success': True, 'attributes': attributes}
+        updates = {
+            'attributes': [] if raster else normalize_feature_attributes(detail['attributes'])
+        }
+        if 'bounds' in detail:
+            updates['bounds'] = detail['bounds']
+        Layer.objects.filter(pk=layer.pk).update(**updates)
+        for field, value in updates.items():
+            setattr(layer, field, value)
+        return {
+            'success': True,
+            'attributes': layer.attributes,
+            'bounds': layer.bounds,
+        }
 
     @classmethod
     def update_published_metadata(

@@ -2,7 +2,7 @@ from django import forms
 from django.contrib import admin
 from django.contrib.admin.options import IS_POPUP_VAR
 from django.http import HttpResponseRedirect
-from django.urls import reverse
+from django.urls import path, reverse
 from django.utils.html import format_html
 
 from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin
@@ -11,6 +11,7 @@ from tosca_api.apps.core.editorjs import render_content_media_urls
 
 from .forms import GeoStorySceneLayerForm
 from .models import GeoStory, GeoStoryScene, GeoStorySceneLayer
+from .scene_editor import basemap_style, preview_view
 
 
 class GeoStoryAdminForm(forms.ModelForm):
@@ -129,20 +130,17 @@ class GeoStoryAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         )
 
 
-class GeoStorySceneLayerInline(admin.TabularInline):
+class GeoStorySceneLayerInline(admin.StackedInline):
     model = GeoStorySceneLayer
     form = GeoStorySceneLayerForm
     fields = (
-        "layer",
-        "style_assignment",
+        ("layer", "style_assignment"),
+        ("display_order", "opacity"),
         "render_layer_ids",
-        "display_order",
-        "opacity",
-        "feature_mode",
-        "feature_id_attribute",
+        ("feature_mode", "feature_id_attribute"),
         "feature_ids",
     )
-    extra = 1
+    extra = 0
     autocomplete_fields = ("layer",)
 
     class Media:
@@ -158,6 +156,7 @@ class GeoStorySceneAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     autocomplete_fields = ("geostory",)
     inlines = [GeoStorySceneLayerInline]
     readonly_fields = ("story_link",)
+    change_form_template = "admin/geostories/geostoryscene/change_form.html"
     fieldsets = (
         (None, {"fields": ("geostory", "story_link", "title", "caption", "order")}),
         (
@@ -170,7 +169,8 @@ class GeoStorySceneAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
                     "bounds",
                 ),
                 "description": (
-                    "Leave the center empty to fit the map to the scene's layers."
+                    "Frame the map and press “Capture view”. Leave the center empty "
+                    "to fit the map to the scene's layers."
                 ),
             },
         ),
@@ -180,6 +180,24 @@ class GeoStorySceneAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     def get_model_perms(self, request):
         # Scenes are reached through their story, not the admin index.
         return {}
+
+    def get_urls(self):
+        preview = path(
+            "preview/",
+            self.admin_site.admin_view(lambda request: preview_view(request, self)),
+            name="geostories_geostoryscene_preview",
+        )
+        return [preview, *super().get_urls()]
+
+    def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
+        extra_context = {
+            **(extra_context or {}),
+            "scene_editor_config": {
+                "previewUrl": reverse("admin:geostories_geostoryscene_preview"),
+                "basemap": basemap_style(),
+            },
+        }
+        return super().changeform_view(request, object_id, form_url, extra_context)
 
     @admin.display(description="Layers")
     def layer_count(self, obj: GeoStoryScene) -> int:

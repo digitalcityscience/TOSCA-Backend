@@ -38,8 +38,10 @@ window.addEventListener('load', function () {
             var $select = $row.find('select[name$="-style_assignment"]');
             if (!$select.length) return;
             var currentValue = chooseDefault ? '' : String($select.val() || '');
+            // Cache the server-rendered options before emptying the select.
+            var options = assignmentOptions($select);
             $select.empty();
-            assignmentOptions($select).each(function () {
+            options.each(function () {
                 var optionLayerId = String($(this).attr('data-layer-id') || '');
                 if (!optionLayerId || optionLayerId === layerId) {
                     $select.append($(this).clone());
@@ -78,16 +80,23 @@ window.addEventListener('load', function () {
             }, 0);
         });
 
-        $(document).on('formset:added', function (event, $row, formsetName) {
-            if (formsetName !== prefix) return;
-            $row = $row || $(event.target);
+        // Django dispatches these as native CustomEvents carrying
+        // detail.formsetName; the event target is the added row.
+        function formsetName(event) {
+            var detail = event.originalEvent && event.originalEvent.detail;
+            return detail && detail.formsetName;
+        }
+
+        $(document).on('formset:added', function (event) {
+            if (formsetName(event) !== prefix) return;
+            var $row = $(event.target);
             initializeRow($row, true);
             $row.find('input[name$="-display_order"]').val(visibleRows().length - 1);
             updateOrders();
         });
 
-        $(document).on('formset:removed', function (event, $row, formsetName) {
-            if (formsetName === prefix) updateOrders();
+        $(document).on('formset:removed', function (event) {
+            if (formsetName(event) === prefix) updateOrders();
         });
 
         $(document).on('change', '.dynamic-' + prefix + ' input[name$="-DELETE"]', updateOrders);

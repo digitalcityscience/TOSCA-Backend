@@ -31,6 +31,7 @@ class LayerSummarySerializer(serializers.ModelSerializer):
             "workspace",
             "geometry_type",
             "srid",
+            "bounds",
             "published_url",
             "is_public",
             "publishing_state",

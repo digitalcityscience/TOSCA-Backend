@@ -69,27 +69,34 @@ def source_key(scene_layer: GeoStorySceneLayer) -> str:
 
 
 def build_story_map(*, request, scenes) -> dict:
+    return build_map(
+        request=request,
+        scene_layers=[item for scene in scenes for item in renderable_scene_layers(scene)],
+    )
+
+
+def build_map(*, request, scene_layers) -> dict:
+    """Sources, styles and sprites for already-filtered, renderable scene layers."""
     sources: dict[str, dict] = {}
     styles: dict[str, dict] = {}
     sprites: dict[str, dict] = {}
-    for scene in scenes:
-        for scene_layer in renderable_scene_layers(scene):
-            key = source_key(scene_layer)
-            if key not in sources:
-                sources[key] = build_source(
-                    layer=scene_layer.layer, style_assignment=scene_layer.style_assignment
-                )
-            style = scene_layer.style_assignment.style
-            provider_id = scene_layer.layer.workspace.geodata_engine_id
-            if str(style.id) not in styles:
-                styles[str(style.id)] = build_style_entry(
-                    request=request, style=style, provider_id=provider_id
-                )
-            sprite_asset = style.sprite_asset
-            if sprite_asset is not None and str(sprite_asset.id) not in sprites:
-                sprites[str(sprite_asset.id)] = build_sprite_entry(
-                    request=request, sprite_asset=sprite_asset, provider_id=provider_id
-                )
+    for scene_layer in scene_layers:
+        key = source_key(scene_layer)
+        if key not in sources:
+            sources[key] = build_source(
+                layer=scene_layer.layer, style_assignment=scene_layer.style_assignment
+            )
+        style = scene_layer.style_assignment.style
+        provider_id = scene_layer.layer.workspace.geodata_engine_id
+        if str(style.id) not in styles:
+            styles[str(style.id)] = build_style_entry(
+                request=request, style=style, provider_id=provider_id
+            )
+        sprite_asset = style.sprite_asset
+        if sprite_asset is not None and str(sprite_asset.id) not in sprites:
+            sprites[str(sprite_asset.id)] = build_sprite_entry(
+                request=request, sprite_asset=sprite_asset, provider_id=provider_id
+            )
     return {"sources": sources, "styles": styles, "sprites": sprites}
 
 
@@ -98,8 +105,12 @@ def build_story_map(*, request, scenes) -> dict:
 
 def build_scene_render_layers(scene: GeoStoryScene) -> list[dict]:
     """Ordered MapLibre layers for one scene, bottom to top."""
+    return build_render_layers_for(renderable_scene_layers(scene))
+
+
+def build_render_layers_for(scene_layers) -> list[dict]:
     render_layers: list[dict] = []
-    for scene_layer in renderable_scene_layers(scene):
+    for scene_layer in scene_layers:
         prefix = f"scene-layer-{scene_layer.id}"
         key = source_key(scene_layer)
         passes = build_render_layers(
@@ -130,8 +141,25 @@ def build_scene_render_layers(scene: GeoStoryScene) -> list[dict]:
     return render_layers
 
 
+def scene_bounds(scene_layers) -> list[float] | None:
+    """Union of the layers' WGS84 extents, for "fit to layers"."""
+    boxes = [item.layer.bounds for item in scene_layers if item.layer.bounds]
+    if not boxes:
+        return None
+    return [
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    ]
+
+
 def build_scene_legend(scene: GeoStoryScene) -> list[dict]:
     """Legend entries, top-most layer first."""
+    return build_legend_for(renderable_scene_layers(scene))
+
+
+def build_legend_for(scene_layers) -> list[dict]:
     return [
         {
             "scene_layer_id": str(scene_layer.id),
@@ -152,7 +180,7 @@ def build_scene_legend(scene: GeoStoryScene) -> list[dict]:
                 layer=scene_layer.layer, style_assignment=scene_layer.style_assignment
             ),
         }
-        for scene_layer in reversed(renderable_scene_layers(scene))
+        for scene_layer in reversed(list(scene_layers))
     ]
 
 

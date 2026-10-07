@@ -472,6 +472,11 @@ class Layer(SyncStateMixin, TimeStampedModel):
             '[{"name": ..., "type": ...}]. Empty for raster layers.'
         ),
     )
+    bounds = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="WGS84 extent reported by the engine, as [west, south, east, north].",
+    )
 
     publishing_state = models.CharField(
         max_length=20,
