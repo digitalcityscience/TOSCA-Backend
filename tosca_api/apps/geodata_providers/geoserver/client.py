@@ -11,6 +11,7 @@ import requests
 # manipulation needed for this import to resolve.
 from geo.Geoserver import Geoserver as GeoServerRestClient
 from ..exceptions import GeoServerConnectionError, GeoServerPublishError
+from ..feature_attributes import normalize_feature_attributes
 from ..results import OperationResult
 
 logger = logging.getLogger(__name__)
@@ -1895,11 +1896,17 @@ class GeoServerClient:
                                     workspace, store_name, clean
                                 )
                                 layer_settings = self.get_layer_settings(workspace, clean)
-                                spatial_metadata = {
+                                featuretype_metadata = {
                                     key: featuretype_detail[key]
                                     for key in ('geometry_type', 'geometry_column', 'srid')
                                     if key in featuretype_detail
                                 }
+                                if 'attributes' in featuretype_detail:
+                                    # Absent only when the detail call failed;
+                                    # then the stored attributes are kept.
+                                    featuretype_metadata['attributes'] = normalize_feature_attributes(
+                                        featuretype_detail['attributes']
+                                    )
                                 result.append({
                                     'name': clean,
                                     'store_name': store_name,
@@ -1910,7 +1917,7 @@ class GeoServerClient:
                                     'opaque': layer_settings.get('opaque', False),
                                     'default_style_name': layer_settings.get('default_style_name', ''),
                                     'additional_style_names': layer_settings.get('additional_style_names', []),
-                                    **spatial_metadata,
+                                    **featuretype_metadata,
                                 })
                                 logger.debug(
                                     f"Layer discovered: {workspace}/{store_name}/{clean} "

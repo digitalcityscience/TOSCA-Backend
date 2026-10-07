@@ -95,3 +95,21 @@ def unpublish_layer(modeladmin, request, queryset):
                 f"Layer '{layer.name}': GeoServer delete failed — {exc}",
                 messages.ERROR,
             )
+
+
+@admin.action(description='Refresh feature attributes from GeoServer', permissions=['change'])
+def refresh_layer_attributes(modeladmin, request, queryset):
+    """Re-read each selected layer's attribute list (used for scene feature IDs)."""
+    refreshed = 0
+    for layer in queryset.select_related('workspace__geodata_engine', 'store'):
+        result = LayerService.refresh_attributes(layer)
+        if result['success']:
+            refreshed += 1
+        else:
+            modeladmin.message_user(request, result['error'], messages.ERROR)
+    if refreshed:
+        modeladmin.message_user(
+            request,
+            f"Refreshed attributes for {refreshed} layer(s).",
+            messages.SUCCESS,
+        )

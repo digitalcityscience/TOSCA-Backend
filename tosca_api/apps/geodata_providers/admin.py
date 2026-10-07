@@ -8,7 +8,7 @@ from django import forms
 from django.forms.models import BaseInlineFormSet, ModelChoiceIteratorValue
 from django.http import HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
 from django.utils import timezone
 from django.contrib import messages
 from django.db import transaction
@@ -20,6 +20,7 @@ from .admin_actions import (
     deactivate_engines,
     publish_layer,
     reactivate_engines,
+    refresh_layer_attributes,
     set_as_default,
     sync_engines,
     sync_workspaces,
@@ -1386,7 +1387,7 @@ class LayerAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
     # organizations/permissions.py.
     org_lookup = "workspace__organization__slug"
     form = LayerAdminForm
-    actions = [publish_layer, unpublish_layer]
+    actions = [publish_layer, unpublish_layer, refresh_layer_attributes]
     change_form_template = 'admin/geodata_providers/layer/change_form.html'
     list_display = [
         'name', 'title', 'workspace_link', 'store_name',
@@ -1403,7 +1404,7 @@ class LayerAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
         'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier',
         'remote_hash', 'published_url', 'publishing_error', 'default_style_display',
         'additional_styles_display', 'available_styles_display', 'selected_styles_display',
-        'description', 'provider_description',
+        'description', 'provider_description', 'attributes_display',
     ]
     inlines = [LayerStyleInline]
     list_per_page = 25
@@ -1414,6 +1415,13 @@ class LayerAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
         }),
         ('Geometry & CRS', {
             'fields': ('table_name', 'geometry_column', 'geometry_type', 'srid'),
+        }),
+        ('Attributes', {
+            'fields': ('attributes_display',),
+            'description': (
+                'Read from GeoServer on sync and publish. Use the '
+                '"Refresh feature attributes" action to update them.'
+            ),
         }),
         ('Source', {
             'fields': ('workspace', 'store'),
@@ -1482,6 +1490,16 @@ class LayerAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
             return '—'
         return format_html('<a href="{}">{}</a>', _admin_change_url(engine), engine.name)
     provider_link.short_description = 'Provider'
+
+    def attributes_display(self, obj):
+        if obj is None or not obj.attributes:
+            return '—'
+        return format_html_join(
+            ', ',
+            '<code>{}</code> <small style="color:var(--body-quiet-color);">{}</small>',
+            ((item['name'], item.get('type', '')) for item in obj.attributes),
+        )
+    attributes_display.short_description = 'Feature attributes'
 
     def store_name(self, obj):
         return format_html('<a href="{}">{}</a>', _admin_change_url(obj.store), obj.store.name)
