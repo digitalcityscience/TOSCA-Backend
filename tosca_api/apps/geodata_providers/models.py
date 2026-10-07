@@ -559,7 +559,10 @@ class Layer(SyncStateMixin, TimeStampedModel):
         from every parent that depends on it.
         """
         return {
-            "geostories": self.geostory_uses.count(),
+            "geostories": self.geostory_scene_uses.order_by()
+            .values("scene__geostory_id")
+            .distinct()
+            .count(),
             "events": self.event_uses.count(),
             "feedbacks": self.feedback_uses.count(),
         }

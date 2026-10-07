@@ -1,8 +1,8 @@
 """
 GeoStory model - The core narrative unit.
 
-A GeoStory combines an owned rich-content document with map layers
-(geodata_providers.Layer) and is organized within a Campaign.
+A GeoStory combines an owned rich-content document with map scenes
+(camera + geodata_providers.Layer selections) and is organized within a Campaign.
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ class GeoStory(TimeStampedModel):
         campaign: The parent campaign this story belongs to
         author: The creator/owner
         content: The canonical Editor.js document containing the story
-        layers: M2M link to map layers
+        scenes: Ordered map scenes (see GeoStoryScene)
     """
 
     class Status(models.TextChoices):
@@ -151,13 +151,6 @@ class GeoStory(TimeStampedModel):
         on_delete=models.PROTECT,
         related_name="geostories",
     )
-    layers = models.ManyToManyField(
-        "geodata_providers.Layer",
-        through="GeoStoryLayer",
-        related_name="geostories",
-        blank=True,
-    )
-
     # Reverse generic relations for cascading deletes of FeatureLinks
     feature_links_source = GenericRelation(
         "featurelinks.FeatureLink",
@@ -239,10 +232,11 @@ class GeoStory(TimeStampedModel):
 
 class GeoStoryLayer(TimeStampedModel):
     """
-    Through model for GeoStory <-> geodata_providers.Layer.
+    Legacy story-level layer assignment, superseded by scenes.
 
-    Allows ordering of layers within a story. Layers must be public and
-    published — see ``clean()``.
+    Rows were copied into each story's "Overview" scene (migration 0012) and
+    are no longer read or written. Kept for one release as a rollback net;
+    dropped in Task 10.9.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
@@ -252,9 +246,12 @@ class GeoStoryLayer(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name="geostory_uses",
     )
+    # RESTRICT, not PROTECT: a style still in use cannot be removed on its
+    # own, but deleting the whole layer (which cascades to both the style
+    # assignment and this row) must go through.
     style_assignment = models.ForeignKey(
         "geodata_providers.LayerStyleAssignment",
-        on_delete=models.PROTECT,
+        on_delete=models.RESTRICT,
         related_name="geostory_uses",
         null=True,
         blank=True,
@@ -444,9 +441,12 @@ class GeoStorySceneLayer(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name="geostory_scene_uses",
     )
+    # RESTRICT, not PROTECT: a style still in use cannot be removed on its
+    # own, but deleting the whole layer (which cascades to both the style
+    # assignment and this row) must go through.
     style_assignment = models.ForeignKey(
         "geodata_providers.LayerStyleAssignment",
-        on_delete=models.PROTECT,
+        on_delete=models.RESTRICT,
         related_name="geostory_scene_uses",
         null=True,
         blank=True,

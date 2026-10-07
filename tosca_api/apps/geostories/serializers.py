@@ -2,7 +2,6 @@ import copy
 
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
 from rest_framework import serializers
 
 from tosca_api.apps.core.image_policy import validate_hero_image
@@ -11,9 +10,9 @@ from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geodata_providers.api.serializers import (
     LayerSummarySerializer,
 )
-from tosca_api.apps.geodata_providers.models import Layer, LayerStyleAssignment
+from tosca_api.apps.geodata_providers.models import Layer
 
-from .models import GeoStory, GeoStoryLayer
+from .models import GeoStory, GeoStoryScene, GeoStorySceneLayer
 
 
 def _absolute_hero_image_url(obj: GeoStory, request) -> str | None:
@@ -31,128 +30,92 @@ def _absolute_hero_image_url(obj: GeoStory, request) -> str | None:
 # =============================================================================
 
 
-class GeoStoryLayerSerializer(serializers.ModelSerializer):
-    """
-    Serializer for GeoStoryLayer through model.
+def _style_assignment_payload(assignment) -> dict | None:
+    if assignment is None:
+        return None
+    style = assignment.style
+    return {
+        "id": str(assignment.id),
+        "style_id": str(style.id),
+        "name": style.name,
+        "qualified_name": style.qualified_name,
+        "role": assignment.role,
+        "format": style.format,
+        "style_layer_ids": assignment.style_layer_ids,
+    }
 
-    Embeds the canonical Layer summary (id, name, workspace, geometry_type,
-    srid, published_url, is_public, publishing_state) plus the per-story
-    display_order.
-    """
+
+def _is_publicly_renderable(layer: Layer) -> bool:
+    """Layers that lost public/published status after authoring are skipped on read."""
+    return layer.is_public and layer.publishing_state == Layer.PublishingState.PUBLISHED
+
+
+def _renderable_scene_layers(scene: GeoStoryScene) -> list[GeoStorySceneLayer]:
+    return [item for item in scene.scene_layers.all() if _is_publicly_renderable(item.layer)]
+
+
+class GeoStorySceneLayerSerializer(serializers.ModelSerializer):
+    """A layer rendered in a scene, with its pinned style and feature selection."""
 
     layer = LayerSummarySerializer(read_only=True)
     style_assignment = serializers.SerializerMethodField()
+    render_layer_ids = serializers.SerializerMethodField()
+    features = serializers.SerializerMethodField()
 
     class Meta:
-        model = GeoStoryLayer
-        fields = ["layer", "style_assignment", "display_order"]
+        model = GeoStorySceneLayer
+        fields = [
+            "id",
+            "layer",
+            "style_assignment",
+            "render_layer_ids",
+            "display_order",
+            "opacity",
+            "features",
+        ]
         read_only_fields = fields
 
     def get_style_assignment(self, obj) -> dict | None:
-        assignment = obj.style_assignment
-        if assignment is None:
-            return None
-        style = assignment.style
+        return _style_assignment_payload(obj.style_assignment)
+
+    def get_render_layer_ids(self, obj) -> list[str]:
+        return obj.effective_style_layer_ids
+
+    def get_features(self, obj) -> dict:
         return {
-            "id": str(assignment.id),
-            "style_id": str(style.id),
-            "name": style.name,
-            "qualified_name": style.qualified_name,
-            "role": assignment.role,
-            "format": style.format,
-            "style_layer_ids": assignment.style_layer_ids,
+            "mode": obj.feature_mode,
+            "attribute": obj.feature_id_attribute or None,
+            "ids": obj.feature_ids,
         }
 
 
-class GeoStoryLayerListField(serializers.Field):
-    """Accept legacy layer UUIDs or layer/style selections for a story."""
+class GeoStorySceneSerializer(serializers.ModelSerializer):
+    """A captured map state; ``camera.center`` is null when the map fits its layers."""
 
-    default_error_messages = {
-        "not_list": "Expected a list of layer UUIDs or layer objects.",
-        "invalid_item": (
-            "Each layer must be a UUID or an object containing 'layer' and, "
-            "optionally, 'style_assignment' and 'display_order'."
-        ),
-    }
+    camera = serializers.SerializerMethodField()
+    transition = serializers.SerializerMethodField()
+    layers = serializers.SerializerMethodField()
 
-    def to_internal_value(self, data):
-        from tosca_api.apps.geodata_providers.validators import (
-            validate_layer_is_public_and_published,
-        )
+    class Meta:
+        model = GeoStoryScene
+        fields = ["id", "order", "title", "caption", "camera", "transition", "layers"]
+        read_only_fields = fields
 
-        if not isinstance(data, list):
-            self.fail("not_list")
+    def get_camera(self, obj) -> dict:
+        has_center = obj.center_lng is not None and obj.center_lat is not None
+        return {
+            "center": [obj.center_lng, obj.center_lat] if has_center else None,
+            "zoom": obj.zoom,
+            "bearing": obj.bearing,
+            "pitch": obj.pitch,
+            "bounds": obj.bounds,
+        }
 
-        normalized = []
-        seen_layers = set()
-        for index, item in enumerate(data):
-            if isinstance(item, dict):
-                unexpected = set(item) - {
-                    "layer",
-                    "layer_id",
-                    "style_assignment",
-                    "style_assignment_id",
-                    "display_order",
-                }
-                layer_value = item.get("layer", item.get("layer_id"))
-                assignment_value = item.get("style_assignment", item.get("style_assignment_id"))
-                display_order = item.get("display_order", index)
-                if unexpected or layer_value is None:
-                    self.fail("invalid_item")
-            else:
-                layer_value = item
-                assignment_value = None
-                display_order = index
+    def get_transition(self, obj) -> dict:
+        return {"type": obj.transition, "duration_ms": obj.duration_ms}
 
-            try:
-                layer_id = serializers.UUIDField().run_validation(layer_value)
-                display_order = serializers.IntegerField(min_value=0).run_validation(display_order)
-            except serializers.ValidationError as exc:
-                raise serializers.ValidationError({index: exc.detail}) from exc
-
-            try:
-                layer = Layer.objects.get(pk=layer_id)
-            except Layer.DoesNotExist as exc:
-                raise serializers.ValidationError({index: f"Unknown layer id: {layer_id}"}) from exc
-            try:
-                validate_layer_is_public_and_published(layer)
-            except DjangoValidationError as exc:
-                raise serializers.ValidationError(
-                    {index: exc.message_dict.get("layer", exc.messages)}
-                ) from exc
-
-            assignment = None
-            if assignment_value not in (None, ""):
-                try:
-                    assignment_id = serializers.UUIDField().run_validation(assignment_value)
-                    assignment = LayerStyleAssignment.objects.select_related("style").get(
-                        pk=assignment_id
-                    )
-                except LayerStyleAssignment.DoesNotExist as exc:
-                    raise serializers.ValidationError(
-                        {index: f"Unknown style assignment id: {assignment_value}"}
-                    ) from exc
-                except serializers.ValidationError as exc:
-                    raise serializers.ValidationError({index: exc.detail}) from exc
-                if assignment.layer_id != layer.id:
-                    raise serializers.ValidationError(
-                        {index: "Style assignment must belong to the selected layer."}
-                    )
-
-            if layer.id in seen_layers:
-                raise serializers.ValidationError({index: "A layer can only be added once."})
-            seen_layers.add(layer.id)
-            normalized.append(
-                {
-                    "layer": layer,
-                    "style_assignment": assignment,
-                    "display_order": display_order,
-                }
-            )
-        return normalized
-
-    def to_representation(self, value):
-        return value
+    def get_layers(self, obj) -> list:
+        return GeoStorySceneLayerSerializer(_renderable_scene_layers(obj), many=True).data
 
 
 class FeatureLinkSerializer(serializers.ModelSerializer):
@@ -207,9 +170,13 @@ class GeoStoryListSerializer(serializers.ModelSerializer):
 class GeoStoryDetailSerializer(serializers.ModelSerializer):
     """
     Full serializer for GeoStory detail view.
-    Includes owned story content, layers, and feature links.
+    Includes owned story content, scenes, and feature links.
+
+    ``layers`` is deprecated: it lists the distinct layer/style pairs across
+    all scenes for clients that predate scenes, and is removed in Task 10.9.
     """
 
+    scenes = serializers.SerializerMethodField()
     layers = serializers.SerializerMethodField()
     feature_links = serializers.SerializerMethodField()
     hero_image_url = serializers.SerializerMethodField()
@@ -227,6 +194,7 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
             "hero_image_alt",
             "status",
             "campaign",
+            "scenes",
             "layers",
             "feature_links",
             "created_at",
@@ -240,15 +208,28 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
     def get_content(self, obj) -> dict:
         return render_content_media_urls(obj.content, self.context.get("request"))
 
+    def get_scenes(self, obj) -> list:
+        return GeoStorySceneSerializer(obj.scenes.all(), many=True).data
+
     def get_layers(self, obj) -> list:
-        """
-        Return layers ordered by display_order.
-        Uses the through model to get ordering.
-        """
-        through_qs = GeoStoryLayer.objects.filter(geostory=obj).select_related(
-            "layer__workspace", "style_assignment__style__workspace"
-        )
-        return GeoStoryLayerSerializer(through_qs, many=True).data
+        layers = []
+        seen = set()
+        for scene in obj.scenes.all():
+            for scene_layer in _renderable_scene_layers(scene):
+                key = (scene_layer.layer_id, scene_layer.style_assignment_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                layers.append(
+                    {
+                        "layer": LayerSummarySerializer(scene_layer.layer).data,
+                        "style_assignment": _style_assignment_payload(
+                            scene_layer.style_assignment
+                        ),
+                        "display_order": len(layers),
+                    }
+                )
+        return layers
 
     def get_feature_links(self, obj) -> list:
         """
@@ -267,12 +248,8 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
     Write serializer for GeoStory model.
     Used for create/update operations (Admin/Editor use).
 
-    Accepts an optional ``layers`` list of layer UUIDs or objects containing
-    ``layer``, optional ``style_assignment``, and optional ``display_order``.
-    Bare UUIDs remain supported and pin the layer's active default style.
+    Map scenes are authored in the Django admin only and are not writable here.
     """
-
-    layers = GeoStoryLayerListField(required=False, write_only=True)
 
     class Meta:
         model = GeoStory
@@ -287,7 +264,6 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
             "status",
             "campaign",
             "author",
-            "layers",
             "created_at",
             "updated_at",
         ]
@@ -326,13 +302,12 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
                     {"hero_image": detail.get("image", detail)}
                 ) from exc
 
-        layer_attrs = {k: v for k, v in attrs.items() if k != "layers"}
         if self.instance:
             instance = copy.copy(self.instance)
-            for attr, value in layer_attrs.items():
+            for attr, value in attrs.items():
                 setattr(instance, attr, value)
         else:
-            instance = GeoStory(**layer_attrs)
+            instance = GeoStory(**attrs)
 
         try:
             instance.clean()
@@ -340,30 +315,7 @@ class GeoStoryWriteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(exc.message_dict) from exc
         return attrs
 
-    @transaction.atomic
-    def create(self, validated_data):
-        layers = validated_data.pop("layers", None)
-        story = super().create(validated_data)
-        if layers is not None:
-            self._sync_layers(story, layers)
-        return story
-
-    @transaction.atomic
-    def update(self, instance, validated_data):
-        layers = validated_data.pop("layers", None)
-        story = super().update(instance, validated_data)
-        if layers is not None:
-            self._sync_layers(story, layers)
-        return story
-
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data["content"] = render_content_media_urls(instance.content, self.context.get("request"))
         return data
-
-    @staticmethod
-    def _sync_layers(story: GeoStory, layers: list) -> None:
-        """Replace the story's GeoStoryLayer rows with the supplied list."""
-        GeoStoryLayer.objects.filter(geostory=story).delete()
-        for item in layers:
-            GeoStoryLayer.objects.create(geostory=story, **item)
