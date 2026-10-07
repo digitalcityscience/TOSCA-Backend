@@ -16,6 +16,7 @@ from tosca_api.apps.core.editorjs import (
     description_document_from_text,
     description_document_to_text,
     empty_document,
+    map_scene_ids,
     render_content_media_urls,
     validate_and_normalize,
     validate_description_document,
@@ -563,3 +564,58 @@ def test_image_blocks_are_not_capped(stored_image):
     }
     normalized = validate_and_normalize(doc)
     assert sum(1 for block in normalized["blocks"] if block["type"] == "image") == 6
+
+
+# --- mapScene anchors (GeoStory only) -------------------------------------------
+
+SCENE_ID = "0192f0c8-1b2a-7c3d-8e4f-5a6b7c8d9e0f"
+
+
+def test_map_scene_blocks_are_rejected_unless_allowed():
+    document = {"blocks": [{"type": "mapScene", "data": {"scene_id": SCENE_ID}}]}
+
+    with pytest.raises(ValidationError) as exc:
+        validate_and_normalize(document)
+
+    assert "unsupported type 'mapScene'" in exc.value.messages[0]
+
+
+def test_map_scene_block_keeps_only_canonical_scene_id():
+    document = {
+        "blocks": [
+            {"type": "paragraph", "data": {"text": "Intro"}},
+            {
+                "id": "abc",
+                "type": "mapScene",
+                "data": {"scene_id": SCENE_ID.upper(), "title": "x", "camera": {}},
+            },
+        ]
+    }
+
+    normalized = validate_and_normalize(document, allow_map_scenes=True)
+
+    assert normalized["blocks"][1] == {"type": "mapScene", "data": {"scene_id": SCENE_ID}}
+    assert validate_and_normalize(normalized, allow_map_scenes=True) == normalized
+
+
+@pytest.mark.parametrize("scene_id", [None, "", "not-a-uuid", 5])
+def test_map_scene_block_requires_valid_scene_id(scene_id):
+    document = {"blocks": [{"type": "mapScene", "data": {"scene_id": scene_id}}]}
+
+    with pytest.raises(ValidationError) as exc:
+        validate_and_normalize(document, allow_map_scenes=True)
+
+    assert "scene_id" in exc.value.messages[0]
+
+
+def test_map_scene_ids_lists_anchors_in_order():
+    other = "0192f0c8-1b2a-7c3d-8e4f-000000000001"
+    document = {
+        "blocks": [
+            {"type": "mapScene", "data": {"scene_id": other}},
+            {"type": "paragraph", "data": {"text": "x"}},
+            {"type": "mapScene", "data": {"scene_id": SCENE_ID}},
+        ]
+    }
+
+    assert map_scene_ids(document) == [other, SCENE_ID]
