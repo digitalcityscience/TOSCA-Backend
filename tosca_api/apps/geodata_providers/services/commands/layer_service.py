@@ -11,6 +11,7 @@ from tosca_api.apps.core.editorjs import (
 
 from ...engine_factory import EngineClientFactory
 from ...exceptions import GeodataEngineError
+from ...feature_attributes import normalize_feature_attributes
 from ...models import Layer, Store, Workspace
 from ...postgis_inspector import PostGISInspectorError, get_table_bbox
 
@@ -145,6 +146,7 @@ class LayerService:
                 )
                 layer.refresh_from_db()
 
+        cls.refresh_attributes(layer, client=client)
         return {
             'success': True,
             'verified': True,
@@ -190,6 +192,7 @@ class LayerService:
                 published_at=timezone.now(),
             )
             layer.refresh_from_db()
+            cls.refresh_attributes(layer, client=client)
             return {
                 'success': True,
                 'already_exists': True,
@@ -242,6 +245,7 @@ class LayerService:
             published_url='',
         )
         layer.refresh_from_db()
+        cls.refresh_attributes(layer, client=client)
         return {
             'success': True,
             'verified': True,
@@ -249,6 +253,42 @@ class LayerService:
             'publish_result': publish_result,
             'resource': layer,
         }
+
+    @classmethod
+    def refresh_attributes(cls, layer: Layer, *, client=None) -> dict:
+        """Re-read the layer's feature attributes from its engine.
+
+        Raster layers have no feature attributes and are cleared without a
+        remote call. On engine errors the stored attributes are left as-is and
+        a failure result is returned instead of raising.
+        """
+        if layer.store.store_type == Store.StoreType.GEOTIFF:
+            Layer.objects.filter(pk=layer.pk).update(attributes=[])
+            layer.attributes = []
+            return {'success': True, 'attributes': []}
+
+        engine = layer.workspace.geodata_engine if layer.workspace else None
+        if not engine:
+            return {'success': False, 'error': f"Layer '{layer.name}' has no engine."}
+
+        try:
+            client = client or EngineClientFactory.create_client(engine)
+            detail = client.get_featuretype_detail(
+                layer.workspace.name, layer.store.name, layer.name
+            )
+        except Exception as exc:  # never fail the caller (e.g. a finished publish)
+            error = f"Could not read attributes for '{layer.workspace.name}:{layer.name}': {exc}"
+            logger.warning(error)
+            return {'success': False, 'error': error}
+        if not isinstance(detail, dict) or 'attributes' not in detail:
+            error = f"GeoServer did not return attributes for '{layer.workspace.name}:{layer.name}'."
+            logger.warning(error)
+            return {'success': False, 'error': error}
+
+        attributes = normalize_feature_attributes(detail['attributes'])
+        Layer.objects.filter(pk=layer.pk).update(attributes=attributes)
+        layer.attributes = attributes
+        return {'success': True, 'attributes': attributes}
 
     @classmethod
     def update_published_metadata(

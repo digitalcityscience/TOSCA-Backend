@@ -464,6 +464,14 @@ class Layer(SyncStateMixin, TimeStampedModel):
     geometry_column = models.CharField(max_length=100, default="geom", help_text="Geometry column name")
     geometry_type = models.CharField(max_length=50, choices=GeometryType.choices, help_text="Geometry type")
     srid = models.IntegerField(default=4326, help_text="Spatial Reference System Identifier")
+    attributes = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "Non-geometry feature attributes reported by the engine, as "
+            '[{"name": ..., "type": ...}]. Empty for raster layers.'
+        ),
+    )
 
     publishing_state = models.CharField(
         max_length=20,

@@ -143,6 +143,12 @@ class LayerSyncer(BaseSyncer):
                 }
                 if provider_description is not None:
                     layer_defaults['provider_description'] = provider_description or ''
+                if store.store_type == Store.StoreType.GEOTIFF:
+                    layer_defaults['attributes'] = []
+                elif 'attributes' in layer_data:
+                    # Missing when GeoServer's feature-type detail failed; keep
+                    # the stored attributes rather than wiping them.
+                    layer_defaults['attributes'] = layer_data['attributes']
 
                 layer, created = Layer.objects.update_or_create(
                     workspace=workspace,
