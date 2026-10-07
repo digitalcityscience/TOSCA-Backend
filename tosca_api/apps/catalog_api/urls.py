@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import include, path
 
 from .views import (
     GlobalLayerListV1View,
@@ -15,6 +15,8 @@ from .views import (
 )
 
 urlpatterns = [
+    # External services & curated categories (external_catalog app).
+    path("", include("tosca_api.apps.external_catalog.api_urls")),
     path(
         "providers",
         ProviderListV1View.as_view(),
