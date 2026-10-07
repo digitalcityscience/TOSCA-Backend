@@ -309,16 +309,30 @@ class CategoryItem(TimeStampedModel):
     def __str__(self) -> str:
         return f"{self.category} -> {self.title}"
 
+    def _related_or_none(self, name: str):
+        """Return a FK target, preferring the in-memory instance.
+
+        Admin inline validation attaches the (still unsaved) parent category
+        object while ``category_id`` is not set yet; checking ids alone would
+        silently skip every rule below until ``save()``.
+        """
+        field = self._meta.get_field(name)
+        if field.is_cached(self):
+            return field.get_cached_value(self)
+        return getattr(self, name) if getattr(self, field.attname) else None
+
     def clean(self) -> None:
         super().clean()
         errors: dict[str, str] = {}
 
-        if self.category_id and self.service_id:
+        category = self._related_or_none("category")
+        service = self._related_or_none("service")
+        if category is not None and service is not None:
             # Phase 1: no cross-organization references.
-            if self.category.organization_id != self.service.organization_id:
+            if category.organization_id != service.organization_id:
                 errors["service"] = "The service must belong to the category's organization."
 
-            if self.service.service_type == ExternalService.ServiceType.OGC_API_FEATURES:
+            if service.service_type == ExternalService.ServiceType.OGC_API_FEATURES:
                 errors.update(self._ogc_errors())
             else:
                 errors.update(self._sensorthings_errors())
