@@ -1,3 +1,5 @@
+import json
+
 from django import forms
 from django.contrib import admin
 from django.contrib.admin.options import IS_POPUP_VAR
@@ -19,6 +21,21 @@ class GeoStoryAdminForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if self.instance and self.instance.pk and not self.is_bound:
             self.initial["content"] = render_content_media_urls(self.instance.content)
+        # The content editor's "Map scene" tool offers the story's saved scenes.
+        scenes = (
+            [
+                {
+                    "id": str(scene.pk),
+                    "title": scene.title,
+                    "order": scene.order,
+                    "url": reverse("admin:geostories_geostoryscene_change", args=[scene.pk]),
+                }
+                for scene in self.instance.scenes.all()
+            ]
+            if self.instance.pk
+            else []
+        )
+        self.fields["content"].widget.attrs["data-editorjs-map-scenes"] = json.dumps(scenes)
 
     class Meta:
         model = GeoStory
@@ -39,7 +56,7 @@ class GeoStorySceneInline(admin.TabularInline):
     """Read-only scene overview; scenes are edited on their own page."""
 
     model = GeoStoryScene
-    fields = ("order", "title", "layer_count", "camera")
+    fields = ("order", "title", "layer_count", "camera", "anchor")
     readonly_fields = fields
     extra = 0
     can_delete = False
@@ -59,6 +76,14 @@ class GeoStorySceneInline(admin.TabularInline):
     def camera(self, obj: GeoStoryScene) -> str:
         return _camera_summary(obj)
 
+    @admin.display(description="Anchor in story")
+    def anchor(self, obj: GeoStoryScene) -> str:
+        if str(obj.pk) in obj.geostory.anchored_scene_ids():
+            return "Anchored"
+        if obj in obj.geostory.unreachable_scenes():
+            return format_html('<strong style="color: var(--error-fg)">Not anchored — never shown</strong>')
+        return "Shown before the first anchor"
+
 
 @admin.register(GeoStory)
 class GeoStoryAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
@@ -71,6 +96,10 @@ class GeoStoryAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     autocomplete_fields = ["campaign", "author"]
     inlines = [GeoStorySceneInline]
     readonly_fields = ("hero_image_preview", "scene_tools")
+
+    class Media:
+        css = {"all": ("geostories/css/editorjs_map_scene.css",)}
+        js = ("geostories/js/editorjs_map_scene.js",)
     fieldsets = (
         (None, {"fields": ("title", "summary", "status", "campaign", "author")}),
         ("About the author", {"fields": ("about_author",)}),
@@ -103,8 +132,18 @@ class GeoStoryAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         if obj is None or obj.pk is None:
             return "Save the story first to add map scenes."
         url = reverse("admin:geostories_geostoryscene_add")
-        return format_html(
+        add_link = format_html(
             '<a class="addlink" href="{}?geostory={}">Add scene</a>', url, obj.pk
+        )
+        unreachable = obj.unreachable_scenes()
+        if not unreachable:
+            return add_link
+        return format_html(
+            '{}<p class="errornote">Readers will never see {}: place a “Map scene” '
+            "anchor for {} in the story text.</p>",
+            add_link,
+            ", ".join(f"“{scene.title}”" for scene in unreachable),
+            "it" if len(unreachable) == 1 else "them",
         )
 
     @admin.display(description="Hero")
@@ -180,6 +219,18 @@ class GeoStorySceneAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     def get_model_perms(self, request):
         # Scenes are reached through their story, not the admin index.
         return {}
+
+    def get_deleted_objects(self, objs, request):
+        deleted, model_count, perms_needed, protected = super().get_deleted_objects(objs, request)
+        # A deleted scene would leave a dangling anchor that blocks the next
+        # story save; make authors remove the anchor first.
+        for scene in objs:
+            if str(scene.pk) in scene.geostory.anchored_scene_ids():
+                protected.append(
+                    f"Map scene anchor for “{scene.title}” in the text of story "
+                    f"“{scene.geostory.title}” — remove the anchor first"
+                )
+        return deleted, model_count, perms_needed, protected
 
     def get_urls(self):
         preview = path(

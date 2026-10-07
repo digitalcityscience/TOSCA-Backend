@@ -335,6 +335,15 @@
             };
         }
 
+        const mapScenes = textarea.dataset.editorjsMapScenes;
+        if (mapScenes !== undefined && typeof MapSceneTool !== "undefined") {
+            let scenes = [];
+            try {
+                scenes = JSON.parse(mapScenes);
+            } catch (e) { /* no scenes to offer */ }
+            tools.mapScene = { class: MapSceneTool, config: { scenes: scenes } };
+        }
+
         let registeredField;
         const editor = new EditorJS({
             holder: holder,

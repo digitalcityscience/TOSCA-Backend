@@ -78,9 +78,11 @@ class Command(BaseCommand):
             for row in queryset.order_by("id").iterator():
                 checked += 1
                 row_id = f"{label}:{row.id}"
+                # Only GeoStory content may carry mapScene anchors.
+                options = {"allow_map_scenes": label == "geostories.GeoStory"}
                 try:
-                    normalized = validate_and_normalize(getattr(row, field_name))
-                    if validate_and_normalize(normalized) != normalized:
+                    normalized = validate_and_normalize(getattr(row, field_name), **options)
+                    if validate_and_normalize(normalized, **options) != normalized:
                         failures.append({"id": row_id, "error": "normalization is not idempotent"})
                 except ValidationError as exc:
                     failures.append({"id": row_id, "error": "; ".join(exc.messages)})

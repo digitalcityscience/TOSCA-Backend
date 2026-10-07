@@ -17,7 +17,7 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db.models.fields.files import ImageField, ImageFieldFile, ImageFileDescriptor
 from django.db import models
 
-from tosca_api.apps.core.editorjs import empty_document, validate_and_normalize
+from tosca_api.apps.core.editorjs import empty_document, map_scene_ids, validate_and_normalize
 from tosca_api.apps.core.models import TimeStampedModel
 from tosca_api.apps.core.sanitization import sanitize_simple
 
@@ -178,13 +178,52 @@ class GeoStory(TimeStampedModel):
         super().clean()
         errors = {}
         try:
-            self.content = validate_and_normalize(self.content)
+            self.content = validate_and_normalize(self.content, allow_map_scenes=True)
         except ValidationError as exc:
             errors["content"] = exc.messages
+        else:
+            anchor_errors = self._scene_anchor_errors()
+            if anchor_errors:
+                errors["content"] = anchor_errors
         if self.hero_image and not (self.hero_image_alt or "").strip():
             errors["hero_image_alt"] = "Hero image alt text is required when a hero image is set."
         if errors:
             raise ValidationError(errors)
+
+    def _scene_anchor_errors(self) -> list[str]:
+        """Each anchor must point at one of this story's scenes, at most once."""
+        anchored = map_scene_ids(self.content)
+        if not anchored:
+            return []
+        errors = []
+        if len(anchored) != len(set(anchored)):
+            errors.append(
+                "Each map scene can be anchored only once; remove the extra anchor(s)."
+            )
+        own_scene_ids = (
+            {str(pk) for pk in self.scenes.values_list("pk", flat=True)}
+            if self.pk and not self._state.adding
+            else set()
+        )
+        if set(anchored) - own_scene_ids:
+            errors.append(
+                "A map scene anchor points to a scene that does not belong to this "
+                "story (it may have been deleted); remove or re-pick it."
+            )
+        return errors
+
+    def anchored_scene_ids(self) -> set[str]:
+        return set(map_scene_ids(self.content or {}))
+
+    def unreachable_scenes(self) -> list["GeoStoryScene"]:
+        """Scenes readers can never reach.
+
+        Text before the first anchor shows the first scene by order, so that
+        one needs no anchor; every other scene is only shown at its anchor.
+        """
+        scenes = list(self.scenes.all())
+        anchored = self.anchored_scene_ids()
+        return [scene for scene in scenes[1:] if str(scene.pk) not in anchored]
 
     def save(self, *args, **kwargs) -> None:
         """Override save to enforce Zero Trust sanitization."""
@@ -192,7 +231,7 @@ class GeoStory(TimeStampedModel):
         self.summary = sanitize_simple(self.summary)
         self.about_author = sanitize_simple(self.about_author)
         self.hero_image_alt = sanitize_simple(self.hero_image_alt)
-        self.content = validate_and_normalize(self.content)
+        self.content = validate_and_normalize(self.content, allow_map_scenes=True)
 
         # New/replaced uploads must be written directly to the bucket dictated
         # by the current ownership state. Status/visibility-only saves are

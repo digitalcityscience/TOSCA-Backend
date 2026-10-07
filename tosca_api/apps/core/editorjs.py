@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import html
 import re
+import uuid
 from typing import Any
 from urllib.parse import urlparse
 
@@ -78,13 +79,16 @@ def empty_document() -> dict:
     return {"blocks": []}
 
 
-def validate_and_normalize(value: Any) -> dict:
+def validate_and_normalize(value: Any, *, allow_map_scenes: bool = False) -> dict:
     """
     Validate and normalize an Editor.js document.
 
     Accepts ``None`` / ``{}`` / ``{"blocks": []}`` / full save envelope and
     returns the canonical storage form ``{"blocks": [...]}`` with only
     supported block types and inline formatting.
+
+    ``allow_map_scenes`` additionally accepts ``mapScene`` anchor blocks; only
+    GeoStory content has scenes for them to point at.
 
     Raises:
         ValidationError: if the document shape or any block is invalid.
@@ -102,8 +106,18 @@ def validate_and_normalize(value: Any) -> dict:
     if not isinstance(blocks, list):
         raise ValidationError("'blocks' must be an array.")
 
-    normalized_blocks = [_normalize_block(b, idx) for idx, b in enumerate(blocks)]
+    allowed = _ALLOWED_BLOCK_TYPES | ({"mapScene"} if allow_map_scenes else set())
+    normalized_blocks = [_normalize_block(b, idx, allowed) for idx, b in enumerate(blocks)]
     return {"blocks": normalized_blocks}
+
+
+def map_scene_ids(document: dict) -> list[str]:
+    """Scene ids referenced by ``mapScene`` anchors, in document order."""
+    return [
+        block["data"]["scene_id"]
+        for block in document.get("blocks", [])
+        if block.get("type") == "mapScene"
+    ]
 
 
 def validate_description_document(value: Any) -> dict:
@@ -179,15 +193,15 @@ def _list_to_plain_text(data: dict) -> str:
     return "\n".join(lines)
 
 
-def _normalize_block(block: Any, idx: int) -> dict:
+def _normalize_block(block: Any, idx: int, allowed_types: set[str] = _ALLOWED_BLOCK_TYPES) -> dict:
     if not isinstance(block, dict):
         raise ValidationError(f"Block at index {idx} must be an object.")
 
     block_type = block.get("type")
-    if block_type not in _ALLOWED_BLOCK_TYPES:
+    if block_type not in allowed_types:
         raise ValidationError(
             f"Block at index {idx} has unsupported type '{block_type}'. "
-            f"Allowed types: {sorted(_ALLOWED_BLOCK_TYPES)}."
+            f"Allowed types: {sorted(allowed_types)}."
         )
 
     data = block.get("data")
@@ -309,6 +323,15 @@ def _normalize_quote(data: dict, idx: int) -> dict:
 
 def _normalize_delimiter(data: dict, idx: int) -> dict:
     return {}
+
+
+def _normalize_map_scene(data: dict, idx: int) -> dict:
+    """Scene anchors carry only the scene id; everything else is dropped."""
+    try:
+        scene_id = uuid.UUID(str(data.get("scene_id")))
+    except ValueError as exc:
+        raise ValidationError(f"mapScene block at {idx} requires a valid 'scene_id'.") from exc
+    return {"scene_id": str(scene_id)}
 
 
 def _normalize_code(data: dict, idx: int) -> dict:
@@ -535,6 +558,7 @@ _BLOCK_NORMALIZERS = {
     "delimiter": _normalize_delimiter,
     "code": _normalize_code,
     "image": _normalize_image,
+    "mapScene": _normalize_map_scene,
 }
 
 
