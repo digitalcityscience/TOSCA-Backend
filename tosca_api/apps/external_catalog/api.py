@@ -9,11 +9,13 @@ observations straight from the external services.
 
 from __future__ import annotations
 
+from drf_spectacular.utils import extend_schema
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import api_schema
 from .models import Category, CategoryItem, ExternalService
 from .visibility import ExternalCatalogVisibilityService as Visibility
 
@@ -79,6 +81,12 @@ class ExternalServiceListView(APIView):
 
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        tags=["catalog: external"],
+        summary="External services and their capabilities",
+        description="Active services; PRIVATE ones only for signed-in callers (Bearer token).",
+        responses={200: api_schema.ExternalServiceSchema(many=True)},
+    )
     def get(self, request):
         services = Visibility.services(authenticated=_authenticated(request))
         return Response([service_payload(service) for service in services])
@@ -89,6 +97,12 @@ class ExternalCategoryListView(APIView):
 
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        tags=["catalog: external"],
+        summary="Curated external categories (sidebar list)",
+        description="Listed categories with at least one listed item, in display order.",
+        responses={200: api_schema.ExternalCategorySummarySchema(many=True)},
+    )
     def get(self, request):
         categories = Visibility.categories(authenticated=_authenticated(request))
         return Response(
@@ -110,6 +124,11 @@ class ExternalCategoryDetailView(APIView):
 
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        tags=["catalog: external"],
+        summary="One external category with its items",
+        responses={200: api_schema.ExternalCategoryDetailSchema, 404: api_schema.NotFoundSchema},
+    )
     def get(self, request, slug: str):
         try:
             category = Visibility.category(slug=slug, authenticated=_authenticated(request))
