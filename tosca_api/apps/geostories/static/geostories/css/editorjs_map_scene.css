@@ -1,3 +1,5 @@
+/* The Editor.js surface is always light (see geocontext/editorjs/editor.css),
+ * so the anchor block uses the same fixed palette instead of admin theme vars. */
 .geostory-map-scene-block {
   display: flex;
   flex-wrap: wrap;
@@ -5,10 +7,11 @@
   gap: 8px 12px;
   margin: 8px 0;
   padding: 10px 12px;
-  border: 1px dashed var(--hairline-color);
-  border-left: 4px solid var(--primary);
+  border: 1px dashed #b8c7d0;
+  border-left: 4px solid #417690;
   border-radius: 4px;
-  background: var(--darkened-bg);
+  background: #f4f7f9;
+  color: #202020;
 }
 
 .geostory-map-scene-block__label {
@@ -16,14 +19,27 @@
   align-items: center;
   gap: 6px;
   font-weight: 600;
-  color: var(--body-fg);
+  color: #202020;
+}
+
+.geostory-map-scene-block__label svg {
+  color: #417690;
 }
 
 .geostory-map-scene-block__select {
   min-width: 220px;
+  padding: 4px 6px;
+  border: 1px solid #999999;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #202020;
+}
+
+.geostory-map-scene-block__link {
+  color: #1a73e8;
 }
 
 .geostory-map-scene-block__empty {
   margin: 0;
-  color: var(--body-quiet-color);
+  color: #555555;
 }
