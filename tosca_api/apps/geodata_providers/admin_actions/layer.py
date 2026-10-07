@@ -97,12 +97,14 @@ def unpublish_layer(modeladmin, request, queryset):
             )
 
 
-@admin.action(description='Refresh feature attributes from GeoServer', permissions=['change'])
-def refresh_layer_attributes(modeladmin, request, queryset):
-    """Re-read each selected layer's attribute list (used for scene feature IDs)."""
+@admin.action(
+    description='Refresh attributes and extent from GeoServer', permissions=['change']
+)
+def refresh_layer_metadata(modeladmin, request, queryset):
+    """Re-read each selected layer's attributes and extent (used by GeoStory scenes)."""
     refreshed = 0
     for layer in queryset.select_related('workspace__geodata_engine', 'store'):
-        result = LayerService.refresh_attributes(layer)
+        result = LayerService.refresh_resource_metadata(layer)
         if result['success']:
             refreshed += 1
         else:
@@ -110,6 +112,6 @@ def refresh_layer_attributes(modeladmin, request, queryset):
     if refreshed:
         modeladmin.message_user(
             request,
-            f"Refreshed attributes for {refreshed} layer(s).",
+            f"Refreshed metadata for {refreshed} layer(s).",
             messages.SUCCESS,
         )

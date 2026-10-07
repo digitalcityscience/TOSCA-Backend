@@ -149,6 +149,8 @@ class LayerSyncer(BaseSyncer):
                     # Missing when GeoServer's feature-type detail failed; keep
                     # the stored attributes rather than wiping them.
                     layer_defaults['attributes'] = layer_data['attributes']
+                if 'bounds' in layer_data:
+                    layer_defaults['bounds'] = layer_data['bounds']
 
                 layer, created = Layer.objects.update_or_create(
                     workspace=workspace,

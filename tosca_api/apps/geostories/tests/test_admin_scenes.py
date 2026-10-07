@@ -194,3 +194,123 @@ def test_other_org_cannot_open_scene(story):
 
     assert response.status_code == 302
     assert response.url == reverse("admin:index")
+
+
+# --- Scene editor -------------------------------------------------------------
+
+PREVIEW_URL = reverse("admin:geostories_geostoryscene_preview")
+
+
+def _preview(client, *rows):
+    import json
+
+    return client.post(PREVIEW_URL, json.dumps({"layers": list(rows)}), content_type="application/json")
+
+
+@pytest.mark.django_db
+def test_scene_editor_page_ships_map_and_config(client, story):
+    response = client.get(f"{ADD_URL}?geostory={story.pk}")
+
+    content = response.content.decode()
+    assert 'id="scene-editor-map"' in content
+    assert 'type="module"' in content and "geostories/js/scene_editor.mjs" in content
+    assert "geostories/vendor/maplibre-gl/maplibre-gl.css" in content
+    assert 'id="scene-editor-config"' in content
+    assert response.context["scene_editor_config"]["previewUrl"] == PREVIEW_URL
+    assert response.context["scene_editor_config"]["basemap"]["version"] == 8
+
+
+@pytest.mark.django_db
+def test_scene_editor_basemap_is_configurable(client, story, settings):
+    settings.GEOSTORY_SCENE_EDITOR_BASEMAP = "https://tiles.example.com/style.json"
+
+    response = client.get(f"{ADD_URL}?geostory={story.pk}")
+
+    assert response.context["scene_editor_config"]["basemap"] == "https://tiles.example.com/style.json"
+
+
+@pytest.mark.django_db
+def test_preview_renders_unsaved_rows_in_display_order(client, superuser):
+    from tosca_api.apps.geodata_providers.models import Layer
+    from tosca_api.apps.geostories.tests.scene_helpers import make_raster_layer
+
+    parks = make_vector_layer("ws:preview_parks", user=superuser)
+    ortho = make_raster_layer("ras:preview_ortho", user=superuser)
+    Layer.objects.filter(pk=parks.pk).update(bounds=[9.9, 53.5, 10.1, 53.6])
+    Layer.objects.filter(pk=ortho.pk).update(bounds=[9.7, 53.3, 10.3, 53.7])
+
+    response = _preview(
+        client,
+        {"layer": str(parks.pk), "display_order": "1", "opacity": "0.5"},
+        {"layer": "", "display_order": "2"},  # empty extra inline form
+        {"layer": str(ortho.pk), "display_order": "0"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["errors"] == {}
+    assert [layer["type"] for layer in data["render_layers"]] == ["raster", "fill", "line"]
+    assert data["render_layers"][1]["paint"] == {"fill-opacity": 0.5}
+    assert set(data["map"]["sources"]) == {
+        layer["source"] for layer in data["render_layers"]
+    }
+    assert [entry["title"] for entry in data["legend"]] == ["preview_parks", "preview_ortho"]
+    assert data["bounds"] == [9.7, 53.3, 10.3, 53.7]
+
+
+@pytest.mark.django_db
+def test_preview_reports_invalid_rows_by_index(client, superuser, layer):
+    import uuid
+
+    from tosca_api.apps.geodata_providers.test_helpers import make_layer
+
+    private = make_layer("ws:preview_private", user=superuser, is_public=False)
+
+    data = _preview(
+        client,
+        {"layer": str(layer.pk), "opacity": "3"},
+        {"layer": str(private.pk)},
+        {"layer": str(uuid.uuid4())},
+        {"layer": str(layer.pk), "feature_mode": "only"},
+    ).json()
+
+    assert set(data["errors"]) == {"0", "1", "2", "3"}
+    assert "opacity" in data["errors"]["0"]
+    assert "layer" in data["errors"]["1"]
+    assert data["errors"]["2"] == {"layer": ["Unknown layer."]}
+    assert "feature_id_attribute" in data["errors"]["3"]
+    assert data["render_layers"] == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("body", "status"),
+    [("not json", 400), ('{"layers": "x"}', 400), ('{"layers": [1]}', 400)],
+)
+def test_preview_rejects_malformed_payloads(client, body, status):
+    response = client.post(PREVIEW_URL, body, content_type="application/json")
+
+    assert response.status_code == status
+
+
+@pytest.mark.django_db
+def test_preview_requires_post(client):
+    assert client.get(PREVIEW_URL).status_code == 405
+
+
+@pytest.mark.django_db
+def test_preview_requires_scene_permission():
+    client = _org_staff_client("dcs-reader", "dcs", "READER")
+
+    response = _preview(client)
+
+    assert response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_preview_requires_staff():
+    client = Client()
+
+    response = _preview(client)
+
+    assert response.status_code == 302  # admin login redirect

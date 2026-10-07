@@ -20,7 +20,7 @@ from .admin_actions import (
     deactivate_engines,
     publish_layer,
     reactivate_engines,
-    refresh_layer_attributes,
+    refresh_layer_metadata,
     set_as_default,
     sync_engines,
     sync_workspaces,
@@ -1387,7 +1387,7 @@ class LayerAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
     # organizations/permissions.py.
     org_lookup = "workspace__organization__slug"
     form = LayerAdminForm
-    actions = [publish_layer, unpublish_layer, refresh_layer_attributes]
+    actions = [publish_layer, unpublish_layer, refresh_layer_metadata]
     change_form_template = 'admin/geodata_providers/layer/change_form.html'
     list_display = [
         'name', 'title', 'workspace_link', 'store_name',
@@ -1404,7 +1404,7 @@ class LayerAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
         'sync_state_badge', 'last_sync_at', 'last_sync_error', 'remote_identifier',
         'remote_hash', 'published_url', 'publishing_error', 'default_style_display',
         'additional_styles_display', 'available_styles_display', 'selected_styles_display',
-        'description', 'provider_description', 'attributes_display',
+        'description', 'provider_description', 'attributes_display', 'bounds',
     ]
     inlines = [LayerStyleInline]
     list_per_page = 25
@@ -1417,10 +1417,10 @@ class LayerAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
             'fields': ('table_name', 'geometry_column', 'geometry_type', 'srid'),
         }),
         ('Attributes', {
-            'fields': ('attributes_display',),
+            'fields': ('attributes_display', 'bounds'),
             'description': (
                 'Read from GeoServer on sync and publish. Use the '
-                '"Refresh feature attributes" action to update them.'
+                '"Refresh attributes and extent" action to update them.'
             ),
         }),
         ('Source', {

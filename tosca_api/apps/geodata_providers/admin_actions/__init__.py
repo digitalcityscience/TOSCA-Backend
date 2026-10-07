@@ -14,7 +14,7 @@ from .engine import (
 )
 from .workspace import sync_workspaces
 from .store import clone_store
-from .layer import publish_layer, refresh_layer_attributes, unpublish_layer
+from .layer import publish_layer, refresh_layer_metadata, unpublish_layer
 
 __all__ = [
     # Engine (Phase 1)
@@ -30,5 +30,5 @@ __all__ = [
     # Layer (Phase 4)
     'publish_layer',
     'unpublish_layer',
-    'refresh_layer_attributes',
+    'refresh_layer_metadata',
 ]

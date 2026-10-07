@@ -1,4 +1,4 @@
-"""Tests for the layer feature-attribute catalog (Layer.attributes)."""
+"""Tests for engine-reported layer metadata (Layer.attributes, Layer.bounds)."""
 
 from unittest.mock import MagicMock, patch
 
@@ -7,7 +7,10 @@ from django.contrib.auth import get_user_model
 from django.test import Client
 from django.urls import reverse
 
-from tosca_api.apps.geodata_providers.feature_attributes import normalize_feature_attributes
+from tosca_api.apps.geodata_providers.resource_metadata import (
+    normalize_feature_attributes,
+    normalize_lat_lon_bounds,
+)
 from tosca_api.apps.geodata_providers.models import Layer, Store
 from tosca_api.apps.geodata_providers.services.commands.layer_service import LayerService
 from tosca_api.apps.geodata_providers.sync import LayerSyncer
@@ -22,6 +25,8 @@ RAW_ATTRIBUTES = [
     {"name": "name", "binding": "java.lang.String"},
 ]
 NORMALIZED = [{"name": "objectid", "type": "Long"}, {"name": "name", "type": "String"}]
+RAW_BBOX = {"minx": 9.7, "maxx": 10.3, "miny": 53.39, "maxy": 53.59, "crs": "EPSG:4326"}
+BOUNDS = [9.7, 53.39, 10.3, 53.59]
 
 FACTORY = (
     "tosca_api.apps.geodata_providers.services.commands.layer_service."
@@ -84,6 +89,25 @@ def test_normalize_skips_duplicates_blank_names_and_keeps_unknown_bindings():
     ]
 
 
+def test_normalize_bounds_orders_west_south_east_north():
+    assert normalize_lat_lon_bounds(RAW_BBOX) == BOUNDS
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        {"minx": 1, "miny": 2, "maxx": 3},
+        {"minx": "a", "miny": 2, "maxx": 3, "maxy": 4},
+        {"minx": 5, "miny": 2, "maxx": 3, "maxy": 4},
+        {"minx": -200, "miny": 2, "maxx": 3, "maxy": 4},
+    ],
+    ids=["missing", "incomplete", "non-numeric", "inverted", "out-of-range"],
+)
+def test_normalize_bounds_rejects_bad_boxes(raw):
+    assert normalize_lat_lon_bounds(raw) is None
+
+
 # --- GeoServerClient.get_layers --------------------------------------------
 
 
@@ -97,7 +121,11 @@ def _client_listing_one_featuretype(featuretype):
 
 def test_get_layers_includes_normalized_attributes():
     client = _client_listing_one_featuretype(
-        {"name": "districts", "attributes": {"attribute": RAW_ATTRIBUTES}}
+        {
+            "name": "districts",
+            "attributes": {"attribute": RAW_ATTRIBUTES},
+            "latLonBoundingBox": RAW_BBOX,
+        }
     )
 
     with patch.object(client, "get_layer_settings", return_value={}), patch.object(
@@ -106,6 +134,7 @@ def test_get_layers_includes_normalized_attributes():
         [layer] = client.get_layers("mobility")
 
     assert layer["attributes"] == NORMALIZED
+    assert layer["bounds"] == BOUNDS
     assert layer["geometry_type"] == "MultiPolygon"
 
 
@@ -119,6 +148,18 @@ def test_get_layers_omits_attributes_when_detail_fails():
         [layer] = client.get_layers("mobility")
 
     assert "attributes" not in layer
+    assert "bounds" not in layer
+
+
+def test_coverage_detail_includes_bounds():
+    client = make_client()
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"coverage": {"srs": "EPSG:4326", "latLonBoundingBox": RAW_BBOX}}
+
+    with patch.object(client, "_request", return_value=response):
+        detail = client.get_coverage_detail("ras", "ortho_store", "ortho")
+
+    assert detail["bounds"] == BOUNDS
 
 
 # --- LayerSyncer ------------------------------------------------------------
@@ -142,12 +183,20 @@ def test_sync_stores_reported_attributes(vector_layer):
 
 
 @pytest.mark.django_db
+def test_sync_stores_reported_bounds(vector_layer):
+    _sync(vector_layer, {"bounds": BOUNDS})
+
+    assert vector_layer.bounds == BOUNDS
+
+
+@pytest.mark.django_db
 def test_sync_keeps_attributes_when_engine_omits_them(vector_layer):
-    Layer.objects.filter(pk=vector_layer.pk).update(attributes=NORMALIZED)
+    Layer.objects.filter(pk=vector_layer.pk).update(attributes=NORMALIZED, bounds=BOUNDS)
 
     _sync(vector_layer, {})
 
     assert vector_layer.attributes == NORMALIZED
+    assert vector_layer.bounds == BOUNDS
 
 
 @pytest.mark.django_db
@@ -157,32 +206,49 @@ def test_sync_clears_attributes_for_raster_layers(raster_layer):
     assert raster_layer.attributes == []
 
 
-# --- LayerService.refresh_attributes ----------------------------------------
+# --- LayerService.refresh_resource_metadata --------------------------------
 
 
 @pytest.mark.django_db
-def test_refresh_attributes_stores_engine_attributes(vector_layer):
+def test_refresh_stores_vector_attributes_and_bounds(vector_layer):
+    client = MagicMock()
+    client.get_featuretype_detail.return_value = {"attributes": RAW_ATTRIBUTES, "bounds": BOUNDS}
+
+    with patch(FACTORY, return_value=client):
+        result = LayerService.refresh_resource_metadata(vector_layer)
+
+    assert result == {"success": True, "attributes": NORMALIZED, "bounds": BOUNDS}
+    client.get_featuretype_detail.assert_called_once_with("ws", "ws_store", "districts")
+    vector_layer.refresh_from_db()
+    assert (vector_layer.attributes, vector_layer.bounds) == (NORMALIZED, BOUNDS)
+
+
+@pytest.mark.django_db
+def test_refresh_reads_raster_extent_from_coverage(raster_layer):
+    client = MagicMock()
+    client.get_coverage_detail.return_value = {"title": "ortho", "bounds": BOUNDS}
+
+    with patch(FACTORY, return_value=client):
+        result = LayerService.refresh_resource_metadata(raster_layer)
+
+    client.get_featuretype_detail.assert_not_called()
+    client.get_coverage_detail.assert_called_once_with("ras", "ras_store", "ortho")
+    assert result == {"success": True, "attributes": [], "bounds": BOUNDS}
+    raster_layer.refresh_from_db()
+    assert (raster_layer.attributes, raster_layer.bounds) == ([], BOUNDS)
+
+
+@pytest.mark.django_db
+def test_refresh_keeps_bounds_when_engine_reports_none(vector_layer):
+    Layer.objects.filter(pk=vector_layer.pk).update(bounds=BOUNDS)
     client = MagicMock()
     client.get_featuretype_detail.return_value = {"attributes": RAW_ATTRIBUTES}
 
     with patch(FACTORY, return_value=client):
-        result = LayerService.refresh_attributes(vector_layer)
+        LayerService.refresh_resource_metadata(vector_layer)
 
-    assert result == {"success": True, "attributes": NORMALIZED}
-    client.get_featuretype_detail.assert_called_once_with("ws", "ws_store", "districts")
     vector_layer.refresh_from_db()
-    assert vector_layer.attributes == NORMALIZED
-
-
-@pytest.mark.django_db
-def test_refresh_attributes_clears_raster_without_engine_call(raster_layer):
-    with patch(FACTORY) as factory:
-        result = LayerService.refresh_attributes(raster_layer)
-
-    factory.assert_not_called()
-    assert result == {"success": True, "attributes": []}
-    raster_layer.refresh_from_db()
-    assert raster_layer.attributes == []
+    assert vector_layer.bounds == BOUNDS
 
 
 @pytest.mark.django_db
@@ -194,13 +260,13 @@ def test_refresh_attributes_clears_raster_without_engine_call(raster_layer):
     ],
     ids=["no-attributes", "engine-error"],
 )
-def test_refresh_attributes_keeps_existing_on_failure(vector_layer, configure):
+def test_refresh_keeps_existing_on_failure(vector_layer, configure):
     Layer.objects.filter(pk=vector_layer.pk).update(attributes=NORMALIZED)
     client = MagicMock()
     configure(client)
 
     with patch(FACTORY, return_value=client):
-        result = LayerService.refresh_attributes(vector_layer)
+        result = LayerService.refresh_resource_metadata(vector_layer)
 
     assert result["success"] is False
     assert "districts" in result["error"]
@@ -260,11 +326,11 @@ def test_admin_refresh_action_updates_selected_layers(admin_client, vector_layer
     with patch(FACTORY, return_value=client):
         response = admin_client.post(
             reverse("admin:geodata_providers_layer_changelist"),
-            {"action": "refresh_layer_attributes", "_selected_action": [str(vector_layer.pk)]},
+            {"action": "refresh_layer_metadata", "_selected_action": [str(vector_layer.pk)]},
             follow=True,
         )
 
-    assert "Refreshed attributes for 1 layer(s)." in response.content.decode()
+    assert "Refreshed metadata for 1 layer(s)." in response.content.decode()
     vector_layer.refresh_from_db()
     assert vector_layer.attributes == NORMALIZED
 

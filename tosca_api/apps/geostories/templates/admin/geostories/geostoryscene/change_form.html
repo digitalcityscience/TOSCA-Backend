@@ -1,0 +1,36 @@
+{% extends "admin/change_form.html" %}
+{% load static %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  <link rel="stylesheet" href="{% static 'geostories/vendor/maplibre-gl/maplibre-gl.css' %}">
+  <link rel="stylesheet" href="{% static 'geostories/css/scene_editor.css' %}">
+{% endblock %}
+
+{% block field_sets %}
+<div class="scene-editor">
+  <div class="scene-editor__form">
+    {{ block.super }}
+{% endblock %}
+
+{% block inline_field_sets %}
+    {{ block.super }}
+  </div>
+  <aside class="scene-editor__panel" aria-label="Scene map preview">
+    <div id="scene-editor-map" class="scene-editor__map"></div>
+    <div class="scene-editor__toolbar">
+      <button type="button" class="button" data-scene-action="capture">Capture view</button>
+      <button type="button" class="button" data-scene-action="fit">Fit to layers</button>
+      <button type="button" class="button" data-scene-action="reset">Clear camera</button>
+    </div>
+    <p class="scene-editor__readout" data-scene-readout aria-live="polite"></p>
+    <p class="scene-editor__status" data-scene-status role="status"></p>
+    <div class="scene-editor__legend" data-scene-legend hidden>
+      <h3>Legend</h3>
+      <ul></ul>
+    </div>
+  </aside>
+</div>
+{{ scene_editor_config|json_script:"scene-editor-config" }}
+<script type="module" src="{% static 'geostories/js/scene_editor.mjs' %}"></script>
+{% endblock %}

@@ -11,7 +11,7 @@ import requests
 # manipulation needed for this import to resolve.
 from geo.Geoserver import Geoserver as GeoServerRestClient
 from ..exceptions import GeoServerConnectionError, GeoServerPublishError
-from ..feature_attributes import normalize_feature_attributes
+from ..resource_metadata import normalize_feature_attributes, normalize_lat_lon_bounds
 from ..results import OperationResult
 
 logger = logging.getLogger(__name__)
@@ -1901,6 +1901,8 @@ class GeoServerClient:
                                     for key in ('geometry_type', 'geometry_column', 'srid')
                                     if key in featuretype_detail
                                 }
+                                if 'bounds' in featuretype_detail:
+                                    featuretype_metadata['bounds'] = featuretype_detail['bounds']
                                 if 'attributes' in featuretype_detail:
                                     # Absent only when the detail call failed;
                                     # then the stored attributes are kept.
@@ -1993,6 +1995,7 @@ class GeoServerClient:
                         "opaque": layer_settings.get("opaque", False),
                         "default_style_name": layer_settings.get("default_style_name", ""),
                         "additional_style_names": layer_settings.get("additional_style_names", []),
+                        **({"bounds": detail["bounds"]} if "bounds" in detail else {}),
                     })
             except Exception as coverage_err:
                 logger.warning(
@@ -2033,12 +2036,16 @@ class GeoServerClient:
                 srid = int(srs.upper().rsplit("EPSG:", 1)[1].split()[0])
             except (ValueError, IndexError):
                 srid = 4326
-        return {
+        detail = {
             "title": coverage.get("title") or coverage_name,
             "native_name": coverage.get("nativeName") or coverage_name,
             "advertised": coverage.get("advertised", True),
             "srid": srid,
         }
+        bounds = normalize_lat_lon_bounds(coverage.get("latLonBoundingBox"))
+        if bounds is not None:
+            detail["bounds"] = bounds
+        return detail
 
     def get_styles(self, workspace: Optional[str] = None) -> list:
         """Return GeoServer styles normalized as {name, href, workspace} records."""
@@ -2261,6 +2268,9 @@ class GeoServerClient:
                 'advertised': self._as_bool(featuretype.get('advertised'), default=True),
             }
             detail.update(self._featuretype_spatial_metadata(featuretype))
+            bounds = normalize_lat_lon_bounds(featuretype.get('latLonBoundingBox'))
+            if bounds is not None:
+                detail['bounds'] = bounds
             return detail
         except Exception as exc:
             logger.warning(
