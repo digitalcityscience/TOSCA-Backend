@@ -94,6 +94,7 @@ INSTALLED_APPS = [
     "tosca_api.apps.featurelinks",
     "tosca_api.apps.events",
     "tosca_api.apps.feedback",
+    "tosca_api.apps.external_catalog.apps.ExternalCatalogConfig",
 ]
 
 # Authorization foundation (security tickets ticket 03) -- the single source
@@ -137,6 +138,10 @@ TOSCA_PERMISSION_MODELS = {
         "workspace", "store", "layer", "layergroup", "style", "spriteasset",
         "geodataengine",
     },
+    # External catalog (OGC API / SensorThings curation, 2026-10-07 tickets):
+    # ExternalService and Category carry a direct organization FK;
+    # CategoryItem reaches its org through category__organization.
+    "external_catalog": {"externalservice", "category", "categoryitem"},
 }
 TOSCA_ENTITLEABLE_APPS = set(TOSCA_PERMISSION_MODELS)
 
