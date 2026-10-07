@@ -10,9 +10,15 @@ from tosca_api.apps.featurelinks.models import FeatureLink
 from tosca_api.apps.geodata_providers.api.serializers import (
     LayerSummarySerializer,
 )
-from tosca_api.apps.geodata_providers.models import Layer
 
 from .models import GeoStory, GeoStoryScene, GeoStorySceneLayer
+from .scene_manifest import (
+    build_scene_legend,
+    build_scene_render_layers,
+    build_story_map,
+    source_key,
+    visible_scene_layers,
+)
 
 
 def _absolute_hero_image_url(obj: GeoStory, request) -> str | None:
@@ -45,21 +51,13 @@ def _style_assignment_payload(assignment) -> dict | None:
     }
 
 
-def _is_publicly_renderable(layer: Layer) -> bool:
-    """Layers that lost public/published status after authoring are skipped on read."""
-    return layer.is_public and layer.publishing_state == Layer.PublishingState.PUBLISHED
-
-
-def _renderable_scene_layers(scene: GeoStoryScene) -> list[GeoStorySceneLayer]:
-    return [item for item in scene.scene_layers.all() if _is_publicly_renderable(item.layer)]
-
-
 class GeoStorySceneLayerSerializer(serializers.ModelSerializer):
     """A layer rendered in a scene, with its pinned style and feature selection."""
 
     layer = LayerSummarySerializer(read_only=True)
     style_assignment = serializers.SerializerMethodField()
     render_layer_ids = serializers.SerializerMethodField()
+    source_key = serializers.SerializerMethodField()
     features = serializers.SerializerMethodField()
 
     class Meta:
@@ -69,6 +67,7 @@ class GeoStorySceneLayerSerializer(serializers.ModelSerializer):
             "layer",
             "style_assignment",
             "render_layer_ids",
+            "source_key",
             "display_order",
             "opacity",
             "features",
@@ -80,6 +79,10 @@ class GeoStorySceneLayerSerializer(serializers.ModelSerializer):
 
     def get_render_layer_ids(self, obj) -> list[str]:
         return obj.effective_style_layer_ids
+
+    def get_source_key(self, obj) -> str | None:
+        """Key into the story's ``map.sources``; null when the layer has no style."""
+        return source_key(obj) if obj.style_assignment_id else None
 
     def get_features(self, obj) -> dict:
         return {
@@ -95,10 +98,22 @@ class GeoStorySceneSerializer(serializers.ModelSerializer):
     camera = serializers.SerializerMethodField()
     transition = serializers.SerializerMethodField()
     layers = serializers.SerializerMethodField()
+    render_layers = serializers.SerializerMethodField()
+    legend = serializers.SerializerMethodField()
 
     class Meta:
         model = GeoStoryScene
-        fields = ["id", "order", "title", "caption", "camera", "transition", "layers"]
+        fields = [
+            "id",
+            "order",
+            "title",
+            "caption",
+            "camera",
+            "transition",
+            "layers",
+            "render_layers",
+            "legend",
+        ]
         read_only_fields = fields
 
     def get_camera(self, obj) -> dict:
@@ -115,7 +130,14 @@ class GeoStorySceneSerializer(serializers.ModelSerializer):
         return {"type": obj.transition, "duration_ms": obj.duration_ms}
 
     def get_layers(self, obj) -> list:
-        return GeoStorySceneLayerSerializer(_renderable_scene_layers(obj), many=True).data
+        return GeoStorySceneLayerSerializer(visible_scene_layers(obj), many=True).data
+
+    def get_render_layers(self, obj) -> list:
+        """MapLibre layers for this scene, bottom to top, over the story's ``map.sources``."""
+        return build_scene_render_layers(obj)
+
+    def get_legend(self, obj) -> list:
+        return build_scene_legend(obj)
 
 
 class FeatureLinkSerializer(serializers.ModelSerializer):
@@ -177,6 +199,7 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
     """
 
     scenes = serializers.SerializerMethodField()
+    map = serializers.SerializerMethodField()
     layers = serializers.SerializerMethodField()
     feature_links = serializers.SerializerMethodField()
     hero_image_url = serializers.SerializerMethodField()
@@ -195,6 +218,7 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
             "status",
             "campaign",
             "scenes",
+            "map",
             "layers",
             "feature_links",
             "created_at",
@@ -211,11 +235,15 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
     def get_scenes(self, obj) -> list:
         return GeoStorySceneSerializer(obj.scenes.all(), many=True).data
 
+    def get_map(self, obj) -> dict:
+        """Sources, styles and sprites shared by every scene's ``render_layers``."""
+        return build_story_map(request=self.context.get("request"), scenes=obj.scenes.all())
+
     def get_layers(self, obj) -> list:
         layers = []
         seen = set()
         for scene in obj.scenes.all():
-            for scene_layer in _renderable_scene_layers(scene):
+            for scene_layer in visible_scene_layers(scene):
                 key = (scene_layer.layer_id, scene_layer.style_assignment_id)
                 if key in seen:
                     continue

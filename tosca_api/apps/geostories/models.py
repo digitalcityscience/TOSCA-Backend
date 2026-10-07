@@ -417,8 +417,9 @@ class GeoStorySceneLayer(TimeStampedModel):
     """
     A layer rendered in a scene, with a pinned style and optional feature selection.
 
-    Raster (GeoTIFF/WMS) layers take SLD styles; vector (WMTS tiles) layers take
-    MBStyle styles and may restrict or highlight features by an attribute value.
+    Vector layers with an MBStyle style are drawn from WMTS vector tiles and may
+    restrict or highlight features by an attribute value. Raster (GeoTIFF)
+    layers and SLD-styled vector layers are drawn by GeoServer as WMS images.
     """
 
     class SourceKind(models.TextChoices):
@@ -493,6 +494,17 @@ class GeoStorySceneLayer(TimeStampedModel):
         return self.layer.store.store_type == Store.StoreType.GEOTIFF
 
     @property
+    def uses_vector_tiles(self) -> bool:
+        """Client-side vector tiles (MBStyle); otherwise GeoServer draws WMS images."""
+        from tosca_api.apps.geodata_providers.models import Style
+
+        return (
+            not self.is_raster
+            and self.style_assignment_id is not None
+            and self.style_assignment.style.format == Style.StyleFormat.MBSTYLE
+        )
+
+    @property
     def effective_style_layer_ids(self) -> list[str]:
         """Resolve a scene-specific rule selection over the assignment default."""
         if self.render_layer_ids:
@@ -546,15 +558,10 @@ class GeoStorySceneLayer(TimeStampedModel):
         if style.validation_state != Style.ValidationState.VALID:
             return {"style_assignment": "Selected style is not valid."}
 
-        expected_format = Style.StyleFormat.SLD if self.is_raster else Style.StyleFormat.MBSTYLE
-        if style.format != expected_format:
-            data_type = "raster" if self.is_raster else "vector"
-            return {
-                "style_assignment": (
-                    f"Layer is {data_type} and requires an {expected_format.upper()} style."
-                )
-            }
-        if self.is_raster:
+        if self.is_raster and style.format != Style.StyleFormat.SLD:
+            return {"style_assignment": "Raster layers require an SLD style."}
+        if style.format != Style.StyleFormat.MBSTYLE:
+            # SLD-styled vector data is rendered by GeoServer as WMS images.
             if ids:
                 return {"render_layer_ids": "Only MBStyle styles can select render layer IDs."}
             return {}
@@ -586,8 +593,12 @@ class GeoStorySceneLayer(TimeStampedModel):
             if ids:
                 return {"feature_ids": "Clear selected features or choose a selection mode."}
             return {}
-        if self.is_raster:
-            return {"feature_mode": "Feature selection is only available for vector layers."}
+        if not self.uses_vector_tiles:
+            return {
+                "feature_mode": (
+                    "Feature selection needs a vector layer with an MBStyle style."
+                )
+            }
         if not self.feature_id_attribute.strip():
             return {"feature_id_attribute": "Choose the attribute that identifies features."}
         if not ids:
