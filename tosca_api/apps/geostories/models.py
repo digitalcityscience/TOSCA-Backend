@@ -13,6 +13,7 @@ from django.conf import settings
 from django.contrib.contenttypes.fields import GenericRelation
 from django.core.exceptions import ValidationError
 from django.core.files.storage import storages
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db.models.fields.files import ImageField, ImageFieldFile, ImageFileDescriptor
 from django.db import models
 
@@ -308,6 +309,298 @@ class GeoStoryLayer(TimeStampedModel):
         if self._state.adding and self.display_order == 0:
             # Find the current maximum order for this story
             max_order = GeoStoryLayer.objects.filter(geostory=self.geostory).aggregate(
+                models.Max("display_order")
+            )["display_order__max"]
+            if max_order is not None:
+                self.display_order = max_order + 1
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+MAX_SCENE_FEATURE_IDS = 500
+
+
+class GeoStoryScene(TimeStampedModel):
+    """
+    A captured map state that the story switches to while the reader scrolls.
+
+    The camera is optional: a scene without a center fits the map to its
+    layers (or to ``bounds`` when captured).
+    """
+
+    class Transition(models.TextChoices):
+        FLY = "fly", "Fly"
+        EASE = "ease", "Ease"
+        JUMP = "jump", "Jump"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+    geostory = models.ForeignKey(GeoStory, on_delete=models.CASCADE, related_name="scenes")
+    order = models.PositiveIntegerField(default=0)
+    title = models.CharField(max_length=255)
+    caption = models.TextField(blank=True, default="")
+
+    center_lng = models.FloatField(
+        null=True, blank=True, validators=[MinValueValidator(-180), MaxValueValidator(180)]
+    )
+    center_lat = models.FloatField(
+        null=True, blank=True, validators=[MinValueValidator(-90), MaxValueValidator(90)]
+    )
+    zoom = models.FloatField(
+        null=True, blank=True, validators=[MinValueValidator(0), MaxValueValidator(24)]
+    )
+    bearing = models.FloatField(
+        default=0, validators=[MinValueValidator(-180), MaxValueValidator(180)]
+    )
+    pitch = models.FloatField(default=0, validators=[MinValueValidator(0), MaxValueValidator(85)])
+    bounds = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Captured viewport as [west, south, east, north] in EPSG:4326.",
+    )
+    transition = models.CharField(
+        max_length=10, choices=Transition.choices, default=Transition.FLY
+    )
+    duration_ms = models.PositiveIntegerField(default=1500, validators=[MaxValueValidator(10000)])
+
+    class Meta:
+        ordering = ["order", "created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["geostory", "order"], name="geostories_scene_unique_order"
+            ),
+        ]
+        verbose_name = "GeoStory Scene"
+        verbose_name_plural = "GeoStory Scenes"
+
+    def __str__(self) -> str:
+        return f"{self.geostory} - {self.title}"
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        camera = (self.center_lng, self.center_lat, self.zoom)
+        if any(value is not None for value in camera) and any(value is None for value in camera):
+            errors["zoom"] = "Center longitude, center latitude and zoom must be set together."
+        if self.bounds is not None:
+            bounds_error = _validate_bounds(self.bounds)
+            if bounds_error:
+                errors["bounds"] = bounds_error
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs) -> None:
+        self.title = sanitize_simple(self.title)
+        self.caption = sanitize_simple(self.caption)
+        if self._state.adding and self.order == 0 and self.geostory_id:
+            max_order = GeoStoryScene.objects.filter(geostory_id=self.geostory_id).aggregate(
+                models.Max("order")
+            )["order__max"]
+            if max_order is not None:
+                self.order = max_order + 1
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+def _validate_bounds(bounds) -> str | None:
+    if (
+        not isinstance(bounds, list)
+        or len(bounds) != 4
+        or any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in bounds)
+    ):
+        return "Bounds must be a list of four numbers: [west, south, east, north]."
+    west, south, east, north = bounds
+    if not (-180 <= west < east <= 180):
+        return "Bounds longitudes must satisfy -180 <= west < east <= 180."
+    if not (-90 <= south < north <= 90):
+        return "Bounds latitudes must satisfy -90 <= south < north <= 90."
+    return None
+
+
+class GeoStorySceneLayer(TimeStampedModel):
+    """
+    A layer rendered in a scene, with a pinned style and optional feature selection.
+
+    Raster (GeoTIFF/WMS) layers take SLD styles; vector (WMTS tiles) layers take
+    MBStyle styles and may restrict or highlight features by an attribute value.
+    """
+
+    class SourceKind(models.TextChoices):
+        CATALOG_LAYER = "catalog_layer", "Catalog layer"
+
+    class FeatureMode(models.TextChoices):
+        ALL = "all", "All features"
+        ONLY = "only", "Only selected features"
+        HIGHLIGHT = "highlight", "Highlight selected features"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+    scene = models.ForeignKey(
+        GeoStoryScene, on_delete=models.CASCADE, related_name="scene_layers"
+    )
+    source_kind = models.CharField(
+        max_length=30, choices=SourceKind.choices, default=SourceKind.CATALOG_LAYER
+    )
+    layer = models.ForeignKey(
+        "geodata_providers.Layer",
+        on_delete=models.CASCADE,
+        related_name="geostory_scene_uses",
+    )
+    style_assignment = models.ForeignKey(
+        "geodata_providers.LayerStyleAssignment",
+        on_delete=models.PROTECT,
+        related_name="geostory_scene_uses",
+        null=True,
+        blank=True,
+        help_text="Pinned style assignment; defaults to the layer's active default assignment.",
+    )
+    render_layer_ids = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "Optional MBStyle layer IDs for this scene. "
+            "Leave empty to use the pinned assignment's selected layer IDs."
+        ),
+    )
+    display_order = models.PositiveIntegerField(default=0)
+    opacity = models.FloatField(default=1.0, validators=[MinValueValidator(0), MaxValueValidator(1)])
+    feature_mode = models.CharField(
+        max_length=20, choices=FeatureMode.choices, default=FeatureMode.ALL
+    )
+    feature_id_attribute = models.CharField(max_length=255, blank=True, default="")
+    feature_ids = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Values of the feature ID attribute to show or highlight.",
+    )
+
+    class Meta:
+        ordering = ["display_order", "created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["scene", "layer", "style_assignment"],
+                name="geostories_scenelayer_unique_layer_style",
+            ),
+        ]
+        verbose_name = "GeoStory Scene Layer"
+        verbose_name_plural = "GeoStory Scene Layers"
+
+    def __str__(self) -> str:
+        return f"{self.scene} - {self.layer} ({self.display_order})"
+
+    @property
+    def is_raster(self) -> bool:
+        from tosca_api.apps.geodata_providers.models import Store
+
+        return self.layer.store.store_type == Store.StoreType.GEOTIFF
+
+    @property
+    def effective_style_layer_ids(self) -> list[str]:
+        """Resolve a scene-specific rule selection over the assignment default."""
+        if self.render_layer_ids:
+            return self.render_layer_ids
+        if self.style_assignment_id:
+            return self.style_assignment.style_layer_ids
+        return []
+
+    def clean(self) -> None:
+        from tosca_api.apps.geodata_providers.models import LayerStyleAssignment
+        from tosca_api.apps.geodata_providers.validators import (
+            validate_layer_is_public_and_published,
+        )
+
+        super().clean()
+        errors: dict[str, str] = {}
+        if self.layer_id is not None:
+            try:
+                validate_layer_is_public_and_published(self.layer)
+            except ValidationError as exc:
+                errors.update({key: msgs[0] for key, msgs in exc.message_dict.items()})
+            if self.style_assignment_id is None:
+                self.style_assignment = self.layer.style_assignments.filter(
+                    role=LayerStyleAssignment.Role.DEFAULT,
+                    is_active=True,
+                ).first()
+            errors.update(self._style_errors())
+            errors.update(self._feature_errors())
+        if errors:
+            raise ValidationError(errors)
+
+    def _style_errors(self) -> dict[str, str]:
+        from tosca_api.apps.geodata_providers.models import Style
+
+        ids = self.render_layer_ids
+        if not isinstance(ids, list) or any(
+            not isinstance(layer_id, str) or not layer_id.strip() for layer_id in ids
+        ):
+            return {"render_layer_ids": "Render layer IDs must be a list of non-empty strings."}
+        if len(ids) != len(set(ids)):
+            return {"render_layer_ids": "Render layer IDs cannot contain duplicates."}
+
+        assignment = self.style_assignment
+        if assignment is None:
+            return {"style_assignment": "Layer has no active default style; select a style."}
+        if assignment.layer_id != self.layer_id:
+            return {"style_assignment": "Style assignment must belong to the selected layer."}
+        if not assignment.is_active:
+            return {"style_assignment": "Style assignment is inactive."}
+        style = assignment.style
+        if style.validation_state != Style.ValidationState.VALID:
+            return {"style_assignment": "Selected style is not valid."}
+
+        expected_format = Style.StyleFormat.SLD if self.is_raster else Style.StyleFormat.MBSTYLE
+        if style.format != expected_format:
+            data_type = "raster" if self.is_raster else "vector"
+            return {
+                "style_assignment": (
+                    f"Layer is {data_type} and requires an {expected_format.upper()} style."
+                )
+            }
+        if self.is_raster:
+            if ids:
+                return {"render_layer_ids": "Only MBStyle styles can select render layer IDs."}
+            return {}
+
+        effective_ids = self.effective_style_layer_ids
+        if not effective_ids:
+            return {"render_layer_ids": "Select at least one MBStyle layer to render."}
+        selected = assignment.selected_mbstyle_layers(effective_ids)
+        if len(selected) != len(effective_ids):
+            known = {style_layer.get("id") for style_layer in selected}
+            missing = [layer_id for layer_id in effective_ids if layer_id not in known]
+            return {"render_layer_ids": "Unknown MBStyle layer IDs: " + ", ".join(missing) + "."}
+        for style_layer in selected:
+            if style_layer.get("type") in {"background", "raster", "hillshade"}:
+                return {
+                    "render_layer_ids": (
+                        f"MBStyle layer '{style_layer.get('id')}' cannot render a vector layer."
+                    )
+                }
+        return {}
+
+    def _feature_errors(self) -> dict[str, str]:
+        ids = self.feature_ids
+        if not isinstance(ids, list) or any(
+            isinstance(value, bool) or not isinstance(value, (str, int, float)) for value in ids
+        ):
+            return {"feature_ids": "Feature IDs must be a list of strings or numbers."}
+        if self.feature_mode == self.FeatureMode.ALL:
+            if ids:
+                return {"feature_ids": "Clear selected features or choose a selection mode."}
+            return {}
+        if self.is_raster:
+            return {"feature_mode": "Feature selection is only available for vector layers."}
+        if not self.feature_id_attribute.strip():
+            return {"feature_id_attribute": "Choose the attribute that identifies features."}
+        if not ids:
+            return {"feature_ids": "Select at least one feature."}
+        if len(ids) > MAX_SCENE_FEATURE_IDS:
+            return {"feature_ids": f"Select at most {MAX_SCENE_FEATURE_IDS} features."}
+        if len(ids) != len(set(ids)):
+            return {"feature_ids": "Feature IDs cannot contain duplicates."}
+        return {}
+
+    def save(self, *args, **kwargs) -> None:
+        if self._state.adding and self.display_order == 0 and self.scene_id:
+            max_order = GeoStorySceneLayer.objects.filter(scene_id=self.scene_id).aggregate(
                 models.Max("display_order")
             )["display_order__max"]
             if max_order is not None:
