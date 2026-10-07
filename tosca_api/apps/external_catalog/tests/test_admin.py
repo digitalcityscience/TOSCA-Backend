@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
 
-from tosca_api.apps.external_catalog.models import Category, CategoryItem, ExternalService
+from tosca_api.apps.external_catalog.models import Category, CategoryItem, ExternalService, ServiceSource
 from tosca_api.apps.organizations.models import (
     Organization,
     OrganizationAppEntitlement,
@@ -55,7 +57,8 @@ def _category(org, user, slug):
     return Category.objects.create(organization=org, slug=slug, title=slug.title(), created_by=user)
 
 
-def _category_post(items, **fields):
+def _category_post(keys=(), **fields):
+    """Category form data; ``keys`` is the picker's item list (item:/src: keys)."""
     data = {
         "title": "Shared mobility",
         "slug": "shared-mobility",
@@ -63,31 +66,21 @@ def _category_post(items, **fields):
         "display_order": "1",
         "visibility": "PUBLIC",
         "is_active": "on",
-        "items-TOTAL_FORMS": str(len(items)),
-        "items-INITIAL_FORMS": "0",
-        "items-MIN_NUM_FORMS": "0",
-        "items-MAX_NUM_FORMS": "1000",
+        "item_sources": json.dumps(list(keys)),
     }
     data.update(fields)
-    for index, item in enumerate(items):
-        defaults = {
-            "id": "",
-            "category": "",
-            "title": f"Item {index}",
-            "display_order": str(index),
-            "description": "",
-            "color": "#0288d1",
-            "min_zoom": "",
-            "ogc_dataset_id": "",
-            "ogc_collection_ids": "",
-            "default_properties": "",
-            "default_filter": "",
-            "sta_service_name": "",
-            "sta_layer_name": "",
-        }
-        defaults.update(item)
-        data.update({f"items-{index}-{key}": value for key, value in defaults.items()})
     return data
+
+
+def _source(service, dataset_id, source_id, **fields):
+    values = {
+        "title": source_id.replace("_", " ").title(),
+        "dataset_title": dataset_id.title(),
+        "description": f"About {source_id}",
+        "harvested_at": timezone.now(),
+    }
+    values.update(fields)
+    return ServiceSource.objects.create(service=service, dataset_id=dataset_id, source_id=source_id, **values)
 
 
 # ---------------------------------------------------------------------------
@@ -161,103 +154,27 @@ def test_service_add_derives_organization_and_creator():
     assert service.allow_full_load is False  # unchecked box in the form
 
 
-@pytest.mark.django_db
-def test_category_add_with_ogc_and_sensorthings_items():
-    client, user = _staff_client("writer-a", "org-a")
-    org = _org("org-a")
-    ogc = _service(org, user, "hamburg-ogc-api")
-    sta = _service(org, user, "hamburg-sta", service_type=ExternalService.ServiceType.SENSORTHINGS)
-
-    response = client.post(
-        reverse("admin:external_catalog_category_add"),
-        _category_post(
-            [
-                {
-                    "service": str(ogc.pk),
-                    "title": "StadtRAD stations",
-                    "ogc_dataset_id": "stadtrad",
-                    "ogc_collection_ids": '["stadtrad_stationen"]',
-                    "default_filter": '[{"property": "anzahl", "operator": "gt", "value": 0}]',
-                },
-                {
-                    "service": str(sta.pk),
-                    "title": "EV charging stations",
-                    "sta_service_name": "HH_STA_E-Ladestationen",
-                    "sta_layer_name": "Status_E-Ladepunkt",
-                },
-            ]
-        ),
-    )
-
-    assert response.status_code == 302, response.context and response.context.get("errors")
-    category = Category.objects.get(slug="shared-mobility")
-    assert category.organization == org
-    assert category.created_by == user
-    items = list(category.items.all())
-    assert [item.title for item in items] == ["StadtRAD stations", "EV charging stations"]
-    assert all(item.created_by == user for item in items)
-    assert items[0].default_properties == []
-    assert items[1].ogc_collection_ids == []
-
-
-@pytest.mark.django_db
-def test_item_validation_errors_are_form_errors_not_server_errors():
-    client, user = _staff_client("writer-a", "org-a")
-    ogc = _service(_org("org-a"), user, "hamburg-ogc-api")
-
-    response = client.post(
-        reverse("admin:external_catalog_category_add"),
-        _category_post(
-            [
-                {
-                    "service": str(ogc.pk),
-                    "ogc_collection_ids": "",
-                    "sta_service_name": "HH_STA_StadtRad",
-                }
-            ]
-        ),
-    )
-
-    assert response.status_code == 200
-    item_errors = response.context["inline_admin_formsets"][0].formset.errors[0]
-    assert {"ogc_collection_ids", "sta_service_name"} <= set(item_errors)
-    assert not Category.objects.exists()
-
-
-@pytest.mark.django_db
-def test_inline_service_choices_are_limited_to_own_organization():
-    client, user_a = _staff_client("writer-a", "org-a")
-    _, user_b = _staff_client("writer-b", "org-b")
-    own = _service(_org("org-a"), user_a, "own-service")
-    _service(_org("org-b"), user_b, "other-service")
-
-    response = client.get(reverse("admin:external_catalog_category_add"))
-
-    service_field = response.context["inline_admin_formsets"][0].formset.empty_form.fields["service"]
-    assert list(service_field.queryset) == [own]
-
-
 # ---------------------------------------------------------------------------
-# Item overview
+# Item overview / settings
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-def test_item_overview_is_read_only_and_scoped():
+def test_item_overview_is_scoped_and_items_cannot_be_added_there():
     client, user_a = _staff_client("writer-a", "org-a")
     _, user_b = _staff_client("writer-b", "org-b")
     own_item = CategoryItem.objects.create(
         category=_category(_org("org-a"), user_a, "a"),
         service=_service(_org("org-a"), user_a, "svc-a"),
         title="Own",
-        ogc_collection_ids=["c"],
+        ogc_collection_id="c",
         created_by=user_a,
     )
     CategoryItem.objects.create(
         category=_category(_org("org-b"), user_b, "b"),
         service=_service(_org("org-b"), user_b, "svc-b"),
         title="Other",
-        ogc_collection_ids=["c"],
+        ogc_collection_id="c",
         created_by=user_b,
     )
 
@@ -266,3 +183,37 @@ def test_item_overview_is_read_only_and_scoped():
 
     assert list(changelist.context["cl"].queryset) == [own_item]
     assert add.status_code == 403
+
+
+@pytest.mark.django_db
+def test_item_settings_are_editable_but_source_and_title_are_not():
+    client, user = _staff_client("writer-a", "org-a")
+    item = CategoryItem.objects.create(
+        category=_category(_org("org-a"), user, "a"),
+        service=_service(_org("org-a"), user, "svc-a"),
+        title="From the service",
+        ogc_collection_id="c",
+        created_by=user,
+    )
+
+    response = client.post(
+        reverse("admin:external_catalog_categoryitem_change", args=[item.pk]),
+        {
+            "color": "#10b981",
+            "min_zoom": "14",
+            "default_properties": '["name"]',
+            "default_filter": "",
+            "title": "Typed by hand",
+            "ogc_collection_id": "other",
+        },
+    )
+
+    assert response.status_code == 302, response.context["adminform"].form.errors
+    item.refresh_from_db()
+    assert (item.color, str(item.min_zoom), item.default_properties, item.default_filter) == (
+        "#10b981",
+        "14.0",
+        ["name"],
+        [],
+    )
+    assert (item.title, item.ogc_collection_id) == ("From the service", "c")

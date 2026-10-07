@@ -78,7 +78,7 @@ def ogc_item(category, service, user, **overrides) -> CategoryItem:
         "service": service,
         "title": "StadtRAD stations",
         "ogc_dataset_id": "stadtrad",
-        "ogc_collection_ids": ["stadtrad_stationen"],
+        "ogc_collection_id": "stadtrad_stationen",
         "created_by": user,
     }
     values.update(overrides)
@@ -192,7 +192,7 @@ def test_category_defaults_private_and_orders_by_display_order_then_title(org, u
 
 
 @pytest.mark.django_db
-def test_ogc_item_valid_with_merged_collections_defaults_and_filter(org, user):
+def test_ogc_item_valid_with_defaults_and_filter(org, user):
     service = make_service(org, user)
     category = make_category(org, user)
     item = ogc_item(
@@ -200,7 +200,7 @@ def test_ogc_item_valid_with_merged_collections_defaults_and_filter(org, user):
         service,
         user,
         ogc_dataset_id="priobike",
-        ogc_collection_ids=["ampelschaltung", "gruene_welle"],
+        ogc_collection_id="gruene_welle",
         default_properties=["name"],
         default_filter=[
             {"property": "breite", "operator": "gte", "value": 5},
@@ -216,10 +216,10 @@ def test_ogc_item_valid_with_merged_collections_defaults_and_filter(org, user):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("collection_ids", [[], ["a", "a"], [""], "a", [1]])
-def test_ogc_item_needs_unique_non_empty_collection_ids(org, user, collection_ids):
-    item = ogc_item(make_category(org, user), make_service(org, user), user, ogc_collection_ids=collection_ids)
-    assert "ogc_collection_ids" in error_fields(item)
+@pytest.mark.parametrize("collection_id", ["", "   "])
+def test_ogc_item_needs_a_collection(org, user, collection_id):
+    item = ogc_item(make_category(org, user), make_service(org, user), user, ogc_collection_id=collection_id)
+    assert "ogc_collection_id" in error_fields(item)
 
 
 @pytest.mark.django_db
@@ -298,11 +298,11 @@ def test_sensorthings_item_rejects_ogc_fields(org, user):
         make_sta_service(org, user),
         user,
         ogc_dataset_id="stadtrad",
-        ogc_collection_ids=["stadtrad_stationen"],
+        ogc_collection_id="stadtrad_stationen",
         default_properties=["name"],
         default_filter=[{"property": "a", "operator": "eq", "value": 1}],
     )
-    assert {"ogc_dataset_id", "ogc_collection_ids", "default_properties", "default_filter"} <= error_fields(item)
+    assert {"ogc_dataset_id", "ogc_collection_id", "default_properties", "default_filter"} <= error_fields(item)
 
 
 # ---------------------------------------------------------------------------

@@ -138,6 +138,14 @@ class ExternalService(TimeStampedModel):
         help_text="Optional upper bound of features per layer load. Empty = app default.",
     )
 
+    # Source index load ("Load catalog" in the admin, see harvest.py).
+    catalog_load_started_at = models.DateTimeField(null=True, blank=True, editable=False)
+    catalog_loaded_at = models.DateTimeField(null=True, blank=True, editable=False)
+    catalog_load_error = models.TextField(blank=True, editable=False)
+    catalog_load_note = models.TextField(
+        blank=True, editable=False, help_text="Problems of the last load that did not stop it."
+    )
+
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
     class Meta:
@@ -211,13 +219,15 @@ class Category(TimeStampedModel):
 
 
 class CategoryItem(TimeStampedModel):
-    """One map layer of a category: OGC collection(s) or a SensorThings layer.
+    """One map layer of a category: one OGC collection or one SensorThings layer.
 
     Which source fields apply is decided by ``service.service_type``:
 
-    * OGC API Features: ``ogc_collection_ids`` (one or several collections
-      rendered as one merged layer), optional ``ogc_dataset_id`` (the API id
-      inside a multi-API catalog), ``default_properties``, ``default_filter``.
+    * OGC API Features: ``ogc_collection_id``, optional ``ogc_dataset_id``
+      (the API id inside a multi-API catalog), ``default_properties``,
+      ``default_filter``. Collections are never merged into one layer
+      (points and polygons cannot share one); related collections are
+      separate items.
     * SensorThings: ``sta_service_name`` and ``sta_layer_name``, matched
       against ``Datastream.properties.serviceName`` / ``layerName``.
     """
@@ -232,8 +242,13 @@ class CategoryItem(TimeStampedModel):
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="items")
     service = models.ForeignKey(ExternalService, on_delete=models.PROTECT, related_name="items")
     display_order = models.PositiveIntegerField(default=0, help_text="Lower values are listed first.")
+    # Copied from the source index (ServiceSource) when the item is added and
+    # refreshed by "Update catalog"; not typed by admins.
     title = models.CharField(max_length=200)
     description = models.TextField(blank=True)
+    dataset_title = models.CharField(
+        max_length=500, blank=True, help_text="OGC dataset title or SensorThings serviceName."
+    )
 
     # OGC API Features
     ogc_dataset_id = models.CharField(
@@ -241,10 +256,10 @@ class CategoryItem(TimeStampedModel):
         blank=True,
         help_text="OGC API only: dataset (API) id inside a multi-API catalog; empty for a single landing page.",
     )
-    ogc_collection_ids = models.JSONField(
-        default=list,
+    ogc_collection_id = models.CharField(
+        max_length=200,
         blank=True,
-        help_text="OGC API only: collection ids; several ids are rendered as one merged layer.",
+        help_text="OGC API only: the collection shown by this item.",
     )
     default_properties = models.JSONField(
         default=list,
@@ -342,8 +357,8 @@ class CategoryItem(TimeStampedModel):
 
     def _ogc_errors(self) -> dict[str, str]:
         errors: dict[str, str] = {}
-        if not _is_unique_string_list(self.ogc_collection_ids) or not self.ogc_collection_ids:
-            errors["ogc_collection_ids"] = "List at least one collection id; ids must be unique, non-empty strings."
+        if not self.ogc_collection_id.strip():
+            errors["ogc_collection_id"] = "Required for OGC API items."
         if not _is_unique_string_list(self.default_properties):
             errors["default_properties"] = "Use a list of unique, non-empty attribute names."
         filter_error = _default_filter_error(self.default_filter)
@@ -364,7 +379,7 @@ class CategoryItem(TimeStampedModel):
         if not self.sta_layer_name.strip():
             errors["sta_layer_name"] = "Required for SensorThings items."
         message = "Only OGC API items use this field."
-        for field in ("ogc_dataset_id", "ogc_collection_ids", "default_properties", "default_filter"):
+        for field in ("ogc_dataset_id", "ogc_collection_id", "default_properties", "default_filter"):
             if getattr(self, field):
                 errors[field] = message
         return errors
@@ -397,3 +412,39 @@ def _default_filter_error(value) -> str | None:
         if not isinstance(condition["value"], str | int | float | bool) or condition["value"] == "":
             return f"Condition {index}: value must be a non-empty string, number or boolean."
     return None
+
+
+class ServiceSource(models.Model):
+    """Local index of everything a service offers for category items.
+
+    One row per OGC collection (``dataset_id``/``source_id`` = dataset and
+    collection id) or SensorThings layer (``dataset_id``/``source_id`` =
+    ``serviceName``/``layerName``). Filled by "Load catalog" (:mod:`.harvest`)
+    so composing a category never waits for the remote service. Only an
+    admin aid: the catalog API reads the copies stored on ``CategoryItem``.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    service = models.ForeignKey(ExternalService, on_delete=models.CASCADE, related_name="sources")
+    dataset_id = models.CharField(max_length=200, blank=True)
+    dataset_title = models.CharField(max_length=500, blank=True)
+    source_id = models.CharField(max_length=200)
+    title = models.CharField(max_length=500)
+    description = models.TextField(blank=True)
+    item_type = models.CharField(max_length=50, blank=True)
+    geojson = models.BooleanField(default=True, help_text="OGC: offers GeoJSON items (can be shown on the map).")
+    count = models.PositiveIntegerField(null=True, blank=True, help_text="Features (OGC) or datastreams (STA).")
+    themes = models.JSONField(default=list, blank=True, help_text="EU data theme codes, e.g. TRAN.")
+    harvested_at = models.DateTimeField()
+
+    class Meta:
+        verbose_name = "Indexed source"
+        ordering = ["dataset_title", "title", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["service", "dataset_id", "source_id"], name="external_catalog_unique_service_source"
+            )
+        ]
+
+    def __str__(self) -> str:
+        return self.title

@@ -1,0 +1,7 @@
+{% extends "admin/change_list.html" %}
+{% block object-tools-items %}
+  {% if has_add_permission %}
+    <li><a href="{% url 'admin:external_catalog_category_from_theme' %}" class="addlink">New category from theme</a></li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

@@ -1,0 +1,5 @@
+<div class="category-picker" data-category-picker>
+  <input type="hidden" name="{{ widget.name }}" value="{{ widget.value }}" data-category-picker-value>
+  {{ picker_config|json_script:"category-picker-config" }}
+  <noscript>The item picker needs JavaScript.</noscript>
+</div>

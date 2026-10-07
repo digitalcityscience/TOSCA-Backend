@@ -1,0 +1,39 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; <a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+  &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <p>Creates a <strong>private, inactive</strong> category named after the theme, holding every
+  collection of the theme's datasets that can be shown on the map. Review and prune it in the
+  category's item picker, then activate it.</p>
+  {% if choices %}
+    <form method="post">{% csrf_token %}
+      <fieldset class="module aligned">
+        <div class="form-row">
+          <label for="id_choice" class="required">Service and theme:</label>
+          <select name="choice" id="id_choice" required>
+            <option value="">---------</option>
+            {% for choice in choices %}<option value="{{ choice.value }}">{{ choice.label }}</option>{% endfor %}
+          </select>
+        </div>
+      </fieldset>
+      <div class="submit-row"><input type="submit" class="default" value="Create category"></div>
+    </form>
+  {% else %}
+    <p>No themes available yet: load an OGC API service's catalog first.</p>
+  {% endif %}
+  {% if services_without_catalog %}
+    <p class="help">Catalog not loaded yet (use "Load catalog" in the service list):
+      {{ services_without_catalog|join:", " }}.</p>
+  {% endif %}
+</div>
+{% endblock %}
