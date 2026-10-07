@@ -149,6 +149,7 @@ def test_scene_layer_pins_default_style_and_orders(scene, vector_layer, raster_l
     ras = GeoStorySceneLayer.objects.create(scene=scene, layer=raster_layer)
 
     assert vec.style_assignment.layer_id == vector_layer.id
+    assert (vec.uses_vector_tiles, ras.uses_vector_tiles) == (True, False)
     assert vec.effective_style_layer_ids == ["parks-fill", "parks-line"]
     assert (vec.display_order, ras.display_order) == (0, 1)
     assert list(scene.scene_layers.all()) == [vec, ras]
@@ -215,14 +216,43 @@ def test_scene_layer_accepts_alternate_style(scene, vector_layer, user):
 
 
 @pytest.mark.django_db
-def test_vector_layer_rejects_sld_style(scene, user):
+def test_vector_layer_accepts_sld_style_rendered_by_geoserver(scene, user):
+    layer = make_layer("vec:roads", user=user)
+    assign_style(layer, user, fmt=Style.StyleFormat.SLD, name="roads-sld")
+
+    scene_layer = GeoStorySceneLayer.objects.create(scene=scene, layer=layer)
+
+    assert scene_layer.uses_vector_tiles is False
+
+
+@pytest.mark.django_db
+def test_vector_layer_with_sld_rejects_render_layer_ids(scene, user):
     layer = make_layer("vec:roads", user=user)
     assign_style(layer, user, fmt=Style.StyleFormat.SLD, name="roads-sld")
 
     with pytest.raises(ValidationError) as exc:
-        GeoStorySceneLayer.objects.create(scene=scene, layer=layer)
+        GeoStorySceneLayer.objects.create(scene=scene, layer=layer, render_layer_ids=["x"])
 
-    assert "MBSTYLE" in exc.value.message_dict["style_assignment"][0]
+    assert "render_layer_ids" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_raster_layer_rejects_mbstyle_style(scene, raster_layer, user):
+    mbstyle = assign_style(
+        raster_layer,
+        user,
+        fmt=Style.StyleFormat.MBSTYLE,
+        name="ortho-mbstyle",
+        style_layer_ids=["parks-fill"],
+        role=LayerStyleAssignment.Role.ALTERNATE,
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        GeoStorySceneLayer.objects.create(
+            scene=scene, layer=raster_layer, style_assignment=mbstyle
+        )
+
+    assert "SLD" in exc.value.message_dict["style_assignment"][0]
 
 
 @pytest.mark.django_db
@@ -294,6 +324,23 @@ def test_raster_layer_rejects_feature_selection(scene, raster_layer):
         )
 
     assert "feature_mode" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_sld_vector_layer_rejects_feature_selection(scene, user):
+    layer = make_layer("vec:roads", user=user)
+    assign_style(layer, user, fmt=Style.StyleFormat.SLD, name="roads-sld")
+
+    with pytest.raises(ValidationError) as exc:
+        GeoStorySceneLayer.objects.create(
+            scene=scene,
+            layer=layer,
+            feature_mode=GeoStorySceneLayer.FeatureMode.ONLY,
+            feature_id_attribute="id",
+            feature_ids=[1],
+        )
+
+    assert "MBStyle" in exc.value.message_dict["feature_mode"][0]
 
 
 @pytest.mark.django_db

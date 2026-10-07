@@ -1,9 +1,13 @@
-from copy import deepcopy
-from urllib.parse import urlencode
-
 from django.urls import reverse
 
 from tosca_api.apps.geodata_providers.models import Store
+
+from .render_manifest import (
+    build_render_layers,
+    build_source,
+    build_sprite_entry,
+    build_style_entry,
+)
 
 
 class LayerGroupV1Builder:
@@ -161,26 +165,10 @@ class LayerGroupV1Builder:
         styles: dict[str, dict] = {}
         for member in members:
             style = member.style_assignment.style
-            style_id = str(style.id)
-            if style_id in styles:
-                continue
-            styles[style_id] = {
-                "id": style_id,
-                "name": style.name,
-                "title": style.title or style.name,
-                "format": style.format,
-                "content_hash": style.content_hash,
-                "sprite_id": None if style.sprite_asset_id is None else str(style.sprite_asset_id),
-                "href": request.build_absolute_uri(
-                    reverse(
-                        "catalog-v1-provider-style-detail",
-                        kwargs={
-                            "provider_id": provider_id,
-                            "style_ref": style.id,
-                        },
-                    )
-                ),
-            }
+            if str(style.id) not in styles:
+                styles[str(style.id)] = build_style_entry(
+                    request=request, style=style, provider_id=provider_id
+                )
         return styles
 
     @classmethod
@@ -188,59 +176,30 @@ class LayerGroupV1Builder:
         sprites: dict[str, dict] = {}
         for member in members:
             sprite_asset = member.style_assignment.style.sprite_asset
-            sprite_id = None if sprite_asset is None else str(sprite_asset.id)
-            if sprite_id is None or sprite_id in sprites:
+            if sprite_asset is None or str(sprite_asset.id) in sprites:
                 continue
-            sprites[sprite_id] = {
-                "id": sprite_id,
-                "url": request.build_absolute_uri(
-                    reverse(
-                        "catalog-v1-provider-sprite-versioned-stem",
-                        kwargs={
-                            "provider_id": provider_id,
-                            "sprite_id": sprite_id,
-                            "content_hash": sprite_asset.content_hash,
-                        },
-                    )
-                ),
-                "content_hash": sprite_asset.content_hash,
-            }
+            sprites[str(sprite_asset.id)] = build_sprite_entry(
+                request=request, sprite_asset=sprite_asset, provider_id=provider_id
+            )
         return sprites
 
     @classmethod
     def _build_render_layers(cls, *, members, source_keys) -> list[dict]:
         render_layers: list[dict] = []
         for member in members:
-            assignment = member.style_assignment
-            if member.layer.store.store_type == Store.StoreType.GEOTIFF:
-                render_layers.append(
-                    {
-                        "id": f"member-{member.id}",
-                        "type": "raster",
-                        "source": source_keys[member.id],
-                        "metadata": {
-                            "tosca:member-id": str(member.id),
-                            "tosca:style-id": str(assignment.style_id),
-                        },
-                    }
-                )
-                continue
-            for style_layer in assignment.selected_mbstyle_layers(
-                member.effective_style_layer_ids
-            ):
-                render_layer = deepcopy(style_layer)
-                render_layer["source"] = source_keys[member.id]
-                render_layer["source-layer"] = member.layer.name
-                metadata = render_layer.get("metadata")
-                metadata = dict(metadata) if isinstance(metadata, dict) else {}
-                metadata.update(
-                    {
+            render_layers.extend(
+                build_render_layers(
+                    layer=member.layer,
+                    style_assignment=member.style_assignment,
+                    style_layer_ids=member.effective_style_layer_ids,
+                    source_key=source_keys[member.id],
+                    raster_id=f"member-{member.id}",
+                    metadata={
                         "tosca:member-id": str(member.id),
-                        "tosca:style-id": str(assignment.style_id),
-                    }
+                        "tosca:style-id": str(member.style_assignment.style_id),
+                    },
                 )
-                render_layer["metadata"] = metadata
-                render_layers.append(render_layer)
+            )
         return render_layers
 
     @staticmethod
@@ -260,48 +219,4 @@ class LayerGroupV1Builder:
 
     @staticmethod
     def _build_source(*, group, member) -> dict:
-        base_url = group.workspace.geodata_engine.public_url.rstrip("/")
-        workspace = group.workspace.name
-        layer_name = member.layer.name
-        if member.layer.store.store_type != Store.StoreType.GEOTIFF:
-            params = urlencode(
-                {
-                    "REQUEST": "GetTile",
-                    "SERVICE": "WMTS",
-                    "VERSION": "1.0.0",
-                    "LAYER": f"{workspace}:{layer_name}",
-                    "STYLE": "",
-                    "TILEMATRIX": "EPSG:900913:{z}",
-                    "TILEMATRIXSET": "EPSG:900913",
-                    "TILECOL": "{x}",
-                    "TILEROW": "{y}",
-                    "FORMAT": "application/vnd.mapbox-vector-tile",
-                }
-            )
-            for token in ("z", "x", "y"):
-                params = params.replace(f"%7B{token}%7D", f"{{{token}}}")
-            return {
-                "type": "vector",
-                "tiles": [f"{base_url}/gwc/service/wmts?{params}"],
-            }
-
-        params = urlencode(
-            {
-                "REQUEST": "GetMap",
-                "SERVICE": "WMS",
-                "VERSION": "1.3.0",
-                "LAYERS": f"{workspace}:{layer_name}",
-                "STYLES": member.style_assignment.style.name,
-                "CRS": "EPSG:3857",
-                "WIDTH": "256",
-                "HEIGHT": "256",
-                "transparent": "true",
-                "format": "image/png",
-                "TILED": "true",
-            }
-        )
-        return {
-            "type": "raster",
-            "tiles": [f"{base_url}/wms?{params}&BBOX={{bbox-epsg-3857}}"],
-            "tileSize": 256,
-        }
+        return build_source(layer=member.layer, style_assignment=member.style_assignment)

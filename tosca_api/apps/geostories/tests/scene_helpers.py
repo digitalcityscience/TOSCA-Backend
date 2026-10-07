@@ -2,7 +2,7 @@
 
 import json
 
-from tosca_api.apps.geodata_providers.models import LayerStyleAssignment, Store, Style
+from tosca_api.apps.geodata_providers.models import Layer, LayerStyleAssignment, Store, Style
 from tosca_api.apps.geodata_providers.test_helpers import make_layer
 
 MBSTYLE = json.dumps(
@@ -52,9 +52,16 @@ def make_vector_layer(layer_name, *, user, **kwargs):
 def make_raster_layer(layer_name, *, user, **kwargs):
     """A WMS GeoTIFF layer with an SLD default style."""
     layer = make_layer(layer_name, user=user, **kwargs)
-    Store.objects.filter(pk=layer.store_id).update(
-        store_type=Store.StoreType.GEOTIFF, file_path=f"/data/{layer.name}.tif"
+    # make_layer shares one PostGIS store per workspace; give the raster its
+    # own GeoTIFF store so sibling vector layers stay vector.
+    store = Store.objects.create(
+        workspace=layer.workspace,
+        name=f"{layer.name}_coverage",
+        store_type=Store.StoreType.GEOTIFF,
+        file_path=f"/data/{layer.name}.tif",
+        created_by=layer.created_by,
     )
+    Layer.objects.filter(pk=layer.pk).update(store=store)
     layer.refresh_from_db()
     assign_style(layer, user, fmt=Style.StyleFormat.SLD, name=f"{layer.name}-style")
     return layer

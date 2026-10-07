@@ -125,7 +125,10 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
                 Prefetch(
                     "scenes__scene_layers",
                     queryset=GeoStorySceneLayer.objects.select_related(
-                        "layer__workspace", "style_assignment__style__workspace"
+                        "layer__store",
+                        "layer__workspace__geodata_engine",
+                        "style_assignment__style__workspace",
+                        "style_assignment__style__sprite_asset",
                     ),
                 )
             )
