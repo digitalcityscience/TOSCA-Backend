@@ -98,3 +98,21 @@
     order: -1;
   }
 }
+
+.scene-editor__features {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--hairline-color);
+}
+
+.scene-editor__features[hidden] {
+  display: none;
+}
+
+.scene-editor__feature-count {
+  font-size: 12px;
+  color: var(--body-quiet-color);
+}

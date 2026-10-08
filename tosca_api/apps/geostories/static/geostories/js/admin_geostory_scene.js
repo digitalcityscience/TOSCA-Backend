@@ -5,9 +5,12 @@ window.addEventListener('load', function () {
         if (!$) return;
 
         var prefix = 'scene_layers';
+        // Match rows by the inline's own markup: Django adds its dynamic-<prefix>
+        // class during its own setup, which may run after this script.
+        var rowSelector = '#' + prefix + '-group .inline-related:not(.empty-form)';
 
         function visibleRows() {
-            return $('.dynamic-' + prefix).filter(function () {
+            return $(rowSelector).filter(function () {
                 var deleteInput = $(this).find('input[name$="-DELETE"]');
                 return !deleteInput.prop('checked') && $(this).is(':visible');
             });
@@ -56,25 +59,35 @@ window.addEventListener('load', function () {
             }
         }
 
+        function serverLayerId($row) {
+            // The layer the server rendered as selected, independent of when
+            // this script runs relative to Django's own inline/autocomplete setup.
+            var option = $row.find('select[name$="-layer"] option').filter(function () {
+                return this.defaultSelected;
+            }).first();
+            return String(option.val() || '');
+        }
+
         function initializeRow($row, chooseDefault) {
             var layerId = String($row.find('select[name$="-layer"]').val() || '');
-            var previousLayerId = String($row.data('initialized-layer-id') || '');
-            // Autocomplete fires both change and select2:select; only the first
-            // event for a new layer may reset the style to the layer default.
-            filterAssignments($row, chooseDefault && layerId !== previousLayerId);
+            var previousLayerId = $row.data('initialized-layer-id');
+            if (previousLayerId === undefined) previousLayerId = serverLayerId($row);
+            // Autocomplete fires both change and select2:select; only a genuine
+            // switch to another layer may reset the style to the layer default.
+            filterAssignments($row, chooseDefault && layerId !== String(previousLayerId));
             $row.data('initialized-layer-id', layerId);
         }
 
-        $('.dynamic-' + prefix).each(function () {
+        $(rowSelector).each(function () {
             initializeRow($(this), false);
         });
 
-        $(document).on('change', '.dynamic-' + prefix + ' select[name$="-layer"]', function () {
-            initializeRow($(this).closest('.dynamic-' + prefix), true);
+        $(document).on('change', rowSelector + ' select[name$="-layer"]', function () {
+            initializeRow($(this).closest(rowSelector), true);
         });
 
-        $(document).on('select2:select', '.dynamic-' + prefix + ' select[name$="-layer"]', function () {
-            var $row = $(this).closest('.dynamic-' + prefix);
+        $(document).on('select2:select', rowSelector + ' select[name$="-layer"]', function () {
+            var $row = $(this).closest(rowSelector);
             window.setTimeout(function () {
                 initializeRow($row, true);
             }, 0);
@@ -99,6 +112,6 @@ window.addEventListener('load', function () {
             if (formsetName(event) === prefix) updateOrders();
         });
 
-        $(document).on('change', '.dynamic-' + prefix + ' input[name$="-DELETE"]', updateOrders);
+        $(document).on('change', rowSelector + ' input[name$="-DELETE"]', updateOrders);
     })(django.jQuery);
 });

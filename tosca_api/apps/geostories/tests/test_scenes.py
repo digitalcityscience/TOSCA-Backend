@@ -412,3 +412,31 @@ def test_deleting_layer_removes_it_from_scenes(scene, vector_layer):
     vector_layer.delete()
 
     assert not scene.scene_layers.exists()
+
+
+@pytest.mark.django_db
+def test_feature_attribute_must_be_a_known_layer_attribute(scene, vector_layer):
+    from tosca_api.apps.geodata_providers.models import Layer
+
+    Layer.objects.filter(pk=vector_layer.pk).update(
+        attributes=[{"name": "name", "type": "String"}, {"name": "objectid", "type": "Long"}]
+    )
+    vector_layer.refresh_from_db()
+
+    with pytest.raises(ValidationError) as exc:
+        GeoStorySceneLayer.objects.create(
+            scene=scene,
+            layer=vector_layer,
+            feature_mode=GeoStorySceneLayer.FeatureMode.ONLY,
+            feature_id_attribute="missing",
+            feature_ids=[1],
+        )
+
+    assert "not an attribute of this layer" in exc.value.message_dict["feature_id_attribute"][0]
+    GeoStorySceneLayer.objects.create(
+        scene=scene,
+        layer=vector_layer,
+        feature_mode=GeoStorySceneLayer.FeatureMode.ONLY,
+        feature_id_attribute="objectid",
+        feature_ids=[1],
+    )

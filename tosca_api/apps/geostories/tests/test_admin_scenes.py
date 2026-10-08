@@ -333,3 +333,108 @@ def test_preview_requires_staff():
     response = _preview(client)
 
     assert response.status_code == 302  # admin login redirect
+
+
+# --- Feature picking -----------------------------------------------------------
+
+ATTRIBUTES = [{"name": "objectid", "type": "Long"}, {"name": "name", "type": "String"}]
+
+
+@pytest.mark.django_db
+def test_attribute_dropdown_lists_layer_attributes(client, story, layer):
+    from tosca_api.apps.geodata_providers.models import Layer
+
+    Layer.objects.filter(pk=layer.pk).update(attributes=ATTRIBUTES)
+    scene = GeoStoryScene.objects.create(geostory=story, title="Parks")
+    GeoStorySceneLayer.objects.create(
+        scene=scene,
+        layer=layer,
+        feature_mode="highlight",
+        feature_id_attribute="name",
+        feature_ids=["Stadtpark"],
+    )
+    # The saved attribute stays selectable after GeoServer stops reporting it.
+    Layer.objects.filter(pk=layer.pk).update(attributes=ATTRIBUTES[:1])
+
+    response = client.get(reverse("admin:geostories_geostoryscene_change", args=[scene.pk]))
+
+    form = response.context["inline_admin_formsets"][0].formset.forms[0]
+    choices = form.fields["feature_id_attribute"].widget.choices
+    assert choices == [
+        ("", "— choose an attribute —"),
+        ("objectid", "objectid (Long)"),
+        ("name", "name"),
+    ]
+    assert form["feature_id_attribute"].value() == "name"
+
+
+@pytest.mark.django_db
+def test_scene_saves_picked_features(client, story, layer):
+    from tosca_api.apps.geodata_providers.models import Layer
+
+    Layer.objects.filter(pk=layer.pk).update(attributes=ATTRIBUTES)
+    row = {
+        "layer": str(layer.pk),
+        "feature_mode": "only",
+        "feature_id_attribute": "objectid",
+        "feature_ids": "[12, 40]",
+    }
+
+    response = client.post(ADD_URL, _scene_post(story, row))
+
+    assert response.status_code == 302
+    scene_layer = GeoStorySceneLayer.objects.get(scene__geostory=story)
+    assert (scene_layer.feature_mode, scene_layer.feature_id_attribute, scene_layer.feature_ids) == (
+        "only", "objectid", [12, 40],
+    )
+
+
+@pytest.mark.django_db
+def test_rejected_new_row_keeps_submitted_attribute(client, story, layer):
+    row = {"layer": str(layer.pk), "feature_mode": "only", "feature_id_attribute": "objectid"}
+
+    response = client.post(ADD_URL, _scene_post(story, row))
+
+    assert response.status_code == 200  # no feature ids picked yet
+    form = response.context["inline_admin_formsets"][0].formset.forms[0]
+    assert ("objectid", "objectid") in form.fields["feature_id_attribute"].widget.choices
+    assert form["feature_id_attribute"].value() == "objectid"
+
+
+@pytest.mark.django_db
+def test_preview_reports_row_hints_for_picking(client, superuser):
+    from tosca_api.apps.geodata_providers.models import Layer, Style
+    from tosca_api.apps.geodata_providers.test_helpers import make_layer
+    from tosca_api.apps.geostories.tests.scene_helpers import assign_style, make_raster_layer
+
+    parks = make_vector_layer("ws:hint_parks", user=superuser)
+    Layer.objects.filter(pk=parks.pk).update(attributes=ATTRIBUTES)
+    roads = make_layer("ws:hint_roads", user=superuser)
+    assign_style(roads, superuser, fmt=Style.StyleFormat.SLD, name="roads-sld")
+    ortho = make_raster_layer("ras:hint_ortho", user=superuser)
+
+    data = _preview(
+        client,
+        {
+            "layer": str(parks.pk),
+            "feature_mode": "highlight",
+            "feature_id_attribute": "name",
+            "feature_ids": ["A"],
+        },
+        {"layer": str(roads.pk)},
+        {"layer": str(ortho.pk)},
+        {"layer": str(parks.pk), "feature_mode": "only"},  # invalid: no attribute yet
+    ).json()
+
+    rows = data["rows"]
+    assert rows["0"]["attributes"] == ATTRIBUTES
+    assert [rows[i]["feature_selectable"] for i in "0123"] == [True, False, False, True]
+    picked_layer_ids = rows["0"]["map_layer_ids"]
+    assert [layer_id.rsplit("/", 1)[-1] for layer_id in picked_layer_ids] == ["parks-fill", "parks-line"]
+    highlight_ids = {
+        layer["id"] for layer in data["render_layers"]
+        if layer["metadata"].get("tosca:role") == "highlight"
+    }
+    assert highlight_ids and not highlight_ids & set(picked_layer_ids)
+    assert len(rows["1"]["map_layer_ids"]) == 1  # one WMS image layer
+    assert "3" in data["errors"] and rows["3"]["map_layer_ids"] == []
