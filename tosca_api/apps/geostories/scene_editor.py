@@ -60,6 +60,9 @@ def build_preview(request, rows) -> dict:
     ``rows`` mirror the scene layer inline: ``layer`` and ``style_assignment``
     ids plus the editable fields. Rows without a layer are ignored (empty
     inline forms); invalid rows are reported under ``errors`` by row index.
+    ``rows`` in the result carries per-row editor hints: the layer's
+    attributes, whether features can be picked, and the map layer ids drawn
+    for the row (what a map click is matched against).
     """
     layer_ids = {_uuid(row.get("layer")) for row in rows} - {None}
     assignment_ids = {_uuid(row.get("style_assignment")) for row in rows} - {None}
@@ -70,6 +73,7 @@ def build_preview(request, rows) -> dict:
 
     scene_layers = []
     errors: dict[str, dict] = {}
+    row_info: dict[str, dict] = {}
     for index, row in enumerate(rows):
         if not row.get("layer"):
             continue
@@ -87,17 +91,33 @@ def build_preview(request, rows) -> dict:
             scene_layer.clean()
         except ValidationError as exc:
             errors[str(index)] = exc.message_dict
-            continue
-        scene_layers.append((scene_layer.display_order, index, scene_layer))
+        else:
+            scene_layers.append((scene_layer.display_order, index, scene_layer))
+        # Reported for invalid rows too, so authors can still pick an attribute
+        # (clean() has resolved the default style by now).
+        row_info[str(index)] = {
+            "attributes": layer.attributes or [],
+            "feature_selectable": scene_layer.uses_vector_tiles,
+            "map_layer_ids": [],
+        }
 
-    renderable = [item for _, _, item in sorted(scene_layers, key=lambda entry: entry[:2])]
-    renderable = [item for item in renderable if item.style_assignment_id]
+    ordered = sorted(scene_layers, key=lambda entry: entry[:2])
+    renderable = [item for _, _, item in ordered if item.style_assignment_id]
+    render_layers = build_render_layers_for(renderable)
+    for _, index, scene_layer in ordered:
+        row_info[str(index)]["map_layer_ids"] = [
+            render_layer["id"]
+            for render_layer in render_layers
+            if render_layer["metadata"].get("tosca:scene-layer-id") == str(scene_layer.id)
+            and render_layer["metadata"].get("tosca:role") != "highlight"
+        ]
     return {
         "map": build_map(request=request, scene_layers=renderable),
-        "render_layers": build_render_layers_for(renderable),
+        "render_layers": render_layers,
         "legend": build_legend_for(renderable),
         "bounds": scene_bounds(renderable),
         "errors": errors,
+        "rows": row_info,
     }
 
 

@@ -645,6 +645,15 @@ class GeoStorySceneLayer(TimeStampedModel):
             }
         if not self.feature_id_attribute.strip():
             return {"feature_id_attribute": "Choose the attribute that identifies features."}
+        # Layers synced before attributes were stored report none; accept any
+        # name for those rather than blocking authors.
+        known = {item.get("name") for item in self.layer.attributes or [] if isinstance(item, dict)}
+        if known and self.feature_id_attribute not in known:
+            return {
+                "feature_id_attribute": (
+                    f"“{self.feature_id_attribute}” is not an attribute of this layer."
+                )
+            }
         if not ids:
             return {"feature_ids": "Select at least one feature."}
         if len(ids) > MAX_SCENE_FEATURE_IDS:

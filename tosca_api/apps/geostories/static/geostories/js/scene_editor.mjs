@@ -1,6 +1,7 @@
-/* GeoStory scene editor: live MapLibre preview of the scene layer inline and
- * "Capture view" into the camera fields. The preview endpoint renders unsaved
- * rows with the same manifest builder the public story API uses. */
+/* GeoStory scene editor: live MapLibre preview of the scene layer inline,
+ * "Capture view" into the camera fields, and picking features on the map for
+ * vector-tile layers. The preview endpoint renders unsaved rows with the same
+ * manifest builder the public story API uses. */
 import { Map as MapLibreMap, NavigationControl } from '../vendor/maplibre-gl/maplibre-gl.mjs';
 
 const PREFIX = 'scene_layers';
@@ -39,6 +40,11 @@ let previewSprite = null;
 let layerBounds = null;
 let refreshTimer = null;
 let requestCounter = 0;
+const rowInfo = new WeakMap(); // inline row element -> preview hints for it
+let pickingRow = null;
+// Inline widgets fire change events while the page initialises; sources can
+// only be added once the map style has loaded, so earlier refreshes wait.
+let mapReady = false;
 
 // --- Camera -------------------------------------------------------------------
 
@@ -133,7 +139,10 @@ function updateReadout() {
 // --- Preview ------------------------------------------------------------------
 
 function inlineRows() {
-    return Array.from(document.querySelectorAll(`.dynamic-${PREFIX}`)).filter(
+    // Rows by inline markup, not Django's runtime dynamic-<prefix> class.
+    return Array.from(
+        document.querySelectorAll(`#${PREFIX}-group .inline-related:not(.empty-form)`),
+    ).filter(
         (row) => !row.querySelector('input[name$="-DELETE"]')?.checked,
     );
 }
@@ -150,19 +159,27 @@ function parseJsonField(row, suffix) {
 
 function rowPayload(row) {
     const value = (suffix) => row.querySelector(`[name$="-${suffix}"]`)?.value ?? '';
+    let featureMode = value('feature_mode') || 'all';
+    // While picking, unselected features must stay visible to be clickable.
+    if (row === pickingRow && featureMode === 'only') featureMode = 'highlight';
+    // A selection mode with nothing picked yet is invalid and would drop the
+    // layer from the preview, leaving nothing to click. Preview it as "all";
+    // saving still reports the missing selection.
+    if (featureMode !== 'all' && featureIds(row).length === 0) featureMode = 'all';
     return {
         layer: value('layer'),
         style_assignment: value('style_assignment'),
         render_layer_ids: parseJsonField(row, 'render_layer_ids'),
         display_order: value('display_order') || 0,
         opacity: value('opacity') || 1,
-        feature_mode: value('feature_mode') || 'all',
+        feature_mode: featureMode,
         feature_id_attribute: value('feature_id_attribute'),
         feature_ids: parseJsonField(row, 'feature_ids'),
     };
 }
 
 function scheduleRefresh() {
+    if (!mapReady) return; // the initial refresh on map load covers it
     window.clearTimeout(refreshTimer);
     refreshTimer = window.setTimeout(refreshPreview, REFRESH_DELAY_MS);
 }
@@ -190,8 +207,15 @@ async function refreshPreview({ initial = false } = {}) {
     if (requestId !== requestCounter) return; // a newer refresh is on its way
 
     layerBounds = data.bounds;
-    const failures = applyManifest(data);
+    let failures;
+    try {
+        failures = applyManifest(data);
+    } catch (error) {
+        showStatus(`Preview could not be drawn: ${error.message}`, 'error');
+        return;
+    }
     markRowErrors(rows, data.errors);
+    updateFeatureControls(rows, data.rows || {});
     renderLegend(data.legend);
 
     const invalid = Object.keys(data.errors).length;
@@ -279,9 +303,196 @@ function renderLegend(entries) {
     legend.hidden = entries.length === 0;
 }
 
-function showStatus(message, kind) {
+let stickyStatusUntil = 0;
+
+function showStatus(message, kind, { sticky = false } = {}) {
+    // Routine preview messages must not wipe a pick result or warning the
+    // author has not had time to read.
+    if (!sticky && Date.now() < stickyStatusUntil) return;
+    stickyStatusUntil = sticky ? Date.now() + 6000 : 0;
     status.textContent = message;
     status.dataset.kind = kind;
+}
+
+
+// --- Feature picking --------------------------------------------------------------
+
+const rowInput = (row, suffix) => row.querySelector(`[name$="-${suffix}"]`);
+
+function featureIds(row) {
+    try {
+        const value = JSON.parse(rowInput(row, 'feature_ids').value || '[]');
+        return Array.isArray(value) ? value : [];
+    } catch {
+        return [];
+    }
+}
+
+function setFeatureIds(row, ids) {
+    rowInput(row, 'feature_ids').value = JSON.stringify(ids);
+    updateFeatureToolbar(row);
+    scheduleRefresh();
+}
+
+function featureFormRows(row) {
+    return Array.from(row.querySelectorAll('.form-row')).filter((formRow) =>
+        formRow.querySelector('[name$="-feature_mode"], [name$="-feature_ids"]'),
+    );
+}
+
+function ensureFeatureToolbar(row) {
+    let toolbar = row.querySelector('.scene-editor__features');
+    if (toolbar) return toolbar;
+    toolbar = document.createElement('div');
+    toolbar.className = 'scene-editor__features';
+    toolbar.innerHTML =
+        '<button type="button" class="button" data-feature-action="pick">Pick features on map</button>' +
+        '<button type="button" class="button" data-feature-action="clear">Clear selection</button>' +
+        '<span class="scene-editor__feature-count" aria-live="polite"></span>';
+    const idsRow = featureFormRows(row).find((formRow) => formRow.querySelector('[name$="-feature_ids"]'));
+    (idsRow || row).after(toolbar);
+    toolbar.addEventListener('click', (event) => {
+        const action = event.target.closest('[data-feature-action]')?.dataset.featureAction;
+        if (action === 'pick') togglePicking(row);
+        if (action === 'clear') setFeatureIds(row, []);
+    });
+    return toolbar;
+}
+
+function updateFeatureToolbar(row) {
+    const toolbar = ensureFeatureToolbar(row);
+    const count = featureIds(row).length;
+    toolbar.querySelector('.scene-editor__feature-count').textContent =
+        count ? `${count} feature(s) selected` : 'No features selected';
+    toolbar.querySelector('[data-feature-action="pick"]').textContent =
+        row === pickingRow ? 'Done picking' : 'Pick features on map';
+    toolbar.querySelector('[data-feature-action="clear"]').disabled = count === 0;
+}
+
+function syncAttributeOptions(row, attributes) {
+    const select = rowInput(row, 'feature_id_attribute');
+    const layerId = rowInput(row, 'layer')?.value || '';
+    if (!select || select.dataset.attributesFor === layerId) return;
+    select.dataset.attributesFor = layerId;
+    const current = select.value;
+    const options = [new Option('— choose an attribute —', '')];
+    for (const attribute of attributes) {
+        const label = attribute.type ? `${attribute.name} (${attribute.type})` : attribute.name;
+        options.push(new Option(label, attribute.name));
+    }
+    if (current && !attributes.some((attribute) => attribute.name === current)) {
+        options.push(new Option(current, current)); // keep a saved value visible
+    }
+    select.replaceChildren(...options);
+    select.value = current;
+}
+
+function updateFeatureControls(rows, infoByIndex) {
+    if (pickingRow && !rows.includes(pickingRow)) stopPicking(); // row deleted mid-pick
+    rows.forEach((row, index) => {
+        const info = infoByIndex[String(index)];
+        if (!info) {
+            rowInfo.delete(row);
+            return;
+        }
+        rowInfo.set(row, info);
+        syncAttributeOptions(row, info.attributes);
+        // Hide controls that cannot apply, but never hide a selection that is
+        // still set (its validation error has to stay visible and fixable).
+        const inUse = rowInput(row, 'feature_mode')?.value !== 'all' || featureIds(row).length > 0;
+        const show = info.feature_selectable || inUse;
+        featureFormRows(row).forEach((formRow) => { formRow.hidden = !show; });
+        const toolbar = ensureFeatureToolbar(row);
+        toolbar.hidden = !info.feature_selectable;
+        updateFeatureToolbar(row);
+        if (row === pickingRow && !info.feature_selectable) stopPicking();
+    });
+}
+
+function togglePicking(row) {
+    if (pickingRow === row) {
+        stopPicking();
+        return;
+    }
+    const previous = pickingRow;
+    pickingRow = row;
+    if (previous) updateFeatureToolbar(previous);
+    updateFeatureToolbar(row);
+    map.getCanvas().style.cursor = 'crosshair';
+    const attribute = rowInput(row, 'feature_id_attribute')?.value;
+    showStatus(
+        attribute
+            ? `Click features to add or remove them (matched on “${attribute}”).`
+            : 'Choose the feature ID attribute for this layer, then click features.',
+        attribute ? 'ok' : 'error',
+        { sticky: true },
+    );
+    scheduleRefresh(); // "only" layers show every feature while picking
+}
+
+function stopPicking() {
+    const row = pickingRow;
+    pickingRow = null;
+    map.getCanvas().style.cursor = '';
+    if (row) {
+        updateFeatureToolbar(row);
+        scheduleRefresh();
+    }
+}
+
+function pickableFeatures(row, pointOrBox) {
+    const layers = (rowInfo.get(row)?.map_layer_ids || []).filter((id) => map.getLayer(id));
+    return layers.length ? map.queryRenderedFeatures(pointOrBox, { layers }) : [];
+}
+
+function onMapClick(event) {
+    const row = pickingRow;
+    if (!row) return;
+    const attribute = rowInput(row, 'feature_id_attribute')?.value;
+    if (!attribute) {
+        showStatus('Choose the feature ID attribute for this layer first.', 'error', { sticky: true });
+        return;
+    }
+    const feature = pickableFeatures(row, event.point).find(
+        (candidate) => candidate.properties[attribute] !== undefined,
+    );
+    if (!feature) {
+        showStatus(`No feature with “${attribute}” here.`, 'error', { sticky: true });
+        return;
+    }
+    const value = feature.properties[attribute];
+    const ids = featureIds(row);
+    const removing = ids.includes(value);
+    const modeSelect = rowInput(row, 'feature_mode');
+    if (!removing && modeSelect && modeSelect.value === 'all') modeSelect.value = 'highlight';
+    setFeatureIds(row, removing ? ids.filter((id) => id !== value) : [...ids, value]);
+
+    // Tiles split large features, so only distinct feature ids count as "shared".
+    const sharing = new Set(
+        pickableFeatures(row)
+            .filter((candidate) => candidate.properties[attribute] === value)
+            .map((candidate) => candidate.id)
+            .filter((id) => id !== undefined),
+    );
+    if (!removing && sharing.size > 1) {
+        showStatus(
+            `${sharing.size} visible features share ${attribute} = ${value}; all of them are ` +
+                'selected. Pick a unique attribute to select single features.',
+            'error',
+            { sticky: true },
+        );
+    } else {
+        showStatus(`${removing ? 'Removed' : 'Added'} ${attribute} = ${value}.`, 'ok', {
+            sticky: true,
+        });
+    }
+}
+
+function onMapHover(event) {
+    if (!pickingRow) return;
+    map.getCanvas().style.cursor = pickableFeatures(pickingRow, event.point).length
+        ? 'pointer'
+        : 'crosshair';
 }
 
 // --- Wiring -----------------------------------------------------------------------
@@ -313,7 +524,10 @@ function onFormsetChange(event) {
 }
 
 map.on('move', updateReadout);
+map.on('click', onMapClick);
+map.on('mousemove', onMapHover);
 map.once('load', () => {
+    mapReady = true;
     updateReadout();
     applySavedCamera();
     refreshPreview({ initial: true });
