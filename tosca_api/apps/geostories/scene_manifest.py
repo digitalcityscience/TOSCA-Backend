@@ -121,6 +121,9 @@ def build_render_layers_for(scene_layers) -> list[dict]:
             raster_id=prefix,
             vector_id=lambda style_layer_id, prefix=prefix: f"{prefix}/{style_layer_id}",
             metadata={
+                # tosca:member-id lets clients treat a scene like a layer-group
+                # manifest (one member per scene layer).
+                "tosca:member-id": str(scene_layer.id),
                 "tosca:scene-layer-id": str(scene_layer.id),
                 "tosca:layer-id": str(scene_layer.layer_id),
                 "tosca:style-id": str(scene_layer.style_assignment.style_id),
@@ -291,6 +294,7 @@ def _highlight_layers(scene_layer, key: str, prefix: str, attribute: str, ids: l
             "filter": filter_,
             "paint": paint,
             "metadata": {
+                "tosca:member-id": str(scene_layer.id),
                 "tosca:scene-layer-id": str(scene_layer.id),
                 "tosca:layer-id": str(scene_layer.layer_id),
                 "tosca:role": "highlight",

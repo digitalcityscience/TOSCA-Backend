@@ -51,10 +51,28 @@ def _style_assignment_payload(assignment) -> dict | None:
     }
 
 
+class SceneLayerSummarySerializer(LayerSummarySerializer):
+    """Layer summary plus its provider, for provider-scoped catalog and legend lookups."""
+
+    provider = serializers.SerializerMethodField()
+
+    class Meta(LayerSummarySerializer.Meta):
+        fields = [*LayerSummarySerializer.Meta.fields, "provider"]
+        read_only_fields = fields
+
+    def get_provider(self, obj) -> dict:
+        engine = obj.workspace.geodata_engine
+        return {
+            "id": str(engine.id),
+            "name": engine.name,
+            "base_url": engine.public_url.rstrip("/"),
+        }
+
+
 class GeoStorySceneLayerSerializer(serializers.ModelSerializer):
     """A layer rendered in a scene, with its pinned style and feature selection."""
 
-    layer = LayerSummarySerializer(read_only=True)
+    layer = SceneLayerSummarySerializer(read_only=True)
     style_assignment = serializers.SerializerMethodField()
     render_layer_ids = serializers.SerializerMethodField()
     source_key = serializers.SerializerMethodField()

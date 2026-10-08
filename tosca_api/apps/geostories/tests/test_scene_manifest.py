@@ -163,6 +163,7 @@ def test_sld_vector_layer_renders_as_wms_image(story, user):
         "type": "raster",
         "source": key,
         "metadata": {
+            "tosca:member-id": str(row.id),
             "tosca:scene-layer-id": str(row.id),
             "tosca:layer-id": str(roads.id),
             "tosca:style-id": str(row.style_assignment.style_id),
@@ -378,3 +379,38 @@ def test_detail_exposes_map_and_scene_render_layers(story, parks, ortho):
     assert {layer["source"] for layer in scene["render_layers"]} <= set(data["map"]["sources"])
     assert [entry["title"] for entry in scene["legend"]] == ["parks", "ortho"]
     assert {item["source_key"] for item in scene["layers"]} == set(data["map"]["sources"])
+
+
+# --- Group-manifest compatibility (frontend renders scenes via addMapGroup) -----
+
+
+@pytest.mark.django_db
+def test_every_render_layer_names_its_member(story, parks, ortho):
+    scene, (raster_row, vector_row) = _scene(story, ortho, parks)
+    GeoStorySceneLayer.objects.filter(pk=vector_row.pk).update(
+        feature_mode="highlight", feature_id_attribute="name", feature_ids=["A"]
+    )
+
+    layers = build_scene_render_layers(GeoStoryScene.objects.get(pk=scene.pk))
+
+    assert any(layer["metadata"].get("tosca:role") == "highlight" for layer in layers)
+    assert [layer["metadata"]["tosca:member-id"] for layer in layers] == [
+        str(raster_row.id), *[str(vector_row.id)] * (len(layers) - 1)
+    ]
+
+
+@pytest.mark.django_db
+def test_detail_scene_layers_carry_their_provider(story, parks):
+    _scene(story, parks)
+    engine = parks.workspace.geodata_engine
+
+    response = APIClient().get(f"/api/v1/stories/{story.id}/")
+
+    layer_summary = response.data["scenes"][0]["layers"][0]["layer"]
+    assert layer_summary["provider"] == {
+        "id": str(engine.id),
+        "name": engine.name,
+        "base_url": engine.public_url.rstrip("/"),
+    }
+    # The deprecated top-level list keeps its original shape.
+    assert "provider" not in response.data["layers"][0]["layer"]
