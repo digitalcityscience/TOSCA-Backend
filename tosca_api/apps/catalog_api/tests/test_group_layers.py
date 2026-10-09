@@ -225,6 +225,25 @@ class LayerGroupCatalogTests(TestCase):
         self.assertEqual(len(response.json()["groups"]["group"]), 2)
         self.assertEqual(len(two_groups), len(one_group))
 
+    def test_group_manifest_vector_sources_carry_layer_extent(self):
+        Layer.objects.filter(pk=self.layers[0].pk).update(bounds=[9.7, 53.39, 10.3, 53.59])
+
+        response = self.client.get(
+            reverse(
+                "catalog-v1-provider-workspace-group-detail",
+                kwargs={
+                    "provider_id": self.provider.id,
+                    "workspace_name": self.workspace.name,
+                    "group_name": self.group.name,
+                },
+            )
+        )
+
+        sources = response.json()["group"]["sources"]
+        self.assertEqual(sources["roads"]["bounds"], [9.7, 53.39, 10.3, 53.59])
+        # A layer whose extent is unknown keeps the previous source shape.
+        self.assertNotIn("bounds", sources["stations"])
+
     def test_group_manifest_exposes_canonical_sources_and_complete_style(self):
         response = self.client.get(
             reverse(

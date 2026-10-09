@@ -53,10 +53,16 @@ def build_source(*, layer, style_assignment) -> dict:
         )
         for token in ("z", "x", "y"):
             params = params.replace(f"%7B{token}%7D", f"{{{token}}}")
-        return {
+        source = {
             "type": "vector",
             "tiles": [f"{base_url}/gwc/service/wmts?{params}"],
         }
+        # MapLibre requests no tiles outside `bounds`; without it, GeoWebCache
+        # answers every tile beyond the layer's extent with HTTP 400.
+        bounds = source_bounds(layer)
+        if bounds is not None:
+            source["bounds"] = bounds
+        return source
 
     params = urlencode(
         {
@@ -78,6 +84,21 @@ def build_source(*, layer, style_assignment) -> dict:
         "tiles": [f"{base_url}/wms?{params}&BBOX={{bbox-epsg-3857}}"],
         "tileSize": 256,
     }
+
+
+def source_bounds(layer) -> list[float] | None:
+    """The layer's WGS84 extent as MapLibre source `bounds`, if known and valid."""
+    bounds = getattr(layer, "bounds", None)
+    if (
+        not isinstance(bounds, (list, tuple))
+        or len(bounds) != 4
+        or any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in bounds)
+    ):
+        return None
+    west, south, east, north = (float(value) for value in bounds)
+    if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+        return None
+    return [west, south, east, north]
 
 
 def build_legend_graphic_url(*, layer, style_assignment) -> str:

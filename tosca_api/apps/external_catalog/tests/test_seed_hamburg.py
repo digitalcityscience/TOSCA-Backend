@@ -109,3 +109,17 @@ def test_seed_refuses_foreign_rows_unknown_orgs_and_unloaded_catalogs(offline_ca
     _service(_org("other"), creator, seed.OGC)
     with pytest.raises(CommandError, match="another organization"):
         call_command("seed_external_catalog_hamburg", organization="dcs")
+
+
+@pytest.mark.django_db
+def test_public_flag_also_publishes_existing_seeded_rows(offline_catalog, creator):
+    call_command("seed_external_catalog_hamburg", organization="dcs")
+    own = Category.objects.create(organization=_org("dcs"), slug="own", title="Own", created_by=creator)
+
+    call_command("seed_external_catalog_hamburg", organization="dcs", public=True, skip_catalog_load=True)
+
+    assert set(ExternalService.objects.values_list("visibility", flat=True)) == {Visibility.PUBLIC}
+    seeded = Category.objects.exclude(pk=own.pk)
+    assert set(seeded.values_list("visibility", flat=True)) == {Visibility.PUBLIC}
+    own.refresh_from_db()
+    assert own.visibility == Visibility.PRIVATE  # not managed by the seed

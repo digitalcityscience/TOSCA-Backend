@@ -414,3 +414,35 @@ def test_detail_scene_layers_carry_their_provider(story, parks):
     }
     # The deprecated top-level list keeps its original shape.
     assert "provider" not in response.data["layers"][0]["layer"]
+
+
+# --- Source bounds (no tile requests outside a layer's extent) ----------------
+
+
+@pytest.mark.django_db
+def test_vector_source_carries_the_layer_extent(story, parks, ortho):
+    Layer.objects.filter(pk=parks.pk).update(bounds=[9.7, 53.39, 10.3, 53.59])
+    Layer.objects.filter(pk=ortho.pk).update(bounds=[9.7, 53.29, 10.33, 53.78])
+    _scene(story, ortho, parks)
+
+    sources = build_story_map(request=None, scenes=story.scenes.all())["sources"]
+
+    assert sources[f"vector-{parks.id}"]["bounds"] == [9.7, 53.39, 10.3, 53.59]
+    # WMS images are requested per viewport bbox, so they never get bounds.
+    wms = next(source for key, source in sources.items() if key.startswith("wms-"))
+    assert "bounds" not in wms
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "bounds",
+    [None, [], [9.7, 53.39, 10.3], [10.3, 53.39, 9.7, 53.59], [9.7, 53.39, 10.3, 95], [True, 1, 2, 3]],
+    ids=["unknown", "empty", "short", "inverted", "out-of-range", "bool"],
+)
+def test_vector_source_without_valid_extent_has_no_bounds(story, parks, bounds):
+    Layer.objects.filter(pk=parks.pk).update(bounds=bounds)
+    _scene(story, parks)
+
+    sources = build_story_map(request=None, scenes=story.scenes.all())["sources"]
+
+    assert "bounds" not in sources[f"vector-{parks.id}"]
