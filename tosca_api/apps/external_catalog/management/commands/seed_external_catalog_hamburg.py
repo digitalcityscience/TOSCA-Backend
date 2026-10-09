@@ -169,13 +169,18 @@ class DryRun(Exception):
 class Command(BaseCommand):
     help = (
         "Create the Hamburg OGC API and SensorThings services and the Smart City Explorer demo "
-        "categories (private by default). Safe to run again: only missing rows are added."
+        "categories (private by default). Safe to run again: only missing rows are added; "
+        "--public also makes the existing seeded services and categories public."
     )
 
     def add_arguments(self, parser):
         parser.add_argument("--organization", required=True, help="Organization slug that owns the rows.")
         parser.add_argument("--user", help="Username recorded as creator (default: first superuser).")
-        parser.add_argument("--public", action="store_true", help="Make new services and categories public.")
+        parser.add_argument(
+            "--public",
+            action="store_true",
+            help="Make the seeded services and categories public (new and existing ones).",
+        )
         parser.add_argument(
             "--skip-catalog-load",
             action="store_true",
@@ -189,6 +194,7 @@ class Command(BaseCommand):
             raise CommandError(f"No organization with slug '{options['organization']}'.")
         user = self._user(options["user"])
         visibility = Visibility.PUBLIC if options["public"] else Visibility.PRIVATE
+        self.publish = options["public"]
         try:
             with transaction.atomic():
                 self._seed(organization, user, visibility, load=not options["skip_catalog_load"])
@@ -262,7 +268,12 @@ class Command(BaseCommand):
         if service is not None:
             if service.organization_id != organization.pk:
                 raise CommandError(f"Service '{slug}' already exists in another organization.")
-            self.stdout.write(f"Service '{slug}' exists; reused unchanged.")
+            if self.publish and service.visibility != Visibility.PUBLIC:
+                ExternalService.objects.filter(pk=service.pk).update(visibility=Visibility.PUBLIC)
+                service.visibility = Visibility.PUBLIC
+                self.stdout.write(f"Service '{slug}' exists; made public.")
+            else:
+                self.stdout.write(f"Service '{slug}' exists; reused unchanged.")
             return service
         service = ExternalService.objects.create(
             organization=organization, slug=slug, visibility=visibility, created_by=user, **SERVICES[slug]
@@ -275,6 +286,10 @@ class Command(BaseCommand):
         if category is not None:
             if category.organization_id != organization.pk:
                 raise CommandError(f"Category '{slug}' already exists in another organization.")
+            if self.publish and category.visibility != Visibility.PUBLIC:
+                Category.objects.filter(pk=category.pk).update(visibility=Visibility.PUBLIC)
+                category.visibility = Visibility.PUBLIC
+                self.stdout.write(f"Category '{slug}' made public.")
             return category
         return Category.objects.create(
             organization=organization,
