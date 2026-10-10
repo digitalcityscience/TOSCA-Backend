@@ -1668,7 +1668,7 @@ class LayerAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
     # 4.5 — Delete safety: GeoServer-first for PUBLISHED layers
     # ------------------------------------------------------------------
     def delete_view(self, request, object_id, extra_context=None):
-        """Inject GeoStory/Event/GeoFeedback usage counts into the page."""
+        """Inject GeoStory/Event/GeoFeedback/simulation usage counts into the page."""
         try:
             layer = self.get_object(request, object_id)
         except Exception:
@@ -1682,8 +1682,9 @@ class LayerAdmin(OrgScopedAdminMixin, RemoteDeleteAdminMixin, admin.ModelAdmin):
                     (
                         f"Layer '{layer.name}' is referenced by "
                         f"{usage['geostories']} geostories, "
-                        f"{usage['events']} events, and "
-                        f"{usage['feedbacks']} feedbacks. "
+                        f"{usage['events']} events, "
+                        f"{usage['feedbacks']} feedbacks, and "
+                        f"{usage['simulations']} simulation runs. "
                         "Confirming will cascade-remove those references."
                     ),
                     messages.WARNING,

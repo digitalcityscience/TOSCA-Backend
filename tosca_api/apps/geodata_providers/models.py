@@ -564,8 +564,8 @@ class Layer(SyncStateMixin, TimeStampedModel):
 
     def usage_summary(self) -> dict[str, int]:
         """
-        Return how many GeoStory / Event / GeoFeedback rows reference this
-        layer through their respective through-tables.
+        Return how many GeoStory / Event / GeoFeedback / simulation-run rows
+        reference this layer through their respective through-tables.
 
         Used by the admin delete-confirmation page and the API destroy
         action to warn an operator before a CASCADE removes the layer
@@ -578,6 +578,10 @@ class Layer(SyncStateMixin, TimeStampedModel):
             .count(),
             "events": self.event_uses.count(),
             "feedbacks": self.feedback_uses.count(),
+            "simulations": self.simulation_uses.order_by()
+            .values("run_id")
+            .distinct()
+            .count(),
         }
 
 
