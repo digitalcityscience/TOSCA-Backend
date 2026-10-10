@@ -95,6 +95,7 @@ INSTALLED_APPS = [
     "tosca_api.apps.events",
     "tosca_api.apps.feedback",
     "tosca_api.apps.external_catalog.apps.ExternalCatalogConfig",
+    "tosca_api.apps.geosimulations.apps.GeoSimulationsConfig",
 ]
 
 # Authorization foundation (security tickets ticket 03) -- the single source
@@ -144,6 +145,12 @@ TOSCA_PERMISSION_MODELS = {
     # ExternalService and Category carry a direct organization FK;
     # CategoryItem reaches its org through category__organization.
     "external_catalog": {"externalservice", "category", "categoryitem"},
+    # GeoSimulations (Phase 12): SimulationModel carries a direct organization
+    # FK; runs reach it through model__organization, outputs through
+    # run__model__organization, and assets through their owner_org FK.
+    "geosimulations": {
+        "simulationmodel", "simulationrun", "simulationoutput", "simulationasset",
+    },
 }
 TOSCA_ENTITLEABLE_APPS = set(TOSCA_PERMISSION_MODELS)
 
