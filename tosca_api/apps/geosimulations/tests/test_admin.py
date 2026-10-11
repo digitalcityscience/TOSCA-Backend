@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
 
-from tosca_api.apps.geodata_providers.test_helpers import make_layer
 from tosca_api.apps.geosimulations.models import (
     SimulationModel,
     SimulationOutput,
     SimulationRun,
     Status,
 )
+from tosca_api.apps.geosimulations.packages import PackageIssue, PackageValidationError
 from tosca_api.apps.organizations.models import UserAuthorizationSnapshot
 
 from .helpers import asset, org, simulation_model, simulation_run
@@ -115,20 +118,20 @@ def test_model_key_is_read_only_after_creation(catalog):
 def test_run_admin_edits_only_authored_fields(catalog):
     client, _ = _staff_client("dcs-writer", "dcs")
     run = catalog["own_run"]
-    layer = make_layer("dcs-simulations:bike_flow")
     output = SimulationOutput.objects.create(
         run=run,
         role="bike_flow",
         kind=SimulationOutput.Kind.VECTOR_LAYER,
         title="Cyclists per segment",
-        layer=layer,
-        metadata={"features": 16681},
+        asset=asset(org("dcs"), run=run, path="geosimulations/dcs/run/layers/bike_flow.pmtiles"),
+        style=[{"id": "bike_flow-line", "type": "line"}],
+        metadata={"features": 16681, "geometry_type": "LineString", "minzoom": 8, "maxzoom": 15},
     )
     url = reverse("admin:geosimulations_simulationrun_change", args=[run.pk])
 
     page = client.get(url)
     assert set(page.context["adminform"].form.fields) == {"title", "status", "description_content"}
-    assert "16681 features" in page.content.decode()
+    assert "16681 LineString features · z8–15" in page.content.decode()
 
     response = client.post(
         url,
@@ -165,3 +168,79 @@ def test_reader_can_view_but_not_change_runs(catalog):
     assert client.get(url).status_code == 200
     assert client.post(url, {"title": "Nope"}).status_code == 403
     assert SimulationRun.objects.get(pk=catalog["own_run"].pk).title != "Nope"
+
+
+# ---------------------------------------------------------------------------
+# Package import upload
+# ---------------------------------------------------------------------------
+
+IMPORT_URL = "admin:geosimulations_simulationrun_import"
+
+
+def _upload(name="package.zip", content=b"PK\x05\x06" + b"\0" * 18):
+    return SimpleUploadedFile(name, content, content_type="application/zip")
+
+
+def test_import_button_and_page_need_add_permission(catalog):
+    reader, _ = _staff_client("dcs-reader", "dcs", level="READER")
+    writer, _ = _staff_client("dcs-writer", "dcs")
+
+    assert reader.get(reverse(IMPORT_URL)).status_code == 403
+    assert "Import simulation package" not in reader.get(
+        reverse("admin:geosimulations_simulationrun_changelist")
+    ).content.decode()
+    assert writer.get(reverse(IMPORT_URL)).status_code == 200
+    assert "Import simulation package" in writer.get(
+        reverse("admin:geosimulations_simulationrun_changelist")
+    ).content.decode()
+
+
+def test_import_derives_the_organization_and_redirects_to_the_run(catalog):
+    client, user = _staff_client("dcs-writer", "dcs")
+    run = catalog["own_run"]
+    result = SimpleNamespace(run=run, warnings=("Replay is large.",))
+
+    with patch("tosca_api.apps.geosimulations.admin.import_package", return_value=result) as mocked:
+        response = client.post(reverse(IMPORT_URL), {"package": _upload(), "publish": "on"})
+
+    assert response.status_code == 302
+    assert response["Location"] == reverse(
+        "admin:geosimulations_simulationrun_change", args=[run.pk]
+    )
+    kwargs = mocked.call_args.kwargs
+    assert kwargs["organization"].slug == "dcs"
+    assert kwargs["user"] == user
+    assert (kwargs["publish"], kwargs["replace"]) == (True, False)
+    page = client.get(response["Location"])
+    assert "Warning: Replay is large." in page.content.decode()
+
+
+def test_staff_cannot_pick_another_organization(catalog):
+    client, _ = _staff_client("dcs-writer", "dcs")
+
+    page = client.get(reverse(IMPORT_URL))
+
+    assert "organization" not in page.context["form"].fields
+
+
+def test_validation_issues_are_shown_on_the_form(catalog):
+    client, _ = _staff_client("dcs-writer", "dcs")
+    error = PackageValidationError([PackageIssue("run.time.end", "Ends before it starts.")])
+
+    with patch("tosca_api.apps.geosimulations.admin.import_package", side_effect=error):
+        response = client.post(reverse(IMPORT_URL), {"package": _upload()})
+
+    assert response.status_code == 200
+    assert response.context["form"].errors["package"] == ["run.time.end: Ends before it starts."]
+
+
+def test_replacing_needs_delete_permission(catalog):
+    client, _ = _staff_client("dcs-writer", "dcs")
+
+    with patch("tosca_api.apps.geosimulations.admin.import_package") as mocked:
+        response = client.post(reverse(IMPORT_URL), {"package": _upload(), "replace": "on"})
+
+    assert not mocked.called
+    assert response.context["form"].errors["replace"] == [
+        "Replacing a run needs permission to delete runs."
+    ]

@@ -1,22 +1,21 @@
-"""Model rules for GeoSimulations (Task 12.1)."""
+"""Model rules for GeoSimulations (Tasks 12.1 and 12.3)."""
 
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from django.core.exceptions import ValidationError
-from django.db.models import ProtectedError
+from django.db.models import RestrictedError
 
-from tosca_api.apps.geodata_providers.models import Style
-from tosca_api.apps.geodata_providers.test_helpers import make_layer
 from tosca_api.apps.geosimulations.models import (
     SimulationAsset,
     SimulationOutput,
     SimulationRun,
     Status,
 )
-from tosca_api.apps.geostories.tests.scene_helpers import assign_style, make_vector_layer
 
 from .helpers import START, asset, org, simulation_model, simulation_run
 
@@ -161,41 +160,22 @@ def _output(run, role="bike_flow", kind=SimulationOutput.Kind.VECTOR_LAYER, **fi
     )
 
 
-def test_vector_output_pins_the_layers_default_style(run, django_user_model):
-    user = django_user_model.objects.create_user(username="styler")
-    layer = make_vector_layer("dcs-simulations:bike_flow", user=user)
-
-    output = _output(run, layer=layer)
-
-    assert output.style_assignment is not None
-    assert output.style_assignment.layer_id == layer.id
+STYLE = [{"id": "bike_flow-line", "type": "line", "paint": {"line-width": 2}}]
 
 
-def test_vector_output_rejects_a_style_of_another_layer(run, django_user_model):
-    user = django_user_model.objects.create_user(username="styler")
-    layer = make_vector_layer("dcs-simulations:bike_flow", user=user)
-    other = make_vector_layer("dcs-simulations:signal_delay", user=user)
-    foreign_style = assign_style(
-        other, user, fmt=Style.StyleFormat.MBSTYLE, name="foreign", role="alternate"
-    )
+def test_map_layer_output_holds_tiles_and_a_style(run, dcs):
+    tiles = asset(dcs, run=run, path="geosimulations/dcs/run/layers/bike_flow.pmtiles")
 
-    with pytest.raises(ValidationError, match="belong to the selected layer"):
-        _output(run, layer=layer, style_assignment=foreign_style)
+    output = _output(run, asset=tiles, style=STYLE, metadata={"minzoom": 8})
 
-
-def test_vector_output_layer_must_belong_to_the_models_organization(django_user_model):
-    other_org_model = simulation_model(org("qg2"), key="qg2-model")
-    other_org_run = simulation_run(other_org_model)
-    layer = make_layer("dcs-simulations:bike_flow")  # workspace defaults to org "dcs"
-
-    with pytest.raises(ValidationError, match="organization"):
-        _output(other_org_run, layer=layer)
+    assert output.asset == tiles
+    assert run.assets.get() == tiles
 
 
 @pytest.mark.parametrize(
     ("kind", "fields", "message"),
     [
-        (SimulationOutput.Kind.VECTOR_LAYER, {}, "needs a layer"),
+        (SimulationOutput.Kind.VECTOR_LAYER, {}, "need an asset"),
         (SimulationOutput.Kind.TRIPS, {}, "need an asset"),
         (SimulationOutput.Kind.IMAGE, {}, "need an asset"),
         (SimulationOutput.Kind.TABLE, {}, "rows in data"),
@@ -206,16 +186,29 @@ def test_output_kind_requires_its_payload(run, kind, fields, message):
         _output(run, kind=kind, **fields)
 
 
-def test_output_payloads_cannot_be_mixed(run, dcs):
-    replay = asset(dcs)
-    layer = make_layer("dcs-simulations:mixed")
+def test_tables_hold_rows_not_files(run, dcs):
+    with pytest.raises(ValidationError, match="not an asset"):
+        _output(run, role="kpis", kind=SimulationOutput.Kind.TABLE, data=[], asset=asset(dcs))
 
-    with pytest.raises(ValidationError, match="cannot have an asset"):
-        _output(run, layer=layer, asset=replay)
-    with pytest.raises(ValidationError, match="Only vector layer outputs"):
-        _output(run, role="replay", kind=SimulationOutput.Kind.TRIPS, asset=replay, layer=layer)
-    with pytest.raises(ValidationError, match="not a layer or asset"):
-        _output(run, role="kpis", kind=SimulationOutput.Kind.TABLE, data=[], asset=replay)
+
+@pytest.mark.parametrize(
+    ("kind", "style", "message"),
+    [
+        (SimulationOutput.Kind.TRIPS, STYLE, "Only map layer outputs"),
+        (SimulationOutput.Kind.VECTOR_LAYER, {"id": "x"}, "list of MapLibre layers"),
+        (SimulationOutput.Kind.VECTOR_LAYER, [{"paint": {}}], "list of MapLibre layers"),
+    ],
+)
+def test_style_rules(run, dcs, kind, style, message):
+    with pytest.raises(ValidationError, match=message):
+        _output(run, kind=kind, asset=asset(dcs), style=style)
+
+
+def test_output_cannot_use_another_runs_asset(model, run, dcs):
+    other_run = simulation_run(model, key="other")
+
+    with pytest.raises(ValidationError, match="another run"):
+        _output(run, asset=asset(dcs, run=other_run))
 
 
 def test_output_role_is_unique_per_run(run):
@@ -225,37 +218,48 @@ def test_output_role_is_unique_per_run(run):
         _output(run, role="kpis", kind=SimulationOutput.Kind.TABLE, data=[])
 
 
-def test_deleting_a_run_keeps_its_assets(run, dcs):
-    replay = asset(dcs)
+def test_deleting_a_run_removes_outputs_assets_and_stored_files(
+    run, dcs, django_capture_on_commit_callbacks
+):
+    replay = asset(dcs, run=run)
     _output(run, role="replay", kind=SimulationOutput.Kind.TRIPS, asset=replay)
+    run.source_package = asset(dcs, run=run, path="geosimulations/dcs/run/package.zip")
+    run.save()
+    deleted = []
+    storage = SimpleNamespace(delete=deleted.append)
 
-    run.delete()
+    with patch.object(SimulationAsset, "storage", storage):
+        with django_capture_on_commit_callbacks(execute=True):
+            run.delete()
 
-    assert SimulationAsset.objects.filter(pk=replay.pk).exists()
+    assert not SimulationAsset.objects.exists()
     assert not SimulationOutput.objects.exists()
+    assert sorted(deleted) == [
+        "geosimulations/dcs/run/package.zip",
+        "geosimulations/run/replay/trips.json.gz",
+    ]
 
 
-def test_assets_used_by_an_output_are_protected(run, dcs):
-    replay = asset(dcs)
+def test_stored_files_survive_a_rolled_back_delete(run, dcs, django_capture_on_commit_callbacks):
+    asset(dcs, run=run)
+    deleted = []
+
+    with patch.object(SimulationAsset, "storage", SimpleNamespace(delete=deleted.append)):
+        with django_capture_on_commit_callbacks(execute=False) as callbacks:
+            run.delete()
+
+    assert len(callbacks) == 1
+    assert deleted == []  # nothing runs unless the transaction commits
+
+
+def test_assets_used_by_an_output_cannot_be_deleted_alone(run, dcs):
+    replay = asset(dcs, run=run)
     _output(run, role="replay", kind=SimulationOutput.Kind.TRIPS, asset=replay)
 
-    with pytest.raises(ProtectedError):
+    with pytest.raises(RestrictedError):
         replay.delete()
 
 
 def test_asset_checksum_format(dcs):
     with pytest.raises(ValidationError, match="sha256"):
         asset(dcs, sha256="md5:abc")
-
-
-def test_layer_usage_counts_each_run_once_and_cascades(model, run):
-    layer = make_layer("dcs-simulations:shared")
-    second_run = simulation_run(model, key="second")
-    _output(run, role="bike_flow", layer=layer)
-    _output(run, role="bike_flow_copy", layer=layer)
-    _output(second_run, role="bike_flow", layer=layer)
-
-    assert layer.usage_summary()["simulations"] == 2
-
-    layer.delete()
-    assert not SimulationOutput.objects.exists()

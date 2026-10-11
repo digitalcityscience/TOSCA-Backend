@@ -128,3 +128,42 @@ def zip_dir(root: Path, target: Path) -> Path:
             if path.is_file():
                 archive.write(path, path.relative_to(root).as_posix())
     return target
+
+
+def write_real_gpkg(path: Path, layer: str = "bike_flow") -> None:
+    """A real two-feature line GeoPackage in EPSG:25832, written with ogr2ogr."""
+    import subprocess
+
+    geojson = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"agent_count": count, "street_name": name},
+                "geometry": {"type": "LineString", "coordinates": coordinates},
+            }
+            for count, name, coordinates in (
+                (12, "Mönckebergstraße", [[566000, 5934000], [566400, 5934100]]),
+                (3, "Steindamm", [[566400, 5934100], [566900, 5934600]]),
+            )
+        ],
+    }
+    source = path.with_suffix(".geojson")
+    source.write_text(json.dumps(geojson), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ogr2ogr", "-f", "GPKG", str(path), str(source), "-nln", layer, "-a_srs", "EPSG:25832"],
+        check=True,
+        capture_output=True,
+    )
+    source.unlink()
+
+
+def write_real_package(root: Path, manifest: dict | None = None) -> dict:
+    """Like ``write_package`` but with a GeoPackage GDAL can actually tile."""
+    manifest = write_package(root, manifest)
+    (root / "layers.gpkg").unlink()
+    write_real_gpkg(root / "layers.gpkg")
+    manifest["files"]["layers.gpkg"] = _sha256(root / "layers.gpkg")
+    write_manifest(root, manifest)
+    return manifest

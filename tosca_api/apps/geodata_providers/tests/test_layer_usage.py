@@ -67,7 +67,6 @@ def test_usage_summary_zero_for_unreferenced_layer(layer):
         "geostories": 0,
         "events": 0,
         "feedbacks": 0,
-        "simulations": 0,
     }
 
 
@@ -102,7 +101,6 @@ def test_usage_summary_counts_each_consumer(layer, admin_user, campaign):
         "geostories": 1,
         "events": 1,
         "feedbacks": 1,
-        "simulations": 0,
     }
 
 
