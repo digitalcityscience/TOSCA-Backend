@@ -3,8 +3,8 @@ GeoSimulations — simulation models, their runs, and the runs' outputs.
 
 A ``SimulationModel`` is the catalog item (what can be run). A ``SimulationRun``
 is one execution with concrete parameters. A run's ``SimulationOutput`` rows are
-static map layers (ordinary ``geodata_providers.Layer`` rows), an animated
-replay or images (``SimulationAsset`` files), or small tables.
+map layers (PMTiles), an animated replay, or images, each backed by a
+``SimulationAsset`` file in object storage, or small tables kept in the row.
 
 Runs enter TOSCA as simulation packages; see
 ``docs/implementation/geosimulations-plan.md``.
@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.files.storage import storages
 from django.db import models
 from django.db.models import Q
 
@@ -255,6 +256,14 @@ class SimulationRun(TimeStampedModel):
     manifest = models.JSONField(
         default=dict, blank=True, help_text="Package manifest, stored verbatim for provenance."
     )
+    source_package = models.ForeignKey(
+        "SimulationAsset",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="The imported package archive, kept so outputs can be regenerated.",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -322,13 +331,21 @@ class SimulationRun(TimeStampedModel):
 
 
 class SimulationAsset(TimeStampedModel):
-    """A non-image file of a run (replay bundle, preview) in object storage.
+    """A file of a run in object storage: map tiles, replay, image, or the package.
 
     ``core.MediaAsset`` is image-shaped (required width/height, image policy),
-    so simulation files get their own row with a checksum instead.
+    so simulation files get their own row with a checksum instead. Deleting the
+    row deletes the stored object after the transaction commits (``signals.py``).
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+    run = models.ForeignKey(
+        SimulationRun,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="assets",
+    )
     storage_path = models.CharField(max_length=1024, unique=True)
     original_name = models.CharField(max_length=255, blank=True)
     mime = models.CharField(max_length=100)
@@ -356,6 +373,10 @@ class SimulationAsset(TimeStampedModel):
     def __str__(self) -> str:
         return self.original_name or self.storage_path
 
+    @property
+    def storage(self):
+        return storages[self.storage_alias]
+
     def save(self, *args, **kwargs) -> None:
         self.full_clean()
         super().save(*args, **kwargs)
@@ -376,29 +397,19 @@ class SimulationOutput(TimeStampedModel):
     kind = models.CharField(max_length=20, choices=Kind.choices)
     title = models.CharField(max_length=255)
     display_order = models.PositiveIntegerField(default=0)
-    layer = models.ForeignKey(
-        "geodata_providers.Layer",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="simulation_uses",
-    )
-    style_assignment = models.ForeignKey(
-        "geodata_providers.LayerStyleAssignment",
-        # RESTRICT, not PROTECT: deleting the whole layer must still cascade
-        # (same reasoning as GeoStorySceneLayer, decision 10.10).
+    asset = models.ForeignKey(
+        SimulationAsset,
+        # RESTRICT, not PROTECT: deleting the run deletes its outputs and assets
+        # in one cascade, while deleting an asset on its own stays blocked.
         on_delete=models.RESTRICT,
         null=True,
         blank=True,
-        related_name="simulation_uses",
-        help_text="Pinned style; defaults to the layer's active default assignment.",
+        related_name="outputs",
     )
-    asset = models.ForeignKey(
-        SimulationAsset,
-        on_delete=models.PROTECT,
+    style = models.JSONField(
         null=True,
         blank=True,
-        related_name="outputs",
+        help_text="MapLibre style layers (without source) for a map layer output.",
     )
     data = models.JSONField(null=True, blank=True, help_text="Rows of a table output.")
     metadata = models.JSONField(default=dict, blank=True)
@@ -417,31 +428,24 @@ class SimulationOutput(TimeStampedModel):
     def clean(self) -> None:
         super().clean()
         errors: dict = {}
-        has_layer = self.layer_id is not None
         has_asset = self.asset_id is not None
-        if self.kind == self.Kind.VECTOR_LAYER:
-            if not has_layer:
-                errors["layer"] = "A vector layer output needs a layer."
+        if self.kind == self.Kind.TABLE:
             if has_asset:
-                errors["asset"] = "A vector layer output cannot have an asset."
-        elif self.kind in (self.Kind.TRIPS, self.Kind.IMAGE):
-            if not has_asset:
-                errors["asset"] = "Replay and image outputs need an asset."
-            if has_layer:
-                errors["layer"] = "Only vector layer outputs can have a layer."
-        elif self.kind == self.Kind.TABLE:
-            if has_layer or has_asset:
-                errors["kind"] = "A table output holds its rows in data, not a layer or asset."
+                errors["asset"] = "A table output holds its rows in data, not an asset."
             if not isinstance(self.data, (dict, list)):
                 errors["data"] = "A table output needs its rows in data."
-        if self.style_assignment_id is not None:
-            if not has_layer:
-                errors["style_assignment"] = "A style needs a layer."
-            elif self.style_assignment.layer_id != self.layer_id:
-                errors["style_assignment"] = "Style assignment must belong to the selected layer."
-        if has_layer and self.run_id is not None:
-            if self.layer.workspace.organization_id != self.run.model.organization_id:
-                errors["layer"] = "The layer must belong to the simulation model's organization."
+        elif not has_asset:
+            errors["asset"] = "Map layer, replay and image outputs need an asset."
+        if self.style is not None:
+            if self.kind != self.Kind.VECTOR_LAYER:
+                errors["style"] = "Only map layer outputs have a style."
+            elif not isinstance(self.style, list) or not all(
+                isinstance(layer, dict) and layer.get("id") and layer.get("type")
+                for layer in self.style
+            ):
+                errors["style"] = "Style must be a list of MapLibre layers with id and type."
+        if has_asset and self.run_id is not None and self.asset.run_id not in (None, self.run_id):
+            errors["asset"] = "The asset belongs to another run."
         if not isinstance(self.metadata, dict):
             errors["metadata"] = "Metadata must be a JSON object."
         if errors:
@@ -449,11 +453,5 @@ class SimulationOutput(TimeStampedModel):
 
     def save(self, *args, **kwargs) -> None:
         self.title = sanitize_simple(self.title)
-        if self.layer_id and self.style_assignment_id is None:
-            from tosca_api.apps.geodata_providers.models import LayerStyleAssignment
-
-            self.style_assignment = self.layer.style_assignments.filter(
-                role=LayerStyleAssignment.Role.DEFAULT, is_active=True
-            ).first()
         self.full_clean()
         super().save(*args, **kwargs)

@@ -535,7 +535,7 @@ class LayerViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         layer = self.get_object()
 
-        # Pre-delete usage warning: if any GeoStory / Event / GeoFeedback / simulation run
+        # Pre-delete usage warning: if any GeoStory / Event / GeoFeedback
         # references this layer, require an explicit ?confirm=true so the
         # caller can show the user what will be cascade-removed.
         usage = layer.usage_summary()
