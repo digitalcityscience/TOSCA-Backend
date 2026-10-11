@@ -411,6 +411,11 @@ class SimulationOutput(TimeStampedModel):
         blank=True,
         help_text="MapLibre style layers (without source) for a map layer output.",
     )
+    legend = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Legend built from the same classes as the style: {type, title, items, ...}.",
+    )
     data = models.JSONField(null=True, blank=True, help_text="Rows of a table output.")
     metadata = models.JSONField(default=dict, blank=True)
 
@@ -444,6 +449,12 @@ class SimulationOutput(TimeStampedModel):
                 for layer in self.style
             ):
                 errors["style"] = "Style must be a list of MapLibre layers with id and type."
+        if self.legend is not None and (
+            self.kind != self.Kind.VECTOR_LAYER
+            or not isinstance(self.legend, dict)
+            or not isinstance(self.legend.get("items"), list)
+        ):
+            errors["legend"] = "Only map layer outputs have a legend: an object with an items list."
         if has_asset and self.run_id is not None and self.asset.run_id not in (None, self.run_id):
             errors["asset"] = "The asset belongs to another run."
         if not isinstance(self.metadata, dict):

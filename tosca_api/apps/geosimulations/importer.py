@@ -34,7 +34,7 @@ from .models import (
     Status,
 )
 from .packages import PackageLimits, ValidatedPackage, open_package
-from .styles import style_for_output
+from .styles import build_style
 from .tiles import TileBuildError, build_pmtiles
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,7 @@ class _PackageImporter:
             MediaAsset.StorageAlias.PUBLIC if publish else MediaAsset.StorageAlias.DEFAULT
         )
         self.uploaded: list[tuple[str, str]] = []
+        self.warnings: list[str] = [str(warning) for warning in package.warnings]
 
     def run(self, *, replace: bool) -> ImportResult:
         try:
@@ -117,7 +118,7 @@ class _PackageImporter:
         return ImportResult(
             run=run,
             model_created=model_created,
-            warnings=tuple(str(warning) for warning in self.package.warnings),
+            warnings=tuple(self.warnings),
         )
 
     # -- rows ---------------------------------------------------------------
@@ -174,11 +175,15 @@ class _PackageImporter:
     def _import_output(self, run: SimulationRun, output: dict, order: int) -> SimulationOutput:
         kind = output["kind"]
         metadata = {key: value for key, value in output.items() if key not in OUTPUT_FIELDS}
-        fields = {"asset": None, "style": None, "data": None}
+        fields = {"asset": None, "style": None, "legend": None, "data": None}
         if kind == SimulationOutput.Kind.VECTOR_LAYER:
             fields["asset"], tile_metadata = self._tile_layer(run, output)
             metadata.update(tile_metadata)
-            fields["style"] = style_for_output(output)
+            styled = build_style(
+                output, self.package.file(output["path"]), labels=self.manifest.get("labels")
+            )
+            fields["style"], fields["legend"] = styled.style, styled.legend
+            self.warnings.extend(styled.warnings)
         elif kind == SimulationOutput.Kind.TABLE:
             fields["data"] = _read_table(self.package.file(output["path"]))
         else:
