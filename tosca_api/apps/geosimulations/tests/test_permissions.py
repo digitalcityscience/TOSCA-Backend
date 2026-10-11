@@ -20,6 +20,7 @@ from .helpers import org
 
 MODELS = (
     "simulationmodel", "simulationrun", "simulationcomparison", "simulationoutput", "simulationasset",
+    "simulationrunner", "simulationjob",
 )
 
 _migration = importlib.import_module(

@@ -45,6 +45,30 @@ else:
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="change-me-in-production")
 DEBUG = env("DJANGO_DEBUG")
 ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS")
+
+# GeoSimulations runners call back to TOSCA at this base URL, e.g. http://django:8000
+# inside the dev Docker network. Its host is accepted in addition to ALLOWED_HOSTS.
+GEOSIMULATIONS_CALLBACK_BASE_URL = env("GEOSIMULATIONS_CALLBACK_BASE_URL", default="").rstrip("/")
+
+
+def with_callback_host(hosts: list[str]) -> list[str]:
+    """``hosts`` plus the runner callback host, when one is configured."""
+    from urllib.parse import urlsplit
+
+    host = urlsplit(GEOSIMULATIONS_CALLBACK_BASE_URL).hostname if GEOSIMULATIONS_CALLBACK_BASE_URL else None
+    return [*hosts, host] if host and host not in hosts and "*" not in hosts else list(hosts)
+
+
+ALLOWED_HOSTS = with_callback_host(ALLOWED_HOSTS)
+
+# Background simulation jobs (run_simulation_worker): seconds between polls when
+# idle, and how long an import may hold a job before another worker retries it.
+GEOSIMULATIONS_WORKER = {
+    "poll_seconds": env.int("GEOSIMULATIONS_WORKER_POLL_SECONDS", default=5),
+    "lock_timeout_seconds": env.int("GEOSIMULATIONS_WORKER_LOCK_TIMEOUT_SECONDS", default=1800),
+    "dispatch_timeout_seconds": 15,
+    "max_dispatch_attempts": 3,
+}
 CORS_ALLOWED_ORIGINS = env.list("DJANGO_CORS_ALLOWED_ORIGINS", default=[])
 CORS_ALLOW_CREDENTIALS = env.bool("DJANGO_CORS_ALLOW_CREDENTIALS")
 CORS_ALLOWED_METHODS = ["DELETE", "GET", "OPTIONS", "PATCH", "POST", "PUT"]
@@ -150,6 +174,7 @@ TOSCA_PERMISSION_MODELS = {
     # run__model__organization, and assets through their owner_org FK.
     "geosimulations": {
         "simulationmodel", "simulationrun", "simulationcomparison", "simulationoutput", "simulationasset",
+        "simulationrunner", "simulationjob",
     },
 }
 TOSCA_ENTITLEABLE_APPS = set(TOSCA_PERMISSION_MODELS)

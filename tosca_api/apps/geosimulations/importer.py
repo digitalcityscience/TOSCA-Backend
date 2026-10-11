@@ -79,12 +79,15 @@ def import_package(
     publish: bool = False,
     replace: bool = False,
     skip_existing: bool = False,
+    into_run: SimulationRun | None = None,
     limits: PackageLimits | None = None,
 ) -> ImportResult:
     """Validate ``source`` (directory or ``.zip``) and import it as a run or comparison of ``organization``.
 
     ``skip_existing`` leaves a run or comparison with the same key untouched and
-    returns it with ``skipped=True`` (idempotent seeding). Raises
+    returns it with ``skipped=True`` (idempotent seeding). ``into_run`` fills a
+    run that was started in TOSCA and is waiting for its package (runner jobs);
+    the package must be a run of that run's model with that run's key. Raises
     ``packages.PackageValidationError`` for invalid packages and
     ``PackageImportError`` when a valid package cannot be imported.
     """
@@ -103,6 +106,8 @@ def import_package(
         importer = _PackageImporter(
             package, source, organization=organization, user=user, publish=publish
         )
+        if into_run is not None:
+            return importer.fill(into_run)
         return importer.run(replace=replace)
 
 
@@ -164,6 +169,50 @@ class _PackageImporter:
             model_created=model_created,
             warnings=tuple(self.warnings),
         )
+
+    def fill(self, run: SimulationRun) -> ImportResult:
+        """Import the package into ``run``, a run started in TOSCA (no new run row)."""
+        if self.package.kind != "run":
+            raise PackageImportError("A started run needs a run package, not a comparison package.")
+        if self.manifest["model"]["key"] != run.model.key:
+            raise PackageImportError(
+                f"The package is for model {self.manifest['model']['key']!r}, the run for {run.model.key!r}."
+            )
+        if self.manifest["run"]["key"] != run.key:
+            raise PackageImportError(
+                f"The package is for run {self.manifest['run']['key']!r}, expected {run.key!r}."
+            )
+        try:
+            with transaction.atomic():
+                run = SimulationRun.objects.select_for_update().get(pk=run.pk)
+                if run.outputs.exists():
+                    raise PackageImportError(f"Run {run.key!r} already has outputs.")
+                info = self.manifest["run"]
+                time = info["time"]
+                run.model_version = self.manifest["model"]["version"]
+                run.seed = run.seed if run.seed is not None else info.get("seed")
+                run.time_start = datetime.fromisoformat(time["start"])
+                run.time_end = datetime.fromisoformat(time["end"])
+                run.timezone = time["timezone"]
+                run.bounds = info.get("bounds")
+                run.manifest = self.manifest
+                run.source_package = self._archive(run)
+                outputs = [
+                    self._import_output(run, output, order)
+                    for order, output in enumerate(self.manifest["outputs"])
+                ]
+                kpis = next(
+                    (_kpis(output.data) for output in outputs if output.role == "kpis"), None
+                )
+                if kpis:
+                    run.kpis = kpis
+                run.execution_state = SimulationRun.ExecutionState.SUCCEEDED
+                run.execution_error = ""
+                run.save()
+        except Exception:
+            self._discard_uploads()
+            raise
+        return ImportResult(run=run, model_created=False, warnings=tuple(self.warnings))
 
     def _run_comparison(self, *, replace: bool) -> ImportResult:
         try:

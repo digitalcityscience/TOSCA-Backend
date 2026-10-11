@@ -9,15 +9,19 @@ platform-exempt callers see everything. Anything else is a 404, never a 403.
 
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, Prefetch, Q
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.pagination import CursorPagination
 from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from tosca_api.apps.organizations.permissions import get_request_org_context
 
+from .jobs import CallbackRejected, handle_callback
 from .models import SimulationComparison, SimulationModel, SimulationOutput, SimulationRun
 from .serializers import (
     SimulationComparisonDetailSerializer,
@@ -181,3 +185,27 @@ class SimulationComparisonViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_serializer_context(self):
         return {**super().get_serializer_context(), "now": timezone.now()}
+
+
+class SimulationJobCallbackView(APIView):
+    """Status reports from a simulation runner (Phase 4 runner contract).
+
+    Authenticated by the job's own callback token (``Authorization: Bearer``),
+    which TOSCA sent with the job; unknown jobs and wrong tokens both answer 404.
+    """
+
+    authentication_classes: list = []
+    permission_classes = [AllowAny]
+
+    @extend_schema(exclude=True)
+    def post(self, request, job_id):
+        header = request.headers.get("Authorization", "")
+        token = header.removeprefix("Bearer ").strip() if header.startswith("Bearer ") else ""
+        report = request.data if isinstance(request.data, dict) else {}
+        try:
+            job = handle_callback(job_id, token, report)
+        except CallbackRejected:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        except DjangoValidationError as exc:
+            return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"job_id": str(job.pk), "state": job.state}, status=status.HTTP_202_ACCEPTED)

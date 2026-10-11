@@ -8,6 +8,10 @@ map layers (PMTiles), an animated replay, or images, each backed by a
 A ``SimulationComparison`` sets two runs of one model side by side; it owns its
 own outputs (difference layers, tables) and assets the same way a run does.
 
+Runs users start (Phase 4) are executed by a ``SimulationRunner``, an external
+HTTP service; each such run has one ``SimulationJob`` that the worker
+(``run_simulation_worker``) moves from dispatch to import.
+
 Runs enter TOSCA as simulation packages; see
 ``docs/implementation/geosimulations-plan.md``.
 """
@@ -25,6 +29,7 @@ from django.core.exceptions import ValidationError
 from django.core.files.storage import storages
 from django.db import models
 from django.db.models import Q
+from django.utils.timezone import now as timezone_now
 
 from tosca_api.apps.core.editorjs import (
     description_document_from_text,
@@ -84,6 +89,15 @@ def validate_bounds(value) -> None:
         raise ValidationError(
             "Bounds must satisfy -180 ≤ west < east ≤ 180 and -90 ≤ south < north ≤ 90."
         )
+
+
+def validate_service_url(value: str) -> None:
+    """An http(s) URL with a host; internal names without a TLD are fine."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(value or "")
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.query or parts.fragment:
+        raise ValidationError("Enter an http(s) URL with a host, e.g. http://bike-runner:8080.")
 
 
 def validate_sha256(value: str) -> None:
@@ -147,6 +161,14 @@ class SimulationModel(TimeStampedModel):
         help_text="JSON Schema of runnable parameters (user-triggered runs, Phase 4).",
     )
     default_parameters = models.JSONField(default=dict, blank=True)
+    runner = models.ForeignKey(
+        "SimulationRunner",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="models",
+        help_text="Service that runs this model when users start runs. Without one, runs are only imported.",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -171,6 +193,12 @@ class SimulationModel(TimeStampedModel):
             errors["parameter_schema"] = "Parameter schema must be a JSON object."
         if not isinstance(self.default_parameters, dict):
             errors["default_parameters"] = "Default parameters must be a JSON object."
+        if (
+            self.runner_id is not None
+            and self.organization_id is not None
+            and self.runner.organization_id != self.organization_id
+        ):
+            errors["runner"] = "The runner must belong to the model's organization."
         if errors:
             raise ValidationError(errors)
 
@@ -224,7 +252,9 @@ class SimulationRun(TimeStampedModel):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     description_content = models.JSONField(default=empty_document, blank=True)
-    model_version = models.CharField(max_length=50)
+    model_version = models.CharField(
+        max_length=50, blank=True, help_text="From the package; empty while a started run is queued."
+    )
     parameters = models.JSONField(default=dict, blank=True)
     params_hash = models.CharField(
         max_length=64,
@@ -265,6 +295,14 @@ class SimulationRun(TimeStampedModel):
         blank=True,
         related_name="+",
         help_text="The imported package archive, kept so outputs can be regenerated.",
+    )
+    runner = models.ForeignKey(
+        "SimulationRunner",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="runs",
+        help_text="Service that executed the run; empty for imported runs.",
     )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -652,3 +690,114 @@ class SimulationOutput(TimeStampedModel):
         self.title = sanitize_simple(self.title)
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+class SimulationRunner(TimeStampedModel):
+    """An HTTP service that runs simulations for TOSCA.
+
+    Contract (``docs/implementation/geosimulations-plan.md``, Phase 4): TOSCA
+    ``POST``s a job to ``{base_url}/jobs`` with the bearer ``token``; the runner
+    uploads the result package to a presigned URL and reports back to the job's
+    callback URL. One runner can serve several models (``SimulationModel.runner``).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+    organization = models.ForeignKey(
+        "organizations.Organization", on_delete=models.PROTECT, related_name="simulation_runners"
+    )
+    name = models.CharField(max_length=255)
+    # Not URLField: Docker service names such as "bike-runner" have no TLD.
+    base_url = models.CharField(
+        max_length=500,
+        validators=[validate_service_url],
+        help_text="Runner root URL as TOSCA's worker reaches it, e.g. http://bike-runner:8080.",
+    )
+    token_encrypted = models.TextField(
+        blank=True, help_text="Bearer token TOSCA sends to the runner (stored encrypted)."
+    )
+    is_active = models.BooleanField(default=True)
+    max_concurrent_jobs = models.PositiveSmallIntegerField(
+        default=1, help_text="Jobs sent to the runner at the same time; the rest wait in TOSCA's queue."
+    )
+    timeout_minutes = models.PositiveIntegerField(
+        default=360, help_text="A job not finished this long after dispatch is marked failed."
+    )
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Simulation runner"
+        verbose_name_plural = "Simulation runners"
+
+    def __str__(self) -> str:
+        return self.name
+
+    def set_token(self, token: str) -> None:
+        from tosca_api.apps.geodata_providers.encryption import encrypt_value
+
+        self.token_encrypted = encrypt_value(token) if token else ""
+
+    def get_token(self) -> str:
+        from tosca_api.apps.geodata_providers.encryption import decrypt_value
+
+        return decrypt_value(self.token_encrypted) if self.token_encrypted else ""
+
+    def save(self, *args, **kwargs) -> None:
+        self.base_url = self.base_url.rstrip("/")
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class SimulationJob(TimeStampedModel):
+    """The background work for one run that a runner executes.
+
+    The worker dispatches ``pending`` jobs to the runner and imports
+    ``uploaded`` packages; the runner's callbacks move the job in between.
+    A row is also the queue entry (Postgres, ``SELECT … FOR UPDATE SKIP LOCKED``);
+    a Celery + Redis worker is planned to replace the polling loop later.
+    """
+
+    class State(models.TextChoices):
+        PENDING = "pending", "Waiting to be sent to the runner"
+        DISPATCHED = "dispatched", "Accepted by the runner"
+        RUNNING = "running", "Running"
+        UPLOADED = "uploaded", "Package uploaded, waiting for import"
+        IMPORTING = "importing", "Importing"
+        SUCCEEDED = "succeeded", "Succeeded"
+        FAILED = "failed", "Failed"
+
+    TERMINAL_STATES = frozenset({State.SUCCEEDED, State.FAILED})
+    AT_RUNNER_STATES = frozenset({State.DISPATCHED, State.RUNNING})
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+    run = models.OneToOneField(SimulationRun, on_delete=models.CASCADE, related_name="job")
+    runner = models.ForeignKey(SimulationRunner, on_delete=models.PROTECT, related_name="jobs")
+    state = models.CharField(max_length=20, choices=State.choices, default=State.PENDING, db_index=True)
+    attempts = models.PositiveSmallIntegerField(default=0, help_text="Dispatch attempts so far.")
+    runner_job_id = models.CharField(max_length=255, blank=True)
+    callback_token_hash = models.CharField(max_length=64, blank=True, editable=False)
+    upload_path = models.CharField(
+        max_length=1024, blank=True, help_text="Where the runner uploads the package (default storage)."
+    )
+    message = models.CharField(max_length=500, blank=True, help_text="Latest status message from the runner.")
+    error = models.TextField(blank=True)
+    available_at = models.DateTimeField(
+        default=timezone_now, db_index=True, help_text="The worker picks the job up from this moment."
+    )
+    locked_by = models.CharField(max_length=255, blank=True)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    dispatched_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    last_callback_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Simulation job"
+        verbose_name_plural = "Simulation jobs"
+
+    def __str__(self) -> str:
+        return f"{self.run} · {self.get_state_display()}"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.state in self.TERMINAL_STATES

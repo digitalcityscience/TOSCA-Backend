@@ -28,13 +28,16 @@ from tosca_api.apps.organizations.permissions import (
     resolve_write_organization,
 )
 
+from . import jobs
 from .importer import PackageImportError, import_package
 from .models import (
     SimulationAsset,
     SimulationComparison,
+    SimulationJob,
     SimulationModel,
     SimulationOutput,
     SimulationRun,
+    SimulationRunner,
 )
 from .packages import PackageValidationError
 
@@ -119,8 +122,8 @@ class SimulationModelAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
         (
             "Parameters",
             {
-                "fields": ("parameter_schema_display", "default_parameters_display"),
-                "description": "Set by imports; used by user-triggered runs (Phase 4).",
+                "fields": ("runner", "parameter_schema_display", "default_parameters_display"),
+                "description": "The runner executes runs started in TOSCA; the schema validates their parameters.",
             },
         ),
         ("Record", {"fields": ("created_by", "created_at", "updated_at")}),
@@ -135,6 +138,13 @@ class SimulationModelAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
 
     def get_queryset(self, request):
         return super().get_queryset(request).annotate(_run_count=Count("runs"))
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "runner" and not request.user.is_superuser:
+            _roles, org_slug, exempt = get_request_org_context(request)
+            if not exempt:
+                kwargs["queryset"] = SimulationRunner.objects.filter(organization__slug=org_slug)
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
     @admin.display(description="Runs", ordering="_run_count")
     def run_count(self, obj: SimulationModel) -> int:
@@ -197,6 +207,8 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         "params_hash",
         "execution_state",
         "execution_error",
+        "runner",
+        "job_link",
         "time_start",
         "time_end",
         "timezone",
@@ -217,6 +229,8 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
                 "fields": (
                     "execution_state",
                     "execution_error",
+                    "runner",
+                    "job_link",
                     "model_version",
                     "seed",
                     "params_hash",
@@ -331,6 +345,14 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         )
         return item
 
+    @admin.display(description="Job")
+    def job_link(self, obj: SimulationRun):
+        job = SimulationJob.objects.filter(run=obj).first()
+        if job is None:
+            return "— (imported)"
+        url = reverse("admin:geosimulations_simulationjob_change", args=[job.pk])
+        return format_html('<a href="{}">{}</a>', url, job.get_state_display())
+
     @admin.display(description="Parameters")
     def parameters_display(self, obj: SimulationRun):
         return _pretty_json(obj.parameters)
@@ -398,6 +420,94 @@ class SimulationComparisonAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     @admin.display(description="Package manifest")
     def manifest_display(self, obj: SimulationComparison):
         return _pretty_json(obj.manifest)
+
+
+class SimulationRunnerAdminForm(forms.ModelForm):
+    token = forms.CharField(
+        required=False,
+        widget=forms.PasswordInput(render_value=False),
+        help_text="Bearer token for the runner. Leave empty to keep the current one.",
+    )
+    clear_token = forms.BooleanField(required=False, help_text="Remove the stored token.")
+
+    class Meta:
+        model = SimulationRunner
+        fields = ["organization", "name", "base_url", "is_active", "max_concurrent_jobs", "timeout_minutes"]
+
+    def save(self, commit=True):
+        runner = super().save(commit=False)
+        if self.cleaned_data.get("clear_token"):
+            runner.set_token("")
+        elif self.cleaned_data.get("token"):
+            runner.set_token(self.cleaned_data["token"])
+        if commit:
+            runner.save()
+        return runner
+
+
+@admin.register(SimulationRunner)
+class SimulationRunnerAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
+    """External services that execute runs started in TOSCA."""
+
+    form = SimulationRunnerAdminForm
+    list_display = ("name", "base_url", "organization", "is_active", "max_concurrent_jobs", "has_token")
+    list_filter = ("is_active", "organization")
+    search_fields = ("name", "base_url")
+    actions = ["check_health"]
+
+    @admin.display(description="Token", boolean=True)
+    def has_token(self, obj: SimulationRunner) -> bool:
+        return bool(obj.token_encrypted)
+
+    @admin.action(description="Check that the selected runners answer")
+    def check_health(self, request, queryset):
+        import requests
+
+        for runner in queryset:
+            try:
+                response = requests.get(f"{runner.base_url}/health", timeout=5)
+                response.raise_for_status()
+                self.message_user(request, f"{runner.name}: OK ({response.text[:200]})")
+            except requests.RequestException as exc:
+                self.message_user(request, f"{runner.name}: {exc}", messages.ERROR)
+
+    def save_model(self, request, obj, form, change):
+        # OrganizationOwnedAdminMixin would set created_by, which runners do not have.
+        admin.ModelAdmin.save_model(self, request, obj, form, change)
+
+
+@admin.register(SimulationJob)
+class SimulationJobAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
+    """Background work of started runs; read-only apart from retrying failed jobs."""
+
+    org_lookup = "run__model__organization__slug"
+
+    list_display = ("run", "runner", "state", "attempts", "message", "updated_at")
+    list_filter = ("state", "runner")
+    search_fields = ("run__key", "run__title", "runner_job_id")
+    list_select_related = ("run", "runner")
+    actions = ["retry_jobs"]
+    readonly_fields = (
+        "id", "run", "runner", "state", "attempts", "runner_job_id", "upload_path", "message", "error",
+        "available_at", "locked_by", "locked_at", "dispatched_at", "started_at", "last_callback_at",
+        "finished_at", "created_at", "updated_at",
+    )
+    fields = readonly_fields
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.action(description="Retry the selected failed jobs")
+    def retry_jobs(self, request, queryset):
+        retried = 0
+        for job in queryset.select_related("run"):
+            try:
+                jobs.retry_job(job)
+                retried += 1
+            except jobs.RunSubmissionError as exc:
+                self.message_user(request, f"{job.run.key}: {exc}", messages.WARNING)
+        if retried:
+            self.message_user(request, f"Queued {retried} job(s) again.")
 
 
 @admin.register(SimulationAsset)

@@ -83,3 +83,30 @@ def copy_between(source_alias: str, target_alias: str, name: str) -> int:
 
 def delete(alias: str, name: str) -> None:
     storages[alias].delete(name)
+
+
+class UploadUrlUnavailable(Exception):
+    """The storage cannot issue upload URLs (filesystem storage)."""
+
+
+def presigned_upload_url(alias: str, name: str, *, content_type: str, expires_in: int) -> str:
+    """A URL a runner can ``PUT`` one object to, without TOSCA credentials.
+
+    The URL is signed for the storage's endpoint, so the runner must reach that
+    endpoint (in dev: the ``garage.localhost`` alias on the Docker network).
+    """
+    storage = storages[alias]
+    if not _s3(storage):
+        raise UploadUrlUnavailable("Runner uploads need S3 storage.")
+    return storage.connection.meta.client.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": storage.bucket_name, "Key": _key(storage, name), "ContentType": content_type},
+        ExpiresIn=expires_in,
+    )
+
+
+def download_to(alias: str, name: str, target: Path) -> None:
+    """Copy a stored object to a local file."""
+    with storages[alias].open(name, "rb") as source, target.open("wb") as handle:
+        for chunk in iter(lambda: source.read(1 << 20), b""):
+            handle.write(chunk)
