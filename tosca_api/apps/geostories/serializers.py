@@ -1,6 +1,9 @@
 import copy
+from zoneinfo import ZoneInfo
 
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ObjectDoesNotExist
+from django.utils import timezone
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
@@ -118,6 +121,7 @@ class GeoStorySceneSerializer(serializers.ModelSerializer):
     layers = serializers.SerializerMethodField()
     render_layers = serializers.SerializerMethodField()
     legend = serializers.SerializerMethodField()
+    simulation = serializers.SerializerMethodField()
 
     class Meta:
         model = GeoStoryScene
@@ -131,6 +135,7 @@ class GeoStorySceneSerializer(serializers.ModelSerializer):
             "layers",
             "render_layers",
             "legend",
+            "simulation",
         ]
         read_only_fields = fields
 
@@ -156,6 +161,53 @@ class GeoStorySceneSerializer(serializers.ModelSerializer):
 
     def get_legend(self, obj) -> list:
         return build_scene_legend(obj)
+
+    def get_simulation(self, obj) -> dict | None:
+        """A GeoSimulation run shown in the scene, in the simulation API's output shapes.
+
+        ``None`` when the scene has none, or when its run is no longer public.
+        """
+        try:
+            simulation = obj.simulation
+        except ObjectDoesNotExist:
+            return None
+        if not simulation.is_publicly_visible:
+            return None
+        from tosca_api.apps.geosimulations.models import SimulationOutput
+        from tosca_api.apps.geosimulations.serializers import SimulationOutputSerializer
+
+        run = simulation.run
+        context = {"request": self.context.get("request"), "now": self.context.get("now") or timezone.now()}
+        zone = ZoneInfo(run.timezone)
+        map_outputs = [
+            output for output in simulation.map_outputs.select_related("asset").order_by("display_order")
+        ]
+        replay = None
+        trips = run.outputs.filter(kind=SimulationOutput.Kind.TRIPS).select_related("asset").first()
+        if simulation.show_replay and trips is not None:
+            replay = {
+                "output": SimulationOutputSerializer(trips, context=context).data,
+                "start_s": simulation.replay_start_s or 0,
+                "end_s": simulation.replay_end_s if simulation.replay_end_s is not None else run.duration_seconds,
+                "playback_rate": simulation.playback_rate,
+                "loop": simulation.loop,
+            }
+        return {
+            "run": {
+                "id": str(run.pk),
+                "title": run.title,
+                "model": {"id": str(run.model_id), "title": run.model.title},
+            },
+            "time": {
+                "start": run.time_start.astimezone(zone).isoformat() if run.time_start else None,
+                "end": run.time_end.astimezone(zone).isoformat() if run.time_end else None,
+                "timezone": run.timezone,
+            },
+            "bounds": run.bounds,
+            "labels": (run.manifest or {}).get("labels", {}),
+            "map_outputs": SimulationOutputSerializer(map_outputs, many=True, context=context).data,
+            "replay": replay,
+        }
 
 
 class FeatureLinkSerializer(serializers.ModelSerializer):
@@ -251,7 +303,9 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
         return render_content_media_urls(obj.content, self.context.get("request"))
 
     def get_scenes(self, obj) -> list:
-        return GeoStorySceneSerializer(obj.scenes.all(), many=True).data
+        # One timestamp per response, so every presigned URL reports the same expiry.
+        context = {"request": self.context.get("request"), "now": timezone.now()}
+        return GeoStorySceneSerializer(obj.scenes.all(), many=True, context=context).data
 
     def get_map(self, obj) -> dict:
         """Sources, styles and sprites shared by every scene's ``render_layers``."""
