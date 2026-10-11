@@ -9,7 +9,7 @@ from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from .delivery import asset_url, file_url
-from .models import SimulationModel, SimulationOutput, SimulationRun
+from .models import SimulationComparison, SimulationModel, SimulationOutput, SimulationRun
 
 TRIPS_METADATA = ("agents", "encoding", "encoding_version", "vertices", "stops", "time_unit", "time_origin")
 
@@ -53,6 +53,28 @@ class SimulationRunSummarySerializer(serializers.ModelSerializer):
         return _time(run)
 
 
+class SimulationComparisonSummarySerializer(serializers.ModelSerializer):
+    baseline = serializers.SerializerMethodField()
+    candidate = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SimulationComparison
+        fields = ["id", "key", "title", "status", "baseline", "candidate", "created_at"]
+        read_only_fields = fields
+
+    @extend_schema_field(OpenApiTypes.OBJECT)
+    def get_baseline(self, comparison: SimulationComparison) -> dict:
+        return _run_ref(comparison.baseline_run)
+
+    @extend_schema_field(OpenApiTypes.OBJECT)
+    def get_candidate(self, comparison: SimulationComparison) -> dict:
+        return _run_ref(comparison.candidate_run)
+
+
+def _run_ref(run: SimulationRun) -> dict:
+    return {"id": str(run.pk), "key": run.key, "title": run.title}
+
+
 class SimulationModelListSerializer(serializers.ModelSerializer):
     run_count = serializers.IntegerField(read_only=True)
     preview_image_url = serializers.SerializerMethodField()
@@ -72,6 +94,7 @@ class SimulationModelListSerializer(serializers.ModelSerializer):
 class SimulationModelDetailSerializer(SimulationModelListSerializer):
     organization = serializers.SerializerMethodField()
     runs = serializers.SerializerMethodField()
+    comparisons = serializers.SerializerMethodField()
 
     class Meta(SimulationModelListSerializer.Meta):
         fields = SimulationModelListSerializer.Meta.fields + [
@@ -80,6 +103,7 @@ class SimulationModelDetailSerializer(SimulationModelListSerializer):
             "parameter_schema",
             "default_parameters",
             "runs",
+            "comparisons",
         ]
         read_only_fields = fields
 
@@ -92,6 +116,12 @@ class SimulationModelDetailSerializer(SimulationModelListSerializer):
         # The view passes the runs this caller may read, newest first.
         runs = self.context.get("readable_runs", [])
         return SimulationRunSummarySerializer(runs, many=True, context=self.context).data
+
+    @extend_schema_field(SimulationComparisonSummarySerializer(many=True))
+    def get_comparisons(self, model: SimulationModel) -> list[dict]:
+        # Comparisons this caller may read, newest first (both runs readable too).
+        comparisons = self.context.get("readable_comparisons", [])
+        return SimulationComparisonSummarySerializer(comparisons, many=True, context=self.context).data
 
 
 class SimulationOutputSerializer(serializers.BaseSerializer):
@@ -175,3 +205,57 @@ class SimulationRunDetailSerializer(serializers.ModelSerializer):
     @extend_schema_field({"type": "array", "items": {"type": "object"}})
     def get_outputs(self, run: SimulationRun) -> list[dict]:
         return SimulationOutputSerializer(run.outputs.all(), many=True, context=self.context).data
+
+
+class SimulationComparisonDetailSerializer(serializers.ModelSerializer):
+    model = _ModelRefSerializer(read_only=True)
+    baseline = serializers.SerializerMethodField()
+    candidate = serializers.SerializerMethodField()
+    labels = serializers.SerializerMethodField()
+    kpi_changes = serializers.SerializerMethodField()
+    outputs = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SimulationComparison
+        fields = [
+            "id",
+            "model",
+            "key",
+            "title",
+            "description_content",
+            "status",
+            "baseline",
+            "candidate",
+            "bounds",
+            "labels",
+            "kpi_changes",
+            "outputs",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    @extend_schema_field(SimulationRunSummarySerializer)
+    def get_baseline(self, comparison: SimulationComparison) -> dict:
+        return SimulationRunSummarySerializer(comparison.baseline_run, context=self.context).data
+
+    @extend_schema_field(SimulationRunSummarySerializer)
+    def get_candidate(self, comparison: SimulationComparison) -> dict:
+        return SimulationRunSummarySerializer(comparison.candidate_run, context=self.context).data
+
+    @extend_schema_field(OpenApiTypes.OBJECT)
+    def get_labels(self, comparison: SimulationComparison) -> dict:
+        """Both runs' labels, overridden by the comparison package's own."""
+        labels: dict = {}
+        for source in (comparison.baseline_run.manifest, comparison.candidate_run.manifest, comparison.manifest):
+            for attribute, values in ((source or {}).get("labels") or {}).items():
+                labels.setdefault(attribute, {}).update(values)
+        return labels
+
+    @extend_schema_field({"type": "array", "items": {"type": "object"}})
+    def get_kpi_changes(self, comparison: SimulationComparison) -> list[dict]:
+        return comparison.kpi_changes()
+
+    @extend_schema_field({"type": "array", "items": {"type": "object"}})
+    def get_outputs(self, comparison: SimulationComparison) -> list[dict]:
+        return SimulationOutputSerializer(comparison.outputs.all(), many=True, context=self.context).data

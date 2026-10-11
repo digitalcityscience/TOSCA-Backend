@@ -149,7 +149,7 @@ TOSCA_PERMISSION_MODELS = {
     # FK; runs reach it through model__organization, outputs through
     # run__model__organization, and assets through their owner_org FK.
     "geosimulations": {
-        "simulationmodel", "simulationrun", "simulationoutput", "simulationasset",
+        "simulationmodel", "simulationrun", "simulationcomparison", "simulationoutput", "simulationasset",
     },
 }
 TOSCA_ENTITLEABLE_APPS = set(TOSCA_PERMISSION_MODELS)

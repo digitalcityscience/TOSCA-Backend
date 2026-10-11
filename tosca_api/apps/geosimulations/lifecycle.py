@@ -1,4 +1,4 @@
-"""Keep a run's files in the bucket that matches its status.
+"""Keep a run's (or comparison's) files in the bucket that matches its status.
 
 Published runs live in ``media_public``, archived runs in ``media_archive``
 (when configured), everything else in the private ``default`` alias, the same
@@ -20,7 +20,7 @@ from django.conf import settings
 from tosca_api.apps.core.models import MediaAsset
 
 from . import storage
-from .models import SimulationAsset, SimulationRun, Status
+from .models import SimulationAsset, SimulationComparison, SimulationRun, Status
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,10 @@ class MoveResult:
     error: str = ""
 
 
-def desired_alias(run: SimulationRun) -> str:
-    if run.status == Status.PUBLISHED:
+def desired_alias(owner: SimulationRun | SimulationComparison) -> str:
+    if owner.status == Status.PUBLISHED:
         return MediaAsset.StorageAlias.PUBLIC
-    if run.status == Status.ARCHIVED and MediaAsset.StorageAlias.ARCHIVE in settings.STORAGES:
+    if owner.status == Status.ARCHIVED and MediaAsset.StorageAlias.ARCHIVE in settings.STORAGES:
         return MediaAsset.StorageAlias.ARCHIVE
     return MediaAsset.StorageAlias.DEFAULT
 
@@ -63,12 +63,14 @@ def move_asset(asset: SimulationAsset, target_alias: str) -> MoveResult:
     return MoveResult(str(asset.pk), old_alias, target_alias, moved=True)
 
 
-def sync_run_storage(run: SimulationRun) -> list[MoveResult]:
-    target = desired_alias(run)
-    results = [move_asset(asset, target) for asset in run.assets.all()]
+def sync_run_storage(owner: SimulationRun | SimulationComparison) -> list[MoveResult]:
+    """Move every file of a run or comparison to the bucket of its status."""
+    target = desired_alias(owner)
+    results = [move_asset(asset, target) for asset in owner.assets.all()]
     failures = [result for result in results if result.error]
     if failures:
         logger.error(
-            "Run %s storage sync to %s: %d of %d files failed", run.pk, target, len(failures), len(results)
+            "%s %s storage sync to %s: %d of %d files failed",
+            type(owner).__name__, owner.pk, target, len(failures), len(results),
         )
     return results

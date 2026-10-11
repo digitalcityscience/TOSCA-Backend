@@ -18,7 +18,9 @@ from tosca_api.apps.organizations.models import Organization, OrganizationAppEnt
 
 from .helpers import org
 
-MODELS = ("simulationmodel", "simulationrun", "simulationoutput", "simulationasset")
+MODELS = (
+    "simulationmodel", "simulationrun", "simulationcomparison", "simulationoutput", "simulationasset",
+)
 
 _migration = importlib.import_module(
     "tosca_api.apps.geosimulations.migrations.0002_seed_geosimulations_entitlements"

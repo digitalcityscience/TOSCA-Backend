@@ -213,7 +213,7 @@ def test_replacing_a_run_shown_in_a_story_is_refused(dcs, package_dir, cleanup, 
     scene = GeoStoryScene.objects.create(geostory=story, title="Scene")
     GeoStorySceneSimulation.objects.create(scene=scene, run=run)
 
-    with pytest.raises(PackageImportError, match="shown in GeoStory scenes"):
+    with pytest.raises(PackageImportError, match="used by GeoStory scenes"):
         import_package(package_dir, organization=dcs, replace=True)
 
     assert SimulationRun.objects.get().pk == run.pk

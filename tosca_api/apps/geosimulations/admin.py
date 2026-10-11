@@ -1,6 +1,6 @@
 """Admin for GeoSimulations (read-mostly).
 
-Runs, outputs, and assets enter through package imports
+Runs, comparisons, outputs, and assets enter through package imports
 (``import_simulation_package``, Task 12.3), so their admin only lets staff
 edit what is authored in TOSCA: titles, descriptions, and reader status.
 Every admin is row-scoped to the caller's organization.
@@ -29,7 +29,13 @@ from tosca_api.apps.organizations.permissions import (
 )
 
 from .importer import PackageImportError, import_package
-from .models import SimulationAsset, SimulationModel, SimulationOutput, SimulationRun
+from .models import (
+    SimulationAsset,
+    SimulationComparison,
+    SimulationModel,
+    SimulationOutput,
+    SimulationRun,
+)
 from .packages import PackageValidationError
 
 
@@ -59,7 +65,7 @@ class SimulationRunAdminForm(forms.ModelForm):
 class PackageImportForm(forms.Form):
     package = forms.FileField(
         help_text="A simulation package (.zip), for example written by geodata-science "
-        "bike-export-tosca."
+        "bike-export-tosca, or a comparison package of two runs imported before."
     )
     organization = forms.ModelChoiceField(
         queryset=Organization.objects.order_by("name"),
@@ -276,10 +282,11 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
             ):
                 form.add_error("replace", "Replacing a run needs permission to delete runs.")
             else:
-                run = self._import_upload(request, form, organization)
-                if run is not None:
+                item = self._import_upload(request, form, organization)
+                if item is not None:
+                    name = item._meta.model_name
                     return HttpResponseRedirect(
-                        reverse("admin:geosimulations_simulationrun_change", args=[run.pk])
+                        reverse(f"admin:geosimulations_{name}_change", args=[item.pk])
                     )
 
         context = {
@@ -316,12 +323,13 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
                 return None
         for warning in result.warnings:
             self.message_user(request, f"Warning: {warning}", messages.WARNING)
+        item = result.item
         self.message_user(
             request,
-            f"Imported '{result.run.title}' with {result.run.outputs.count()} outputs "
-            f"({result.run.get_status_display().lower()}).",
+            f"Imported {item._meta.verbose_name} '{item.title}' with {item.outputs.count()} "
+            f"outputs ({item.get_status_display().lower()}).",
         )
-        return result.run
+        return item
 
     @admin.display(description="Parameters")
     def parameters_display(self, obj: SimulationRun):
@@ -333,6 +341,62 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
 
     @admin.display(description="Package manifest")
     def manifest_display(self, obj: SimulationRun):
+        return _pretty_json(obj.manifest)
+
+
+class SimulationComparisonAdminForm(forms.ModelForm):
+    class Meta:
+        model = SimulationComparison
+        fields = ["title", "status", "description_content"]
+        widgets = {"description_content": EditorJsWidget(profile="description")}
+
+
+@admin.register(SimulationComparison)
+class SimulationComparisonAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
+    """Comparisons come from comparison packages (imported on the run list)."""
+
+    org_lookup = "model__organization__slug"
+
+    form = SimulationComparisonAdminForm
+    list_display = ("title", "model", "baseline_run", "candidate_run", "status", "created_at")
+    list_filter = ("status", "model")
+    search_fields = ("title", "key", "model__title", "baseline_run__title", "candidate_run__title")
+    list_select_related = ("model", "baseline_run", "candidate_run")
+    inlines = [SimulationOutputInline]
+    readonly_fields = (
+        "id",
+        "model",
+        "key",
+        "baseline_run",
+        "candidate_run",
+        "bounds",
+        "kpi_changes_display",
+        "manifest_display",
+        "created_by",
+        "created_at",
+        "updated_at",
+    )
+    fieldsets = (
+        (None, {"fields": ("id", "model", "key", "title", "status")}),
+        ("Runs", {"fields": ("baseline_run", "candidate_run", "bounds")}),
+        ("Description", {"fields": ("description_content",)}),
+        ("Results", {"fields": ("kpi_changes_display",)}),
+        (
+            "Provenance",
+            {"fields": ("manifest_display", "created_by", "created_at", "updated_at"),
+             "classes": ("collapse",)},
+        ),
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.display(description="Key figure changes")
+    def kpi_changes_display(self, obj: SimulationComparison):
+        return _pretty_json(obj.kpi_changes())
+
+    @admin.display(description="Package manifest")
+    def manifest_display(self, obj: SimulationComparison):
         return _pretty_json(obj.manifest)
 
 

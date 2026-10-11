@@ -6,7 +6,7 @@ from django.db import transaction
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
-from .models import SimulationAsset, SimulationRun
+from .models import SimulationAsset, SimulationComparison, SimulationRun
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,8 @@ def delete_stored_object(sender, instance: SimulationAsset, **kwargs) -> None:
 
 
 @receiver(pre_save, sender=SimulationRun)
-def capture_prior_status(sender, instance: SimulationRun, **kwargs) -> None:
+@receiver(pre_save, sender=SimulationComparison)
+def capture_prior_status(sender, instance, **kwargs) -> None:
     prior = None
     if instance.pk is not None:
         prior = sender.objects.filter(pk=instance.pk).values_list("status", flat=True).first()
@@ -36,18 +37,19 @@ def capture_prior_status(sender, instance: SimulationRun, **kwargs) -> None:
 
 
 @receiver(post_save, sender=SimulationRun)
-def move_files_on_status_change(sender, instance: SimulationRun, created, **kwargs) -> None:
+@receiver(post_save, sender=SimulationComparison)
+def move_files_on_status_change(sender, instance, created, **kwargs) -> None:
     prior = getattr(instance, _PRIOR_STATUS, None)
     if created or prior is None or prior == instance.status:
         return
-    run_id = instance.pk
+    owner_id = instance.pk
 
     def sync() -> None:
         from .lifecycle import sync_run_storage
 
-        run = SimulationRun.objects.filter(pk=run_id).first()
-        if run is not None:
-            sync_run_storage(run)
+        owner = sender.objects.filter(pk=owner_id).first()
+        if owner is not None:
+            sync_run_storage(owner)
 
     # After commit: a rolled-back status change must not move files.
     transaction.on_commit(sync)

@@ -1,4 +1,4 @@
-"""Import a TOSCA simulation package (directory or .zip) as a new simulation run."""
+"""Import a TOSCA simulation package (directory or .zip): a new run, or a comparison of two runs."""
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
@@ -16,10 +16,15 @@ class Command(BaseCommand):
         parser.add_argument("--organization", required=True, help="Owning organization slug")
         parser.add_argument("--user", help="Username recorded as the importer")
         parser.add_argument(
-            "--publish", action="store_true", help="Publish the run (and its model if needed)"
+            "--publish", action="store_true", help="Publish the run (and its model if needed) or the comparison"
         )
         parser.add_argument(
-            "--replace", action="store_true", help="Replace an existing run with the same key"
+            "--replace", action="store_true", help="Replace an existing run or comparison with the same key"
+        )
+        parser.add_argument(
+            "--skip-existing",
+            action="store_true",
+            help="Leave an existing run or comparison with the same key untouched (for seeding)",
         )
 
     def handle(self, *args, **options):
@@ -39,19 +44,28 @@ class Command(BaseCommand):
                 user=user,
                 publish=options["publish"],
                 replace=options["replace"],
+                skip_existing=options["skip_existing"],
             )
         except PackageValidationError as exc:
             raise CommandError(str(exc)) from exc
         except PackageImportError as exc:
             raise CommandError(f"Import failed: {exc}") from exc
 
-        run = result.run
+        item = result.item
+        if result.skipped:
+            self.stdout.write(f"Skipped: {item._meta.verbose_name} {item.key!r} already exists.")
+            return
         for warning in result.warnings:
             self.stdout.write(self.style.WARNING(f"Warning: {warning}"))
         model_note = " (new model)" if result.model_created else ""
-        self.stdout.write(f"Model:   {run.model.key}{model_note}")
-        self.stdout.write(f"Run:     {run.key} [{run.status}] {run.pk}")
-        for output in run.outputs.select_related("asset"):
+        self.stdout.write(f"Model:   {item.model.key}{model_note}")
+        if result.comparison is not None:
+            comparison = result.comparison
+            self.stdout.write(f"Compare: {comparison.key} [{comparison.status}] {comparison.pk}")
+            self.stdout.write(f"         {comparison.baseline_run.key} → {comparison.candidate_run.key}")
+        else:
+            self.stdout.write(f"Run:     {item.key} [{item.status}] {item.pk}")
+        for output in item.outputs.select_related("asset"):
             size = f" · {output.asset.size / 1e6:.2f} MB" if output.asset_id else ""
             self.stdout.write(f"Output:  {output.role:<20} {output.kind:<13}{size}")
         self.stdout.write(self.style.SUCCESS("Imported."))

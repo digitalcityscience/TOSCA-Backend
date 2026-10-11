@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +12,7 @@ from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
 
+from tosca_api.apps.geosimulations.importer import ImportResult
 from tosca_api.apps.geosimulations.models import (
     SimulationModel,
     SimulationOutput,
@@ -198,7 +198,7 @@ def test_import_button_and_page_need_add_permission(catalog):
 def test_import_derives_the_organization_and_redirects_to_the_run(catalog):
     client, user = _staff_client("dcs-writer", "dcs")
     run = catalog["own_run"]
-    result = SimpleNamespace(run=run, warnings=("Replay is large.",))
+    result = ImportResult(run=run, model_created=False, warnings=("Replay is large.",))
 
     with patch("tosca_api.apps.geosimulations.admin.import_package", return_value=result) as mocked:
         response = client.post(reverse(IMPORT_URL), {"package": _upload(), "publish": "on"})
