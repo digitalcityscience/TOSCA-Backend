@@ -5,7 +5,7 @@ from .base import *  # noqa: F401,F403
 DEBUG = True
 
 # Allow Postman reverse DNS lookup + testserver for tests
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '1.0.0.127.in-addr.arpa', 'testserver']
+ALLOWED_HOSTS = with_callback_host(['localhost', '127.0.0.1', '1.0.0.127.in-addr.arpa', 'testserver'])  # noqa: F405
 CORS_ALLOWED_ORIGINS = env.list(  # noqa: F405
     "DJANGO_CORS_ALLOWED_ORIGINS",
     default=["http://localhost:5173", "http://127.0.0.1:5173"],
