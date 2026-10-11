@@ -122,6 +122,7 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
         if self.action == "retrieve":
             queryset = queryset.select_related("campaign", "author")
             queryset = queryset.prefetch_related(
+                "scenes__simulation__run__model",
                 Prefetch(
                     "scenes__scene_layers",
                     queryset=GeoStorySceneLayer.objects.select_related(

@@ -12,8 +12,8 @@ from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin
 from tosca_api.apps.geocontext.widgets import EditorJsWidget
 from tosca_api.apps.core.editorjs import render_content_media_urls
 
-from .forms import GeoStorySceneLayerForm
-from .models import GeoStory, GeoStoryScene, GeoStorySceneLayer
+from .forms import GeoStorySceneLayerForm, GeoStorySceneSimulationForm
+from .models import GeoStory, GeoStoryScene, GeoStorySceneLayer, GeoStorySceneSimulation
 from .scene_editor import basemap_style, preview_view
 
 
@@ -187,6 +187,24 @@ class GeoStorySceneLayerInline(admin.StackedInline):
         js = ("geostories/js/admin_geostory_scene.js",)
 
 
+class GeoStorySceneSimulationInline(admin.StackedInline):
+    """At most one simulation run per scene: map layers plus a replay window."""
+
+    model = GeoStorySceneSimulation
+    form = GeoStorySceneSimulationForm
+    fields = (
+        "run",
+        "map_outputs",
+        ("show_replay", "loop"),
+        ("replay_start_s", "replay_end_s"),
+        "playback_rate",
+    )
+    extra = 0
+    max_num = 1
+    verbose_name = "Simulation"
+    verbose_name_plural = "Simulation (shown in the story, not in the preview above)"
+
+
 @admin.register(GeoStoryScene)
 class GeoStorySceneAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     org_lookup = "geostory__campaign__organization__slug"
@@ -194,7 +212,7 @@ class GeoStorySceneAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     list_display = ("title", "geostory", "order", "layer_count")
     search_fields = ("title", "geostory__title")
     autocomplete_fields = ("geostory",)
-    inlines = [GeoStorySceneLayerInline]
+    inlines = [GeoStorySceneLayerInline, GeoStorySceneSimulationInline]
     readonly_fields = ("story_link",)
     change_form_template = "admin/geostories/geostoryscene/change_form.html"
     fieldsets = (

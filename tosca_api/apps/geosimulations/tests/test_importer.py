@@ -199,3 +199,22 @@ def test_management_command(dcs, package_dir, cleanup, capsys):
         call_command("import_simulation_package", str(package_dir), "--organization", "dcs")
     with pytest.raises(CommandError, match="Unknown organization"):
         call_command("import_simulation_package", str(package_dir), "--organization", "nope")
+
+
+def test_replacing_a_run_shown_in_a_story_is_refused(dcs, package_dir, cleanup, django_user_model):
+    from tosca_api.apps.campaigns.models import Campaign
+    from tosca_api.apps.geostories.models import GeoStory, GeoStoryScene, GeoStorySceneSimulation
+
+    run = import_package(package_dir, organization=dcs, publish=True).run
+    author = django_user_model.objects.create_user(username="story-author")
+    story = GeoStory.objects.create(
+        title="Story", campaign=Campaign.objects.create(title="C", created_by=author), author=author
+    )
+    scene = GeoStoryScene.objects.create(geostory=story, title="Scene")
+    GeoStorySceneSimulation.objects.create(scene=scene, run=run)
+
+    with pytest.raises(PackageImportError, match="shown in GeoStory scenes"):
+        import_package(package_dir, organization=dcs, replace=True)
+
+    assert SimulationRun.objects.get().pk == run.pk
+    story.delete()

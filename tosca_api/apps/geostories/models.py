@@ -671,3 +671,107 @@ class GeoStorySceneLayer(TimeStampedModel):
                 self.display_order = max_order + 1
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+MAX_PLAYBACK_RATE = 3600
+
+
+class GeoStorySceneSimulation(TimeStampedModel):
+    """
+    A GeoSimulation run shown in a scene: some of its map layers and,
+    optionally, a looping window of its replay.
+
+    Kept apart from ``GeoStorySceneLayer`` (catalog layers with pinned styles
+    and feature selection): simulation layers are PMTiles files with their own
+    styles, so they share none of that machinery. The frontend draws them above
+    the scene's catalog layers.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+    scene = models.OneToOneField(
+        GeoStoryScene, on_delete=models.CASCADE, related_name="simulation"
+    )
+    # PROTECT: a story must not silently lose its simulation when a run is
+    # deleted or replaced; the import refuses with a clear message instead.
+    run = models.ForeignKey(
+        "geosimulations.SimulationRun",
+        on_delete=models.PROTECT,
+        related_name="geostory_scene_uses",
+    )
+    map_outputs = models.ManyToManyField(
+        "geosimulations.SimulationOutput",
+        blank=True,
+        related_name="geostory_scene_uses",
+        help_text="Map layers of the run to show in this scene.",
+    )
+    show_replay = models.BooleanField(default=True)
+    replay_start_s = models.FloatField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+        help_text="Seconds after the run's start; empty plays from the beginning.",
+    )
+    replay_end_s = models.FloatField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+        help_text="Seconds after the run's start; empty plays to the end.",
+    )
+    playback_rate = models.FloatField(
+        default=60,
+        validators=[MinValueValidator(1), MaxValueValidator(MAX_PLAYBACK_RATE)],
+        help_text="Simulated seconds per real second (60 = one minute per second).",
+    )
+    loop = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "GeoStory Scene Simulation"
+        verbose_name_plural = "GeoStory Scene Simulations"
+
+    def __str__(self) -> str:
+        return f"{self.scene} - {self.run}"
+
+    @property
+    def is_publicly_visible(self) -> bool:
+        from tosca_api.apps.geosimulations.models import Status
+
+        return self.run.status == Status.PUBLISHED and self.run.model.status == Status.PUBLISHED
+
+    def clean(self) -> None:
+        super().clean()
+        if self.run_id is None:
+            return
+        from tosca_api.apps.geosimulations.models import SimulationOutput
+
+        errors = {}
+        if not self.is_publicly_visible:
+            errors["run"] = "Only published runs of published simulation models can be shown in a story."
+        duration = self.run.duration_seconds
+        start = self.replay_start_s or 0.0
+        end = self.replay_end_s if self.replay_end_s is not None else duration
+        if duration is not None and end is not None and (start >= end or end > duration):
+            errors["replay_end_s"] = (
+                f"The replay window must lie within the run (0–{duration:.0f} s) and end after it starts."
+            )
+        if self.show_replay and not self.run.outputs.filter(kind=SimulationOutput.Kind.TRIPS).exists():
+            errors["show_replay"] = "This run has no replay."
+        if errors:
+            raise ValidationError(errors)
+
+    def clean_map_outputs(self, outputs) -> None:
+        """Checked by the form: many-to-many values are not on the instance during clean()."""
+        from tosca_api.apps.geosimulations.models import SimulationOutput
+
+        wrong = [
+            output.title
+            for output in outputs
+            if output.run_id != self.run_id or output.kind != SimulationOutput.Kind.VECTOR_LAYER
+        ]
+        if wrong:
+            raise ValidationError(
+                f"Only map layers of the selected run can be shown: {', '.join(wrong)}."
+            )
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        super().save(*args, **kwargs)

@@ -7,7 +7,7 @@ from tosca_api.apps.geodata_providers.admin import (
 )
 from tosca_api.apps.geodata_providers.models import LayerStyleAssignment
 
-from .models import GeoStorySceneLayer
+from .models import GeoStorySceneSimulation, GeoStorySceneLayer
 
 
 class GeoStorySceneLayerForm(forms.ModelForm):
@@ -61,3 +61,58 @@ class GeoStorySceneLayerForm(forms.ModelForm):
                 choices.append((value, value))
                 names.add(value)
         return choices
+
+
+class SimulationOutputChoiceField(forms.ModelMultipleChoiceField):
+    def label_from_instance(self, obj):
+        return f"{obj.run.title} · {obj.title}"
+
+
+class GeoStorySceneSimulationForm(forms.ModelForm):
+    """Choose a published run, its map layers, and the replay window for a scene."""
+
+    map_outputs = SimulationOutputChoiceField(
+        queryset=None,
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+        help_text="Map layers of the selected run. Shown above the scene's catalog layers.",
+    )
+
+    class Meta:
+        model = GeoStorySceneSimulation
+        fields = (
+            "run",
+            "map_outputs",
+            "show_replay",
+            "replay_start_s",
+            "replay_end_s",
+            "playback_rate",
+            "loop",
+        )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from tosca_api.apps.geosimulations.models import SimulationOutput, SimulationRun, Status
+
+        published_runs = SimulationRun.objects.filter(
+            status=Status.PUBLISHED, model__status=Status.PUBLISHED
+        )
+        self.fields["run"].queryset = published_runs.select_related("model")
+        outputs = SimulationOutput.objects.filter(
+            kind=SimulationOutput.Kind.VECTOR_LAYER, run__in=published_runs
+        ).select_related("run")
+        if self.instance.pk and self.instance.run_id:
+            outputs = outputs.filter(run_id=self.instance.run_id)
+        self.fields["map_outputs"].queryset = outputs.order_by("run__title", "display_order")
+
+    def clean(self):
+        cleaned_data = super().clean()
+        run = cleaned_data.get("run")
+        outputs = cleaned_data.get("map_outputs") or []
+        if run is not None:
+            self.instance.run = run
+            try:
+                self.instance.clean_map_outputs(outputs)
+            except forms.ValidationError as exc:
+                self.add_error("map_outputs", exc)
+        return cleaned_data

@@ -84,6 +84,11 @@ def _scene_post(story, *layer_rows):
         "scene_layers-INITIAL_FORMS": "0",
         "scene_layers-MIN_NUM_FORMS": "0",
         "scene_layers-MAX_NUM_FORMS": "1000",
+        # The optional simulation inline (GeoSimulations Task 12.9), left empty.
+        "simulation-TOTAL_FORMS": "0",
+        "simulation-INITIAL_FORMS": "0",
+        "simulation-MIN_NUM_FORMS": "0",
+        "simulation-MAX_NUM_FORMS": "1",
     }
     for index, row in enumerate(layer_rows):
         defaults = {

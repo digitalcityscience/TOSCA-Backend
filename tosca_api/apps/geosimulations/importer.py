@@ -22,6 +22,7 @@ from pathlib import Path
 
 from django.core.files.storage import storages
 from django.db import transaction
+from django.db.models import ProtectedError
 
 from tosca_api.apps.core.models import MediaAsset
 
@@ -151,7 +152,13 @@ class _PackageImporter:
             )
         # Its stored files are removed after commit (signals.delete_stored_object),
         # so a failed re-import keeps the old run intact.
-        existing.delete()
+        try:
+            existing.delete()
+        except ProtectedError as exc:
+            raise PackageImportError(
+                f"Run {existing.key!r} is shown in GeoStory scenes; remove it from those "
+                "scenes before replacing it."
+            ) from exc
 
     def _create_run(self, model: SimulationModel) -> SimulationRun:
         info = self.manifest["run"]
