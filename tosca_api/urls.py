@@ -39,6 +39,7 @@ urlpatterns = [
     path("api/v1/", include("tosca_api.apps.core.urls")),
     path("api/v1/", include("tosca_api.apps.footer.urls")),
     path("api/v1/", include("tosca_api.apps.geocontext.urls")),
+    path("api/v1/", include("tosca_api.apps.geosimulations.urls")),
     path('api/v1/catalog/', include('tosca_api.apps.catalog_api.urls'), name='catalog_api'),
     # Authentication is mounted at both root and accounts/ deliberately:
     # settings reference paths under both prefixes (LOGIN_REDIRECT_URL=
