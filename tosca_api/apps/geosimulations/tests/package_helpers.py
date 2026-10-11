@@ -167,3 +167,55 @@ def write_real_package(root: Path, manifest: dict | None = None) -> dict:
     manifest["files"]["layers.gpkg"] = _sha256(root / "layers.gpkg")
     write_manifest(root, manifest)
     return manifest
+
+
+def comparison_manifest(baseline_key: str = "baseline_v1", candidate_key: str = "candidate_v1") -> dict:
+    return {
+        "format": "tosca-simulation-package",
+        "format_version": 1,
+        "kind": "comparison",
+        "model": {"key": "hamburg-bike-abm", "version": "0.2.0", "title": "Hamburg bike simulation"},
+        "comparison": {
+            "key": "queues_vs_turn_queues",
+            "title": "Queues vs turn-aware queues",
+            "baseline": {"run_key": baseline_key},
+            "candidate": {"run_key": candidate_key},
+            "bounds": [9.73, 53.395, 10.325, 53.739],
+        },
+        "outputs": [
+            {
+                "role": "flow_change",
+                "kind": "vector_layer",
+                "title": "Change in cyclists per segment",
+                "path": "layers.gpkg",
+                "layer": "flow_change",
+                "geometry_type": "LineString",
+                "srid": 25832,
+                "features": 2,
+                "style_hint": "diverging:agent_count",
+            },
+            {"role": "summary", "kind": "table", "title": "Summary", "path": "tables/summary.csv"},
+        ],
+        "labels": {"bike": {"cargo": {"en": "Cargo bike (compared)"}}},
+    }
+
+
+def write_comparison_package(root: Path, manifest: dict | None = None, *, real_gpkg: bool = True) -> dict:
+    """A comparison package: one difference layer and one table."""
+    root.mkdir(parents=True, exist_ok=True)
+    if real_gpkg:
+        write_real_gpkg(root / "layers.gpkg", layer="flow_change")
+    else:
+        write_gpkg(root / "layers.gpkg", {"flow_change": ("LINESTRING", 25832, 2)})
+    (root / "tables").mkdir(exist_ok=True)
+    (root / "tables" / "summary.csv").write_text(
+        "scenario,mean_trip_time_min\nbaseline,21.5\ncandidate,23.0\n", encoding="utf-8"
+    )
+    manifest = manifest or comparison_manifest()
+    manifest["files"] = {
+        path.relative_to(root).as_posix(): _sha256(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.name != "manifest.json"
+    }
+    write_manifest(root, manifest)
+    return manifest

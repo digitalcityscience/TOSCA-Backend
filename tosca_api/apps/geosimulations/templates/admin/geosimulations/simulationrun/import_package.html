@@ -14,7 +14,8 @@
 <div id="content-main">
   <p>The package is validated first; nothing is stored if it is invalid. Map layers are converted
   to vector tiles, so large runs can take a minute. The run is created as a <strong>draft</strong>
-  unless you publish it here.</p>
+  unless you publish it here. A comparison package needs both of its runs imported first; publishing
+  it needs both runs published.</p>
   <form method="post" enctype="multipart/form-data">{% csrf_token %}
     {% if form.non_field_errors %}<p class="errornote">{{ form.non_field_errors|join:" " }}</p>{% endif %}
     <fieldset class="module aligned">

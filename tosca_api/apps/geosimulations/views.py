@@ -2,7 +2,8 @@
 
 Reads are open. What a caller sees follows the 12.1 visibility rules:
 anonymous readers get published models and runs (a run also needs a published
-model); members additionally see their own organization's drafts and archives;
+model, a comparison its model and both runs published); members additionally
+see their own organization's drafts and archives;
 platform-exempt callers see everything. Anything else is a 404, never a 403.
 """
 
@@ -17,8 +18,10 @@ from rest_framework.permissions import AllowAny
 
 from tosca_api.apps.organizations.permissions import get_request_org_context
 
-from .models import SimulationModel, SimulationOutput, SimulationRun
+from .models import SimulationComparison, SimulationModel, SimulationOutput, SimulationRun
 from .serializers import (
+    SimulationComparisonDetailSerializer,
+    SimulationComparisonSummarySerializer,
     SimulationModelDetailSerializer,
     SimulationModelListSerializer,
     SimulationRunDetailSerializer,
@@ -74,12 +77,27 @@ class SimulationModelViewSet(viewsets.ReadOnlyModelViewSet):
     def get_serializer_context(self):
         context = super().get_serializer_context()
         if self.action == "retrieve" and "pk" in self.kwargs:
+            scope = _reader_scope(self.request)
             context["readable_runs"] = (
-                SimulationRun.objects.readable_by(**_reader_scope(self.request))
+                SimulationRun.objects.readable_by(**scope)
                 .filter(model_id=self.kwargs["pk"])
                 .order_by("-created_at")
             )
+            context["readable_comparisons"] = (
+                _readable_comparisons(scope)
+                .filter(model_id=self.kwargs["pk"])
+                .select_related("baseline_run", "candidate_run")
+                .order_by("-created_at")
+            )
         return context
+
+
+def _readable_comparisons(scope: dict):
+    """Comparisons the caller may read whose two runs the caller may read too."""
+    readable_runs = SimulationRun.objects.readable_by(**scope)
+    return SimulationComparison.objects.readable_by(**scope).filter(
+        baseline_run__in=readable_runs, candidate_run__in=readable_runs
+    )
 
 
 @extend_schema_view(
@@ -118,4 +136,48 @@ class SimulationRunViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_serializer_context(self):
         # One timestamp per response, so every URL reports the same expiry.
+        return {**super().get_serializer_context(), "now": timezone.now()}
+
+
+@extend_schema_view(
+    list=extend_schema(
+        summary="List simulation comparisons the caller may read",
+        tags=["GeoSimulations"],
+        parameters=[
+            OpenApiParameter("model", str, description="Only comparisons of this model id"),
+            OpenApiParameter("run", str, description="Only comparisons with this run on either side"),
+        ],
+    ),
+    retrieve=extend_schema(
+        summary="Simulation comparison with both runs, KPI changes and outputs",
+        tags=["GeoSimulations"],
+    ),
+)
+class SimulationComparisonViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [AllowAny]
+    pagination_class = NewestCursorPagination
+    lookup_value_regex = UUID_PATTERN
+
+    def get_queryset(self):
+        queryset = _readable_comparisons(_reader_scope(self.request)).select_related(
+            "model", "baseline_run", "candidate_run"
+        )
+        model_id = self.request.query_params.get("model")
+        if model_id:
+            queryset = queryset.filter(model_id=model_id)
+        run_id = self.request.query_params.get("run")
+        if run_id:
+            queryset = queryset.filter(Q(baseline_run_id=run_id) | Q(candidate_run_id=run_id))
+        if self.action == "retrieve":
+            queryset = queryset.prefetch_related(
+                Prefetch("outputs", queryset=SimulationOutput.objects.select_related("asset"))
+            )
+        return queryset
+
+    def get_serializer_class(self):
+        if self.action == "retrieve":
+            return SimulationComparisonDetailSerializer
+        return SimulationComparisonSummarySerializer
+
+    def get_serializer_context(self):
         return {**super().get_serializer_context(), "now": timezone.now()}

@@ -1,7 +1,8 @@
 """Validate TOSCA simulation packages before anything is imported.
 
 A package is a directory or ``.zip`` with ``manifest.json`` at its root (format
-v1, ``schemas/package-manifest-v1.schema.json``). Packages are untrusted input:
+v1, ``schemas/package-manifest-v1.schema.json``). It holds one run, or (``kind:
+"comparison"``) a comparison of two runs that were imported before. Packages are untrusted input:
 today an admin uploads them, later a runner service produces them for runs that
 frontend users start. Validation therefore never trusts paths, sizes, or
 archive members, and it runs without a request so the admin, the import command,
@@ -92,6 +93,10 @@ class ValidatedPackage:
     root: Path
     manifest: dict
     warnings: tuple[PackageIssue, ...] = field(default=())
+
+    @property
+    def kind(self) -> str:
+        return self.manifest.get("kind", "run")
 
     @property
     def outputs(self) -> list[dict]:
@@ -201,7 +206,10 @@ def validate_package_dir(root: str | Path, *, limits: PackageLimits | None = Non
 
     issues: list[PackageIssue] = []
     warnings: list[PackageIssue] = []
-    _check_run(manifest["run"], issues)
+    if "run" in manifest:
+        _check_run(manifest["run"], issues)
+    else:
+        _check_comparison(manifest["comparison"], issues)
     _check_files(root, manifest, limits, issues)
     roles: set[str] = set()
     for index, output in enumerate(manifest["outputs"]):
@@ -273,6 +281,16 @@ def _check_run(run: dict, issues: list[PackageIssue]) -> None:
             validate_bounds(run["bounds"])
         except ValidationError as exc:
             issues.append(PackageIssue("run.bounds", exc.messages[0]))
+
+
+def _check_comparison(comparison: dict, issues: list[PackageIssue]) -> None:
+    if comparison["baseline"]["run_key"] == comparison["candidate"]["run_key"]:
+        issues.append(PackageIssue("comparison.candidate.run_key", "Compare two different runs."))
+    if "bounds" in comparison:
+        try:
+            validate_bounds(comparison["bounds"])
+        except ValidationError as exc:
+            issues.append(PackageIssue("comparison.bounds", exc.messages[0]))
 
 
 def _check_files(root: Path, manifest: dict, limits: PackageLimits, issues: list[PackageIssue]) -> None:

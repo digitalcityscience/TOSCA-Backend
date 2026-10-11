@@ -13,6 +13,8 @@ Producers choose a template with the manifest's ``style_hint``:
 ``proportional:<attr>``    point radius / line width scaled continuously
 ``categorical:<attr>``     one colour per value (up to 10, the rest grey)
 ``heatmap:<attr>``         MapLibre heatmap weighted by a numeric attribute
+``diverging:<attr>``       changes around zero (comparisons): decreases blue,
+                           increases red, small changes faint
 ``simple`` / missing       one colour per geometry type
 =========================  =====================================================
 
@@ -39,12 +41,15 @@ CATEGORICAL = [
     "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f",
     "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ac",
 ]
+# Diverging, decrease to increase (ColorBrewer RdBu, reversed); the middle class
+# (little or no change) is a faint neutral.
+DIVERGING = ["#2166ac", "#92c5de", "#d1d5db", "#f4a582", "#b2182b"]
 HEATMAP_RAMP = ["rgba(33,102,172,0)", "#67a9cf", "#d1e5f0", "#fddbc7", "#ef8a62", "#b2182b"]
 LINE_WIDTHS = [1, 2, 3, 4.5, 6]
 MAX_CLASSES = 5
 MAX_CATEGORIES = len(CATEGORICAL)
-HINT_KINDS = {"graduated", "choropleth", "proportional", "categorical", "heatmap", "simple"}
-NUMERIC_KINDS = {"graduated", "choropleth", "proportional", "heatmap"}
+HINT_KINDS = {"graduated", "choropleth", "proportional", "categorical", "heatmap", "diverging", "simple"}
+NUMERIC_KINDS = {"graduated", "choropleth", "proportional", "heatmap", "diverging"}
 
 
 @dataclass
@@ -121,6 +126,8 @@ def build_style(
 
     if kind == "categorical":
         result = categorical_style(role, title, base, values, labels or {})
+    elif kind == "diverging":
+        result = diverging_style(role, title, base, values)
     elif kind == "heatmap":
         result = heatmap_style(role, title, values)
     elif kind == "proportional":
@@ -522,4 +529,99 @@ def heatmap_style(role: str, title: str, values: AttributeValues) -> StyleResult
         "colors": HEATMAP_RAMP[1:],
         "items": [{"label": "Low", "value": 0}, {"label": "High", "value": high}],
     }
+    return StyleResult(style, legend)
+
+
+def diverging_thresholds(values: list[float]) -> tuple[float, float] | None:
+    """Rounded magnitudes ``(small, large)`` splitting changes into five symmetric classes.
+
+    ``small`` is the typical change (median of the non-zero magnitudes) and
+    ``large`` the top tenth; changes within ±small read as "about the same".
+    """
+    magnitudes = sorted(abs(value) for value in values if value != 0)
+    if not magnitudes:
+        return None
+    small = _nice(statistics.median(magnitudes))
+    large = _nice(statistics.quantiles(magnitudes, n=10, method="inclusive")[-1]) if len(magnitudes) > 1 else small
+    if large <= small:
+        large = _nice(small * 2.5)
+        if large <= small:
+            large = small * 2
+    return small, large
+
+
+def _signed(value: float) -> str:
+    return f"+{_format(value)}" if value > 0 else _format(value).replace("-", "−")
+
+
+def diverging_style(role: str, title: str, base: str, values: AttributeValues) -> StyleResult:
+    attribute = values.name
+    thresholds = diverging_thresholds(values.values)
+    metadata = _legend_meta(title)
+    value = ["to-number", ["get", attribute], 0]
+    if thresholds is None:
+        breaks, colors = [], [DIVERGING[2]]
+        items = [{"color": DIVERGING[2], "label": "No change", "min": 0, "max": 0}]
+    else:
+        small, large = thresholds
+        breaks, colors = [-large, -small, small, large], DIVERGING
+        items = [
+            {"color": DIVERGING[0], "label": f"< {_signed(-large)}", "max": -large},
+            {"color": DIVERGING[1], "label": f"{_signed(-large)} – {_signed(-small)}", "min": -large, "max": -small},
+            {"color": DIVERGING[2], "label": f"{_signed(-small)} – {_signed(small)}", "min": -small, "max": small},
+            {"color": DIVERGING[3], "label": f"{_signed(small)} – {_signed(large)}", "min": small, "max": large},
+            {"color": DIVERGING[4], "label": f"≥ {_signed(large)}", "min": large},
+        ]
+    color = _step(attribute, colors, breaks)
+    # Bigger changes draw on top.
+    magnitude = ["abs", value]
+    if base == "LineString":
+        width = _step(attribute, [4.5, 3, 1, 3, 4.5], breaks) if breaks else 1
+        style = [
+            {
+                "id": f"{role}-line",
+                "type": "line",
+                "metadata": metadata,
+                "layout": {"line-cap": "round", "line-join": "round", "line-sort-key": magnitude},
+                "paint": {
+                    "line-color": color,
+                    "line-width": [
+                        "interpolate", ["linear"], ["zoom"],
+                        8, ["*", 0.5, width],
+                        14, ["*", 1.5, width],
+                    ],
+                },
+            }
+        ]
+    elif base == "Point":
+        style = [
+            {
+                "id": f"{role}-circle",
+                "type": "circle",
+                "metadata": metadata,
+                "layout": {"circle-sort-key": magnitude},
+                "paint": {
+                    "circle-radius": _step(attribute, [7, 5, 3, 5, 7], breaks) if breaks else 3,
+                    "circle-color": color,
+                    "circle-stroke-color": "#ffffff",
+                    "circle-stroke-width": 1,
+                },
+            }
+        ]
+    else:
+        style = [
+            {
+                "id": f"{role}-fill",
+                "type": "fill",
+                "metadata": metadata,
+                "paint": {"fill-color": color, "fill-opacity": 0.7},
+            },
+            {
+                "id": f"{role}-outline",
+                "type": "line",
+                "metadata": metadata,
+                "paint": {"line-color": "#ffffff", "line-width": 0.5, "line-opacity": 0.8},
+            },
+        ]
+    legend = {"type": "diverging", "title": title, "attribute": attribute, "geometry": base, "items": items}
     return StyleResult(style, legend)

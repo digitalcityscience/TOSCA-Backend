@@ -2,12 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://tosca.digitalcityscience.de/schemas/geosimulations/package-manifest-v1.schema.json",
   "title": "TOSCA simulation package manifest, format v1",
-  "description": "manifest.json at the root of a TOSCA simulation package. Producers write it; TOSCA validates it before importing anything. Unknown top-level and per-output fields are allowed and stored for provenance; unknown output kinds are rejected. Rules a schema cannot express (unique roles, files on disk, checksums, timezone names, time order) are checked by tosca_api.apps.geosimulations.packages.",
+  "description": "manifest.json at the root of a TOSCA simulation package. Producers write it; TOSCA validates it before importing anything. Unknown top-level and per-output fields are allowed and stored for provenance; unknown output kinds are rejected. Rules a schema cannot express (unique roles, files on disk, checksums, timezone names, time order) are checked by tosca_api.apps.geosimulations.packages. A package holds one run (kind \"run\", the default) or a comparison of two runs that TOSCA already has (kind \"comparison\").",
   "type": "object",
-  "required": ["format", "format_version", "model", "run", "outputs", "files"],
+  "required": ["format", "format_version", "model", "outputs", "files"],
   "properties": {
     "format": { "const": "tosca-simulation-package" },
     "format_version": { "const": 1 },
+    "kind": { "enum": ["run", "comparison"], "default": "run" },
     "model": {
       "type": "object",
       "required": ["key", "version", "title"],
@@ -56,6 +57,24 @@
         }
       }
     },
+    "comparison": {
+      "description": "Two runs of the same model, referenced by their run keys; both must already be imported.",
+      "type": "object",
+      "required": ["key", "title", "baseline", "candidate"],
+      "properties": {
+        "key": { "$ref": "#/$defs/slug", "maxLength": 200 },
+        "title": { "$ref": "#/$defs/title" },
+        "created_at": { "type": "string", "minLength": 1 },
+        "baseline": { "$ref": "#/$defs/run_ref" },
+        "candidate": { "$ref": "#/$defs/run_ref" },
+        "bounds": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 4
+        }
+      }
+    },
     "outputs": {
       "type": "array",
       "minItems": 1,
@@ -81,7 +100,33 @@
     },
     "provenance": { "type": "object" }
   },
+  "if": {
+    "required": ["kind"],
+    "properties": { "kind": { "const": "comparison" } }
+  },
+  "then": {
+    "required": ["comparison"],
+    "not": { "required": ["run"] },
+    "properties": {
+      "outputs": {
+        "items": {
+          "properties": {
+            "kind": { "enum": ["vector_layer", "table", "image"] }
+          }
+        }
+      }
+    }
+  },
+  "else": {
+    "required": ["run"],
+    "not": { "required": ["comparison"] }
+  },
   "$defs": {
+    "run_ref": {
+      "type": "object",
+      "required": ["run_key"],
+      "properties": { "run_key": { "$ref": "#/$defs/slug", "maxLength": 200 } }
+    },
     "slug": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "minLength": 1 },
     "title": { "type": "string", "minLength": 1, "maxLength": 255 },
     "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
