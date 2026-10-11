@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from django.core.files import File
 from django.core.files.storage import storages
 from django.db import transaction
 
@@ -33,6 +32,7 @@ from .models import (
     SimulationRun,
     Status,
 )
+from . import storage
 from .packages import PackageLimits, ValidatedPackage, open_package
 from .styles import build_style
 from .tiles import TileBuildError, build_pmtiles
@@ -232,16 +232,19 @@ class _PackageImporter:
             return self._store(run, archive_path, "package.zip", mime="application/zip")
 
     def _store(self, run: SimulationRun, path: Path, name: str, *, mime: str | None = None) -> SimulationAsset:
-        storage = storages[self.alias]
+        guessed_type, encoding = mimetypes.guess_type(name)
+        content_type = mime or guessed_type or "application/octet-stream"
         key = f"geosimulations/{self.organization.slug}/{run.pk}/{name}"
-        with path.open("rb") as handle:
-            stored_name = storage.save(key, File(handle, name=Path(name).name))
+        # A gzip replay is stored with Content-Encoding, so browsers hand over JSON.
+        stored_name = storage.upload_file(
+            self.alias, key, path, content_type=content_type, content_encoding=encoding
+        )
         self.uploaded.append((self.alias, stored_name))
         return SimulationAsset.objects.create(
             run=run,
             storage_path=stored_name,
             original_name=Path(name).name,
-            mime=mime or mimetypes.guess_type(name)[0] or "application/octet-stream",
+            mime=content_type,
             size=path.stat().st_size,
             sha256=_sha256(path),
             storage_alias=self.alias,

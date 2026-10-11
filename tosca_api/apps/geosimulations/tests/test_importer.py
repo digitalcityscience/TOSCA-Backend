@@ -14,6 +14,7 @@ import pytest
 from django.core.files.storage import storages
 from django.core.management import CommandError, call_command
 
+from tosca_api.apps.geosimulations import storage as storage_ops
 from tosca_api.apps.geosimulations.importer import PackageImportError, import_package
 from tosca_api.apps.geosimulations.models import (
     SimulationAsset,
@@ -151,15 +152,15 @@ def test_reimport_needs_replace_and_replace_swaps_the_run(
 
 def test_failed_import_leaves_no_rows_or_files(dcs, package_dir, cleanup):
     saved = []
-    original_save = storages["default"].save
+    original_upload = storage_ops.upload_file
 
-    def tracking_save(name, content, *args, **kwargs):
-        stored = original_save(name, content, *args, **kwargs)
+    def tracking_upload(alias, name, path, **kwargs):
+        stored = original_upload(alias, name, path, **kwargs)
         saved.append(stored)
         return stored
 
     with (
-        patch.object(storages["default"], "save", side_effect=tracking_save),
+        patch.object(storage_ops, "upload_file", side_effect=tracking_upload),
         patch(
             "tosca_api.apps.geosimulations.importer.build_pmtiles",
             side_effect=TileBuildError("Tiling 'bike_flow' failed: boom"),
