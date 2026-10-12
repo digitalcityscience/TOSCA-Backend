@@ -130,7 +130,7 @@ def test_run_admin_edits_only_authored_fields(catalog):
     url = reverse("admin:geosimulations_simulationrun_change", args=[run.pk])
 
     page = client.get(url)
-    assert set(page.context["adminform"].form.fields) == {"title", "status", "description_content"}
+    assert set(page.context["adminform"].form.fields) == {"title", "status", "visibility", "description_content"}
     assert "16681 LineString features · z8–15" in page.content.decode()
 
     response = client.post(
@@ -138,6 +138,7 @@ def test_run_admin_edits_only_authored_fields(catalog):
         {
             "title": "Renamed run",
             "status": Status.PUBLISHED,
+            "visibility": "organization",
             "description_content": json.dumps(DESCRIPTION),
             # Read-only values in the post must be ignored.
             "key": "hijacked",

@@ -109,7 +109,7 @@ class SimulationModelQuerySet(models.QuerySet):
     def published(self):
         return self.filter(status=Status.PUBLISHED)
 
-    def readable_by(self, *, org_slug: str | None, exempt: bool = False):
+    def readable_by(self, *, org_slug: str | None, exempt: bool = False, user=None):
         """Published models, plus every model of the caller's own organization."""
         if exempt:
             return self
@@ -169,6 +169,11 @@ class SimulationModel(TimeStampedModel):
         related_name="models",
         help_text="Service that runs this model when users start runs. Without one, runs are only imported.",
     )
+    runner_version = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Model version the runner reports (synced from its /models); recorded on started runs.",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -214,20 +219,25 @@ class SimulationRunQuerySet(models.QuerySet):
         """Runs a reader with no elevated access sees: run *and* model published."""
         return self.filter(status=Status.PUBLISHED, model__status=Status.PUBLISHED)
 
-    def readable_by(self, *, org_slug: str | None, exempt: bool = False):
-        """Published runs, plus every run of the caller's own organization.
+    def readable_by(self, *, org_slug: str | None, exempt: bool = False, user=None):
+        """Published runs, the caller's own runs, and the organization's shared runs.
 
-        Cross-organization drafts never enter the queryset, so detail views
-        answer 404 rather than 403 (same rule as GeoStories).
+        A run with ``organization`` visibility (imported runs) is readable by
+        every member of its model's organization; a ``private`` run (runs users
+        start) only by the user who started it, until staff publish it.
+        Unreadable runs never enter the queryset, so detail views answer 404
+        rather than 403 (same rule as GeoStories).
         """
         if exempt:
             return self
-        if not org_slug:
-            return self.published()
-        return self.filter(
-            Q(status=Status.PUBLISHED, model__status=Status.PUBLISHED)
-            | Q(model__organization__slug=org_slug)
-        )
+        readable = Q(status=Status.PUBLISHED, model__status=Status.PUBLISHED)
+        if org_slug:
+            readable |= Q(
+                visibility=SimulationRun.Visibility.ORGANIZATION, model__organization__slug=org_slug
+            )
+        if user is not None and getattr(user, "is_authenticated", False):
+            readable |= Q(created_by=user)
+        return self.filter(readable)
 
 
 class SimulationRun(TimeStampedModel):
@@ -241,6 +251,11 @@ class SimulationRun(TimeStampedModel):
         FAILED = "failed", "Failed"
 
     COMPLETE_STATES = frozenset({ExecutionState.IMPORTED, ExecutionState.SUCCEEDED})
+    ACTIVE_STATES = frozenset({ExecutionState.QUEUED, ExecutionState.RUNNING})
+
+    class Visibility(models.TextChoices):
+        ORGANIZATION = "organization", "Organization (members of the model's organization)"
+        PRIVATE = "private", "Private (only the user who started it)"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     objects = SimulationRunQuerySet.as_manager()
@@ -265,6 +280,12 @@ class SimulationRun(TimeStampedModel):
     seed = models.BigIntegerField(null=True, blank=True)
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True
+    )
+    visibility = models.CharField(
+        max_length=20,
+        choices=Visibility.choices,
+        default=Visibility.ORGANIZATION,
+        help_text="Who reads the run before it is published. Publishing makes it public either way.",
     )
     execution_state = models.CharField(
         max_length=20, choices=ExecutionState.choices, default=ExecutionState.IMPORTED
@@ -303,6 +324,14 @@ class SimulationRun(TimeStampedModel):
         blank=True,
         related_name="runs",
         help_text="Service that executed the run; empty for imported runs.",
+    )
+    submitted_org = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Organization the starting user acted for (organization quotas); empty for imports.",
     )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -380,7 +409,7 @@ class SimulationComparisonQuerySet(models.QuerySet):
             candidate_run__status=Status.PUBLISHED,
         )
 
-    def readable_by(self, *, org_slug: str | None, exempt: bool = False):
+    def readable_by(self, *, org_slug: str | None, exempt: bool = False, user=None):
         """Published comparisons, plus every comparison of the caller's own organization."""
         if exempt:
             return self

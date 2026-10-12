@@ -21,6 +21,7 @@ import logging
 import secrets
 import socket
 import tempfile
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -29,7 +30,7 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.core.files.storage import storages
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Case, Q, When
 from django.urls import reverse
 from django.utils import timezone
 from jsonschema import Draft202012Validator
@@ -55,6 +56,29 @@ ExecutionState = SimulationRun.ExecutionState
 class RunSubmissionError(Exception):
     """The run cannot be started (no runner, invalid parameters)."""
 
+    def __init__(self, message: str, *, errors: list[str] | None = None):
+        super().__init__(message)
+        self.errors = errors or [message]
+
+
+class RunnerUnavailable(RunSubmissionError):
+    """The model has no active runner, so runs cannot be started."""
+
+
+class QuotaExceeded(RunSubmissionError):
+    """Too many runs in progress or started today; try again after ``retry_after`` seconds."""
+
+    def __init__(self, message: str, *, retry_after: int):
+        super().__init__(message)
+        self.retry_after = max(1, retry_after)
+
+
+@dataclass(frozen=True)
+class StartResult:
+    run: SimulationRun
+    #: An identical readable run was returned instead of starting a new one.
+    reused: bool
+
 
 def _worker_settings() -> dict:
     return settings.GEOSIMULATIONS_WORKER
@@ -76,35 +100,164 @@ def parameter_errors(model: SimulationModel, parameters: dict) -> list[str]:
     ]
 
 
+def resolve_parameters(model: SimulationModel, parameters: dict) -> dict:
+    """The model's defaults overridden by ``parameters``, validated; raises ``RunSubmissionError``.
+
+    Runs store resolved parameters, so a request that spells out a default and
+    one that leaves it out get the same ``params_hash``.
+    """
+    if not isinstance(parameters, dict):
+        raise RunSubmissionError("Parameters must be a JSON object.")
+    resolved = {**(model.default_parameters or {}), **parameters}
+    errors = parameter_errors(model, resolved)
+    if errors:
+        raise RunSubmissionError("Invalid parameters: " + "; ".join(errors), errors=errors)
+    return resolved
+
+
+def _require_runner(model: SimulationModel):
+    runner = model.runner
+    if runner is None or not runner.is_active:
+        raise RunnerUnavailable(f"Simulation model {model.key!r} has no active runner.")
+    return runner
+
+
 def submit_run(
     model: SimulationModel,
     parameters: dict,
     *,
     user=None,
+    organization=None,
     title: str | None = None,
     seed: int | None = None,
+    visibility: str = SimulationRun.Visibility.ORGANIZATION,
 ) -> SimulationRun:
     """Create a queued run and its pending job; the worker sends it to the model's runner."""
-    runner = model.runner
-    if runner is None or not runner.is_active:
-        raise RunSubmissionError(f"Simulation model {model.key!r} has no active runner.")
-    errors = parameter_errors(model, parameters)
-    if errors:
-        raise RunSubmissionError("Invalid parameters: " + "; ".join(errors))
+    runner = _require_runner(model)
+    resolved = resolve_parameters(model, parameters)
     started = timezone.now()
     with transaction.atomic():
         run = SimulationRun.objects.create(
             model=model,
             key=f"run-{started:%Y%m%d-%H%M%S}-{secrets.token_hex(3)}",
             title=title or f"{model.title} — {timezone.localtime(started):%Y-%m-%d %H:%M}",
-            parameters=parameters,
+            model_version=model.runner_version,
+            parameters=resolved,
             seed=seed,
+            visibility=visibility,
             execution_state=ExecutionState.QUEUED,
             runner=runner,
             created_by=user,
+            submitted_org=organization,
         )
         SimulationJob.objects.create(run=run, runner=runner)
     return run
+
+
+def find_reusable_run(readable_runs, model: SimulationModel, parameters: dict, seed: int | None):
+    """A readable run of ``model`` with the same resolved parameters, seed and version.
+
+    Finished runs come first, then runs still in progress; failed runs never.
+    """
+    params_hash = SimulationRun.compute_params_hash(model.key, model.runner_version, parameters)
+    complete = [ExecutionState.SUCCEEDED, ExecutionState.IMPORTED]
+    return (
+        readable_runs.filter(
+            model=model,
+            params_hash=params_hash,
+            seed=seed,
+            execution_state__in=[*complete, *SimulationRun.ACTIVE_STATES],
+        )
+        .annotate(_complete=Case(When(execution_state__in=complete, then=0), default=1))
+        .order_by("_complete", "-created_at")
+        .first()
+    )
+
+
+def check_quotas(user, organization) -> None:
+    """Raise ``QuotaExceeded`` when the user or their organization started too many runs."""
+    quotas = settings.GEOSIMULATIONS_QUOTAS
+    now = timezone.now()
+    since = now - timedelta(hours=24)
+    scopes = [("You", "user", SimulationRun.objects.filter(created_by=user, job__isnull=False))]
+    if organization is not None:
+        scopes.append(
+            ("Your organization", "organization", SimulationRun.objects.filter(submitted_org=organization))
+        )
+    for who, scope, runs in scopes:
+        active_limit = quotas[f"{scope}_active"]
+        if runs.filter(execution_state__in=SimulationRun.ACTIVE_STATES).count() >= active_limit:
+            raise QuotaExceeded(
+                f"{who} already have {active_limit} runs in progress; wait until one finishes.",
+                retry_after=60,
+            )
+        daily_limit = quotas[f"{scope}_daily"]
+        today = runs.filter(created_at__gte=since)
+        if today.count() >= daily_limit:
+            oldest = today.order_by("created_at").values_list("created_at", flat=True).first()
+            raise QuotaExceeded(
+                f"{who} started {daily_limit} runs in the last 24 hours, the daily limit.",
+                retry_after=int((oldest + timedelta(hours=24) - now).total_seconds()),
+            )
+
+
+def start_run(
+    model: SimulationModel,
+    parameters: dict,
+    *,
+    user,
+    organization=None,
+    readable_runs=None,
+    seed: int | None = None,
+    title: str | None = None,
+    visibility: str = SimulationRun.Visibility.PRIVATE,
+    exempt: bool = False,
+) -> StartResult:
+    """Start a run for a user, or return an identical run they can read (``params_hash`` reuse).
+
+    Quotas apply only to new runs and not to platform-exempt users.
+    """
+    _require_runner(model)
+    resolved = resolve_parameters(model, parameters)
+    if readable_runs is not None:
+        existing = find_reusable_run(readable_runs, model, resolved, seed)
+        if existing is not None:
+            return StartResult(existing, reused=True)
+    if not exempt:
+        check_quotas(user, organization)
+    run = submit_run(
+        model,
+        resolved,
+        user=user,
+        organization=organization,
+        title=title,
+        seed=seed,
+        visibility=visibility,
+    )
+    return StartResult(run, reused=False)
+
+
+def sync_runner_models(runner) -> list[SimulationModel]:
+    """Copy parameter schema, defaults and version from ``{base_url}/models`` to the runner's models."""
+    response = requests.get(
+        f"{runner.base_url}/models",
+        headers={"Authorization": f"Bearer {runner.get_token()}"},
+        timeout=_worker_settings()["dispatch_timeout_seconds"],
+    )
+    response.raise_for_status()
+    described = {item["key"]: item for item in response.json() if isinstance(item, dict) and "key" in item}
+    updated = []
+    for model in SimulationModel.objects.filter(runner=runner, key__in=described):
+        item = described[model.key]
+        schema = item.get("parameter_schema")
+        if schema is not None:
+            Draft202012Validator.check_schema(schema)
+        model.parameter_schema = schema
+        model.default_parameters = item.get("default_parameters") or {}
+        model.runner_version = str(item.get("version") or "")[:50]
+        model.save()
+        updated.append(model)
+    return updated
 
 
 # -- worker queue ---------------------------------------------------------------

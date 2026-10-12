@@ -41,6 +41,7 @@ class SimulationRunSummarySerializer(serializers.ModelSerializer):
             "key",
             "title",
             "status",
+            "visibility",
             "execution_state",
             "model_version",
             "time",
@@ -95,6 +96,7 @@ class SimulationModelDetailSerializer(SimulationModelListSerializer):
     organization = serializers.SerializerMethodField()
     runs = serializers.SerializerMethodField()
     comparisons = serializers.SerializerMethodField()
+    runnable = serializers.SerializerMethodField()
 
     class Meta(SimulationModelListSerializer.Meta):
         fields = SimulationModelListSerializer.Meta.fields + [
@@ -102,6 +104,7 @@ class SimulationModelDetailSerializer(SimulationModelListSerializer):
             "organization",
             "parameter_schema",
             "default_parameters",
+            "runnable",
             "runs",
             "comparisons",
         ]
@@ -110,6 +113,10 @@ class SimulationModelDetailSerializer(SimulationModelListSerializer):
     @extend_schema_field(OpenApiTypes.OBJECT)
     def get_organization(self, model: SimulationModel) -> dict:
         return {"slug": model.organization.slug, "name": model.organization.name}
+
+    def get_runnable(self, model: SimulationModel) -> bool:
+        """Users can start runs (``POST …/{id}/runs/``): the model has an active runner."""
+        return model.runner_id is not None and model.runner.is_active
 
     @extend_schema_field(SimulationRunSummarySerializer(many=True))
     def get_runs(self, model: SimulationModel) -> list[dict]:
@@ -168,6 +175,8 @@ class SimulationOutputSerializer(serializers.BaseSerializer):
 class SimulationRunDetailSerializer(serializers.ModelSerializer):
     model = _ModelRefSerializer(read_only=True)
     time = serializers.SerializerMethodField()
+    is_owner = serializers.SerializerMethodField()
+    execution = serializers.SerializerMethodField()
     labels = serializers.SerializerMethodField()
     outputs = serializers.SerializerMethodField()
 
@@ -180,7 +189,10 @@ class SimulationRunDetailSerializer(serializers.ModelSerializer):
             "title",
             "description_content",
             "status",
+            "visibility",
+            "is_owner",
             "execution_state",
+            "execution",
             "model_version",
             "parameters",
             "seed",
@@ -201,6 +213,24 @@ class SimulationRunDetailSerializer(serializers.ModelSerializer):
     @extend_schema_field(OpenApiTypes.OBJECT)
     def get_labels(self, run: SimulationRun) -> dict:
         return (run.manifest or {}).get("labels", {})
+
+    def get_is_owner(self, run: SimulationRun) -> bool:
+        user = getattr(self.context.get("request"), "user", None)
+        return bool(user and user.is_authenticated and run.created_by_id == user.pk)
+
+    @extend_schema_field(OpenApiTypes.OBJECT)
+    def get_execution(self, run: SimulationRun) -> dict | None:
+        """Progress and errors of a started run, for the user who started it (and exempt staff)."""
+        if not (self.get_is_owner(run) or self.context.get("exempt")):
+            return None
+        # A missing reverse one-to-one raises a subclass of AttributeError: imported runs have no job.
+        job = getattr(run, "job", None)
+        return {
+            "message": job.message if job else "",
+            "error": run.execution_error,
+            "started_at": job.started_at.isoformat() if job and job.started_at else None,
+            "finished_at": job.finished_at.isoformat() if job and job.finished_at else None,
+        }
 
     @extend_schema_field({"type": "array", "items": {"type": "object"}})
     def get_outputs(self, run: SimulationRun) -> list[dict]:
@@ -259,3 +289,14 @@ class SimulationComparisonDetailSerializer(serializers.ModelSerializer):
     @extend_schema_field({"type": "array", "items": {"type": "object"}})
     def get_outputs(self, comparison: SimulationComparison) -> list[dict]:
         return SimulationOutputSerializer(comparison.outputs.all(), many=True, context=self.context).data
+
+
+class RunSubmissionSerializer(serializers.Serializer):
+    """Body of ``POST /api/v1/geosimulations/{model_id}/runs/``."""
+
+    parameters = serializers.DictField(required=False, default=dict)
+    seed = serializers.IntegerField(required=False, allow_null=True, default=None, min_value=0)
+    title = serializers.CharField(required=False, allow_blank=True, max_length=255, default="")
+    visibility = serializers.ChoiceField(
+        choices=SimulationRun.Visibility.choices, required=False, default=SimulationRun.Visibility.PRIVATE
+    )
