@@ -131,6 +131,7 @@ def submit_run(
     title: str | None = None,
     seed: int | None = None,
     visibility: str = SimulationRun.Visibility.ORGANIZATION,
+    submitter_key: str = "",
 ) -> SimulationRun:
     """Create a queued run and its pending job; the worker sends it to the model's runner."""
     runner = _require_runner(model)
@@ -140,7 +141,8 @@ def submit_run(
         run = SimulationRun.objects.create(
             model=model,
             key=f"run-{started:%Y%m%d-%H%M%S}-{secrets.token_hex(3)}",
-            title=title or f"{model.title} — {timezone.localtime(started):%Y-%m-%d %H:%M}",
+            # UTC, labelled: the server cannot know the visitor's timezone.
+            title=title or f"{model.title} — {started:%Y-%m-%d %H:%M} UTC",
             model_version=model.runner_version,
             parameters=resolved,
             seed=seed,
@@ -149,6 +151,7 @@ def submit_run(
             runner=runner,
             created_by=user,
             submitted_org=organization,
+            submitter_key=submitter_key,
         )
         SimulationJob.objects.create(run=run, runner=runner)
     return run
@@ -174,21 +177,36 @@ def find_reusable_run(readable_runs, model: SimulationModel, parameters: dict, s
     )
 
 
-def check_quotas(user, organization) -> None:
-    """Raise ``QuotaExceeded`` when the user or their organization started too many runs."""
+def submitter_key_for(client_ident: str) -> str:
+    """Salted hash of an anonymous client's address; the address itself is never stored."""
+    return hashlib.sha256(f"{settings.SECRET_KEY}:geosim-submitter:{client_ident}".encode()).hexdigest()
+
+
+def check_quotas(user, organization, submitter_key: str = "") -> None:
+    """Raise ``QuotaExceeded`` when the caller (user, organization, or anonymous address) started too many runs.
+
+    Anonymous runs are limited per client address and, to protect the runner,
+    all together.
+    """
     quotas = settings.GEOSIMULATIONS_QUOTAS
     now = timezone.now()
     since = now - timedelta(hours=24)
-    scopes = [("You", "user", SimulationRun.objects.filter(created_by=user, job__isnull=False))]
-    if organization is not None:
-        scopes.append(
-            ("Your organization", "organization", SimulationRun.objects.filter(submitted_org=organization))
-        )
+    started = SimulationRun.objects.filter(job__isnull=False)
+    if user is None:
+        anonymous = started.filter(created_by__isnull=True)
+        scopes = [
+            ("Runs from your connection", "anonymous", anonymous.filter(submitter_key=submitter_key)),
+            ("Anonymous visitors", "all_anonymous", anonymous),
+        ]
+    else:
+        scopes = [("You", "user", started.filter(created_by=user))]
+        if organization is not None:
+            scopes.append(("Your organization", "organization", started.filter(submitted_org=organization)))
     for who, scope, runs in scopes:
         active_limit = quotas[f"{scope}_active"]
         if runs.filter(execution_state__in=SimulationRun.ACTIVE_STATES).count() >= active_limit:
             raise QuotaExceeded(
-                f"{who} already have {active_limit} runs in progress; wait until one finishes.",
+                f"{who}: {active_limit} run(s) already in progress; wait until one finishes.",
                 retry_after=60,
             )
         daily_limit = quotas[f"{scope}_daily"]
@@ -196,7 +214,7 @@ def check_quotas(user, organization) -> None:
         if today.count() >= daily_limit:
             oldest = today.order_by("created_at").values_list("created_at", flat=True).first()
             raise QuotaExceeded(
-                f"{who} started {daily_limit} runs in the last 24 hours, the daily limit.",
+                f"{who}: {daily_limit} runs started in the last 24 hours, the daily limit.",
                 retry_after=int((oldest + timedelta(hours=24) - now).total_seconds()),
             )
 
@@ -212,11 +230,15 @@ def start_run(
     title: str | None = None,
     visibility: str = SimulationRun.Visibility.PRIVATE,
     exempt: bool = False,
+    submitter_key: str = "",
 ) -> StartResult:
-    """Start a run for a user, or return an identical run they can read (``params_hash`` reuse).
+    """Start a run for a user (``None`` for anonymous), or return an identical readable run.
 
-    Quotas apply only to new runs and not to platform-exempt users.
+    ``params_hash`` reuse comes first; quotas apply only to new runs and not to
+    platform-exempt users. Anonymous runs always get ``link`` visibility.
     """
+    if user is None:
+        visibility = SimulationRun.Visibility.LINK
     _require_runner(model)
     resolved = resolve_parameters(model, parameters)
     if readable_runs is not None:
@@ -224,7 +246,7 @@ def start_run(
         if existing is not None:
             return StartResult(existing, reused=True)
     if not exempt:
-        check_quotas(user, organization)
+        check_quotas(user, organization, submitter_key)
     run = submit_run(
         model,
         resolved,
@@ -233,6 +255,7 @@ def start_run(
         title=title,
         seed=seed,
         visibility=visibility,
+        submitter_key=submitter_key if user is None else "",
     )
     return StartResult(run, reused=False)
 

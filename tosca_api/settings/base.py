@@ -73,7 +73,15 @@ GEOSIMULATIONS_WORKER = {
 # Runs users start: how many may be active (queued or running) at once and how many
 # may start per 24 hours, per user and per organization. Platform-exempt users
 # (staff with platform access) are not limited.
+# Until the frontend has sign-in, anonymous visitors may start runs too (2026-10-12);
+# turn this off once sign-in exists. Anonymous runs are limited per client address
+# (DRF's client identity, honouring NUM_PROXIES) and all together.
+GEOSIMULATIONS_ALLOW_ANONYMOUS_RUNS = env.bool("GEOSIMULATIONS_ALLOW_ANONYMOUS_RUNS", default=True)
 GEOSIMULATIONS_QUOTAS = {
+    "anonymous_active": env.int("GEOSIMULATIONS_QUOTA_ANONYMOUS_ACTIVE", default=1),
+    "anonymous_daily": env.int("GEOSIMULATIONS_QUOTA_ANONYMOUS_DAILY", default=5),
+    "all_anonymous_active": env.int("GEOSIMULATIONS_QUOTA_ALL_ANONYMOUS_ACTIVE", default=3),
+    "all_anonymous_daily": env.int("GEOSIMULATIONS_QUOTA_ALL_ANONYMOUS_DAILY", default=100),
     "user_active": env.int("GEOSIMULATIONS_QUOTA_USER_ACTIVE", default=2),
     "user_daily": env.int("GEOSIMULATIONS_QUOTA_USER_DAILY", default=10),
     "organization_active": env.int("GEOSIMULATIONS_QUOTA_ORG_ACTIVE", default=5),

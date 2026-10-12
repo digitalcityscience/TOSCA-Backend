@@ -256,6 +256,9 @@ class SimulationRun(TimeStampedModel):
     class Visibility(models.TextChoices):
         ORGANIZATION = "organization", "Organization (members of the model's organization)"
         PRIVATE = "private", "Private (only the user who started it)"
+        # Anonymous runs (until the frontend has sign-in): readable by anyone who
+        # has the run id, never listed.
+        LINK = "link", "Anyone with the link (anonymous runs, not listed)"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     objects = SimulationRunQuerySet.as_manager()
@@ -332,6 +335,13 @@ class SimulationRun(TimeStampedModel):
         blank=True,
         related_name="+",
         help_text="Organization the starting user acted for (organization quotas); empty for imports.",
+    )
+    submitter_key = models.CharField(
+        max_length=64,
+        blank=True,
+        db_index=True,
+        editable=False,
+        help_text="Salted hash of the client address of an anonymous run (anonymous quotas); no address is stored.",
     )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

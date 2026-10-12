@@ -220,8 +220,10 @@ class SimulationRunDetailSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(OpenApiTypes.OBJECT)
     def get_execution(self, run: SimulationRun) -> dict | None:
-        """Progress and errors of a started run, for the user who started it (and exempt staff)."""
-        if not (self.get_is_owner(run) or self.context.get("exempt")):
+        """Progress and errors of a started run: for the user who started it, exempt staff,
+        and anyone holding the id of an anonymous (``link``) run."""
+        anonymous_run = run.visibility == SimulationRun.Visibility.LINK
+        if not (self.get_is_owner(run) or self.context.get("exempt") or anonymous_run):
             return None
         # A missing reverse one-to-one raises a subclass of AttributeError: imported runs have no job.
         job = getattr(run, "job", None)
