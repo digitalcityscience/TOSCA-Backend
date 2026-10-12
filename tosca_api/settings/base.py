@@ -69,6 +69,25 @@ GEOSIMULATIONS_WORKER = {
     "dispatch_timeout_seconds": 15,
     "max_dispatch_attempts": 3,
 }
+
+# Runs users start: how many may be active (queued or running) at once and how many
+# may start per 24 hours, per user and per organization. Platform-exempt users
+# (staff with platform access) are not limited.
+GEOSIMULATIONS_QUOTAS = {
+    "user_active": env.int("GEOSIMULATIONS_QUOTA_USER_ACTIVE", default=2),
+    "user_daily": env.int("GEOSIMULATIONS_QUOTA_USER_DAILY", default=10),
+    "organization_active": env.int("GEOSIMULATIONS_QUOTA_ORG_ACTIVE", default=5),
+    "organization_daily": env.int("GEOSIMULATIONS_QUOTA_ORG_DAILY", default=50),
+}
+
+# purge_simulation_runs (also run hourly by the worker): unpublished private runs
+# and failed started runs are deleted with their files after these many days;
+# packages a failed job left in storage after upload_days.
+GEOSIMULATIONS_RETENTION = {
+    "private_runs_days": env.int("GEOSIMULATIONS_RETENTION_PRIVATE_DAYS", default=30),
+    "failed_runs_days": env.int("GEOSIMULATIONS_RETENTION_FAILED_DAYS", default=7),
+    "upload_days": env.int("GEOSIMULATIONS_RETENTION_UPLOAD_DAYS", default=2),
+}
 CORS_ALLOWED_ORIGINS = env.list("DJANGO_CORS_ALLOWED_ORIGINS", default=[])
 CORS_ALLOW_CREDENTIALS = env.bool("DJANGO_CORS_ALLOW_CREDENTIALS")
 CORS_ALLOWED_METHODS = ["DELETE", "GET", "OPTIONS", "PATCH", "POST", "PUT"]

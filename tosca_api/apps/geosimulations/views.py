@@ -14,20 +14,30 @@ from django.db.models import Count, Prefetch, Q
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from rest_framework import status, viewsets
+from rest_framework.decorators import action
 from rest_framework.pagination import CursorPagination
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from tosca_api.apps.organizations.models import Organization
 from tosca_api.apps.organizations.permissions import get_request_org_context
 
-from .jobs import CallbackRejected, handle_callback
+from .jobs import (
+    CallbackRejected,
+    QuotaExceeded,
+    RunnerUnavailable,
+    RunSubmissionError,
+    handle_callback,
+    start_run,
+)
 from .models import SimulationComparison, SimulationModel, SimulationOutput, SimulationRun
 from .serializers import (
     SimulationComparisonDetailSerializer,
     SimulationComparisonSummarySerializer,
     SimulationModelDetailSerializer,
     SimulationModelListSerializer,
+    RunSubmissionSerializer,
     SimulationRunDetailSerializer,
     SimulationRunSummarySerializer,
 )
@@ -48,9 +58,9 @@ class NewestCursorPagination(CursorPagination):
 def _reader_scope(request) -> dict:
     user = request.user
     if not (user and user.is_authenticated):
-        return {"org_slug": None, "exempt": False}
+        return {"org_slug": None, "exempt": False, "user": None}
     _roles, org_slug, exempt = get_request_org_context(request)
-    return {"org_slug": org_slug, "exempt": exempt}
+    return {"org_slug": org_slug, "exempt": exempt, "user": user}
 
 
 @extend_schema_view(
@@ -95,6 +105,61 @@ class SimulationModelViewSet(viewsets.ReadOnlyModelViewSet):
             )
         return context
 
+    @extend_schema(
+        summary="Start a simulation run with parameters (or get an identical existing run)",
+        tags=["GeoSimulations"],
+        request=RunSubmissionSerializer,
+        responses={200: SimulationRunSummarySerializer, 202: SimulationRunSummarySerializer},
+    )
+    @action(detail=True, methods=["post"], url_path="runs", permission_classes=[IsAuthenticated])
+    def start_run(self, request, pk=None):
+        """``202`` for a new queued run, ``200`` with ``reused: true`` for an identical readable run.
+
+        ``400`` invalid parameters (``{"parameters": [...]}``), ``409`` the model
+        has no runner, ``429`` a quota is reached (``Retry-After`` header).
+        """
+        model = self.get_object()
+        submission = RunSubmissionSerializer(data=request.data)
+        submission.is_valid(raise_exception=True)
+        data = submission.validated_data
+        scope = _reader_scope(request)
+        org_slug = scope["org_slug"]
+        organization = Organization.objects.filter(slug=org_slug).first() if org_slug else None
+        if (
+            data["visibility"] == SimulationRun.Visibility.ORGANIZATION
+            and not scope["exempt"]
+            and org_slug != model.organization.slug
+        ):
+            return Response(
+                {"visibility": ["Only members of the model's organization can share runs with it."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            result = start_run(
+                model,
+                data["parameters"],
+                user=request.user,
+                organization=organization,
+                readable_runs=SimulationRun.objects.readable_by(**scope),
+                seed=data["seed"],
+                title=data["title"] or None,
+                visibility=data["visibility"],
+                exempt=scope["exempt"],
+            )
+        except QuotaExceeded as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+                headers={"Retry-After": str(exc.retry_after)},
+            )
+        except RunnerUnavailable as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        except RunSubmissionError as exc:
+            return Response({"parameters": exc.errors}, status=status.HTTP_400_BAD_REQUEST)
+        body = SimulationRunSummarySerializer(result.run, context=self.get_serializer_context()).data
+        body["reused"] = result.reused
+        return Response(body, status=status.HTTP_200_OK if result.reused else status.HTTP_202_ACCEPTED)
+
 
 def _readable_comparisons(scope: dict):
     """Comparisons the caller may read whose two runs the caller may read too."""
@@ -108,7 +173,10 @@ def _readable_comparisons(scope: dict):
     list=extend_schema(
         summary="List simulation runs the caller may read",
         tags=["GeoSimulations"],
-        parameters=[OpenApiParameter("model", str, description="Only runs of this model id")],
+        parameters=[
+            OpenApiParameter("model", str, description="Only runs of this model id"),
+            OpenApiParameter("mine", bool, description="Only runs the caller started"),
+        ],
     ),
     retrieve=extend_schema(
         summary="Simulation run with outputs, file URLs, styles and legends",
@@ -127,8 +195,11 @@ class SimulationRunViewSet(viewsets.ReadOnlyModelViewSet):
         model_id = self.request.query_params.get("model")
         if model_id:
             queryset = queryset.filter(model_id=model_id)
+        if self.request.query_params.get("mine") in ("1", "true"):
+            user = self.request.user
+            queryset = queryset.filter(created_by=user) if user.is_authenticated else queryset.none()
         if self.action == "retrieve":
-            queryset = queryset.prefetch_related(
+            queryset = queryset.select_related("job").prefetch_related(
                 Prefetch("outputs", queryset=SimulationOutput.objects.select_related("asset"))
             )
         return queryset
@@ -140,7 +211,11 @@ class SimulationRunViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_serializer_context(self):
         # One timestamp per response, so every URL reports the same expiry.
-        return {**super().get_serializer_context(), "now": timezone.now()}
+        return {
+            **super().get_serializer_context(),
+            "now": timezone.now(),
+            "exempt": _reader_scope(self.request)["exempt"],
+        }
 
 
 @extend_schema_view(

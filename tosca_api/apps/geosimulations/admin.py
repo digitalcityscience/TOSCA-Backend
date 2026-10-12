@@ -112,6 +112,7 @@ class SimulationModelAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
         "id",
         "parameter_schema_display",
         "default_parameters_display",
+        "runner_version",
         "created_by",
         "created_at",
         "updated_at",
@@ -122,7 +123,12 @@ class SimulationModelAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
         (
             "Parameters",
             {
-                "fields": ("runner", "parameter_schema_display", "default_parameters_display"),
+                "fields": (
+                    "runner",
+                    "runner_version",
+                    "parameter_schema_display",
+                    "default_parameters_display",
+                ),
                 "description": "The runner executes runs started in TOSCA; the schema validates their parameters.",
             },
         ),
@@ -209,6 +215,7 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         "execution_error",
         "runner",
         "job_link",
+        "submitted_org",
         "time_start",
         "time_end",
         "timezone",
@@ -221,7 +228,7 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         "updated_at",
     )
     fieldsets = (
-        (None, {"fields": ("id", "model", "key", "title", "status")}),
+        (None, {"fields": ("id", "model", "key", "title", "status", "visibility", "submitted_org")}),
         ("Description", {"fields": ("description_content",)}),
         (
             "Execution",
@@ -453,7 +460,7 @@ class SimulationRunnerAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
     list_display = ("name", "base_url", "organization", "is_active", "max_concurrent_jobs", "has_token")
     list_filter = ("is_active", "organization")
     search_fields = ("name", "base_url")
-    actions = ["check_health"]
+    actions = ["check_health", "sync_models"]
 
     @admin.display(description="Token", boolean=True)
     def has_token(self, obj: SimulationRunner) -> bool:
@@ -470,6 +477,19 @@ class SimulationRunnerAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
                 self.message_user(request, f"{runner.name}: OK ({response.text[:200]})")
             except requests.RequestException as exc:
                 self.message_user(request, f"{runner.name}: {exc}", messages.ERROR)
+
+    @admin.action(description="Copy parameter schemas and versions from the selected runners")
+    def sync_models(self, request, queryset):
+        import requests
+
+        for runner in queryset:
+            try:
+                models = jobs.sync_runner_models(runner)
+            except (requests.RequestException, ValueError) as exc:
+                self.message_user(request, f"{runner.name}: {exc}", messages.ERROR)
+                continue
+            names = ", ".join(f"{model.key} {model.runner_version}" for model in models) or "no matching models"
+            self.message_user(request, f"{runner.name}: {names}")
 
     def save_model(self, request, obj, form, change):
         # OrganizationOwnedAdminMixin would set created_by, which runners do not have.
