@@ -9,17 +9,21 @@ platform-exempt callers see everything. Anything else is a 404, never a 403.
 
 from __future__ import annotations
 
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, Prefetch, Q
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from rest_framework import status, viewsets
+from rest_framework.authentication import TokenAuthentication
 from rest_framework.decorators import action
 from rest_framework.pagination import CursorPagination
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, BasePermission
+from rest_framework.throttling import BaseThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from tosca_api.apps.authentication.backends import KeycloakTokenAuthentication
 from tosca_api.apps.organizations.models import Organization
 from tosca_api.apps.organizations.permissions import get_request_org_context
 
@@ -30,6 +34,7 @@ from .jobs import (
     RunSubmissionError,
     handle_callback,
     start_run,
+    submitter_key_for,
 )
 from .models import SimulationComparison, SimulationModel, SimulationOutput, SimulationRun
 from .serializers import (
@@ -53,6 +58,21 @@ class TitleCursorPagination(CursorPagination):
 class NewestCursorPagination(CursorPagination):
     page_size = 20
     ordering = ("-created_at", "id")
+
+
+class CanStartRuns(BasePermission):
+    """Signed-in users, and anonymous visitors while ``GEOSIMULATIONS_ALLOW_ANONYMOUS_RUNS`` is on."""
+
+    def has_permission(self, request, view) -> bool:
+        user = request.user
+        return bool(user and user.is_authenticated) or settings.GEOSIMULATIONS_ALLOW_ANONYMOUS_RUNS
+
+
+def _link_readable(queryset):
+    """Readable runs plus anonymous ``link`` runs, which anyone with the id may open."""
+    return SimulationRun.objects.filter(
+        Q(pk__in=queryset.values("pk")) | Q(visibility=SimulationRun.Visibility.LINK)
+    )
 
 
 def _reader_scope(request) -> dict:
@@ -111,12 +131,22 @@ class SimulationModelViewSet(viewsets.ReadOnlyModelViewSet):
         request=RunSubmissionSerializer,
         responses={200: SimulationRunSummarySerializer, 202: SimulationRunSummarySerializer},
     )
-    @action(detail=True, methods=["post"], url_path="runs", permission_classes=[IsAuthenticated])
+    # Token authentication only: a Django admin session cookie (shared across
+    # localhost ports in dev) must not turn the frontend's request into a
+    # session-authenticated one that needs a CSRF token.
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="runs",
+        permission_classes=[CanStartRuns],
+        authentication_classes=[KeycloakTokenAuthentication, TokenAuthentication],
+    )
     def start_run(self, request, pk=None):
         """``202`` for a new queued run, ``200`` with ``reused: true`` for an identical readable run.
 
         ``400`` invalid parameters (``{"parameters": [...]}``), ``409`` the model
         has no runner, ``429`` a quota is reached (``Retry-After`` header).
+        Anonymous visitors (while allowed) get ``link`` runs: readable by id, never listed.
         """
         model = self.get_object()
         submission = RunSubmissionSerializer(data=request.data)
@@ -134,17 +164,19 @@ class SimulationModelViewSet(viewsets.ReadOnlyModelViewSet):
                 {"visibility": ["Only members of the model's organization can share runs with it."]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        anonymous = scope["user"] is None
         try:
             result = start_run(
                 model,
                 data["parameters"],
-                user=request.user,
+                user=scope["user"],
                 organization=organization,
-                readable_runs=SimulationRun.objects.readable_by(**scope),
+                readable_runs=_link_readable(SimulationRun.objects.readable_by(**scope)),
                 seed=data["seed"],
                 title=data["title"] or None,
                 visibility=data["visibility"],
                 exempt=scope["exempt"],
+                submitter_key=submitter_key_for(BaseThrottle().get_ident(request)) if anonymous else "",
             )
         except QuotaExceeded as exc:
             return Response(
@@ -189,9 +221,11 @@ class SimulationRunViewSet(viewsets.ReadOnlyModelViewSet):
     lookup_value_regex = UUID_PATTERN
 
     def get_queryset(self):
-        queryset = SimulationRun.objects.readable_by(**_reader_scope(self.request)).select_related(
-            "model"
-        )
+        readable = SimulationRun.objects.readable_by(**_reader_scope(self.request))
+        if self.action == "retrieve":
+            # Anonymous runs are opened by id; lists never show them.
+            readable = _link_readable(readable)
+        queryset = readable.select_related("model")
         model_id = self.request.query_params.get("model")
         if model_id:
             queryset = queryset.filter(model_id=model_id)

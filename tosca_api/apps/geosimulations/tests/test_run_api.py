@@ -35,7 +35,16 @@ SCHEMA = {
     },
 }
 DEFAULTS = {"agents": 100, "turn_aware_signals": False}
-QUOTAS = {"user_active": 2, "user_daily": 3, "organization_active": 5, "organization_daily": 4}
+QUOTAS = {
+    "anonymous_active": 1,
+    "anonymous_daily": 2,
+    "all_anonymous_active": 3,
+    "all_anonymous_daily": 10,
+    "user_active": 2,
+    "user_daily": 3,
+    "organization_active": 5,
+    "organization_daily": 4,
+}
 Visibility = SimulationRun.Visibility
 Execution = SimulationRun.ExecutionState
 
@@ -102,8 +111,48 @@ def test_signed_in_users_start_private_runs(model, django_user_model):
     assert run.job.state == SimulationJob.State.PENDING
 
 
-def test_anonymous_callers_cannot_start_runs(model):
-    assert _start(APIClient(), model, parameters={}).status_code in (401, 403)
+def test_anonymous_runs_need_the_switch(model):
+    with override_settings(GEOSIMULATIONS_ALLOW_ANONYMOUS_RUNS=False):
+        assert _start(APIClient(), model, parameters={}).status_code in (401, 403)
+
+
+def test_anonymous_visitors_start_link_runs(model):
+    visitor = APIClient(REMOTE_ADDR="203.0.113.7")
+
+    response = _start(visitor, model, parameters={"agents": 12}, visibility="private")
+
+    assert response.status_code == 202 and response.data["visibility"] == "link"
+    run = SimulationRun.objects.get(pk=response.data["id"])
+    assert run.created_by is None and run.submitter_key and "203.0.113.7" not in run.submitter_key
+    SimulationRun.objects.filter(pk=run.pk).update(execution_error="No route")
+
+    stranger = APIClient()
+    detail = stranger.get(f"/api/v1/geosimulations/runs/{run.pk}/")
+    assert detail.status_code == 200 and detail.data["execution"]["error"] == "No route"
+    assert detail.data["is_owner"] is False
+    listed = [item["id"] for item in stranger.get("/api/v1/geosimulations/runs/").data["results"]]
+    assert str(run.pk) not in listed
+    assert str(run.pk) not in [item["id"] for item in stranger.get(f"/api/v1/geosimulations/{model.pk}/").data["runs"]]
+
+
+def test_identical_anonymous_requests_reuse_link_runs(model):
+    first = _start(APIClient(REMOTE_ADDR="203.0.113.7"), model, parameters={"agents": 12})
+    again = _start(APIClient(REMOTE_ADDR="198.51.100.4"), model, parameters={"agents": 12})
+
+    assert again.status_code == 200 and again.data["id"] == first.data["id"]
+
+
+def test_anonymous_quotas_per_address_and_overall(model):
+    one = APIClient(REMOTE_ADDR="203.0.113.7")
+    assert _start(one, model, parameters={"agents": 1}).status_code == 202
+
+    busy = _start(one, model, parameters={"agents": 2})
+    assert busy.status_code == 429 and busy.data["detail"].startswith("Runs from your connection")
+
+    for index, address in enumerate(["198.51.100.4", "198.51.100.5"]):
+        assert _start(APIClient(REMOTE_ADDR=address), model, parameters={"agents": 10 + index}).status_code == 202
+    crowded = _start(APIClient(REMOTE_ADDR="198.51.100.6"), model, parameters={"agents": 20})
+    assert crowded.status_code == 429 and crowded.data["detail"].startswith("Anonymous visitors")
 
 
 def test_invalid_parameters_and_models_without_runner(model, dcs, django_user_model):
@@ -186,7 +235,7 @@ def test_user_quotas_limit_active_and_daily_runs(model, django_user_model):
         assert _start(client, model, parameters={"agents": agents}).status_code == 202
 
     busy = _start(client, model, parameters={"agents": 3})
-    assert busy.status_code == 429 and "2 runs in progress" in busy.data["detail"]
+    assert busy.status_code == 429 and "2 run(s) already in progress" in busy.data["detail"]
     assert busy["Retry-After"] == "60"
     # An identical request is still answered with the existing run.
     assert _start(client, model, parameters={"agents": 1}).status_code == 200
@@ -303,18 +352,20 @@ def test_purge_deletes_expired_private_and_failed_runs(model, django_user_model,
     recent_private = jobs.submit_run(model, {"agents": 2}, user=user, visibility=Visibility.PRIVATE)
     old_shared = jobs.submit_run(model, {"agents": 3}, user=user, visibility=Visibility.ORGANIZATION)
     old_failed = jobs.submit_run(model, {"agents": 4}, user=user, visibility=Visibility.ORGANIZATION)
+    old_anonymous = jobs.submit_run(model, {"agents": 6}, visibility=Visibility.LINK, submitter_key="k")
     jobs._fail(old_failed.job, "boom")
     published = jobs.submit_run(model, {"agents": 5}, user=user, visibility=Visibility.PRIVATE)
     SimulationRun.objects.filter(pk=published.pk).update(status=Status.PUBLISHED)
     curated = simulation_run(model, key="imported")
-    for run in (old_private, old_shared, old_failed, published, curated):
+    for run in (old_private, old_shared, old_failed, old_anonymous, published, curated):
         _age(run, 40)
 
     dry = retention.purge(dry_run=True)
     with django_capture_on_commit_callbacks(execute=True):
         result = retention.purge()
 
-    assert sorted(dry.deleted_runs) == sorted(result.deleted_runs) == sorted([old_private.key, old_failed.key])
+    expected = sorted([old_private.key, old_failed.key, old_anonymous.key])
+    assert sorted(dry.deleted_runs) == sorted(result.deleted_runs) == expected
     remaining = set(SimulationRun.objects.values_list("key", flat=True))
     assert remaining == {recent_private.key, old_shared.key, published.key, curated.key}
 
@@ -345,3 +396,14 @@ def test_models_without_runner_report_not_runnable(dcs):
     model = simulation_model(dcs, status=Status.PUBLISHED)
     assert APIClient().get(f"/api/v1/geosimulations/{model.pk}/").data["runnable"] is False
     assert SimulationModel.objects.get(pk=model.pk).runner_version == ""
+
+
+def test_an_admin_session_cookie_does_not_require_csrf(model, django_user_model):
+    staff = django_user_model.objects.create_user(username="staffer", password="x", is_staff=True)
+    client = APIClient(enforce_csrf_checks=True)
+    client.force_login(staff)
+
+    response = _start(client, model, parameters={"agents": 3})
+
+    # Treated as an anonymous visitor (token authentication only), not a CSRF failure.
+    assert response.status_code == 202 and response.data["visibility"] == "link"

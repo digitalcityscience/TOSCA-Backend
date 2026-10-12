@@ -1,7 +1,7 @@
 """Retention for runs users start (``purge_simulation_runs``, also hourly in the worker).
 
 Curated runs (imported, or published by staff) are never purged. Started runs
-that stayed private and unpublished, and started runs that failed, are deleted
+that stayed private (or anonymous ``link`` runs) and unpublished, and started runs that failed, are deleted
 with their files after ``GEOSIMULATIONS_RETENTION`` days; a package a failed job
 left in the upload area is removed after ``upload_days``. Runs that a GeoStory
 scene or a comparison uses are kept (they are ``PROTECT``ed) and reported.
@@ -44,7 +44,10 @@ def expired_runs(now=None):
         SimulationRun.objects.filter(job__isnull=False)
         .exclude(status=Status.PUBLISHED)
         .filter(
-            Q(visibility=SimulationRun.Visibility.PRIVATE, created_at__lt=private_cutoff)
+            Q(
+                visibility__in=[SimulationRun.Visibility.PRIVATE, SimulationRun.Visibility.LINK],
+                created_at__lt=private_cutoff,
+            )
             | Q(execution_state=SimulationRun.ExecutionState.FAILED, created_at__lt=failed_cutoff)
         )
         .select_related("job")
