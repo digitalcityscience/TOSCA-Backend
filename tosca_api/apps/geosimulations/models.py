@@ -420,13 +420,22 @@ class SimulationComparisonQuerySet(models.QuerySet):
         )
 
     def readable_by(self, *, org_slug: str | None, exempt: bool = False, user=None):
-        """Published comparisons, plus every comparison of the caller's own organization."""
+        """Published comparisons, the caller's own, and the organization's shared ones.
+
+        Same visibility rules as runs: ``organization`` comparisons (imported) are
+        read by the model's organization, ``private`` ones only by their creator;
+        anonymous ``link`` comparisons are opened by id (views add them).
+        """
         if exempt:
             return self
-        published = self.published()
-        if not org_slug:
-            return published
-        return self.filter(Q(pk__in=published.values("pk")) | Q(model__organization__slug=org_slug))
+        readable = Q(pk__in=self.published().values("pk"))
+        if org_slug:
+            readable |= Q(
+                visibility=SimulationRun.Visibility.ORGANIZATION, model__organization__slug=org_slug
+            )
+        if user is not None and getattr(user, "is_authenticated", False):
+            readable |= Q(created_by=user)
+        return self.filter(readable)
 
 
 class SimulationComparison(TimeStampedModel):
@@ -457,6 +466,19 @@ class SimulationComparison(TimeStampedModel):
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True
     )
+    visibility = models.CharField(
+        max_length=20,
+        choices=SimulationRun.Visibility.choices,
+        default=SimulationRun.Visibility.ORGANIZATION,
+        help_text="Who reads the comparison before it is published (same rules as runs).",
+    )
+    execution_state = models.CharField(
+        max_length=20,
+        choices=SimulationRun.ExecutionState.choices,
+        default=SimulationRun.ExecutionState.IMPORTED,
+        help_text="Comparisons users start wait for both runs, then the runner computes them.",
+    )
+    execution_error = models.TextField(blank=True, default="")
     bounds = models.JSONField(
         null=True,
         blank=True,
@@ -481,6 +503,14 @@ class SimulationComparison(TimeStampedModel):
         blank=True,
         related_name="simulation_comparisons",
     )
+    submitted_org = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    submitter_key = models.CharField(max_length=64, blank=True, db_index=True, editable=False)
 
     class Meta:
         ordering = ["-created_at"]
@@ -791,11 +821,14 @@ class SimulationJob(TimeStampedModel):
 
     The worker dispatches ``pending`` jobs to the runner and imports
     ``uploaded`` packages; the runner's callbacks move the job in between.
-    A row is also the queue entry (Postgres, ``SELECT … FOR UPDATE SKIP LOCKED``);
+    A comparison job (``comparison`` instead of ``run``) starts ``waiting`` until
+    both runs succeeded. A row is also the queue entry (Postgres,
+    ``SELECT … FOR UPDATE SKIP LOCKED``);
     a Celery + Redis worker is planned to replace the polling loop later.
     """
 
     class State(models.TextChoices):
+        WAITING = "waiting", "Waiting for its runs (comparisons)"
         PENDING = "pending", "Waiting to be sent to the runner"
         DISPATCHED = "dispatched", "Accepted by the runner"
         RUNNING = "running", "Running"
@@ -808,7 +841,12 @@ class SimulationJob(TimeStampedModel):
     AT_RUNNER_STATES = frozenset({State.DISPATCHED, State.RUNNING})
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
-    run = models.OneToOneField(SimulationRun, on_delete=models.CASCADE, related_name="job")
+    run = models.OneToOneField(
+        SimulationRun, on_delete=models.CASCADE, null=True, blank=True, related_name="job"
+    )
+    comparison = models.OneToOneField(
+        SimulationComparison, on_delete=models.CASCADE, null=True, blank=True, related_name="job"
+    )
     runner = models.ForeignKey(SimulationRunner, on_delete=models.PROTECT, related_name="jobs")
     state = models.CharField(max_length=20, choices=State.choices, default=State.PENDING, db_index=True)
     attempts = models.PositiveSmallIntegerField(default=0, help_text="Dispatch attempts so far.")
@@ -833,9 +871,21 @@ class SimulationJob(TimeStampedModel):
         ordering = ["-created_at"]
         verbose_name = "Simulation job"
         verbose_name_plural = "Simulation jobs"
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(run__isnull=False, comparison__isnull=True)
+                | Q(run__isnull=True, comparison__isnull=False),
+                name="geosim_job_one_owner",
+            ),
+        ]
 
     def __str__(self) -> str:
-        return f"{self.run} · {self.get_state_display()}"
+        return f"{self.owner} · {self.get_state_display()}"
+
+    @property
+    def owner(self) -> SimulationRun | SimulationComparison:
+        """The run or comparison this job computes."""
+        return self.run if self.run_id else self.comparison
 
     @property
     def is_terminal(self) -> bool:

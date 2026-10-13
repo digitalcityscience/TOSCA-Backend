@@ -53,7 +53,7 @@ class Command(BaseCommand):
                 self.stdout.write(f"Failed {failed} job(s) that exceeded their runner timeout.")
             job = jobs.claim_next_job(worker_id)
             if job is not None:
-                self.stdout.write(f"{job.pk}: {job.state} ({job.run.key})")
+                self.stdout.write(f"{job.pk}: {job.state} ({job.owner.key})")
                 jobs.process_job(job)
                 job.refresh_from_db()
                 self.stdout.write(f"{job.pk}: → {job.state}")

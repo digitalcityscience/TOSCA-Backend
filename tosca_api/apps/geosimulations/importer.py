@@ -80,6 +80,7 @@ def import_package(
     replace: bool = False,
     skip_existing: bool = False,
     into_run: SimulationRun | None = None,
+    into_comparison: SimulationComparison | None = None,
     limits: PackageLimits | None = None,
 ) -> ImportResult:
     """Validate ``source`` (directory or ``.zip``) and import it as a run or comparison of ``organization``.
@@ -87,7 +88,8 @@ def import_package(
     ``skip_existing`` leaves a run or comparison with the same key untouched and
     returns it with ``skipped=True`` (idempotent seeding). ``into_run`` fills a
     run that was started in TOSCA and is waiting for its package (runner jobs);
-    the package must be a run of that run's model with that run's key. Raises
+    the package must be a run of that run's model with that run's key.
+    ``into_comparison`` does the same for a comparison users started. Raises
     ``packages.PackageValidationError`` for invalid packages and
     ``PackageImportError`` when a valid package cannot be imported.
     """
@@ -108,6 +110,8 @@ def import_package(
         )
         if into_run is not None:
             return importer.fill(into_run)
+        if into_comparison is not None:
+            return importer.fill_comparison(into_comparison)
         return importer.run(replace=replace)
 
 
@@ -213,6 +217,38 @@ class _PackageImporter:
             self._discard_uploads()
             raise
         return ImportResult(run=run, model_created=False, warnings=tuple(self.warnings))
+
+    def fill_comparison(self, comparison: SimulationComparison) -> ImportResult:
+        """Import a comparison package into ``comparison``, started in TOSCA (no new row)."""
+        if self.package.kind != "comparison":
+            raise PackageImportError("A started comparison needs a comparison package.")
+        info = self.manifest["comparison"]
+        expected = {
+            "model": (self.manifest["model"]["key"], comparison.model.key),
+            "comparison": (info["key"], comparison.key),
+            "baseline run": (info["baseline"]["run_key"], comparison.baseline_run.key),
+            "candidate run": (info["candidate"]["run_key"], comparison.candidate_run.key),
+        }
+        for what, (found, wanted) in expected.items():
+            if found != wanted:
+                raise PackageImportError(f"The package is for {what} {found!r}, expected {wanted!r}.")
+        try:
+            with transaction.atomic():
+                comparison = SimulationComparison.objects.select_for_update().get(pk=comparison.pk)
+                if comparison.outputs.exists():
+                    raise PackageImportError(f"Comparison {comparison.key!r} already has outputs.")
+                comparison.bounds = info.get("bounds")
+                comparison.manifest = self.manifest
+                comparison.source_package = self._archive(comparison)
+                for order, output in enumerate(self.manifest["outputs"]):
+                    self._import_output(comparison, output, order)
+                comparison.execution_state = SimulationRun.ExecutionState.SUCCEEDED
+                comparison.execution_error = ""
+                comparison.save()
+        except Exception:
+            self._discard_uploads()
+            raise
+        return ImportResult(run=None, comparison=comparison, model_created=False, warnings=tuple(self.warnings))
 
     def _run_comparison(self, *, replace: bool) -> ImportResult:
         try:

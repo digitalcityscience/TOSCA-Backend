@@ -39,7 +39,7 @@ from tosca_api.apps.core.models import MediaAsset
 
 from . import storage
 from .importer import PackageImportError, import_package
-from .models import SimulationJob, SimulationModel, SimulationRun
+from .models import SimulationComparison, SimulationJob, SimulationModel, SimulationRun
 from .packages import PackageValidationError
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ UPLOAD_ALIAS = MediaAsset.StorageAlias.DEFAULT
 PACKAGE_CONTENT_TYPE = "application/zip"
 RETRY_DELAYS = (timedelta(seconds=30), timedelta(minutes=2), timedelta(minutes=10))
 BUSY_RUNNER_DELAY = timedelta(seconds=30)
+WAITING_POLL = timedelta(seconds=10)
 
 State = SimulationJob.State
 ExecutionState = SimulationRun.ExecutionState
@@ -182,11 +183,12 @@ def submitter_key_for(client_ident: str) -> str:
     return hashlib.sha256(f"{settings.SECRET_KEY}:geosim-submitter:{client_ident}".encode()).hexdigest()
 
 
-def check_quotas(user, organization, submitter_key: str = "") -> None:
+def check_quotas(user, organization, submitter_key: str = "", *, needed: int = 1) -> None:
     """Raise ``QuotaExceeded`` when the caller (user, organization, or anonymous address) started too many runs.
 
     Anonymous runs are limited per client address and, to protect the runner,
-    all together.
+    all together. ``needed`` is how many new runs the request starts (a pair for
+    a comparison), so a pair is never half-created.
     """
     quotas = settings.GEOSIMULATIONS_QUOTAS
     now = timezone.now()
@@ -204,14 +206,14 @@ def check_quotas(user, organization, submitter_key: str = "") -> None:
             scopes.append(("Your organization", "organization", started.filter(submitted_org=organization)))
     for who, scope, runs in scopes:
         active_limit = quotas[f"{scope}_active"]
-        if runs.filter(execution_state__in=SimulationRun.ACTIVE_STATES).count() >= active_limit:
+        if runs.filter(execution_state__in=SimulationRun.ACTIVE_STATES).count() + needed > active_limit:
             raise QuotaExceeded(
                 f"{who}: {active_limit} run(s) already in progress; wait until one finishes.",
                 retry_after=60,
             )
         daily_limit = quotas[f"{scope}_daily"]
         today = runs.filter(created_at__gte=since)
-        if today.count() >= daily_limit:
+        if today.count() + needed > daily_limit:
             oldest = today.order_by("created_at").values_list("created_at", flat=True).first()
             raise QuotaExceeded(
                 f"{who}: {daily_limit} runs started in the last 24 hours, the daily limit.",
@@ -260,6 +262,94 @@ def start_run(
     return StartResult(run, reused=False)
 
 
+@dataclass(frozen=True)
+class ComparisonStart:
+    comparison: SimulationComparison
+    #: An identical readable comparison was returned instead of starting a new one.
+    reused: bool
+
+
+def start_comparison(
+    model: SimulationModel,
+    baseline_parameters: dict,
+    candidate_parameters: dict,
+    *,
+    user,
+    organization=None,
+    readable_runs=None,
+    readable_comparisons=None,
+    seed: int | None = None,
+    title: str | None = None,
+    visibility: str = SimulationRun.Visibility.PRIVATE,
+    exempt: bool = False,
+    submitter_key: str = "",
+) -> ComparisonStart:
+    """Start two runs with the same seed and a comparison of them (or reuse what exists).
+
+    Each run is reused when an identical readable one exists; when both are,
+    an existing readable comparison of the pair is returned. The comparison's
+    job waits until both runs succeeded, then the runner computes it.
+    """
+    runner = _require_runner(model)
+    if user is None:
+        visibility = SimulationRun.Visibility.LINK
+    sides = {
+        "baseline": resolve_parameters(model, baseline_parameters),
+        "candidate": resolve_parameters(model, candidate_parameters),
+    }
+    if sides["baseline"] == sides["candidate"]:
+        raise RunSubmissionError("The baseline and the candidate have the same parameters.")
+    existing = {
+        side: find_reusable_run(readable_runs, model, parameters, seed) if readable_runs is not None else None
+        for side, parameters in sides.items()
+    }
+    if readable_comparisons is not None and all(existing.values()):
+        found = (
+            readable_comparisons.filter(
+                baseline_run=existing["baseline"], candidate_run=existing["candidate"]
+            )
+            .exclude(execution_state=ExecutionState.FAILED)
+            .order_by("-created_at")
+            .first()
+        )
+        if found is not None:
+            return ComparisonStart(found, reused=True)
+    needed = sum(run is None for run in existing.values())
+    if needed and not exempt:
+        check_quotas(user, organization, submitter_key, needed=needed)
+    started = timezone.now()
+    label = title or f"{model.title} — comparison {started:%Y-%m-%d %H:%M} UTC"
+    with transaction.atomic():
+        runs = {
+            side: existing[side]
+            or submit_run(
+                model,
+                sides[side],
+                user=user,
+                organization=organization,
+                title=f"{label} · {side}",
+                seed=seed,
+                visibility=visibility,
+                submitter_key=submitter_key if user is None else "",
+            )
+            for side in ("baseline", "candidate")
+        }
+        comparison = SimulationComparison.objects.create(
+            model=model,
+            key=f"cmp-{started:%Y%m%d-%H%M%S}-{secrets.token_hex(3)}",
+            title=label,
+            baseline_run=runs["baseline"],
+            candidate_run=runs["candidate"],
+            visibility=visibility,
+            execution_state=ExecutionState.QUEUED,
+            created_by=user,
+            submitted_org=organization,
+            submitter_key=submitter_key if user is None else "",
+        )
+        SimulationJob.objects.create(comparison=comparison, runner=runner, state=State.WAITING)
+    return ComparisonStart(comparison, reused=False)
+
+
 def sync_runner_models(runner) -> list[SimulationModel]:
     """Copy parameter schema, defaults and version from ``{base_url}/models`` to the runner's models."""
     response = requests.get(
@@ -289,8 +379,9 @@ def sync_runner_models(runner) -> list[SimulationModel]:
 def claim_next_job(worker_id: str) -> SimulationJob | None:
     """Lock the next job the worker should act on, or ``None``.
 
-    Pending jobs are dispatched, uploaded jobs imported. An import whose worker
-    died (lock older than ``lock_timeout_seconds``) is claimed again.
+    Pending jobs are dispatched, uploaded jobs imported, waiting comparison jobs
+    checked. An import whose worker died (lock older than
+    ``lock_timeout_seconds``) is claimed again.
     """
     now = timezone.now()
     stale_lock = now - timedelta(seconds=_worker_settings()["lock_timeout_seconds"])
@@ -298,7 +389,7 @@ def claim_next_job(worker_id: str) -> SimulationJob | None:
         job = (
             SimulationJob.objects.select_for_update(skip_locked=True)
             .filter(
-                Q(state__in=[State.PENDING, State.UPLOADED], available_at__lte=now)
+                Q(state__in=[State.WAITING, State.PENDING, State.UPLOADED], available_at__lte=now)
                 | Q(state=State.IMPORTING, locked_at__lt=stale_lock)
             )
             .order_by("available_at", "created_at")
@@ -314,7 +405,9 @@ def claim_next_job(worker_id: str) -> SimulationJob | None:
 
 
 def process_job(job: SimulationJob) -> None:
-    if job.state == State.PENDING:
+    if job.state == State.WAITING:
+        check_waiting(job)
+    elif job.state == State.PENDING:
         dispatch(job)
     elif job.state == State.IMPORTING:
         import_uploaded_package(job)
@@ -343,15 +436,34 @@ def _hash_token(token: str) -> str:
 
 
 def job_payload(job: SimulationJob, *, callback_token: str, upload_url: str) -> dict:
-    """What a runner receives (``POST {base_url}/jobs``)."""
-    run, runner = job.run, job.runner
+    """What a runner receives (``POST {base_url}/jobs``).
+
+    Run jobs carry the run; comparison jobs (``"kind": "comparison"``) carry both
+    runs, which the runner simulated before (or simulates again from the same
+    parameters and seed).
+    """
+    owner, runner = job.owner, job.runner
     expires_at = timezone.now() + timedelta(minutes=runner.timeout_minutes)
+    if job.comparison_id:
+        subject = {
+            "kind": "comparison",
+            "comparison": {"key": owner.key, "title": owner.title},
+            **{
+                side: {"run_key": run.key, "parameters": run.parameters, "seed": run.seed}
+                for side, run in (("baseline", owner.baseline_run), ("candidate", owner.candidate_run))
+            },
+        }
+    else:
+        subject = {
+            "kind": "run",
+            "run": {"key": owner.key, "title": owner.title},
+            "parameters": owner.parameters,
+            "seed": owner.seed,
+        }
     return {
         "job_id": str(job.pk),
-        "model": {"key": run.model.key},
-        "run": {"key": run.key, "title": run.title},
-        "parameters": run.parameters,
-        "seed": run.seed,
+        "model": {"key": owner.model.key},
+        **subject,
         "upload": {
             "url": upload_url,
             "method": "PUT",
@@ -429,10 +541,29 @@ def _fail(job: SimulationJob, error: str) -> None:
     job.finished_at = now
     job.locked_by, job.locked_at = "", None
     job.save()
-    run = job.run
-    run.execution_state = ExecutionState.FAILED
-    run.execution_error = error
-    run.save()
+    owner = job.owner
+    owner.execution_state = ExecutionState.FAILED
+    owner.execution_error = error
+    owner.save()
+
+
+def check_waiting(job: SimulationJob) -> None:
+    """A comparison job waits for both runs: dispatch when they succeeded, fail when one failed."""
+    comparison = job.comparison
+    runs = {"baseline": comparison.baseline_run, "candidate": comparison.candidate_run}
+    for side, run in runs.items():
+        run.refresh_from_db(fields=["execution_state", "execution_error"])
+        if run.execution_state == ExecutionState.FAILED:
+            _fail(job, f"The {side} run failed: {run.execution_error or 'no details'}")
+            return
+    complete = {ExecutionState.SUCCEEDED, ExecutionState.IMPORTED}
+    if all(run.execution_state in complete for run in runs.values()):
+        job.state = State.PENDING
+        job.available_at = timezone.now()
+        job.save()
+        dispatch(job)
+        return
+    _release(job, available_at=timezone.now() + WAITING_POLL)
 
 
 # -- callbacks --------------------------------------------------------------------
@@ -453,7 +584,13 @@ def handle_callback(job_id, token: str, report: dict) -> SimulationJob:
     if state not in ("running", "succeeded", "failed"):
         raise ValidationError({"state": "Expected running, succeeded or failed."})
     with transaction.atomic():
-        job = SimulationJob.objects.select_for_update().select_related("run").filter(pk=job_id).first()
+        job = (
+            # Lock the job row only: run and comparison are outer joins now.
+            SimulationJob.objects.select_for_update(of=("self",))
+            .select_related("run", "comparison")
+            .filter(pk=job_id)
+            .first()
+        )
         if job is None:
             raise CallbackRejected
         check_callback_token(job, token)
@@ -464,12 +601,12 @@ def handle_callback(job_id, token: str, report: dict) -> SimulationJob:
             # Late or repeated reports do not move a job that already went on.
             job.save(update_fields=["last_callback_at", "message", "updated_at"])
             return job
-        run = job.run
+        owner = job.owner
         if state == "running":
             job.state = State.RUNNING
             job.started_at = job.started_at or now
-            run.execution_state = ExecutionState.RUNNING
-            run.save()
+            owner.execution_state = ExecutionState.RUNNING
+            owner.save()
         elif state == "succeeded":
             if not storages[UPLOAD_ALIAS].exists(job.upload_path):
                 job.save()
@@ -477,8 +614,8 @@ def handle_callback(job_id, token: str, report: dict) -> SimulationJob:
                 return job
             job.state = State.UPLOADED
             job.available_at = now
-            run.execution_state = ExecutionState.RUNNING
-            run.save()
+            owner.execution_state = ExecutionState.RUNNING
+            owner.save()
         else:
             job.save()
             _fail(job, str(report.get("error") or "The runner reported a failure.")[:5000])
@@ -491,17 +628,18 @@ def handle_callback(job_id, token: str, report: dict) -> SimulationJob:
 
 
 def import_uploaded_package(job: SimulationJob) -> None:
-    """Import the runner's package into the job's run, then remove the upload."""
-    run = job.run
+    """Import the runner's package into the job's run or comparison, then remove the upload."""
+    owner = job.owner
+    target = {"into_comparison": owner} if job.comparison_id else {"into_run": owner}
     try:
         with tempfile.TemporaryDirectory(prefix="geosim-job-") as staging:
             package = Path(staging) / "package.zip"
             storage.download_to(UPLOAD_ALIAS, job.upload_path, package)
             result = import_package(
                 package,
-                organization=run.model.organization,
-                user=run.created_by,
-                into_run=run,
+                organization=owner.model.organization,
+                user=owner.created_by,
+                **target,
             )
     except PackageValidationError as exc:
         _fail(job, "The runner's package is invalid:\n" + "\n".join(f"- {issue}" for issue in exc.issues))
@@ -546,13 +684,13 @@ def fail_stale_jobs() -> int:
 
 
 def retry_job(job: SimulationJob) -> None:
-    """Start a failed job again from dispatch (the run is simulated again)."""
+    """Start a failed job again (a run is simulated again; a comparison waits for its runs again)."""
     if job.state != State.FAILED:
         raise RunSubmissionError("Only failed jobs can be retried.")
-    run = job.run
-    if run.outputs.exists():
-        raise RunSubmissionError("The run already has outputs; start a new run instead.")
-    job.state = State.PENDING
+    owner = job.owner
+    if owner.outputs.exists():
+        raise RunSubmissionError("It already has outputs; start a new one instead.")
+    job.state = State.WAITING if job.comparison_id else State.PENDING
     job.attempts = 0
     job.error = ""
     job.message = ""
@@ -560,6 +698,6 @@ def retry_job(job: SimulationJob) -> None:
     job.available_at = timezone.now()
     job.dispatched_at = job.started_at = job.finished_at = None
     job.save()
-    run.execution_state = ExecutionState.QUEUED
-    run.execution_error = ""
-    run.save()
+    owner.execution_state = ExecutionState.QUEUED
+    owner.execution_error = ""
+    owner.save()

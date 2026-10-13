@@ -60,7 +60,17 @@ class SimulationComparisonSummarySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SimulationComparison
-        fields = ["id", "key", "title", "status", "baseline", "candidate", "created_at"]
+        fields = [
+            "id",
+            "key",
+            "title",
+            "status",
+            "visibility",
+            "execution_state",
+            "baseline",
+            "candidate",
+            "created_at",
+        ]
         read_only_fields = fields
 
     @extend_schema_field(OpenApiTypes.OBJECT)
@@ -74,6 +84,26 @@ class SimulationComparisonSummarySerializer(serializers.ModelSerializer):
 
 def _run_ref(run: SimulationRun) -> dict:
     return {"id": str(run.pk), "key": run.key, "title": run.title}
+
+
+def _is_owner(context: dict, item) -> bool:
+    user = getattr(context.get("request"), "user", None)
+    return bool(user and user.is_authenticated and item.created_by_id == user.pk)
+
+
+def _execution(context: dict, item) -> dict | None:
+    """``{message, error, started_at, finished_at}`` of a run or comparison users started."""
+    anonymous = item.visibility == SimulationRun.Visibility.LINK
+    if not (_is_owner(context, item) or context.get("exempt") or anonymous):
+        return None
+    # A missing reverse one-to-one raises a subclass of AttributeError: imported items have no job.
+    job = getattr(item, "job", None)
+    return {
+        "message": job.message if job else "",
+        "error": item.execution_error,
+        "started_at": job.started_at.isoformat() if job and job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job and job.finished_at else None,
+    }
 
 
 class SimulationModelListSerializer(serializers.ModelSerializer):
@@ -215,24 +245,13 @@ class SimulationRunDetailSerializer(serializers.ModelSerializer):
         return (run.manifest or {}).get("labels", {})
 
     def get_is_owner(self, run: SimulationRun) -> bool:
-        user = getattr(self.context.get("request"), "user", None)
-        return bool(user and user.is_authenticated and run.created_by_id == user.pk)
+        return _is_owner(self.context, run)
 
     @extend_schema_field(OpenApiTypes.OBJECT)
     def get_execution(self, run: SimulationRun) -> dict | None:
         """Progress and errors of a started run: for the user who started it, exempt staff,
         and anyone holding the id of an anonymous (``link``) run."""
-        anonymous_run = run.visibility == SimulationRun.Visibility.LINK
-        if not (self.get_is_owner(run) or self.context.get("exempt") or anonymous_run):
-            return None
-        # A missing reverse one-to-one raises a subclass of AttributeError: imported runs have no job.
-        job = getattr(run, "job", None)
-        return {
-            "message": job.message if job else "",
-            "error": run.execution_error,
-            "started_at": job.started_at.isoformat() if job and job.started_at else None,
-            "finished_at": job.finished_at.isoformat() if job and job.finished_at else None,
-        }
+        return _execution(self.context, run)
 
     @extend_schema_field({"type": "array", "items": {"type": "object"}})
     def get_outputs(self, run: SimulationRun) -> list[dict]:
@@ -241,6 +260,8 @@ class SimulationRunDetailSerializer(serializers.ModelSerializer):
 
 class SimulationComparisonDetailSerializer(serializers.ModelSerializer):
     model = _ModelRefSerializer(read_only=True)
+    is_owner = serializers.SerializerMethodField()
+    execution = serializers.SerializerMethodField()
     baseline = serializers.SerializerMethodField()
     candidate = serializers.SerializerMethodField()
     labels = serializers.SerializerMethodField()
@@ -256,6 +277,10 @@ class SimulationComparisonDetailSerializer(serializers.ModelSerializer):
             "title",
             "description_content",
             "status",
+            "visibility",
+            "is_owner",
+            "execution_state",
+            "execution",
             "baseline",
             "candidate",
             "bounds",
@@ -266,6 +291,14 @@ class SimulationComparisonDetailSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = fields
+
+    def get_is_owner(self, comparison: SimulationComparison) -> bool:
+        return _is_owner(self.context, comparison)
+
+    @extend_schema_field(OpenApiTypes.OBJECT)
+    def get_execution(self, comparison: SimulationComparison) -> dict | None:
+        """Progress of a comparison users started (same rules as for runs)."""
+        return _execution(self.context, comparison)
 
     @extend_schema_field(SimulationRunSummarySerializer)
     def get_baseline(self, comparison: SimulationComparison) -> dict:
@@ -302,3 +335,23 @@ class RunSubmissionSerializer(serializers.Serializer):
     visibility = serializers.ChoiceField(
         choices=SimulationRun.Visibility.choices, required=False, default=SimulationRun.Visibility.PRIVATE
     )
+
+
+class ComparisonSubmissionSerializer(serializers.Serializer):
+    """Body of ``POST /api/v1/geosimulations/{model_id}/comparisons/``."""
+
+    baseline = serializers.DictField(help_text="{parameters: {...}}")
+    candidate = serializers.DictField(help_text="{parameters: {...}}")
+    seed = serializers.IntegerField(required=False, allow_null=True, default=None, min_value=0)
+    title = serializers.CharField(required=False, allow_blank=True, max_length=240, default="")
+    visibility = serializers.ChoiceField(
+        choices=SimulationRun.Visibility.choices, required=False, default=SimulationRun.Visibility.PRIVATE
+    )
+
+    def validate(self, attrs):
+        for side in ("baseline", "candidate"):
+            parameters = attrs[side].get("parameters", {})
+            if not isinstance(parameters, dict):
+                raise serializers.ValidationError({side: "parameters must be an object."})
+            attrs[side] = parameters
+        return attrs
