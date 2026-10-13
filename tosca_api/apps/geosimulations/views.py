@@ -33,11 +33,13 @@ from .jobs import (
     RunnerUnavailable,
     RunSubmissionError,
     handle_callback,
+    start_comparison,
     start_run,
     submitter_key_for,
 )
 from .models import SimulationComparison, SimulationModel, SimulationOutput, SimulationRun
 from .serializers import (
+    ComparisonSubmissionSerializer,
     SimulationComparisonDetailSerializer,
     SimulationComparisonSummarySerializer,
     SimulationModelDetailSerializer,
@@ -152,53 +154,117 @@ class SimulationModelViewSet(viewsets.ReadOnlyModelViewSet):
         submission = RunSubmissionSerializer(data=request.data)
         submission.is_valid(raise_exception=True)
         data = submission.validated_data
-        scope = _reader_scope(request)
-        org_slug = scope["org_slug"]
-        organization = Organization.objects.filter(slug=org_slug).first() if org_slug else None
-        if (
-            data["visibility"] == SimulationRun.Visibility.ORGANIZATION
-            and not scope["exempt"]
-            and org_slug != model.organization.slug
-        ):
-            return Response(
-                {"visibility": ["Only members of the model's organization can share runs with it."]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        anonymous = scope["user"] is None
+        context = _submission_context(request, model, data["visibility"])
+        if isinstance(context, Response):
+            return context
         try:
             result = start_run(
                 model,
                 data["parameters"],
-                user=scope["user"],
-                organization=organization,
-                readable_runs=_link_readable(SimulationRun.objects.readable_by(**scope)),
                 seed=data["seed"],
                 title=data["title"] or None,
                 visibility=data["visibility"],
-                exempt=scope["exempt"],
-                submitter_key=submitter_key_for(BaseThrottle().get_ident(request)) if anonymous else "",
+                **context,
             )
-        except QuotaExceeded as exc:
-            return Response(
-                {"detail": str(exc)},
-                status=status.HTTP_429_TOO_MANY_REQUESTS,
-                headers={"Retry-After": str(exc.retry_after)},
-            )
-        except RunnerUnavailable as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         except RunSubmissionError as exc:
-            return Response({"parameters": exc.errors}, status=status.HTTP_400_BAD_REQUEST)
+            return _submission_error(exc)
         body = SimulationRunSummarySerializer(result.run, context=self.get_serializer_context()).data
         body["reused"] = result.reused
         return Response(body, status=status.HTTP_200_OK if result.reused else status.HTTP_202_ACCEPTED)
 
-
-def _readable_comparisons(scope: dict):
-    """Comparisons the caller may read whose two runs the caller may read too."""
-    readable_runs = SimulationRun.objects.readable_by(**scope)
-    return SimulationComparison.objects.readable_by(**scope).filter(
-        baseline_run__in=readable_runs, candidate_run__in=readable_runs
+    @extend_schema(
+        summary="Start two runs with the same seed and a comparison of them (or get an identical one)",
+        tags=["GeoSimulations"],
+        request=ComparisonSubmissionSerializer,
+        responses={200: SimulationComparisonSummarySerializer, 202: SimulationComparisonSummarySerializer},
     )
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="comparisons",
+        permission_classes=[CanStartRuns],
+        authentication_classes=[KeycloakTokenAuthentication, TokenAuthentication],
+    )
+    def start_comparison(self, request, pk=None):
+        """Body ``{baseline: {parameters}, candidate: {parameters}, seed, title, visibility}``.
+
+        ``202`` new comparison (its runs start now, the comparison follows),
+        ``200`` with ``reused: true`` for an identical readable comparison; errors as for runs.
+        """
+        model = self.get_object()
+        submission = ComparisonSubmissionSerializer(data=request.data)
+        submission.is_valid(raise_exception=True)
+        data = submission.validated_data
+        context = _submission_context(request, model, data["visibility"])
+        if isinstance(context, Response):
+            return context
+        scope = _reader_scope(request)
+        try:
+            result = start_comparison(
+                model,
+                data["baseline"],
+                data["candidate"],
+                readable_comparisons=_readable_comparisons(scope, by_id=True),
+                seed=data["seed"],
+                title=data["title"] or None,
+                visibility=data["visibility"],
+                **context,
+            )
+        except RunSubmissionError as exc:
+            return _submission_error(exc)
+        body = SimulationComparisonSummarySerializer(result.comparison, context=self.get_serializer_context()).data
+        body["reused"] = result.reused
+        return Response(body, status=status.HTTP_200_OK if result.reused else status.HTTP_202_ACCEPTED)
+
+
+def _submission_context(request, model, visibility: str) -> dict | Response:
+    """Caller details for ``start_run`` / ``start_comparison``, or a 400 response."""
+    scope = _reader_scope(request)
+    org_slug = scope["org_slug"]
+    if (
+        visibility == SimulationRun.Visibility.ORGANIZATION
+        and not scope["exempt"]
+        and org_slug != model.organization.slug
+    ):
+        return Response(
+            {"visibility": ["Only members of the model's organization can share runs with it."]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    anonymous = scope["user"] is None
+    return {
+        "user": scope["user"],
+        "organization": Organization.objects.filter(slug=org_slug).first() if org_slug else None,
+        "readable_runs": _link_readable(SimulationRun.objects.readable_by(**scope)),
+        "exempt": scope["exempt"],
+        "submitter_key": submitter_key_for(BaseThrottle().get_ident(request)) if anonymous else "",
+    }
+
+
+def _submission_error(exc: RunSubmissionError) -> Response:
+    if isinstance(exc, QuotaExceeded):
+        return Response(
+            {"detail": str(exc)},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": str(exc.retry_after)},
+        )
+    if isinstance(exc, RunnerUnavailable):
+        return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+    return Response({"parameters": exc.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _readable_comparisons(scope: dict, *, by_id: bool = False):
+    """Comparisons the caller may read whose two runs the caller may read too.
+
+    ``by_id`` (detail views) adds anonymous ``link`` comparisons and runs.
+    """
+    readable_runs = SimulationRun.objects.readable_by(**scope)
+    comparisons = SimulationComparison.objects.readable_by(**scope)
+    if by_id:
+        readable_runs = _link_readable(readable_runs)
+        comparisons = SimulationComparison.objects.filter(
+            Q(pk__in=comparisons.values("pk")) | Q(visibility=SimulationRun.Visibility.LINK)
+        )
+    return comparisons.filter(baseline_run__in=readable_runs, candidate_run__in=readable_runs)
 
 
 @extend_schema_view(
@@ -272,7 +338,9 @@ class SimulationComparisonViewSet(viewsets.ReadOnlyModelViewSet):
     lookup_value_regex = UUID_PATTERN
 
     def get_queryset(self):
-        queryset = _readable_comparisons(_reader_scope(self.request)).select_related(
+        queryset = _readable_comparisons(
+            _reader_scope(self.request), by_id=self.action == "retrieve"
+        ).select_related(
             "model", "baseline_run", "candidate_run"
         )
         model_id = self.request.query_params.get("model")
@@ -293,7 +361,11 @@ class SimulationComparisonViewSet(viewsets.ReadOnlyModelViewSet):
         return SimulationComparisonSummarySerializer
 
     def get_serializer_context(self):
-        return {**super().get_serializer_context(), "now": timezone.now()}
+        return {
+            **super().get_serializer_context(),
+            "now": timezone.now(),
+            "exempt": _reader_scope(self.request)["exempt"],
+        }
 
 
 class SimulationJobCallbackView(APIView):

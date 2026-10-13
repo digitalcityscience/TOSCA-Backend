@@ -14,6 +14,9 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         result = purge(dry_run=options["dry_run"])
         verb = "Would delete" if options["dry_run"] else "Deleted"
+        if result.deleted_comparisons:
+            self.stdout.write(f"{verb} {len(result.deleted_comparisons)} comparison(s): "
+                              f"{', '.join(result.deleted_comparisons)}")
         self.stdout.write(f"{verb} {len(result.deleted_runs)} run(s): {', '.join(result.deleted_runs) or '—'}")
         if result.kept_runs:
             self.stdout.write(f"Kept {len(result.kept_runs)} run(s) used by stories or comparisons: "

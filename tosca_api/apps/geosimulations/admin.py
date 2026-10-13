@@ -500,15 +500,15 @@ class SimulationRunnerAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
 class SimulationJobAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     """Background work of started runs; read-only apart from retrying failed jobs."""
 
-    org_lookup = "run__model__organization__slug"
+    org_lookup = "runner__organization__slug"
 
-    list_display = ("run", "runner", "state", "attempts", "message", "updated_at")
+    list_display = ("__str__", "runner", "state", "attempts", "message", "updated_at")
     list_filter = ("state", "runner")
-    search_fields = ("run__key", "run__title", "runner_job_id")
-    list_select_related = ("run", "runner")
+    search_fields = ("run__key", "run__title", "comparison__key", "comparison__title", "runner_job_id")
+    list_select_related = ("run", "comparison", "runner")
     actions = ["retry_jobs"]
     readonly_fields = (
-        "id", "run", "runner", "state", "attempts", "runner_job_id", "upload_path", "message", "error",
+        "id", "run", "comparison", "runner", "state", "attempts", "runner_job_id", "upload_path", "message", "error",
         "available_at", "locked_by", "locked_at", "dispatched_at", "started_at", "last_callback_at",
         "finished_at", "created_at", "updated_at",
     )
@@ -520,12 +520,12 @@ class SimulationJobAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     @admin.action(description="Retry the selected failed jobs")
     def retry_jobs(self, request, queryset):
         retried = 0
-        for job in queryset.select_related("run"):
+        for job in queryset.select_related("run", "comparison"):
             try:
                 jobs.retry_job(job)
                 retried += 1
             except jobs.RunSubmissionError as exc:
-                self.message_user(request, f"{job.run.key}: {exc}", messages.WARNING)
+                self.message_user(request, f"{job.owner.key}: {exc}", messages.WARNING)
         if retried:
             self.message_user(request, f"Queued {retried} job(s) again.")
 
