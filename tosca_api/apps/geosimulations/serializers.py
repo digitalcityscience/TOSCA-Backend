@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from zoneinfo import ZoneInfo
 
+from django.conf import settings
+
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
@@ -145,8 +147,10 @@ class SimulationModelDetailSerializer(SimulationModelListSerializer):
         return {"slug": model.organization.slug, "name": model.organization.name}
 
     def get_runnable(self, model: SimulationModel) -> bool:
-        """Users can start runs (``POST …/{id}/runs/``): the model has an active runner."""
-        return model.runner_id is not None and model.runner.is_active
+        """Users can start runs (``POST …/{id}/runs/``): runs are enabled and the model has an active runner."""
+        return (
+            settings.GEOSIMULATIONS_RUNS_ENABLED and model.runner_id is not None and model.runner.is_active
+        )
 
     @extend_schema_field(SimulationRunSummarySerializer(many=True))
     def get_runs(self, model: SimulationModel) -> list[dict]:

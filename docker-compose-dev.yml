@@ -121,7 +121,7 @@ services:
     container_name: tosca-django-api
     env_file:
       - ${ENV_FILE}
-    environment:
+    environment: &django-environment
       DJANGO_SETTINGS_MODULE: tosca_api.settings.${ENV_TYPE}
       DATABASE_URL: postgresql://${PG_API_USER}:${PG_API_PASSWORD}@db:5432/${PG_DATABASE}
       DJANGO_STORAGE_BACKEND: s3
@@ -138,6 +138,8 @@ services:
       S3_SIGNATURE_VERSION: ${S3_SIGNATURE_VERSION:-s3v4}
       MEDIA_PRIVATE_PREFIX: ${MEDIA_PRIVATE_PREFIX:-media/originals/}
       MEDIA_DERIVATIVE_PREFIX: ${MEDIA_DERIVATIVE_PREFIX:-media/derivatives/}
+      # Simulation runners on this Docker network report back here (GeoSimulations).
+      GEOSIMULATIONS_CALLBACK_BASE_URL: ${GEOSIMULATIONS_CALLBACK_BASE_URL:-http://django:8000}
     volumes:
       - .:/app
     ports:
@@ -152,6 +154,30 @@ services:
     stdin_open: true
     tty: true
     restart: unless-stopped
+
+  # Background jobs of runs started in TOSCA: sends them to their simulation
+  # runner and imports the packages the runner uploads (database queue; a
+  # Celery + Redis worker is planned to replace it). Only needed with
+  # GEOSIMULATIONS_RUNS_ENABLED=true and a runner, so it is opt-in:
+  #   docker compose --profile simulation-runs ... up -d geosim-worker
+  geosim-worker:
+    profiles: ["simulation-runs"]
+    build:
+      context: .
+      dockerfile: docker/django/Dockerfile
+    container_name: tosca-geosim-worker
+    env_file:
+      - ${ENV_FILE}
+    environment: *django-environment
+    volumes:
+      - .:/app
+    depends_on:
+      django:
+        condition: service_started
+    working_dir: /app
+    command: ["bash", "-lc", "uv run python manage.py run_simulation_worker"]
+    restart: unless-stopped
+
 volumes:
   pg_data:
   geoserver_data:

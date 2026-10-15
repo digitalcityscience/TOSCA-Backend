@@ -73,6 +73,11 @@ GEOSIMULATIONS_WORKER = {
 # Runs users start: how many may be active (queued or running) at once and how many
 # may start per 24 hours, per user and per organization. Platform-exempt users
 # (staff with platform access) are not limited.
+# Runs and comparisons users start (POST …/runs/, …/comparisons/) need a simulation
+# runner and the geosim-worker. Off by default (2026-10-15): no runner is deployed;
+# imported packages work without it. Turn it on together with the frontend's
+# "geosimulation-runs" feature.
+GEOSIMULATIONS_RUNS_ENABLED = env.bool("GEOSIMULATIONS_RUNS_ENABLED", default=False)
 # Until the frontend has sign-in, anonymous visitors may start runs too (2026-10-12);
 # turn this off once sign-in exists. Anonymous runs are limited per client address
 # (DRF's client identity, honouring NUM_PROXIES) and all together; a comparison
