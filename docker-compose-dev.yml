@@ -113,6 +113,10 @@ services:
       GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-0000000000000000000000000000000000000000000000000000000000000000}
       GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:-local-garage-admin-token}
       S3_REGION_NAME: ${S3_REGION_NAME:-garage}
+    volumes:
+      # The CLI finds the node to talk RPC with via the node key in Garage's
+      # metadata dir; read-only so the bootstrap never writes Garage state.
+      - garage_meta:/var/lib/garage/meta:ro
     restart: "no"
 
   django:
