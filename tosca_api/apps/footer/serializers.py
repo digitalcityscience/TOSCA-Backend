@@ -26,14 +26,48 @@ def serialize_published_footer(footer: Footer, request=None) -> dict:
             }
             for logo in snapshot.get("logos", [])
         ],
+        # Content is served per document so the footer payload stays small
+        # however many documents are published.
         "documents": [
-            {
-                **document,
-                "content": render_content_media_urls(document["content"], request),
-            }
+            {key: value for key, value in document.items() if key != "content"}
             for document in snapshot.get("documents", [])
         ],
     }
+
+
+def serialize_published_document(footer: Footer, slug: str, request=None) -> dict | None:
+    snapshot = footer.published_snapshot or {}
+    document = next(
+        (item for item in snapshot.get("documents", []) if item["slug"] == slug),
+        None,
+    )
+    if document is None:
+        return None
+    return {
+        **document,
+        "content": render_content_media_urls(document["content"], request),
+    }
+
+
+class PublishedFooterLogoSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    image = serializers.CharField()
+    url = serializers.URLField()
+    alt_text = serializers.CharField()
+    destination_url = serializers.CharField(allow_blank=True)
+    display_order = serializers.IntegerField()
+
+
+class PublishedFooterDocumentLinkSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    title = serializers.CharField()
+    slug = serializers.SlugField()
+    path = serializers.CharField()
+    display_order = serializers.IntegerField()
+
+
+class PublishedFooterDocumentSerializer(PublishedFooterDocumentLinkSerializer):
+    content = serializers.DictField()
 
 
 class PublishedFooterSerializer(serializers.Serializer):
@@ -43,5 +77,5 @@ class PublishedFooterSerializer(serializers.Serializer):
     name = serializers.CharField()
     version = serializers.IntegerField()
     published_at = serializers.DateTimeField()
-    logos = serializers.ListField(child=serializers.DictField())
-    documents = serializers.ListField(child=serializers.DictField())
+    logos = PublishedFooterLogoSerializer(many=True)
+    documents = PublishedFooterDocumentLinkSerializer(many=True)

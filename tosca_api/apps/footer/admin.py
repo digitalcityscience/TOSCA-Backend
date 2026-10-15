@@ -11,7 +11,7 @@ from tosca_api.apps.footer.forms import (
     FooterLogoInlineFormSet,
 )
 from tosca_api.apps.footer.models import Footer, FooterDocument, FooterLogo
-from tosca_api.apps.footer.services import publish_footer
+from tosca_api.apps.footer.services import footer_overflow_warnings, publish_footer
 
 
 class FooterLogoInline(admin.TabularInline):
@@ -146,9 +146,15 @@ class FooterAdmin(admin.ModelAdmin):
             "original": footer,
             "title": f"Publish footer “{footer.name}”?",
             "active_documents": footer.documents.filter(is_active=True),
+            "overflow_warnings": footer_overflow_warnings(footer),
             "replaces": Footer.objects.filter(is_published=True).exclude(pk=footer.pk).first(),
         }
         return TemplateResponse(request, "admin/footer/footer/publish_confirmation.html", context)
+
+    def save_related(self, request, form, formsets, change):
+        super().save_related(request, form, formsets, change)
+        for warning in footer_overflow_warnings(form.instance):
+            self.message_user(request, warning, level=messages.WARNING)
 
     def has_delete_permission(self, request, obj=None):
         if obj is not None and obj.is_published:

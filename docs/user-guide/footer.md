@@ -33,7 +33,7 @@ A published Footer cannot be deleted. Publish another Footer first if the old on
 | Image | PNG, JPG/JPEG, or WebP logo file. |
 | Alt text | Required accessible name. Identify the organization or meaningful logo purpose. |
 | Destination URL | Optional link opened when the logo is selected. Use a complete HTTPS URL. |
-| Display order | Unique order within this Footer; lower numbers appear first. |
+| Display order | Position within this Footer; lower numbers appear first. Changing one row's number moves it there and shifts the others. |
 | Active | Only active logos are included when published. |
 
 Use consistent visual dimensions and meaningful alt text. Do not use phrases such as “image of” unless they add information.
@@ -47,14 +47,23 @@ Footer documents are pages such as Privacy, Accessibility, or Imprint.
 | Title | Required public link/page title. |
 | Slug | Reserved frontend path without a leading slash, for example `privacy`. Use lowercase letters, numbers, and single hyphens only. Must be unique within the Footer. |
 | Content | Rich Editor.js document shown on the footer page. |
-| Display order | Unique order within this Footer; lower numbers appear first. |
+| Display order | Position within this Footer; lower numbers appear first. Changing one row's number moves it there and shifts the others. |
 | Active | Only active documents are included when published. |
+
+## How many logos and documents?
+
+There is no fixed limit. Display order decides what stays visible when space runs out:
+
+- **Logos** wrap onto more rows on narrow screens. Put the most important partners first.
+- **Documents** show as links on one row while they fit. The last ones by display order move into a **More** menu on smaller screens.
+
+Above 8 active logos or 6 active documents the admin shows a warning when you save and on the publish confirmation page. The warning never blocks publishing.
 
 ## Publish safely
 
 1. Check every active logo, alt text, and destination URL.
 2. Open every active document and verify title, slug, headings, links, and content.
-3. Confirm display-order values are unique and intentional.
+3. Confirm the display order puts the most important items first.
 4. Save the Footer before publishing.
 5. Publish it and verify the public footer and document routes.
 

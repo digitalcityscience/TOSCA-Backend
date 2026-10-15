@@ -1,45 +1,13 @@
 from django import forms
-from django.core.exceptions import ValidationError
 from django.forms.models import BaseInlineFormSet
 
 from tosca_api.apps.core.editorjs import render_content_media_urls
-from tosca_api.apps.footer.models import (
-    MAX_ACTIVE_DOCUMENTS,
-    MAX_ACTIVE_LOGOS,
-    FooterDocument,
-)
+from tosca_api.apps.footer.models import FooterDocument
 from tosca_api.apps.geocontext.widgets import EditorJsWidget
 
 
-class ActiveItemLimitFormSet(BaseInlineFormSet):
-    active_limit: int
-    item_label: str
-
-    def clean(self):
-        super().clean()
-        if any(self.errors):
-            return
-        active_count = sum(
-            1
-            for form in self.forms
-            if form.cleaned_data
-            and not form.cleaned_data.get("DELETE", False)
-            and form.cleaned_data.get("is_active", True)
-        )
-        if active_count > self.active_limit:
-            raise ValidationError(
-                f"A footer can have at most {self.active_limit} active {self.item_label}."
-            )
-
-
-class FooterLogoInlineFormSet(ActiveItemLimitFormSet):
-    active_limit = MAX_ACTIVE_LOGOS
-    item_label = "logos"
-
-
-class FooterDocumentInlineFormSet(ActiveItemLimitFormSet):
-    active_limit = MAX_ACTIVE_DOCUMENTS
-    item_label = "documents"
+class OrderedInlineFormSet(BaseInlineFormSet):
+    """Normalizes display_order to a gapless 0..n sequence before validation."""
 
     def clean(self):
         if any(self.errors):
@@ -72,14 +40,30 @@ class FooterDocumentInlineFormSet(ActiveItemLimitFormSet):
                 ),
             )
 
-        # New documents always append, regardless of the cloned inline's initial value.
+        # New items always append, regardless of the cloned inline's initial value.
         ordered_forms.extend(new_forms)
         for display_order, form in enumerate(ordered_forms):
             form.cleaned_data["display_order"] = display_order
             form.instance.display_order = display_order
+            # Rows shifted by another row's move must be saved even though the
+            # editor did not touch them; the formset skips unchanged forms.
+            if (
+                form.instance.pk
+                and form.initial.get("display_order") != display_order
+                and "display_order" not in form.changed_data
+            ):
+                form.changed_data.append("display_order")
 
-        # Run model/formset uniqueness and active-item validation after normalization.
+        # Run model/formset uniqueness validation after normalization.
         super().clean()
+
+
+class FooterLogoInlineFormSet(OrderedInlineFormSet):
+    pass
+
+
+class FooterDocumentInlineFormSet(OrderedInlineFormSet):
+    pass
 
 
 class FooterDocumentForm(forms.ModelForm):
