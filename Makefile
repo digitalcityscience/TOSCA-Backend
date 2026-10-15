@@ -3,7 +3,7 @@
 	django-test django-test-unit django-test-integration test-geoserver \
 	django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean \
 	sync-django-geoengine smoke-test list list-media list-test-media list-static media test-media static test test-integration \
-	reconcile-postgis-service-passwords
+	reconcile-postgis-service-passwords configure-storage-cors seed-geosimulations
 
 # -------------------------------------------------
 # ENV selection (DEFAULT = dev) or prod
@@ -111,6 +111,11 @@ help:
 	@echo "$(COLOR_BLUE)GeoEngine Management:$(COLOR_RESET)"
 	@echo "  make sync-django-geoengine   - Sync GeoEngine with active engine"
 	@echo "  make smoke-test              - Run GeoEngine smoke test (validate setup)"
+	@echo ""
+	@echo "$(COLOR_BLUE)GeoSimulations:$(COLOR_RESET)"
+	@echo "  make configure-storage-cors  - Let the frontend origins fetch() files from the media buckets"
+	@echo "  make seed-geosimulations PACKAGES=../geodata-science/output/tosca ORG=dcs"
+	@echo "                               - Import every simulation package (.zip) in PACKAGES, published (existing ones are skipped)"
 	@echo ""
 	@echo "$(COLOR_GREEN)Project Initialization:$(COLOR_RESET)"
 	@echo "  make initialize-project - Build, start all services, run migrations, restart Django"
@@ -513,6 +518,32 @@ sync-django-geoengine: which-env
 smoke-test: which-env
 	@echo "$(COLOR_BLUE)🧪 Running GeoEngine smoke test...$(COLOR_RESET)"
 	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py geoengine_smoke_test
+
+# -------------------------------------------------
+# GeoSimulations
+# -------------------------------------------------
+# Once per environment (and when DJANGO_CORS_ALLOWED_ORIGINS changes): map
+# tiles and replays are fetch()ed from presigned storage URLs by the frontend.
+configure-storage-cors: which-env
+	@echo "$(COLOR_BLUE)🌐 Configuring media bucket CORS...$(COLOR_RESET)"
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T django uv run python manage.py configure_storage_cors
+
+# Seed simulation runs and comparisons from package zips (geodata-science
+# bike-export-tosca / bike-export-tosca-comparison output). Runs are imported
+# before *_comparison.zip packages, which need them. Re-running skips runs and
+# comparisons that already exist; delete one in the admin to re-import it.
+# Usage: make seed-geosimulations PACKAGES=../geodata-science/output/tosca ORG=dcs
+seed-geosimulations: which-env
+	@if [ -z "$(PACKAGES)" ] || [ -z "$(ORG)" ]; then \
+		echo "Usage: make seed-geosimulations PACKAGES=<dir with .zip packages> ORG=<organization slug>"; exit 1; \
+	fi
+	@set -e; for package in $$(ls $(PACKAGES)/*.zip | grep -v '_comparison\.zip$$') $$(ls $(PACKAGES)/*_comparison.zip 2>/dev/null); do \
+		echo "$(COLOR_BLUE)📦 Importing $$package...$(COLOR_RESET)"; \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) cp "$$package" django:/tmp/geosim-seed.zip; \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T django uv run python manage.py \
+			import_simulation_package /tmp/geosim-seed.zip --organization $(ORG) --publish --skip-existing; \
+		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec -T django rm -f /tmp/geosim-seed.zip; \
+	done
 
 # Allow arguments to be passed to certain commands
 %:

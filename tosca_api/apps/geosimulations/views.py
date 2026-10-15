@@ -70,6 +70,13 @@ class CanStartRuns(BasePermission):
         return bool(user and user.is_authenticated) or settings.GEOSIMULATIONS_ALLOW_ANONYMOUS_RUNS
 
 
+def _runs_disabled() -> Response | None:
+    """``404`` while starting runs is switched off (``GEOSIMULATIONS_RUNS_ENABLED``)."""
+    if settings.GEOSIMULATIONS_RUNS_ENABLED:
+        return None
+    return Response({"detail": "Starting simulation runs is not enabled."}, status=status.HTTP_404_NOT_FOUND)
+
+
 def _link_readable(queryset):
     """Readable runs plus anonymous ``link`` runs, which anyone with the id may open."""
     return SimulationRun.objects.filter(
@@ -150,6 +157,8 @@ class SimulationModelViewSet(viewsets.ReadOnlyModelViewSet):
         has no runner, ``429`` a quota is reached (``Retry-After`` header).
         Anonymous visitors (while allowed) get ``link`` runs: readable by id, never listed.
         """
+        if (disabled := _runs_disabled()) is not None:
+            return disabled
         model = self.get_object()
         submission = RunSubmissionSerializer(data=request.data)
         submission.is_valid(raise_exception=True)
@@ -191,6 +200,8 @@ class SimulationModelViewSet(viewsets.ReadOnlyModelViewSet):
         ``202`` new comparison (its runs start now, the comparison follows),
         ``200`` with ``reused: true`` for an identical readable comparison; errors as for runs.
         """
+        if (disabled := _runs_disabled()) is not None:
+            return disabled
         model = self.get_object()
         submission = ComparisonSubmissionSerializer(data=request.data)
         submission.is_valid(raise_exception=True)

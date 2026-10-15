@@ -58,7 +58,11 @@ BODY = {
 
 @pytest.fixture(autouse=True)
 def settings_for_jobs():
-    with override_settings(GEOSIMULATIONS_QUOTAS=QUOTAS, GEOSIMULATIONS_CALLBACK_BASE_URL="http://testserver"):
+    with override_settings(
+        GEOSIMULATIONS_QUOTAS=QUOTAS,
+        GEOSIMULATIONS_CALLBACK_BASE_URL="http://testserver",
+        GEOSIMULATIONS_RUNS_ENABLED=True,
+    ):
         yield
 
 

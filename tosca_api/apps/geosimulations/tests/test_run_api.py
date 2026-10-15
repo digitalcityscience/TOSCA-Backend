@@ -51,7 +51,7 @@ Execution = SimulationRun.ExecutionState
 
 @pytest.fixture(autouse=True)
 def quotas():
-    with override_settings(GEOSIMULATIONS_QUOTAS=QUOTAS):
+    with override_settings(GEOSIMULATIONS_QUOTAS=QUOTAS, GEOSIMULATIONS_RUNS_ENABLED=True):
         yield
 
 
@@ -407,3 +407,18 @@ def test_an_admin_session_cookie_does_not_require_csrf(model, django_user_model)
 
     # Treated as an anonymous visitor (token authentication only), not a CSRF failure.
     assert response.status_code == 202 and response.data["visibility"] == "link"
+
+
+def test_starting_runs_is_off_unless_enabled(model):
+    with override_settings(GEOSIMULATIONS_RUNS_ENABLED=False):
+        run = _start(APIClient(), model, parameters={"agents": 3})
+        comparison = APIClient().post(
+            f"/api/v1/geosimulations/{model.pk}/comparisons/",
+            {"baseline": {"parameters": {"agents": 3}}, "candidate": {"parameters": {"agents": 4}}},
+            format="json",
+        )
+        detail = APIClient().get(f"/api/v1/geosimulations/{model.pk}/")
+
+    assert run.status_code == comparison.status_code == 404
+    assert detail.data["runnable"] is False
+    assert not SimulationRun.objects.exists()
