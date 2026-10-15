@@ -1,28 +1,27 @@
 (function () {
   "use strict";
 
+  const ORDERED_FORMSETS = ["logos", "documents"];
+
   document.addEventListener("formset:added", function (event) {
-    if (event.detail?.formsetName !== "documents") {
+    const formsetName = event.detail?.formsetName;
+    if (!ORDERED_FORMSETS.includes(formsetName)) {
       return;
     }
 
-    const addedOrder = event.target.querySelector(
-      'input[name^="documents-"][name$="-display_order"]',
-    );
+    const selector = `input[name^="${formsetName}-"][name$="-display_order"]`;
+    const addedOrder = event.target.querySelector(selector);
     if (!addedOrder) {
       return;
     }
 
-    const existingOrders = Array.from(
-      document.querySelectorAll(
-        'input[name^="documents-"][name$="-display_order"]',
-      ),
-    )
+    const existingOrders = Array.from(document.querySelectorAll(selector))
       .filter(function (input) {
         if (input === addedOrder || input.name.includes("__prefix__")) {
           return false;
         }
-        const row = input.closest(".inline-related");
+        // Tabular inlines (logos) use table rows; stacked inlines use .inline-related.
+        const row = input.closest("tr, .inline-related");
         const deleteInput = row?.querySelector('input[name$="-DELETE"]');
         return !deleteInput?.checked;
       })

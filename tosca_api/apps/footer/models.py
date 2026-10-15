@@ -12,8 +12,10 @@ from tosca_api.apps.core.editorjs import empty_document, validate_and_normalize
 from tosca_api.apps.core.models import TimeStampedModel
 
 
-MAX_ACTIVE_LOGOS = 4
-MAX_ACTIVE_DOCUMENTS = 3
+# Soft thresholds: above these the frontend is likely to wrap logos or move
+# documents into an overflow menu. Editors are warned, never blocked.
+SOFT_LIMIT_LOGOS = 8
+SOFT_LIMIT_DOCUMENTS = 6
 
 
 def footer_logo_upload_to(instance: "FooterLogo", filename: str) -> str:
@@ -52,18 +54,6 @@ class Footer(TimeStampedModel):
     def __str__(self) -> str:
         return self.name
 
-    def clean(self) -> None:
-        super().clean()
-        errors = {}
-        if self.pk and self.logos.filter(is_active=True).count() > MAX_ACTIVE_LOGOS:
-            errors["logos"] = f"A footer can have at most {MAX_ACTIVE_LOGOS} active logos."
-        if self.pk and self.documents.filter(is_active=True).count() > MAX_ACTIVE_DOCUMENTS:
-            errors["documents"] = (
-                f"A footer can have at most {MAX_ACTIVE_DOCUMENTS} active documents."
-            )
-        if errors:
-            raise ValidationError(errors)
-
     def delete(self, *args, **kwargs):
         if self.is_published:
             raise ValidationError("Publish another footer before deleting this one.")
@@ -85,7 +75,9 @@ class FooterLogo(TimeStampedModel):
         ordering = ["display_order", "created_at"]
         constraints = [
             models.UniqueConstraint(
-                fields=["footer", "display_order"], name="unique_footer_logo_order"
+                fields=["footer", "display_order"],
+                name="unique_footer_logo_order",
+                deferrable=models.Deferrable.DEFERRED,
             )
         ]
 

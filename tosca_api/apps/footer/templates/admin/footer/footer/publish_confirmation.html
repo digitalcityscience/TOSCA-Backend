@@ -8,6 +8,14 @@
       {% if replaces %}It replaces <strong>{{ replaces.name }}</strong>.{% endif %}
     </p>
 
+    {% if overflow_warnings %}
+      <ul class="messagelist footer-overflow-warnings">
+        {% for warning in overflow_warnings %}
+          <li class="warning">{{ warning }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
     <h2>Public document routes</h2>
     {% if active_documents %}
       <ul>

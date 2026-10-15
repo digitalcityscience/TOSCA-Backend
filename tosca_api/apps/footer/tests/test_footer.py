@@ -6,8 +6,14 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from tosca_api.apps.footer.forms import FooterDocumentForm
-from tosca_api.apps.footer.models import Footer, FooterDocument, FooterLogo
-from tosca_api.apps.footer.services import publish_footer
+from tosca_api.apps.footer.models import (
+    SOFT_LIMIT_DOCUMENTS,
+    SOFT_LIMIT_LOGOS,
+    Footer,
+    FooterDocument,
+    FooterLogo,
+)
+from tosca_api.apps.footer.services import footer_overflow_warnings, publish_footer
 
 
 pytestmark = pytest.mark.django_db
@@ -15,6 +21,24 @@ pytestmark = pytest.mark.django_db
 
 def document_content(text: str) -> dict:
     return {"blocks": [{"type": "paragraph", "data": {"text": text}}]}
+
+
+def add_logo(footer: Footer, *, order: int = 0):
+    return FooterLogo.objects.create(
+        footer=footer,
+        image=f"footer/test/logo-{order}.png",
+        alt_text=f"Logo {order}",
+        display_order=order,
+    )
+
+
+def management_form(prefix: str, total: int, initial: int) -> dict:
+    return {
+        f"{prefix}-TOTAL_FORMS": str(total),
+        f"{prefix}-INITIAL_FORMS": str(initial),
+        f"{prefix}-MIN_NUM_FORMS": "0",
+        f"{prefix}-MAX_NUM_FORMS": "1000",
+    }
 
 
 def add_document(footer: Footer, slug: str, *, order: int = 0, text: str | None = None):
@@ -64,13 +88,38 @@ def test_published_snapshot_does_not_change_when_draft_is_edited():
     assert published_text == "Published text"
 
 
-def test_publish_rejects_more_than_three_active_documents():
-    footer = Footer.objects.create(name="Too many")
-    for order, slug in enumerate(("privacy", "imprint", "terms", "accessibility")):
+def test_publish_accepts_many_logos_and_documents_in_display_order():
+    footer = Footer.objects.create(name="Many items")
+    slugs = [f"doc-{index}" for index in range(8)]
+    for order, slug in reversed(list(enumerate(slugs))):
         add_document(footer, slug, order=order)
+    for order in range(10):
+        add_logo(footer, order=order)
 
-    with pytest.raises(ValidationError, match="at most 3 active documents"):
-        publish_footer(footer.pk)
+    publish_footer(footer.pk)
+
+    footer.refresh_from_db()
+    snapshot = footer.published_snapshot
+    assert [document["slug"] for document in snapshot["documents"]] == slugs
+    assert [logo["display_order"] for logo in snapshot["logos"]] == list(range(10))
+
+
+def test_overflow_warnings_only_above_soft_limits():
+    footer = Footer.objects.create(name="Soft limits")
+    for order in range(SOFT_LIMIT_LOGOS):
+        add_logo(footer, order=order)
+    for order in range(SOFT_LIMIT_DOCUMENTS):
+        add_document(footer, f"doc-{order}", order=order)
+
+    assert footer_overflow_warnings(footer) == []
+
+    add_logo(footer, order=SOFT_LIMIT_LOGOS)
+    add_document(footer, "one-more", order=SOFT_LIMIT_DOCUMENTS)
+
+    warnings = footer_overflow_warnings(footer)
+    assert len(warnings) == 2
+    assert "logos" in warnings[0]
+    assert "“More” menu" in warnings[1]
 
 
 def test_publish_rejects_an_empty_active_document():
@@ -83,20 +132,6 @@ def test_publish_rejects_an_empty_active_document():
     )
 
     with pytest.raises(ValidationError, match="has no content"):
-        publish_footer(footer.pk)
-
-
-def test_publish_rejects_more_than_four_active_logos():
-    footer = Footer.objects.create(name="Too many logos")
-    for order in range(5):
-        FooterLogo.objects.create(
-            footer=footer,
-            image=f"footer/test/logo-{order}.png",
-            alt_text=f"Logo {order}",
-            display_order=order,
-        )
-
-    with pytest.raises(ValidationError, match="at most 4 active logos"):
         publish_footer(footer.pk)
 
 
@@ -116,7 +151,10 @@ def test_public_footer_returns_only_the_published_snapshot():
     response = APIClient().get(reverse("footer:published-footer"))
 
     assert response.status_code == 200
-    assert response.json()["documents"][0]["slug"] == "privacy"
+    document = response.json()["documents"][0]
+    assert document["slug"] == "privacy"
+    assert document["path"] == "/privacy"
+    assert "content" not in document
     assert response["Cache-Control"] == "no-cache"
     assert response["ETag"].startswith('"footer-')
 
@@ -125,6 +163,20 @@ def test_public_footer_returns_only_the_published_snapshot():
         HTTP_IF_NONE_MATCH=response["ETag"],
     )
     assert revalidated.status_code == 304
+
+
+def test_document_endpoint_serves_document_content():
+    footer = Footer.objects.create(name="Global")
+    add_document(footer, "privacy", text="Public text")
+    publish_footer(footer.pk)
+
+    response = APIClient().get(
+        reverse("footer:published-footer-document", kwargs={"slug": "privacy"})
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"]["blocks"][0]["data"]["text"] == "Public text"
+    assert response["ETag"].startswith('"footer-')
 
 
 def test_document_endpoint_only_serves_currently_published_document():
@@ -281,3 +333,62 @@ def test_admin_inline_moves_existing_document_and_appends_new_document(client, d
         ("imprint", 2),
         ("accessibility", 3),
     ]
+
+
+def test_admin_inline_moves_existing_logo(client, django_user_model):
+    user = django_user_model.objects.create_superuser(
+        username="footer-logo-order-admin",
+        email="footer-logo-order@example.com",
+        password="test-password",
+    )
+    footer = Footer.objects.create(name="Logo order footer")
+    logos = [add_logo(footer, order=order) for order in range(3)]
+    client.force_login(user)
+
+    data = {
+        "name": footer.name,
+        **management_form("logos", 3, 3),
+        **management_form("documents", 0, 0),
+        "_save": "Save",
+    }
+    for index, logo in enumerate(logos):
+        data |= {
+            f"logos-{index}-id": str(logo.pk),
+            f"logos-{index}-alt_text": logo.alt_text,
+            f"logos-{index}-destination_url": "",
+            f"logos-{index}-display_order": str(index),
+            f"logos-{index}-is_active": "on",
+        }
+    # Move the last logo to the front: a direct swap would collide without the
+    # deferred constraint and formset normalization.
+    data["logos-2-display_order"] = "0"
+
+    response = client.post(reverse("admin:footer_footer_change", args=[footer.pk]), data)
+
+    assert response.status_code == 302
+    assert list(footer.logos.order_by("display_order").values_list("pk", flat=True)) == [
+        logos[2].pk,
+        logos[0].pk,
+        logos[1].pk,
+    ]
+
+
+def test_admin_warns_without_blocking_when_footer_may_overflow(client, django_user_model):
+    user = django_user_model.objects.create_superuser(
+        username="footer-overflow-admin",
+        email="footer-overflow@example.com",
+        password="test-password",
+    )
+    footer = Footer.objects.create(name="Overflowing footer")
+    for order in range(SOFT_LIMIT_DOCUMENTS + 1):
+        add_document(footer, f"doc-{order}", order=order)
+    client.force_login(user)
+
+    publish_url = reverse("admin:footer_footer_publish", args=[footer.pk])
+    confirmation = client.get(publish_url)
+    response = client.post(publish_url)
+
+    footer.refresh_from_db()
+    assert "“More” menu".encode() in confirmation.content
+    assert response.status_code == 302
+    assert footer.is_published is True

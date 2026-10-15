@@ -5,8 +5,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from tosca_api.apps.footer.models import (
-    MAX_ACTIVE_DOCUMENTS,
-    MAX_ACTIVE_LOGOS,
+    SOFT_LIMIT_DOCUMENTS,
+    SOFT_LIMIT_LOGOS,
     Footer,
 )
 
@@ -21,20 +21,29 @@ def _has_meaningful_content(value) -> bool:
     return value not in (None, False, 0)
 
 
+def footer_overflow_warnings(footer: Footer) -> list[str]:
+    """Non-blocking hints for editors when the footer may not fit on one row."""
+    warnings = []
+    logo_count = footer.logos.filter(is_active=True).count()
+    document_count = footer.documents.filter(is_active=True).count()
+    if logo_count > SOFT_LIMIT_LOGOS:
+        warnings.append(
+            f"{logo_count} active logos: on smaller screens they will wrap onto "
+            "several rows. Order them by importance."
+        )
+    if document_count > SOFT_LIMIT_DOCUMENTS:
+        warnings.append(
+            f"{document_count} active documents: the last ones by display order may "
+            "move into a “More” menu on smaller screens."
+        )
+    return warnings
+
+
 def build_footer_snapshot(footer: Footer) -> dict:
     logos = list(footer.logos.filter(is_active=True).order_by("display_order", "created_at"))
     documents = list(
         footer.documents.filter(is_active=True).order_by("display_order", "created_at")
     )
-    if len(logos) > MAX_ACTIVE_LOGOS:
-        raise ValidationError(
-            {"logos": f"A footer can have at most {MAX_ACTIVE_LOGOS} active logos."}
-        )
-    if len(documents) > MAX_ACTIVE_DOCUMENTS:
-        raise ValidationError(
-            {"documents": (f"A footer can have at most {MAX_ACTIVE_DOCUMENTS} active documents.")}
-        )
-
     for logo in logos:
         logo.full_clean()
     for document in documents:
