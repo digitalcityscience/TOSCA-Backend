@@ -36,10 +36,11 @@ EOF
 
 printf '%s\n' 'Waiting for the Garage single-node layout...'
 i=0
-while ! garage status >/dev/null 2>&1; do
+while ! last_error=$(garage status 2>&1); do
   i=$((i + 1))
   if [ "$i" -ge 60 ]; then
-    echo 'Garage did not become ready within 60 seconds.' >&2
+    echo 'Garage did not become ready within 60 seconds. Last error:' >&2
+    printf '%s\n' "$last_error" >&2
     exit 1
   fi
   sleep 1
