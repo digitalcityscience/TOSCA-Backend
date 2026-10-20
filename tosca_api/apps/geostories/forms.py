@@ -25,6 +25,10 @@ class GeoStorySceneLayerForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        if "simulation-TOTAL_FORMS" in self.data:
+            # The simulation form validates the submitted final state of both
+            # inline groups. A database lookup here would reject valid swaps.
+            self.instance._skip_stack_order_database_check = True
         visible_assignments = Q(is_active=True)
         # Keep a pinned assignment selectable even if a provider sync marked it
         # inactive; otherwise the browser submits an empty value and the model
@@ -36,7 +40,10 @@ class GeoStorySceneLayerForm(forms.ModelForm):
             .select_related("style", "layer")
             .order_by("layer__name", "style__title", "style__name")
         )
-        self.fields["display_order"].label = "Order (0 = bottom)"
+        self.fields["display_order"].label = "Stack order (0 = bottom)"
+        self.fields["display_order"].help_text = (
+            "The simulation group cannot use the same position as a catalog layer."
+        )
         self.fields["feature_id_attribute"].label = "Feature ID attribute"
         self.fields["feature_id_attribute"].widget = forms.Select(
             choices=self._attribute_choices()
@@ -102,6 +109,10 @@ class GeoStorySceneSimulationForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        if "scene_layers-TOTAL_FORMS" in self.data:
+            # Validate the submitted final state below instead of comparing
+            # against rows that may also be changing in this admin request.
+            self.instance._skip_stack_order_database_check = True
         from tosca_api.apps.geosimulations.models import SimulationOutput, SimulationRun, Status
 
         published_runs = SimulationRun.objects.filter(
@@ -129,11 +140,25 @@ class GeoStorySceneSimulationForm(forms.ModelForm):
             )
         self.fields["map_outputs"].queryset = outputs
         self.fields["display_order"].label = "Stack order (0 = bottom)"
+        self.fields["display_order"].help_text = (
+            "The simulation group cannot use the same position as a catalog layer."
+        )
 
     def clean(self):
         cleaned_data = super().clean()
         run = cleaned_data.get("run")
         outputs = cleaned_data.get("map_outputs") or []
+        display_order = cleaned_data.get("display_order")
+        if (
+            display_order is not None
+            and not cleaned_data.get("DELETE")
+            and "scene_layers-TOTAL_FORMS" in self.data
+            and display_order in self._submitted_layer_orders()
+        ):
+            self.add_error(
+                "display_order",
+                "This stack order is already used by a scene layer.",
+            )
         if run is not None:
             self.instance.run = run
             try:
@@ -141,6 +166,28 @@ class GeoStorySceneSimulationForm(forms.ModelForm):
             except forms.ValidationError as exc:
                 self.add_error("map_outputs", exc)
         return cleaned_data
+
+    def _submitted_layer_orders(self) -> set[int]:
+        """Active catalog-layer orders in the same scene-admin submission."""
+        try:
+            total = int(self.data.get("scene_layers-TOTAL_FORMS", 0))
+        except (TypeError, ValueError):
+            return set()
+        orders = set()
+        for index in range(total):
+            prefix = f"scene_layers-{index}"
+            if self.data.get(f"{prefix}-DELETE"):
+                continue
+            if not (
+                self.data.get(f"{prefix}-layer")
+                or self.data.get(f"{prefix}-id")
+            ):
+                continue
+            try:
+                orders.add(int(self.data.get(f"{prefix}-display_order")))
+            except (TypeError, ValueError):
+                continue
+        return orders
 
 
 class GeoStoryResultPresentationForm(forms.ModelForm):

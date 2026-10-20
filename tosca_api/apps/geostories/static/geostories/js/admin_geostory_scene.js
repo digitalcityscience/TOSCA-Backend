@@ -36,6 +36,62 @@ window.addEventListener('load', function () {
             rows.forEach(function (row, index) {
                 $(row).find('input[name$="-display_order"]').val(index);
             });
+            validateStackOrders();
+        }
+
+        function activeLayerRows() {
+            return visibleRows().filter(function () {
+                return Boolean(
+                    $(this).find('select[name$="-layer"]').val() ||
+                    $(this).find('input[name$="-id"]').val()
+                );
+            });
+        }
+
+        function activeSimulationRows() {
+            return visibleSimulationRows().filter(function () {
+                return Boolean(
+                    $(this).find('select[name$="-run"]').val() ||
+                    $(this).find('input[name$="-id"]').val()
+                );
+            });
+        }
+
+        function setStackOrderError(input, message) {
+            input.setCustomValidity(message);
+            input.setAttribute('aria-invalid', message ? 'true' : 'false');
+            var $message = $(input).siblings('.stack-order-error');
+            if (message) {
+                if (!$message.length) {
+                    $message = $('<p class="errornote stack-order-error"></p>').insertAfter(input);
+                }
+                $message.text(message);
+            } else {
+                $message.remove();
+            }
+        }
+
+        function validateStackOrders() {
+            var layerInputs = activeLayerRows().find('input[name$="-display_order"]').get();
+            var simulationInputs = activeSimulationRows()
+                .find('input[name$="-display_order"]')
+                .get();
+            var inputs = layerInputs.concat(simulationInputs);
+            inputs.forEach(function (input) {
+                setStackOrderError(input, '');
+            });
+            simulationInputs.forEach(function (simulationInput) {
+                var conflicts = layerInputs.filter(function (layerInput) {
+                    return String(layerInput.value) === String(simulationInput.value);
+                });
+                if (!conflicts.length) return;
+                var message = 'Stack order ' + simulationInput.value +
+                    ' is already used by a catalog layer.';
+                setStackOrderError(simulationInput, message);
+                conflicts.forEach(function (layerInput) {
+                    setStackOrderError(layerInput, message);
+                });
+            });
         }
 
         function assignmentOptions($select) {
@@ -138,6 +194,15 @@ window.addEventListener('load', function () {
             updateOrders
         );
 
+        $(document).on(
+            'input change',
+            rowSelector + ' input[name$="-display_order"], ' +
+                simulationRowSelector + ' input[name$="-display_order"], ' +
+                rowSelector + ' select[name$="-layer"], ' +
+                simulationRowSelector + ' select[name$="-run"]',
+            validateStackOrders
+        );
+
         function simulationOutputContainer($row) {
             return $row.find('.field-map_outputs div[id$="-map_outputs"]').first();
         }
@@ -214,5 +279,6 @@ window.addEventListener('load', function () {
                 loadSimulationOutputs($(this).closest(simulationRowSelector));
             }
         );
+        validateStackOrders();
     })(django.jQuery);
 });

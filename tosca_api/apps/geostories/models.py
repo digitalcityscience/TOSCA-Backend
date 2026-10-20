@@ -707,6 +707,17 @@ class GeoStorySceneLayer(TimeStampedModel):
 
         super().clean()
         errors: dict[str, str] = {}
+        if (
+            self.scene_id
+            and not getattr(self, "_skip_stack_order_database_check", False)
+            and GeoStorySceneSimulation.objects.filter(
+                scene_id=self.scene_id,
+                display_order=self.display_order,
+            ).exists()
+        ):
+            errors["display_order"] = (
+                "This stack order is already used by the scene simulation."
+            )
         if self.layer_id is not None:
             try:
                 validate_layer_is_public_and_published(self.layer)
@@ -806,11 +817,18 @@ class GeoStorySceneLayer(TimeStampedModel):
 
     def save(self, *args, **kwargs) -> None:
         if self._state.adding and self.display_order == 0 and self.scene_id:
-            max_order = GeoStorySceneLayer.objects.filter(scene_id=self.scene_id).aggregate(
+            layer_max = GeoStorySceneLayer.objects.filter(scene_id=self.scene_id).aggregate(
                 models.Max("display_order")
             )["display_order__max"]
-            if max_order is not None:
-                self.display_order = max_order + 1
+            simulation_order = GeoStorySceneSimulation.objects.filter(
+                scene_id=self.scene_id
+            ).values_list("display_order", flat=True).first()
+            used_max = max(
+                (order for order in (layer_max, simulation_order) if order is not None),
+                default=None,
+            )
+            if used_max is not None:
+                self.display_order = used_max + 1
         self.full_clean()
         super().save(*args, **kwargs)
 
@@ -885,11 +903,22 @@ class GeoStorySceneSimulation(TimeStampedModel):
 
     def clean(self) -> None:
         super().clean()
+        errors = {}
+        if (
+            self.scene_id
+            and not getattr(self, "_skip_stack_order_database_check", False)
+            and GeoStorySceneLayer.objects.filter(
+                scene_id=self.scene_id,
+                display_order=self.display_order,
+            ).exists()
+        ):
+            errors["display_order"] = "This stack order is already used by a scene layer."
         if self.run_id is None:
+            if errors:
+                raise ValidationError(errors)
             return
         from tosca_api.apps.geosimulations.models import SimulationOutput
 
-        errors = {}
         if not self.is_publicly_visible:
             errors["run"] = "Only published runs of published simulation models can be shown in a story."
         duration = self.run.duration_seconds
