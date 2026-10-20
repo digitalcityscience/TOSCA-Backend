@@ -121,11 +121,13 @@ def test_story_change_page_lists_scenes_and_add_link(client, story, layer):
 
 
 @pytest.mark.django_db
-def test_story_add_page_asks_to_save_before_scenes(client):
+def test_story_add_page_asks_to_save_before_related_collections(client):
     response = client.get(reverse("admin:geostories_geostory_add"))
 
     assert response.status_code == 200
-    assert "Save the story first to add map scenes." in response.content.decode()
+    content = response.content.decode()
+    assert "Save the story first to add map scenes." in content
+    assert "Save the story first to add simulation results." in content
 
 
 @pytest.mark.django_db

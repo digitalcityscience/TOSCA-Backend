@@ -1,0 +1,24 @@
+<div class="story-related-collection">
+  <div class="story-related-collection__actions">
+    <a class="addlink" href="{{ add_url }}">Add simulation result</a>
+    <span>A result view turns one structured output into a table, metric grid, or chart.</span>
+  </div>
+  {% if results %}
+    <table>
+      <thead><tr><th>Caption</th><th>View</th><th>Source</th><th>Output</th><th>Story placement</th></tr></thead>
+      <tbody>
+        {% for result in results %}
+          <tr>
+            <td><a href="{{ result.url }}">{{ result.object }}</a></td>
+            <td>{{ result.object.get_view_type_display }}</td>
+            <td>{{ result.source }}: {{ result.object.output.owner.title }}</td>
+            <td>{{ result.object.output.title }} <span class="help">(role: {{ result.object.output.role }})</span></td>
+            <td{% if result.missing %} class="story-related-collection__missing"{% endif %}>{{ result.anchor }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="help">No result views yet. Add one, then place it in the story with the Simulation result block.</p>
+  {% endif %}
+</div>

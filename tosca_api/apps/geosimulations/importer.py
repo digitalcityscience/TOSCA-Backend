@@ -49,6 +49,7 @@ OUTPUT_FIELDS = {"role", "kind", "title", "path"}
 # What a protected run is used by, in words for the import error.
 _PROTECTING_USES = {
     "geostories.GeoStorySceneSimulation": "GeoStory scenes",
+    "geostories.GeoStoryResultPresentation": "GeoStory result presentations",
     "geosimulations.SimulationComparison": "comparisons",
 }
 

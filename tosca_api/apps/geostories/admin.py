@@ -5,20 +5,32 @@ from django import forms
 from django.contrib import admin
 from django.contrib.admin.options import IS_POPUP_VAR
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 from django.http import HttpResponseRedirect, JsonResponse
+from django.shortcuts import get_object_or_404
+from django.template.loader import render_to_string
 from django.urls import path, reverse
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 
 from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin
 from tosca_api.apps.geocontext.widgets import EditorJsWidget
 from tosca_api.apps.core.editorjs import render_content_media_urls
+from tosca_api.apps.geosimulations.models import SimulationOutput, Status
 
 from .forms import (
+    GeoStoryResultPresentationForm,
     GeoStorySceneLayerForm,
     GeoStorySceneSimulationForm,
     SimulationOutputChoiceField,
 )
-from .models import GeoStory, GeoStoryScene, GeoStorySceneLayer, GeoStorySceneSimulation
+from .models import (
+    GeoStory,
+    GeoStoryResultPresentation,
+    GeoStoryScene,
+    GeoStorySceneLayer,
+    GeoStorySceneSimulation,
+)
 from .scene_editor import basemap_style, preview_view
 
 
@@ -42,6 +54,25 @@ class GeoStoryAdminForm(forms.ModelForm):
             else []
         )
         self.fields["content"].widget.attrs["data-editorjs-map-scenes"] = json.dumps(scenes)
+        results = (
+            [
+                {
+                    "id": str(result.pk),
+                    "caption": str(result),
+                    "view": result.get_view_type_display(),
+                    "url": reverse(
+                        "admin:geostories_geostoryresultpresentation_change",
+                        args=[result.pk],
+                    ),
+                }
+                for result in self.instance.result_presentations.select_related("output")
+            ]
+            if self.instance.pk
+            else []
+        )
+        self.fields["content"].widget.attrs["data-editorjs-simulation-results"] = json.dumps(
+            results
+        )
 
     class Meta:
         model = GeoStory
@@ -91,6 +122,34 @@ class GeoStorySceneInline(admin.TabularInline):
         return "Shown before the first anchor"
 
 
+class GeoStoryResultPresentationInline(admin.TabularInline):
+    """Read-only overview; result views are edited on their own page."""
+
+    model = GeoStoryResultPresentation
+    fields = ("caption", "view_type", "output", "anchor")
+    readonly_fields = fields
+    extra = 0
+    can_delete = False
+    show_change_link = True
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    @admin.display(description="Anchor in story")
+    def anchor(self, obj: GeoStoryResultPresentation) -> str:
+        return (
+            "Anchored"
+            if str(obj.pk) in obj.story.anchored_simulation_result_ids()
+            else format_html(
+                '<strong style="color: var(--error-fg)">{}</strong>',
+                "Not anchored — never shown",
+            )
+        )
+
+
 @admin.register(GeoStory)
 class GeoStoryAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     org_lookup = "campaign__organization__slug"
@@ -100,12 +159,15 @@ class GeoStoryAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     search_fields = ("title", "summary", "about_author")
     form = GeoStoryAdminForm
     autocomplete_fields = ["campaign", "author"]
-    inlines = [GeoStorySceneInline]
-    readonly_fields = ("hero_image_preview", "scene_tools")
+    inlines = []
+    readonly_fields = ("hero_image_preview", "scene_tools", "result_tools")
 
     class Media:
         css = {"all": ("geostories/css/editorjs_map_scene.css",)}
-        js = ("geostories/js/editorjs_map_scene.js",)
+        js = (
+            "geostories/js/editorjs_map_scene.js",
+            "geostories/js/editorjs_simulation_result.js",
+        )
     fieldsets = (
         (None, {"fields": ("title", "summary", "status", "campaign", "author")}),
         ("About the author", {"fields": ("about_author",)}),
@@ -131,25 +193,76 @@ class GeoStoryAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
                 ),
             },
         ),
+        (
+            "Simulation results",
+            {
+                "fields": ("result_tools",),
+                "description": (
+                    "Create a validated view of a published structured output, then insert "
+                    "it anywhere in the story with the “Simulation result” editor block."
+                ),
+            },
+        ),
     )
 
     @admin.display(description="Scenes")
     def scene_tools(self, obj: GeoStory) -> str:
-        if obj is None or obj.pk is None:
+        if obj is None or obj._state.adding:
             return "Save the story first to add map scenes."
         url = reverse("admin:geostories_geostoryscene_add")
-        add_link = format_html(
-            '<a class="addlink" href="{}?geostory={}">Add scene</a>', url, obj.pk
+        anchored = obj.anchored_scene_ids()
+        scenes = []
+        for index, scene in enumerate(obj.scenes.all()):
+            is_anchored = str(scene.pk) in anchored
+            scenes.append(
+                {
+                    "object": scene,
+                    "url": reverse("admin:geostories_geostoryscene_change", args=[scene.pk]),
+                    "layers": scene.scene_layers.count(),
+                    "camera": _camera_summary(scene),
+                    "anchor": (
+                        "Anchored"
+                        if is_anchored
+                        else "Shown before the first anchor"
+                        if index == 0
+                        else "Not anchored — never shown"
+                    ),
+                    "missing": index > 0 and not is_anchored,
+                }
+            )
+        return mark_safe(
+            render_to_string(
+                "admin/geostories/geostory/scene_collection.html",
+                {"add_url": f"{url}?geostory={obj.pk}", "scenes": scenes},
+            )
         )
-        unreachable = obj.unreachable_scenes()
-        if not unreachable:
-            return add_link
-        return format_html(
-            '{}<p class="errornote">Readers will never see {}: place a “Map scene” '
-            "anchor for {} in the story text.</p>",
-            add_link,
-            ", ".join(f"“{scene.title}”" for scene in unreachable),
-            "it" if len(unreachable) == 1 else "them",
+
+    @admin.display(description="Result views")
+    def result_tools(self, obj: GeoStory) -> str:
+        if obj is None or obj._state.adding:
+            return "Save the story first to add simulation results."
+        url = reverse("admin:geostories_geostoryresultpresentation_add")
+        anchored = obj.anchored_simulation_result_ids()
+        results = [
+            {
+                "object": result,
+                "url": reverse(
+                    "admin:geostories_geostoryresultpresentation_change",
+                    args=[result.pk],
+                ),
+                "source": "Run" if result.output.run_id else "Comparison",
+                "anchor": "Anchored" if str(result.pk) in anchored else "Not anchored — never shown",
+                "missing": str(result.pk) not in anchored,
+            }
+            for result in obj.result_presentations.select_related(
+                "output__run", "output__comparison"
+            )
+        ]
+        return mark_safe(
+            render_to_string(
+                "admin/geostories/geostory/result_collection.html",
+                {"add_url": f"{url}?story={obj.pk}", "results": results},
+            )
         )
 
     @admin.display(description="Hero")
@@ -190,6 +303,128 @@ class GeoStorySceneLayerInline(admin.StackedInline):
 
     class Media:
         js = ("geostories/js/admin_geostory_scene.js",)
+
+
+@admin.register(GeoStoryResultPresentation)
+class GeoStoryResultPresentationAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
+    """Configure a reusable, schema-checked presentation and anchor it in EditorJS."""
+
+    org_lookup = "story__campaign__organization__slug"
+    form = GeoStoryResultPresentationForm
+    fields = (
+        "story",
+        "output",
+        "caption",
+        "view_type",
+        "table_columns",
+        "sort_field",
+        "sort_direction",
+        "metrics",
+        "category_field",
+        "x_field",
+        "series_fields",
+    )
+    autocomplete_fields = ("story",)
+    list_display = ("caption", "story", "view_type", "output")
+
+    class Media:
+        css = {"all": ("geostories/css/result_presentation.css",)}
+        js = ("geostories/js/admin_result_presentation.js",)
+
+    def get_model_perms(self, request):
+        # Result views are reached through their story, not the admin index.
+        return {}
+
+    def get_changeform_initial_data(self, request):
+        initial = super().get_changeform_initial_data(request)
+        story_id = request.GET.get("story")
+        if story_id:
+            initial["story"] = story_id
+        return initial
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "output":
+            kwargs["queryset"] = self._output_queryset()
+        field = super().formfield_for_foreignkey(db_field, request, **kwargs)
+        if db_field.name == "output":
+            field.widget.attrs.update(
+                {
+                    "data-result-schema-url": reverse(
+                        "admin:geostories_geostoryresultpresentation_output_schema"
+                    ),
+                    "class": "result-output-select",
+                }
+            )
+        return field
+
+    @staticmethod
+    def _output_queryset():
+        return (
+            SimulationOutput.objects.filter(kind=SimulationOutput.Kind.TABLE)
+            .filter(
+                Q(run__status=Status.PUBLISHED, run__model__status=Status.PUBLISHED)
+                | Q(
+                    comparison__status=Status.PUBLISHED,
+                    comparison__model__status=Status.PUBLISHED,
+                )
+            )
+            .select_related("run__model", "comparison__model")
+            .order_by("run__title", "comparison__title", "display_order", "title")
+        )
+
+    def get_urls(self):
+        return [
+            path(
+                "output-schema/",
+                self.admin_site.admin_view(self.output_schema_view),
+                name="geostories_geostoryresultpresentation_output_schema",
+            )
+        ] + super().get_urls()
+
+    def output_schema_view(self, request):
+        output = get_object_or_404(self._output_queryset(), pk=request.GET.get("output"))
+        from tosca_api.apps.geosimulations.output_contracts import normalize_dataset
+
+        dataset = normalize_dataset(output.data, metadata=output.metadata)
+        metric_index = next(
+            (
+                index
+                for index, field in enumerate(dataset["fields"])
+                if field.get("semantic") == "metric" or field["key"] == "metric"
+            ),
+            None,
+        )
+        metrics = (
+            [str(row[metric_index]) for row in dataset["rows"] if row[metric_index] is not None]
+            if metric_index is not None
+            else []
+        )
+        return JsonResponse(
+            {
+                "source": "Run" if output.run_id else "Comparison",
+                "owner": output.owner.title,
+                "output": output.title,
+                "role": output.role,
+                "profile": dataset["profile"],
+                "fields": dataset["fields"],
+                "metrics": metrics,
+            }
+        )
+
+    def _story_redirect(self, request, obj, default):
+        if IS_POPUP_VAR not in request.POST and "_continue" not in request.POST:
+            return HttpResponseRedirect(
+                reverse("admin:geostories_geostory_change", args=[obj.story_id])
+            )
+        return default
+
+    def response_add(self, request, obj, post_url_continue=None):
+        return self._story_redirect(
+            request, obj, super().response_add(request, obj, post_url_continue)
+        )
+
+    def response_change(self, request, obj):
+        return self._story_redirect(request, obj, super().response_change(request, obj))
 
 
 class GeoStorySceneSimulationInline(admin.StackedInline):

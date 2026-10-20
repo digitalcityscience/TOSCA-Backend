@@ -187,7 +187,8 @@ def test_story_page_flags_unanchored_scenes(client, story, scenes):
         reverse("admin:geostories_geostory_change", args=[story.pk])
     ).content.decode()
 
-    assert "Readers will never see “Scene 1”" in content
+    assert "Scene 1" in content
+    assert "Not anchored — never shown" in content
     assert content.count("Not anchored — never shown") == 1
     assert "Shown before the first anchor" in content
     assert "Anchored" in content

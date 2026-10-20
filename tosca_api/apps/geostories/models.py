@@ -17,7 +17,12 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db.models.fields.files import ImageField, ImageFieldFile, ImageFileDescriptor
 from django.db import models
 
-from tosca_api.apps.core.editorjs import empty_document, map_scene_ids, validate_and_normalize
+from tosca_api.apps.core.editorjs import (
+    empty_document,
+    map_scene_ids,
+    simulation_result_ids,
+    validate_and_normalize,
+)
 from tosca_api.apps.core.models import TimeStampedModel
 from tosca_api.apps.core.sanitization import sanitize_simple
 
@@ -178,13 +183,20 @@ class GeoStory(TimeStampedModel):
         super().clean()
         errors = {}
         try:
-            self.content = validate_and_normalize(self.content, allow_map_scenes=True)
+            self.content = validate_and_normalize(
+                self.content,
+                allow_map_scenes=True,
+                allow_simulation_results=True,
+            )
         except ValidationError as exc:
             errors["content"] = exc.messages
         else:
             anchor_errors = self._scene_anchor_errors()
             if anchor_errors:
                 errors["content"] = anchor_errors
+            result_errors = self._simulation_result_errors()
+            if result_errors:
+                errors.setdefault("content", []).extend(result_errors)
         if self.hero_image and not (self.hero_image_alt or "").strip():
             errors["hero_image_alt"] = "Hero image alt text is required when a hero image is set."
         if errors:
@@ -215,6 +227,32 @@ class GeoStory(TimeStampedModel):
     def anchored_scene_ids(self) -> set[str]:
         return set(map_scene_ids(self.content or {}))
 
+    def _simulation_result_errors(self) -> list[str]:
+        """Each result block must reference one presentation belonging to this story."""
+        referenced = simulation_result_ids(self.content)
+        if not referenced:
+            return []
+        errors = []
+        if len(referenced) != len(set(referenced)):
+            errors.append(
+                "Each simulation result presentation can be inserted only once; "
+                "remove the duplicate block(s)."
+            )
+        own_ids = (
+            {str(pk) for pk in self.result_presentations.values_list("pk", flat=True)}
+            if self.pk and not self._state.adding
+            else set()
+        )
+        if set(referenced) - own_ids:
+            errors.append(
+                "A simulation result block points to a presentation that does not "
+                "belong to this story (it may have been deleted); remove or re-pick it."
+            )
+        return errors
+
+    def anchored_simulation_result_ids(self) -> set[str]:
+        return set(simulation_result_ids(self.content or {}))
+
     def unreachable_scenes(self) -> list["GeoStoryScene"]:
         """Scenes readers can never reach.
 
@@ -231,7 +269,11 @@ class GeoStory(TimeStampedModel):
         self.summary = sanitize_simple(self.summary)
         self.about_author = sanitize_simple(self.about_author)
         self.hero_image_alt = sanitize_simple(self.hero_image_alt)
-        self.content = validate_and_normalize(self.content, allow_map_scenes=True)
+        self.content = validate_and_normalize(
+            self.content,
+            allow_map_scenes=True,
+            allow_simulation_results=True,
+        )
 
         # New/replaced uploads must be written directly to the bucket dictated
         # by the current ownership state. Status/visibility-only saves are
@@ -267,6 +309,106 @@ class GeoStory(TimeStampedModel):
         ):
             return self.StorageAlias.PUBLIC
         return self.StorageAlias.DEFAULT
+
+
+class GeoStoryResultPresentation(TimeStampedModel):
+    """A validated view of one structured simulation output embedded in a story."""
+
+    class ViewType(models.TextChoices):
+        TABLE = "table", "Table"
+        METRIC_GRID = "metric_grid", "Metric grid"
+        BAR_CHART = "bar_chart", "Bar chart"
+        LINE_CHART = "line_chart", "Line chart"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
+    story = models.ForeignKey(
+        GeoStory,
+        on_delete=models.CASCADE,
+        related_name="result_presentations",
+    )
+    output = models.ForeignKey(
+        "geosimulations.SimulationOutput",
+        on_delete=models.PROTECT,
+        related_name="geostory_presentations",
+        help_text="An exact published table output; the reference is protected for reproducibility.",
+    )
+    caption = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Optional caption for this result view; empty uses the simulation output title.",
+    )
+    view_type = models.CharField(max_length=20, choices=ViewType.choices)
+    configuration = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "View-specific v1 configuration. Tables and metric grids may use {}; "
+            "charts reference dataset fields."
+        ),
+    )
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "GeoStory simulation result"
+        verbose_name_plural = "GeoStory simulation results"
+
+    def __str__(self) -> str:
+        return self.caption or (self.output.title if self.output_id else "Simulation result")
+
+    @property
+    def view(self) -> dict:
+        return {**(self.configuration or {}), "type": self.view_type, "version": 1}
+
+    @property
+    def is_publicly_visible(self) -> bool:
+        if not self.output_id:
+            return False
+        from tosca_api.apps.geosimulations.models import Status
+
+        owner = self.output.owner
+        return bool(
+            owner
+            and owner.status == Status.PUBLISHED
+            and owner.model.status == Status.PUBLISHED
+        )
+
+    def clean(self) -> None:
+        super().clean()
+        if not self.output_id:
+            return
+        from tosca_api.apps.geosimulations.models import SimulationOutput
+        from tosca_api.apps.geosimulations.output_contracts import (
+            normalize_dataset,
+            validate_view,
+        )
+
+        errors = {}
+        configuration_valid = isinstance(self.configuration, dict)
+        if not configuration_valid:
+            errors["configuration"] = "View configuration must be a JSON object."
+        elif {"type", "version"} & set(self.configuration):
+            errors["configuration"] = (
+                "View configuration must not redefine the selected type or schema version."
+            )
+            configuration_valid = False
+        if self.output.kind != SimulationOutput.Kind.TABLE:
+            errors["output"] = "Story result presentations require a structured table output."
+        elif not self.is_publicly_visible:
+            errors["output"] = "Only outputs of published simulations can be shown in a story."
+        elif configuration_valid:
+            try:
+                dataset = normalize_dataset(self.output.data, metadata=self.output.metadata)
+                validate_view(dataset, self.view)
+            except ValidationError as exc:
+                errors["configuration"] = exc.messages
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs) -> None:
+        self.caption = sanitize_simple(self.caption)
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class GeoStoryLayer(TimeStampedModel):

@@ -200,7 +200,10 @@ class SimulationOutputSerializer(serializers.BaseSerializer):
                 metadata={key: metadata[key] for key in TRIPS_METADATA if key in metadata},
             )
         elif output.kind == SimulationOutput.Kind.TABLE:
-            data["data"] = output.data
+            from .output_contracts import default_views, normalize_dataset
+
+            data["data"] = normalize_dataset(output.data, metadata=metadata)
+            data["views"] = default_views(data["data"], metadata.get("views"))
         elif output.kind == SimulationOutput.Kind.IMAGE:
             data["mime"] = output.asset.mime
         return data

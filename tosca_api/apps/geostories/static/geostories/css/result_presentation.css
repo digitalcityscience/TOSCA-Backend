@@ -1,0 +1,18 @@
+.result-output-summary {
+  max-width: 72rem;
+  margin-top: 8px;
+  padding: 9px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--darkened-bg);
+  color: var(--body-quiet-color);
+}
+
+.form-row.field-table_columns select,
+.form-row.field-metrics select,
+.form-row.field-series_fields select {
+  min-width: min(42rem, 100%);
+}
+
+.form-row[hidden] {
+  display: none;
+}

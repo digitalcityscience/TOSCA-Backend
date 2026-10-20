@@ -215,7 +215,12 @@ def test_run_detail_returns_outputs_by_kind(run_with_outputs):
     assert replay["metadata"] == {"agents": 1000, "encoding": "tosca-trips", "encoding_version": 1}
     assert "style" not in replay
 
-    assert table["data"] == {"columns": ["metric", "value"], "rows": [["agents", 1000]]}
+    assert table["data"]["columns"] == ["metric", "value"]
+    assert table["data"]["rows"] == [["agents", 1000]]
+    assert table["data"]["schema_version"] == 1
+    assert table["data"]["profile"] == "metric_set"
+    assert [field["key"] for field in table["data"]["fields"]] == ["metric", "value"]
+    assert table["views"] == [{"type": "metric_grid", "version": 1}]
     assert "url" not in table
 
     assert image["mime"] == "image/png"

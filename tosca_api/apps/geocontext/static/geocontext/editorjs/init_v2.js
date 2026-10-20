@@ -10,6 +10,7 @@
  * disabled), the raw JSON textarea remains visible and fully editable as
  * a no-JS fallback.
  */
+// Versioned path invalidates cached copies when the registered tool set changes.
 (function () {
     "use strict";
 
@@ -342,6 +343,18 @@
                 scenes = JSON.parse(mapScenes);
             } catch (e) { /* no scenes to offer */ }
             tools.mapScene = { class: MapSceneTool, config: { scenes: scenes } };
+        }
+
+        const simulationResults = textarea.dataset.editorjsSimulationResults;
+        if (simulationResults !== undefined && typeof SimulationResultTool !== "undefined") {
+            let presentations = [];
+            try {
+                presentations = JSON.parse(simulationResults);
+            } catch (e) { /* no results to offer */ }
+            tools.simulationResult = {
+                class: SimulationResultTool,
+                config: { presentations: presentations },
+            };
         }
 
         let registeredField;
