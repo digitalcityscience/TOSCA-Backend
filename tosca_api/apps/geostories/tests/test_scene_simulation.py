@@ -181,6 +181,7 @@ def test_story_detail_carries_the_scene_simulation(story, scene, run):
 
     simulation = _scene_payload(story)["simulation"]
 
+    assert simulation["display_order"] == 2
     assert simulation["run"]["title"] == run.title
     assert simulation["display_order"] == 2
     assert simulation["time"]["start"] == "2026-09-08T11:00:00+02:00"
