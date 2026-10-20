@@ -23,6 +23,11 @@ fi
 echo "� Running migrations..."
 uv run python manage.py migrate --noinput
 
+if [ "${CONFIGURE_STORAGE_CORS_ON_STARTUP:-false}" = "true" ]; then
+  echo "🌐 Configuring browser access to S3 media..."
+  uv run python manage.py configure_storage_cors
+fi
+
 echo "🔧 Setting up default GeoServer engine..."
 uv run python manage.py setup_default_engine
 
