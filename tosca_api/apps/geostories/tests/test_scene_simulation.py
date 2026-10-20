@@ -20,6 +20,7 @@ from tosca_api.apps.geostories.models import (
     GeoStory,
     GeoStoryResultPresentation,
     GeoStoryScene,
+    GeoStorySceneLayer,
     GeoStorySceneSimulation,
 )
 
@@ -128,6 +129,26 @@ def test_runs_shown_in_a_story_cannot_be_deleted(scene, run):
         run.delete()
 
 
+def test_simulation_stack_order_cannot_match_a_scene_layer(scene, run):
+    from tosca_api.apps.geostories.tests.scene_helpers import make_vector_layer
+
+    layer = make_vector_layer("ws:stack-order", user=scene.geostory.author)
+    GeoStorySceneLayer.objects.create(scene=scene, layer=layer, display_order=2)
+
+    with pytest.raises(ValidationError, match="already used by a scene layer"):
+        _simulation(scene, run, display_order=2)
+
+
+def test_scene_layer_stack_order_cannot_match_a_simulation(scene, run):
+    from tosca_api.apps.geostories.tests.scene_helpers import make_vector_layer
+
+    _simulation(scene, run, display_order=2)
+    layer = make_vector_layer("ws:inverse-stack-order", user=scene.geostory.author)
+
+    with pytest.raises(ValidationError, match="already used by the scene simulation"):
+        GeoStorySceneLayer.objects.create(scene=scene, layer=layer, display_order=2)
+
+
 # --- Admin form ------------------------------------------------------------
 
 
@@ -172,6 +193,23 @@ def test_form_rejects_map_layers_of_another_run(scene, run):
     assert not form.is_valid()
     assert "valid choice" in str(form.errors["map_outputs"])
     assert _form(scene, run, [_output(run, "bike_flow")]).is_valid()
+
+
+def test_simulation_form_rejects_layer_order_from_same_admin_submission(scene, run):
+    form = _form(
+        scene,
+        run,
+        [_output(run, "bike_flow")],
+        **{
+            "display_order": "2",
+            "scene_layers-TOTAL_FORMS": "1",
+            "scene_layers-0-layer": "catalog-layer-id",
+            "scene_layers-0-display_order": "2",
+        },
+    )
+
+    assert not form.is_valid()
+    assert "already used by a scene layer" in str(form.errors["display_order"])
 
 
 # --- Public API ------------------------------------------------------------
