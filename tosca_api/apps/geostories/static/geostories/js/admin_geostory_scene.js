@@ -5,6 +5,9 @@ window.addEventListener('load', function () {
         if (!$) return;
 
         var prefix = 'scene_layers';
+        var simulationRowSelector = '#simulation-group .inline-related:not(.empty-form)';
+        var editorConfigElement = document.getElementById('scene-editor-config');
+        var editorConfig = editorConfigElement ? JSON.parse(editorConfigElement.textContent) : {};
         // Match rows by the inline's own markup: Django adds its dynamic-<prefix>
         // class during its own setup, which may run after this script.
         var rowSelector = '#' + prefix + '-group .inline-related:not(.empty-form)';
@@ -16,8 +19,15 @@ window.addEventListener('load', function () {
             });
         }
 
+        function visibleSimulationRows() {
+            return $(simulationRowSelector).filter(function () {
+                var deleteInput = $(this).find('input[name$="-DELETE"]');
+                return !deleteInput.prop('checked') && $(this).is(':visible');
+            });
+        }
+
         function updateOrders() {
-            var rows = visibleRows().get();
+            var rows = visibleRows().add(visibleSimulationRows()).get();
             rows.sort(function (left, right) {
                 var leftOrder = parseInt($(left).find('input[name$="-display_order"]').val(), 10) || 0;
                 var rightOrder = parseInt($(right).find('input[name$="-display_order"]').val(), 10) || 0;
@@ -101,6 +111,15 @@ window.addEventListener('load', function () {
         }
 
         $(document).on('formset:added', function (event) {
+            if (formsetName(event) === 'simulation') {
+                var $simulationRow = $(event.target);
+                $simulationRow.find('input[name$="-display_order"]').val(
+                    visibleRows().add(visibleSimulationRows()).length - 1
+                );
+                loadSimulationOutputs($simulationRow);
+                updateOrders();
+                return;
+            }
             if (formsetName(event) !== prefix) return;
             var $row = $(event.target);
             initializeRow($row, true);
@@ -109,9 +128,91 @@ window.addEventListener('load', function () {
         });
 
         $(document).on('formset:removed', function (event) {
-            if (formsetName(event) === prefix) updateOrders();
+            if ([prefix, 'simulation'].indexOf(formsetName(event)) !== -1) updateOrders();
         });
 
-        $(document).on('change', rowSelector + ' input[name$="-DELETE"]', updateOrders);
+        $(document).on(
+            'change',
+            rowSelector + ' input[name$="-DELETE"], ' +
+                simulationRowSelector + ' input[name$="-DELETE"]',
+            updateOrders
+        );
+
+        function simulationOutputContainer($row) {
+            return $row.find('.field-map_outputs div[id$="-map_outputs"]').first();
+        }
+
+        function simulationOutputName($row) {
+            return String($row.find('select[name$="-run"]').attr('name') || '')
+                .replace(/-run$/, '-map_outputs');
+        }
+
+        function renderSimulationOutputs($row, outputs, message) {
+            var $container = simulationOutputContainer($row);
+            if (!$container.length) return;
+            $container.empty();
+            if (message) {
+                $('<p class="help"></p>').text(message).appendTo($container);
+                return;
+            }
+            var name = simulationOutputName($row);
+            outputs.forEach(function (output, index) {
+                var id = 'id_' + name + '_' + index;
+                var $input = $('<input>', {
+                    type: 'checkbox',
+                    name: name,
+                    value: output.id,
+                    id: id,
+                });
+                $('<div></div>').append(
+                    $('<label></label>', { for: id }).append(
+                        $input,
+                        document.createTextNode(' ' + output.label)
+                    )
+                ).appendTo($container);
+            });
+        }
+
+        function loadSimulationOutputs($row) {
+            var runId = String($row.find('select[name$="-run"]').val() || '');
+            if (!runId) {
+                renderSimulationOutputs($row, [], 'Select a run to see its map outputs.');
+                return;
+            }
+            if (!editorConfig.simulationOutputsUrl) return;
+            renderSimulationOutputs($row, [], 'Loading outputs…');
+            var url = new URL(editorConfig.simulationOutputsUrl, window.location.origin);
+            url.searchParams.set('run', runId);
+            window.fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(function (response) {
+                    if (!response.ok) throw new Error('Unable to load simulation outputs.');
+                    return response.json();
+                })
+                .then(function (data) {
+                    renderSimulationOutputs(
+                        $row,
+                        data.outputs,
+                        data.outputs.length ? '' : 'This run has no map outputs.'
+                    );
+                })
+                .catch(function () {
+                    renderSimulationOutputs($row, [], 'Could not load this run\'s map outputs.');
+                });
+        }
+
+        $(simulationRowSelector).each(function () {
+            var $row = $(this);
+            var hasRun = Boolean($row.find('select[name$="-run"]').val());
+            var hasOptions = Boolean($row.find('input[name$="-map_outputs"]').length);
+            if (!hasRun || !hasOptions) loadSimulationOutputs($row);
+        });
+
+        $(document).on(
+            'change select2:select select2:clear',
+            simulationRowSelector + ' select[name$="-run"]',
+            function () {
+                loadSimulationOutputs($(this).closest(simulationRowSelector));
+            }
+        );
     })(django.jQuery);
 });

@@ -65,7 +65,13 @@ class GeoStorySceneLayerForm(forms.ModelForm):
 
 class SimulationOutputChoiceField(forms.ModelMultipleChoiceField):
     def label_from_instance(self, obj):
-        return f"{obj.run.title} · {obj.title}"
+        metadata = obj.metadata or {}
+        details = [f"role: {obj.role}"]
+        if metadata.get("geometry_type"):
+            details.append(metadata["geometry_type"])
+        if obj.asset_id and obj.asset.original_name:
+            details.append(obj.asset.original_name)
+        return f"{obj.run.title} · {obj.title} — {' · '.join(details)}"
 
 
 class GeoStorySceneSimulationForm(forms.ModelForm):
@@ -75,7 +81,10 @@ class GeoStorySceneSimulationForm(forms.ModelForm):
         queryset=None,
         required=False,
         widget=forms.CheckboxSelectMultiple,
-        help_text="Map layers of the selected run. Shown above the scene's catalog layers.",
+        help_text=(
+            "Select a run first, then choose its map outputs. The selected outputs render "
+            "together at the simulation stack order."
+        ),
     )
 
     class Meta:
@@ -83,6 +92,7 @@ class GeoStorySceneSimulationForm(forms.ModelForm):
         fields = (
             "run",
             "map_outputs",
+            "display_order",
             "show_replay",
             "replay_start_s",
             "replay_end_s",
@@ -98,12 +108,27 @@ class GeoStorySceneSimulationForm(forms.ModelForm):
             status=Status.PUBLISHED, model__status=Status.PUBLISHED
         )
         self.fields["run"].queryset = published_runs.select_related("model")
-        outputs = SimulationOutput.objects.filter(
-            kind=SimulationOutput.Kind.VECTOR_LAYER, run__in=published_runs
-        ).select_related("run")
-        if self.instance.pk and self.instance.run_id:
-            outputs = outputs.filter(run_id=self.instance.run_id)
-        self.fields["map_outputs"].queryset = outputs.order_by("run__title", "display_order")
+        selected_run_id = (
+            self.data.get(self.add_prefix("run")) if self.is_bound else self.instance.run_id
+        )
+        selected_run = None
+        if selected_run_id:
+            try:
+                selected_run = published_runs.filter(pk=selected_run_id).first()
+            except (TypeError, ValueError, forms.ValidationError):
+                pass
+        outputs = SimulationOutput.objects.none()
+        if selected_run is not None:
+            outputs = (
+                SimulationOutput.objects.filter(
+                    kind=SimulationOutput.Kind.VECTOR_LAYER,
+                    run=selected_run,
+                )
+                .select_related("run", "asset")
+                .order_by("display_order", "created_at")
+            )
+        self.fields["map_outputs"].queryset = outputs
+        self.fields["display_order"].label = "Stack order (0 = bottom)"
 
     def clean(self):
         cleaned_data = super().clean()

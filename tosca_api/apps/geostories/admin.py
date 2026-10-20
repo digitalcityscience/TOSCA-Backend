@@ -1,10 +1,11 @@
 import json
+import uuid
 
 from django import forms
 from django.contrib import admin
 from django.contrib.admin.options import IS_POPUP_VAR
 from django.core.exceptions import ValidationError
-from django.http import HttpResponseRedirect
+from django.http import HttpResponseRedirect, JsonResponse
 from django.urls import path, reverse
 from django.utils.html import format_html
 
@@ -12,7 +13,11 @@ from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin
 from tosca_api.apps.geocontext.widgets import EditorJsWidget
 from tosca_api.apps.core.editorjs import render_content_media_urls
 
-from .forms import GeoStorySceneLayerForm, GeoStorySceneSimulationForm
+from .forms import (
+    GeoStorySceneLayerForm,
+    GeoStorySceneSimulationForm,
+    SimulationOutputChoiceField,
+)
 from .models import GeoStory, GeoStoryScene, GeoStorySceneLayer, GeoStorySceneSimulation
 from .scene_editor import basemap_style, preview_view
 
@@ -195,6 +200,7 @@ class GeoStorySceneSimulationInline(admin.StackedInline):
     fields = (
         "run",
         "map_outputs",
+        "display_order",
         ("show_replay", "loop"),
         ("replay_start_s", "replay_end_s"),
         "playback_rate",
@@ -267,13 +273,50 @@ class GeoStorySceneAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
             self.admin_site.admin_view(lambda request: preview_view(request, self)),
             name="geostories_geostoryscene_preview",
         )
-        return [preview, *super().get_urls()]
+        simulation_outputs = path(
+            "simulation-outputs/",
+            self.admin_site.admin_view(self.simulation_outputs_view),
+            name="geostories_geostoryscene_simulation_outputs",
+        )
+        return [preview, simulation_outputs, *super().get_urls()]
+
+    def simulation_outputs_view(self, request):
+        from tosca_api.apps.geosimulations.models import SimulationOutput, Status
+
+        outputs = SimulationOutput.objects.none()
+        try:
+            run_id = uuid.UUID(request.GET.get("run", ""))
+        except (TypeError, ValueError):
+            run_id = None
+        if run_id:
+            outputs = (
+                SimulationOutput.objects.filter(
+                    run_id=run_id,
+                    run__status=Status.PUBLISHED,
+                    run__model__status=Status.PUBLISHED,
+                    kind=SimulationOutput.Kind.VECTOR_LAYER,
+                )
+                .select_related("run", "asset")
+                .order_by("display_order", "created_at")
+            )
+        labeler = SimulationOutputChoiceField(queryset=SimulationOutput.objects.none())
+        return JsonResponse(
+            {
+                "outputs": [
+                    {"id": str(output.pk), "label": labeler.label_from_instance(output)}
+                    for output in outputs
+                ]
+            }
+        )
 
     def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
         extra_context = {
             **(extra_context or {}),
             "scene_editor_config": {
                 "previewUrl": reverse("admin:geostories_geostoryscene_preview"),
+                "simulationOutputsUrl": reverse(
+                    "admin:geostories_geostoryscene_simulation_outputs"
+                ),
                 "basemap": basemap_style(),
             },
         }

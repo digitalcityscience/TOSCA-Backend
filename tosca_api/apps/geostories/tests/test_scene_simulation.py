@@ -78,9 +78,12 @@ def _simulation(scene, run, **fields):
 
 
 def test_a_valid_scene_simulation(scene, run):
-    simulation = _simulation(scene, run, replay_start_s=2400, replay_end_s=3300, playback_rate=30)
+    simulation = _simulation(
+        scene, run, display_order=2, replay_start_s=2400, replay_end_s=3300, playback_rate=30
+    )
 
     assert scene.simulation == simulation
+    assert simulation.display_order == 2
     assert list(simulation.map_outputs.all()) == [_output(run, "bike_flow")]
 
 
@@ -124,6 +127,7 @@ def _form(scene, run, outputs, **data):
         data={
             "run": str(run.pk),
             "map_outputs": [str(output.pk) for output in outputs],
+            "display_order": "0",
             "show_replay": "on",
             "loop": "on",
             "playback_rate": "60",
@@ -139,8 +143,10 @@ def test_form_offers_only_map_layers_of_published_runs(scene, run):
         run=draft, role="bike_flow", kind=SimulationOutput.Kind.VECTOR_LAYER, title="Draft flow",
         asset=asset(org("dcs"), run=draft, path="geosimulations/dcs/draft/bike_flow.pmtiles"),
     )
-    form = GeoStorySceneSimulationForm(instance=GeoStorySceneSimulation(scene=scene))
+    empty_form = GeoStorySceneSimulationForm(instance=GeoStorySceneSimulation(scene=scene))
+    form = _form(scene, run, [])
 
+    assert not empty_form.fields["map_outputs"].queryset.exists()
     assert set(form.fields["map_outputs"].queryset.values_list("role", flat=True)) == {"bike_flow", "origins"}
     assert list(form.fields["run"].queryset) == [run]
 
@@ -155,7 +161,7 @@ def test_form_rejects_map_layers_of_another_run(scene, run):
     form = _form(scene, run, [_output(run, "bike_flow"), foreign])
 
     assert not form.is_valid()
-    assert "Other flow" in str(form.errors["map_outputs"])
+    assert "valid choice" in str(form.errors["map_outputs"])
     assert _form(scene, run, [_output(run, "bike_flow")]).is_valid()
 
 
@@ -169,11 +175,14 @@ def _scene_payload(story):
 
 
 def test_story_detail_carries_the_scene_simulation(story, scene, run):
-    _simulation(scene, run, replay_start_s=2400, replay_end_s=3300, playback_rate=30)
+    _simulation(
+        scene, run, display_order=2, replay_start_s=2400, replay_end_s=3300, playback_rate=30
+    )
 
     simulation = _scene_payload(story)["simulation"]
 
     assert simulation["run"]["title"] == run.title
+    assert simulation["display_order"] == 2
     assert simulation["time"]["start"] == "2026-09-08T11:00:00+02:00"
     assert simulation["bounds"] == run.bounds
     (layer,) = simulation["map_outputs"]
@@ -221,6 +230,7 @@ def test_scene_admin_saves_the_simulation_inline(story, run):
         "simulation-TOTAL_FORMS": "1",
         "simulation-0-run": str(run.pk),
         "simulation-0-map_outputs": [str(_output(run, "bike_flow").pk), str(_output(run, "origins").pk)],
+        "simulation-0-display_order": "2",
         "simulation-0-show_replay": "on",
         "simulation-0-loop": "on",
         "simulation-0-replay_start_s": "2400",
@@ -229,10 +239,24 @@ def test_scene_admin_saves_the_simulation_inline(story, run):
     })
 
     page = client.get(reverse("admin:geostories_geostoryscene_add"))
+    outputs_response = client.get(
+        reverse("admin:geostories_geostoryscene_simulation_outputs"),
+        {"run": str(run.pk)},
+    )
     response = client.post(reverse("admin:geostories_geostoryscene_add"), data)
 
     assert page.status_code == 200
+    assert "Trip origins" not in page.content.decode()
+    assert outputs_response.status_code == 200
+    output_labels = [output["label"] for output in outputs_response.json()["outputs"]]
+    assert len(output_labels) == 2
+    assert any("Trip origins" in label and "role: origins" in label for label in output_labels)
     assert response.status_code == 302, response.context["inline_admin_formsets"][1].formset.errors
     simulation = GeoStoryScene.objects.get(geostory=story).simulation
-    assert (simulation.run, simulation.replay_start_s, simulation.playback_rate) == (run, 2400, 30)
+    assert (simulation.run, simulation.display_order, simulation.replay_start_s, simulation.playback_rate) == (
+        run,
+        2,
+        2400,
+        30,
+    )
     assert set(simulation.map_outputs.values_list("role", flat=True)) == {"bike_flow", "origins"}

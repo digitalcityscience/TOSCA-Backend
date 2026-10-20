@@ -193,6 +193,7 @@ class GeoStorySceneSerializer(serializers.ModelSerializer):
                 "loop": simulation.loop,
             }
         return {
+            "display_order": simulation.display_order,
             "run": {
                 "id": str(run.pk),
                 "title": run.title,

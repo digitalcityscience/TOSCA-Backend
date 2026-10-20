@@ -704,6 +704,10 @@ class GeoStorySceneSimulation(TimeStampedModel):
         related_name="geostory_scene_uses",
         help_text="Map layers of the run to show in this scene.",
     )
+    display_order = models.PositiveIntegerField(
+        default=0,
+        help_text="Position of the simulation group in the scene layer stack; 0 is bottom.",
+    )
     show_replay = models.BooleanField(default=True)
     replay_start_s = models.FloatField(
         null=True,
