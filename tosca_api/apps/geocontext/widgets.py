@@ -33,7 +33,7 @@ class EditorJsWidget(forms.Textarea):
             "geocontext/editorjs/vendor/delimiter.umd.js",
             "geocontext/editorjs/vendor/code.umd.js",
             "geocontext/editorjs/vendor/image.umd.js",
-            "geocontext/editorjs/init.js",
+            "geocontext/editorjs/init_v2.js",
         )
 
     def format_value(self, value) -> str:

@@ -99,7 +99,14 @@ def test_import_creates_model_run_outputs_and_files(dcs, package_dir, cleanup, d
     assert json.loads(gzip.decompress(_stored(replay.asset)))["encoding"] == "tosca-trips"
     assert replay.metadata["encoding_version"] == 1
 
-    assert outputs["kpis"].data == {"columns": ["metric", "value", "unit"], "rows": [["agents", 1, "count"]]}
+    assert outputs["kpis"].data["columns"] == ["metric", "value", "unit"]
+    assert outputs["kpis"].data["rows"] == [["agents", 1, "count"]]
+    assert outputs["kpis"].data["profile"] == "metric_set"
+    assert [field["semantic"] for field in outputs["kpis"].data["fields"]] == [
+        "metric",
+        "measure",
+        "unit",
+    ]
     assert outputs["preview"].asset.mime == "image/png"
 
     assert run.source_package.original_name == "package.zip"

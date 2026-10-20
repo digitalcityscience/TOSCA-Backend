@@ -725,8 +725,13 @@ class SimulationOutput(TimeStampedModel):
         if self.kind == self.Kind.TABLE:
             if has_asset:
                 errors["asset"] = "A table output holds its rows in data, not an asset."
-            if not isinstance(self.data, (dict, list)):
-                errors["data"] = "A table output needs its rows in data."
+            try:
+                from .output_contracts import default_views, normalize_dataset
+
+                self.data = normalize_dataset(self.data, metadata=self.metadata)
+                default_views(self.data, (self.metadata or {}).get("views"))
+            except ValidationError as exc:
+                errors["data"] = exc.messages
         elif not has_asset:
             errors["asset"] = "Map layer, replay and image outputs need an asset."
         if self.style is not None:

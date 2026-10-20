@@ -1,0 +1,24 @@
+<div class="story-related-collection">
+  <div class="story-related-collection__actions">
+    <a class="addlink" href="{{ add_url }}">Add scene</a>
+    <span>Scenes capture map layers, their stack order, and the camera.</span>
+  </div>
+  {% if scenes %}
+    <table>
+      <thead><tr><th>Order</th><th>Scene</th><th>Layers</th><th>Camera</th><th>Story placement</th></tr></thead>
+      <tbody>
+        {% for scene in scenes %}
+          <tr>
+            <td>{{ scene.object.order }}</td>
+            <td><a href="{{ scene.url }}">{{ scene.object.title }}</a></td>
+            <td>{{ scene.layers }}</td>
+            <td>{{ scene.camera }}</td>
+            <td{% if scene.missing %} class="story-related-collection__missing"{% endif %}>{{ scene.anchor }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="help">No scenes yet. Add the first scene to define the story's initial map.</p>
+  {% endif %}
+</div>

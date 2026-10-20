@@ -14,7 +14,7 @@ from tosca_api.apps.geodata_providers.api.serializers import (
     LayerSummarySerializer,
 )
 
-from .models import GeoStory, GeoStoryScene, GeoStorySceneLayer
+from .models import GeoStory, GeoStoryResultPresentation, GeoStoryScene, GeoStorySceneLayer
 from .scene_manifest import (
     build_scene_legend,
     build_scene_render_layers,
@@ -260,6 +260,28 @@ class GeoStoryListSerializer(serializers.ModelSerializer):
         return _absolute_hero_image_url(obj, self.context.get("request"))
 
 
+class GeoStoryResultPresentationSerializer(serializers.BaseSerializer):
+    """One validated structured result embedded by an EditorJS story block."""
+
+    def to_representation(self, presentation: GeoStoryResultPresentation) -> dict:
+        from tosca_api.apps.geosimulations.serializers import SimulationOutputSerializer
+
+        output = presentation.output
+        owner = output.owner
+        return {
+            "id": str(presentation.pk),
+            "caption": presentation.caption or output.title,
+            "view": presentation.view,
+            "source": {
+                "type": "run" if output.run_id else "comparison",
+                "id": str(owner.pk),
+                "title": owner.title,
+                "model": {"id": str(owner.model_id), "title": owner.model.title},
+            },
+            "output": SimulationOutputSerializer(output, context=self.context).data,
+        }
+
+
 class GeoStoryDetailSerializer(serializers.ModelSerializer):
     """
     Full serializer for GeoStory detail view.
@@ -301,7 +323,29 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
         return _absolute_hero_image_url(obj, self.context.get("request"))
 
     def get_content(self, obj) -> dict:
-        return render_content_media_urls(obj.content, self.context.get("request"))
+        content = render_content_media_urls(obj.content, self.context.get("request"))
+        presentations = {
+            str(item.pk): item
+            for item in obj.result_presentations.select_related(
+                "output__asset",
+                "output__run__model",
+                "output__comparison__model",
+            )
+            if item.is_publicly_visible
+        }
+        context = {"request": self.context.get("request"), "now": timezone.now()}
+        for block in content.get("blocks", []):
+            if block.get("type") != "simulationResult":
+                continue
+            data = block.get("data") or {}
+            presentation = presentations.get(data.get("presentation_id"))
+            data["presentation"] = (
+                GeoStoryResultPresentationSerializer(presentation, context=context).data
+                if presentation is not None
+                else None
+            )
+            block["data"] = data
+        return content
 
     def get_scenes(self, obj) -> list:
         # One timestamp per response, so every presigned URL reports the same expiry.

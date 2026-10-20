@@ -178,7 +178,7 @@ def test_map_layer_output_holds_tiles_and_a_style(run, dcs):
         (SimulationOutput.Kind.VECTOR_LAYER, {}, "need an asset"),
         (SimulationOutput.Kind.TRIPS, {}, "need an asset"),
         (SimulationOutput.Kind.IMAGE, {}, "need an asset"),
-        (SimulationOutput.Kind.TABLE, {}, "rows in data"),
+        (SimulationOutput.Kind.TABLE, {}, "object dataset"),
     ],
 )
 def test_output_kind_requires_its_payload(run, kind, fields, message):
@@ -212,7 +212,7 @@ def test_output_cannot_use_another_runs_asset(model, run, dcs):
 
 
 def test_output_role_is_unique_per_run(run):
-    _output(run, role="kpis", kind=SimulationOutput.Kind.TABLE, data={"columns": [], "rows": []})
+    _output(run, role="kpis", kind=SimulationOutput.Kind.TABLE, data={"columns": ["metric"], "rows": []})
 
     with pytest.raises(ValidationError):
         _output(run, role="kpis", kind=SimulationOutput.Kind.TABLE, data=[])

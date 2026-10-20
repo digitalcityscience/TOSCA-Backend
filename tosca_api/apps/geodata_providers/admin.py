@@ -85,8 +85,24 @@ _GEODATA_PROVIDER_ADMIN_LABELS = {
 }
 
 _ADMIN_APP_ORDER = {
-    'geocontext': 0,
+    'footer': 0,
     'geostories': 1,
+    'geodata_providers': 2,
+    'external_catalog': 3,
+    'geosimulations': 4,
+    'events': 5,
+    'campaigns': 6,
+    'organizations': 7,
+    'geocontext': 8,
+    'featurelinks': 9,
+    'feedback': 10,
+    'catalog_api': 11,
+    'core': 12,
+    'authentication': 13,
+    'auth': 14,
+    'sites': 15,
+    'formbuilder': 16,
+    'authtoken': 17,
 }
 
 

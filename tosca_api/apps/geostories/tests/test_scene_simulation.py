@@ -6,13 +6,22 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db.models import ProtectedError
+from django.urls import reverse
 from rest_framework.test import APIClient
 
 from tosca_api.apps.campaigns.models import Campaign
 from tosca_api.apps.geosimulations.models import SimulationOutput, Status
 from tosca_api.apps.geosimulations.tests.helpers import asset, org, simulation_model, simulation_run
-from tosca_api.apps.geostories.forms import GeoStorySceneSimulationForm
-from tosca_api.apps.geostories.models import GeoStory, GeoStoryScene, GeoStorySceneSimulation
+from tosca_api.apps.geostories.forms import (
+    GeoStoryResultPresentationForm,
+    GeoStorySceneSimulationForm,
+)
+from tosca_api.apps.geostories.models import (
+    GeoStory,
+    GeoStoryResultPresentation,
+    GeoStoryScene,
+    GeoStorySceneSimulation,
+)
 
 User = get_user_model()
 pytestmark = pytest.mark.django_db
@@ -172,6 +181,118 @@ def _scene_payload(story):
     response = APIClient().get(f"/api/v1/stories/{story.pk}/")
     assert response.status_code == 200
     return response.data["scenes"][0]
+
+
+def test_story_detail_expands_a_structured_result_block(story, run):
+    presentation = GeoStoryResultPresentation.objects.create(
+        story=story,
+        output=_output(run, "kpis"),
+        caption="At a glance",
+        view_type=GeoStoryResultPresentation.ViewType.METRIC_GRID,
+    )
+    story.content = {
+        "blocks": [
+            {
+                "type": "simulationResult",
+                "data": {"presentation_id": str(presentation.pk)},
+            }
+        ]
+    }
+    story.save()
+
+    response = APIClient().get(f"/api/v1/stories/{story.pk}/")
+
+    assert response.status_code == 200
+    block = response.data["content"]["blocks"][0]
+    assert block["data"]["presentation_id"] == str(presentation.pk)
+    result = block["data"]["presentation"]
+    assert result["caption"] == "At a glance"
+    assert result["view"] == {"type": "metric_grid", "version": 1}
+    assert result["source"]["type"] == "run"
+    assert result["output"]["data"]["profile"] == "metric_set"
+
+
+def test_result_presentation_validates_its_view_and_protects_the_output(story, run):
+    output = _output(run, "kpis")
+    with pytest.raises(ValidationError, match="x-axis"):
+        GeoStoryResultPresentation.objects.create(
+            story=story,
+            output=output,
+            view_type=GeoStoryResultPresentation.ViewType.LINE_CHART,
+            configuration={"x": "metric", "series": [{"field": "value"}]},
+        )
+
+    GeoStoryResultPresentation.objects.create(
+        story=story,
+        output=output,
+        view_type=GeoStoryResultPresentation.ViewType.METRIC_GRID,
+    )
+    with pytest.raises(ProtectedError):
+        output.delete()
+
+    with pytest.raises(ValidationError, match="must not redefine"):
+        GeoStoryResultPresentation.objects.create(
+            story=story,
+            output=output,
+            view_type=GeoStoryResultPresentation.ViewType.TABLE,
+            configuration={"type": "line_chart"},
+        )
+
+
+def test_result_form_builds_chart_configuration_without_json(story, run):
+    form = GeoStoryResultPresentationForm(
+        data={
+            "story": story.pk,
+            "output": _output(run, "kpis").pk,
+            "caption": "Agents over value",
+            "view_type": GeoStoryResultPresentation.ViewType.LINE_CHART,
+            "x_field": "value",
+            "series_fields": ["value"],
+        }
+    )
+
+    assert "configuration" not in form.fields
+    assert "caption" in form.fields
+    assert "title" not in form.fields
+    assert form.is_valid(), form.errors
+    presentation = form.save()
+    assert presentation.configuration == {
+        "x": "value",
+        "series": [{"field": "value"}],
+    }
+
+
+def test_result_schema_endpoint_describes_the_selected_output(admin_client, run):
+    response = admin_client.get(
+        reverse("admin:geostories_geostoryresultpresentation_output_schema"),
+        {"output": _output(run, "kpis").pk},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "Run"
+    assert response.json()["role"] == "kpis"
+    assert response.json()["profile"] == "metric_set"
+    assert [field["key"] for field in response.json()["fields"]] == ["metric", "value"]
+
+
+def test_story_admin_groups_add_actions_with_their_lists(admin_client, story, scene, run):
+    GeoStoryResultPresentation.objects.create(
+        story=story,
+        output=_output(run, "kpis"),
+        view_type=GeoStoryResultPresentation.ViewType.METRIC_GRID,
+    )
+
+    response = admin_client.get(reverse("admin:geostories_geostory_change", args=[story.pk]))
+    html = response.content.decode()
+
+    assert response.status_code == 200
+    assert html.count("story-related-collection") >= 2
+    assert "Add scene" in html and "Add simulation result" in html
+    assert "GeoStory scenes" not in html
+    assert "GeoStory simulation results" not in html
+    assert "geocontext/editorjs/init_v2.js" in html
+    assert "geostories/js/editorjs_simulation_result.js" in html
+    assert "data-editorjs-simulation-results" in html
 
 
 def test_story_detail_carries_the_scene_simulation(story, scene, run):

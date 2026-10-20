@@ -79,7 +79,12 @@ def empty_document() -> dict:
     return {"blocks": []}
 
 
-def validate_and_normalize(value: Any, *, allow_map_scenes: bool = False) -> dict:
+def validate_and_normalize(
+    value: Any,
+    *,
+    allow_map_scenes: bool = False,
+    allow_simulation_results: bool = False,
+) -> dict:
     """
     Validate and normalize an Editor.js document.
 
@@ -106,7 +111,11 @@ def validate_and_normalize(value: Any, *, allow_map_scenes: bool = False) -> dic
     if not isinstance(blocks, list):
         raise ValidationError("'blocks' must be an array.")
 
-    allowed = _ALLOWED_BLOCK_TYPES | ({"mapScene"} if allow_map_scenes else set())
+    allowed = (
+        _ALLOWED_BLOCK_TYPES
+        | ({"mapScene"} if allow_map_scenes else set())
+        | ({"simulationResult"} if allow_simulation_results else set())
+    )
     normalized_blocks = [_normalize_block(b, idx, allowed) for idx, b in enumerate(blocks)]
     return {"blocks": normalized_blocks}
 
@@ -117,6 +126,15 @@ def map_scene_ids(document: dict) -> list[str]:
         block["data"]["scene_id"]
         for block in document.get("blocks", [])
         if block.get("type") == "mapScene"
+    ]
+
+
+def simulation_result_ids(document: dict) -> list[str]:
+    """Presentation ids referenced by ``simulationResult`` blocks, in document order."""
+    return [
+        block["data"]["presentation_id"]
+        for block in document.get("blocks", [])
+        if block.get("type") == "simulationResult"
     ]
 
 
@@ -332,6 +350,17 @@ def _normalize_map_scene(data: dict, idx: int) -> dict:
     except ValueError as exc:
         raise ValidationError(f"mapScene block at {idx} requires a valid 'scene_id'.") from exc
     return {"scene_id": str(scene_id)}
+
+
+def _normalize_simulation_result(data: dict, idx: int) -> dict:
+    """Result blocks carry only the presentation id; API-expanded data is discarded."""
+    try:
+        presentation_id = uuid.UUID(str(data.get("presentation_id")))
+    except ValueError as exc:
+        raise ValidationError(
+            f"simulationResult block at {idx} requires a valid 'presentation_id'."
+        ) from exc
+    return {"presentation_id": str(presentation_id)}
 
 
 def _normalize_code(data: dict, idx: int) -> dict:
@@ -559,6 +588,7 @@ _BLOCK_NORMALIZERS = {
     "code": _normalize_code,
     "image": _normalize_image,
     "mapScene": _normalize_map_scene,
+    "simulationResult": _normalize_simulation_result,
 }
 
 
