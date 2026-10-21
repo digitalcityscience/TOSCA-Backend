@@ -32,6 +32,11 @@ if [ "${RUN_MIGRATIONS_ON_STARTUP:-false}" = "true" ]; then
   run_as_appuser /venv/bin/python manage.py migrate --noinput
 fi
 
+if [ "${CONFIGURE_STORAGE_CORS_ON_STARTUP:-false}" = "true" ]; then
+  echo "🌐 Configuring browser access to S3 media..."
+  run_as_appuser /venv/bin/python manage.py configure_storage_cors
+fi
+
 if [ "${RUN_COLLECTSTATIC_ON_STARTUP:-true}" = "true" ]; then
   echo "🗂️ Collecting static files..."
   run_as_appuser /venv/bin/python manage.py collectstatic --noinput
