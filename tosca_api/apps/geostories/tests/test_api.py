@@ -184,7 +184,8 @@ def test_geostory_create_unauthenticated_forbidden(api_client, campaign):
         },
         format="json",
     )
-    assert response.status_code == 403
+    # Anonymous: 401 (sign in), not 403 -- KeycloakTokenAuthentication.authenticate_header.
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db

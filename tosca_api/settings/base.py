@@ -573,6 +573,13 @@ ALLOWED_TOKEN_CLIENTS = env.list(
     "ALLOWED_TOKEN_CLIENTS",
     default=["django-dev", "geoserver", "tosca-web"],
 )
+# Clock difference (seconds) tolerated between Keycloak and this server when
+# checking token exp/iat/nbf. Docker VMs drift; fresh tokens otherwise fail
+# with "not yet valid (iat)".
+JWT_LEEWAY_SECONDS = env.int("JWT_LEEWAY_SECONDS", default=30)
+# How long the realm's signing keys are kept in memory before they are
+# fetched again (an unknown key id after rotation refetches at once).
+KEYCLOAK_JWKS_CACHE_SECONDS = env.int("KEYCLOAK_JWKS_CACHE_SECONDS", default=3600)
 
 SOCIALACCOUNT_PROVIDERS = {
     "openid_connect": {

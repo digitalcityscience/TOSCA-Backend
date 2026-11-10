@@ -26,10 +26,29 @@ def _upload_file(name: str, data: bytes):
     return SimpleUploadedFile(name, data, content_type="application/octet-stream")
 
 
+# Uploads and the image library are for content authors (WRITER+ in their
+# organization); the token claims come from Keycloak.
+AUTHOR_CLAIMS = {"realm_access": {"roles": ["ROLE_GQ2_WRITER"]}, "organization": ["gq2"]}
+
+
 @pytest.fixture
-def api_client():
+def api_client(db):
+    from django.contrib.auth import get_user_model
+
+    author = get_user_model().objects.create(username="author")
     client = APIClient()
-    client.force_authenticate(user=SimpleNamespace(is_authenticated=True, pk=1, is_active=True))
+    client.force_authenticate(user=author, token=AUTHOR_CLAIMS)
+    return client
+
+
+@pytest.fixture
+def exempt_client(db):
+    """Platform admin (DJANGO_SUPERADMIN): sees every organization's images."""
+    from django.contrib.auth import get_user_model
+
+    admin = get_user_model().objects.create(username="platform-admin")
+    client = APIClient()
+    client.force_authenticate(user=admin, token={"realm_access": {"roles": ["DJANGO_SUPERADMIN"]}})
     return client
 
 
@@ -130,11 +149,20 @@ class _FakeResponse:
         url: str = "https://remote.test/image.png",
         status_code: int = 200,
         history: list | None = None,
+        location: str | None = None,
     ):
         self.body = body
         self.url = url
         self.status_code = status_code
         self.history = history or []
+        self.headers = {"Location": location} if location else {}
+
+    @property
+    def is_redirect(self) -> bool:
+        return self.status_code in (301, 302, 303, 307, 308) and "Location" in self.headers
+
+    def close(self):
+        pass
 
     def iter_content(self, chunk_size: int):
         for start in range(0, len(self.body), chunk_size):
@@ -147,7 +175,8 @@ def test_upload_by_url_downloads_rehosts_and_preserves_bytes(api_client, monkeyp
 
     def fake_get(url, **kwargs):
         assert kwargs["stream"] is True
-        assert kwargs["allow_redirects"] is True
+        # Redirects are followed by hand so each hop is validated first.
+        assert kwargs["allow_redirects"] is False
         return _FakeResponse(data, url=url)
 
     monkeypatch.setattr(views.requests, "get", fake_get)
@@ -241,14 +270,16 @@ def test_upload_by_url_blocks_hostname_resolving_to_private_ip(api_client, monke
 def test_upload_by_url_blocks_redirect_to_internal_host(api_client, monkeypatch, tmp_path):
     data = _image_bytes()
 
-    # First hop resolves public; the response reports a final URL on an
-    # internal literal address, simulating a redirect into the metadata host.
+    # First hop resolves public and redirects into the metadata host. The
+    # internal hop must be refused *before* it is requested.
     monkeypatch.setattr(views, "_resolve_host_ips", lambda host: ["93.184.216.34"])
-    monkeypatch.setattr(
-        views.requests,
-        "get",
-        lambda url, **kwargs: _FakeResponse(data, url="http://169.254.169.254/latest/meta-data/"),
-    )
+    requested = []
+
+    def fake_get(url, **kwargs):
+        requested.append(url)
+        return _FakeResponse(b"", url=url, status_code=302, location="http://169.254.169.254/latest/meta-data/")
+
+    monkeypatch.setattr(views.requests, "get", fake_get)
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         response = api_client.post(
             "/api/v1/content/editorjs/upload-by-url/",
@@ -258,6 +289,7 @@ def test_upload_by_url_blocks_redirect_to_internal_host(api_client, monkeypatch,
 
     assert response.status_code == 400
     assert "internal" in response.json()["error"]
+    assert requested == ["https://public.example/inline.png"]
 
 
 def test_editorjs_endpoints_declare_scoped_throttles():
@@ -295,7 +327,8 @@ def test_upload_by_url_rejects_oversized_download(api_client, monkeypatch, tmp_p
 
 
 @pytest.mark.django_db
-def test_media_library_lists_previous_editorjs_uploads(api_client, tmp_path, monkeypatch):
+def test_media_library_lists_previous_editorjs_uploads(exempt_client, tmp_path, monkeypatch):
+    api_client = exempt_client
     data = _image_bytes()
     with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
         storage_path = default_storage.save(
@@ -336,7 +369,8 @@ def test_media_library_lists_previous_editorjs_uploads(api_client, tmp_path, mon
 
 
 @pytest.mark.django_db
-def test_media_library_paginates_beyond_first_hundred(api_client, tmp_path):
+def test_media_library_paginates_beyond_first_hundred(exempt_client, tmp_path):
+    api_client = exempt_client
     MediaAsset.objects.bulk_create(
         [
             MediaAsset(
@@ -373,3 +407,47 @@ def test_openapi_schema_documents_editorjs_image_endpoints(client):
     assert "/api/v1/content/editorjs/upload-by-url/" in schema
     assert "/api/v1/content/editorjs/media/" in schema
     assert "EditorJSImageUploadSuccess" in schema
+
+
+@pytest.mark.django_db
+def test_media_library_lists_only_own_and_own_organization_images(tmp_path):
+    """The library hands out working links: other organizations' images must not be listed."""
+    from django.contrib.auth import get_user_model
+    from tosca_api.apps.organizations.models import Organization
+
+    users = get_user_model().objects
+    author = users.create(username="gq2-author")
+    stranger = users.create(username="other-org-author")
+    gq2, _ = Organization.objects.get_or_create(slug="gq2", defaults={"name": "GQ2"})
+    other, _ = Organization.objects.get_or_create(slug="dcs", defaults={"name": "DCS"})
+
+    def asset(name, **owner):
+        return MediaAsset.objects.create(
+            storage_path=f"geocontext/editorjs/x/{name}.png", original_name=f"{name}.png",
+            mime="image/png", width=1, height=1, size=1, **owner,
+        )
+
+    asset("mine", uploader=author)
+    asset("my-org", owner_org=gq2)
+    asset("other-org-draft", owner_org=other, uploader=stranger)
+
+    client = APIClient()
+    client.force_authenticate(user=author, token=AUTHOR_CLAIMS)
+    with override_settings(MEDIA_ROOT=tmp_path, MEDIA_URL="/media/"):
+        response = client.get("/api/v1/content/editorjs/media/")
+
+    assert response.status_code == 200
+    names = sorted(item["name"] for item in response.json()["results"])
+    assert names == ["mine.png", "my-org.png"]
+
+
+@pytest.mark.django_db
+def test_signed_in_user_without_author_role_cannot_upload_or_browse():
+    from django.contrib.auth import get_user_model
+
+    reader = get_user_model().objects.create(username="reader")
+    client = APIClient()
+    client.force_authenticate(user=reader, token={"realm_access": {"roles": ["ROLE_GQ2_READER"]}, "organization": ["gq2"]})
+
+    assert client.get("/api/v1/content/editorjs/media/").status_code == 403
+    assert client.post("/api/v1/content/editorjs/upload-by-url/", {"url": "https://x.test/a.png"}, format="json").status_code == 403

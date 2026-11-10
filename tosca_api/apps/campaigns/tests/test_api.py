@@ -56,7 +56,8 @@ def _authenticate(api_client, user, *roles, org_slug="dcs"):
 def test_campaign_list_unauthenticated(api_client):
     """Test that unauthenticated users cannot list campaigns."""
     response = api_client.get("/api/v1/campaigns/")
-    assert response.status_code == 403  # or 401 depending on DRF setting
+    # Anonymous: 401 (sign in), not 403 -- KeycloakTokenAuthentication.authenticate_header.
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db

@@ -150,7 +150,8 @@ def test_anon_cannot_write(api_client, dcs_campaign):
             "end_datetime": timezone.now() + timedelta(days=1, hours=1),
         },
     )
-    assert response.status_code == 403
+    # Anonymous: 401 (sign in), not 403 -- KeycloakTokenAuthentication.authenticate_header.
+    assert response.status_code == 401
 
 
 # ---------------------------------------------------------------------------

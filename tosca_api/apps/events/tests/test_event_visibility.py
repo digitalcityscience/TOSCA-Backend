@@ -318,7 +318,8 @@ def test_anon_post_returns_403(api_client, campaign):
         },
         format="json",
     )
-    assert response.status_code == 403
+    # Anonymous: 401 (sign in), not 403 -- KeycloakTokenAuthentication.authenticate_header.
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db
@@ -328,13 +329,15 @@ def test_anon_patch_returns_403(api_client, published_public_event):
         {"title": "new"},
         format="json",
     )
-    assert response.status_code == 403
+    # Anonymous: 401 (sign in), not 403 -- KeycloakTokenAuthentication.authenticate_header.
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db
 def test_anon_delete_returns_403(api_client, published_public_event):
     response = api_client.delete(f"/api/v1/events/{published_public_event.id}/")
-    assert response.status_code == 403
+    # Anonymous: 401 (sign in), not 403 -- KeycloakTokenAuthentication.authenticate_header.
+    assert response.status_code == 401
 
 
 @pytest.mark.django_db
