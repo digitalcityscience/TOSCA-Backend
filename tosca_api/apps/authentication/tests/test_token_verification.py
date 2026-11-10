@@ -120,3 +120,56 @@ def test_azp_fallback():
     payload = verify_and_decode_token(token)
     assert payload["sub"] == "user1"
     assert payload["azp"] == "test-aud"
+
+@patch("tosca_api.apps.core.jwt_utils.PyJWKClient", FakeJWKClient)
+def test_small_clock_difference_is_tolerated(settings):
+    # Keycloak's clock is a few seconds ahead: iat lies in the future.
+    settings.JWT_LEEWAY_SECONDS = 30
+    ahead = datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=10)
+    payload = verify_and_decode_token(make_token({"iat": ahead}))
+    assert payload["sub"] == "user1"
+
+
+@patch("tosca_api.apps.core.jwt_utils.PyJWKClient", FakeJWKClient)
+def test_large_clock_difference_is_refused(settings):
+    settings.JWT_LEEWAY_SECONDS = 30
+    ahead = datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=5)
+    with pytest.raises(AuthenticationFailed):
+        verify_and_decode_token(make_token({"iat": ahead, "exp": ahead + datetime.timedelta(minutes=5)}))
+
+
+@patch("tosca_api.apps.core.jwt_utils.PyJWKClient", FakeJWKClient)
+def test_token_without_sub_is_refused():
+    token = jwt.encode(
+        {"iss": "https://issuer.example.com/", "aud": "test-aud",
+         "iat": datetime.datetime.now(datetime.UTC),
+         "exp": datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=5)},
+        TEST_PRIVATE_KEY, algorithm="RS256", headers={"kid": TEST_KID},
+    )
+    with pytest.raises(AuthenticationFailed):
+        verify_and_decode_token(token)
+
+
+@patch("tosca_api.apps.core.jwt_utils.PyJWKClient", FakeJWKClient)
+def test_error_message_does_not_reveal_the_reason():
+    token = make_token({"iss": "https://wrong-issuer/"})
+    with pytest.raises(AuthenticationFailed) as raised:
+        verify_and_decode_token(token)
+    assert "issuer" not in str(raised.value.detail).lower()
+
+
+def test_signing_keys_client_is_reused(settings):
+    from tosca_api.apps.core import jwt_utils
+
+    created = []
+
+    class CountingClient(FakeJWKClient):
+        def __init__(self, *args, **kwargs):
+            created.append(args)
+
+    settings.KEYCLOAK_JWKS_URL = "https://fake-jwks/reuse"
+    with patch("tosca_api.apps.core.jwt_utils.PyJWKClient", CountingClient):
+        verify_and_decode_token(make_token())
+        verify_and_decode_token(make_token())
+    assert len(created) == 1
+    jwt_utils._jwks_clients.clear()

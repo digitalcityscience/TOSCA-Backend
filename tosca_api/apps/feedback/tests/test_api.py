@@ -28,7 +28,9 @@ def regular_user():
 @pytest.fixture
 def admin_client(admin_user):
     client = APIClient()
-    client.force_authenticate(user=admin_user)
+    # Platform admin per Keycloak (DJANGO_SUPERADMIN): may manage every
+    # organization's feedback. A plain Django is_staff flag is not enough.
+    client.force_authenticate(user=admin_user, token={"realm_access": {"roles": ["DJANGO_SUPERADMIN"]}})
     return client
 
 
@@ -148,7 +150,8 @@ class TestGeoFeedbackAPI:
             "rating_enabled": True,
         }
         resp = api_client.post(url, data)
-        assert resp.status_code == status.HTTP_403_FORBIDDEN
+        # Not signed in: 401, so clients know to sign in (not 403, "not allowed").
+        assert resp.status_code == status.HTTP_401_UNAUTHORIZED
 
     def test_admin_create_feedback(self, admin_client, campaign):
         """Admin user can create feedback."""
@@ -296,3 +299,28 @@ class TestFeedbackLayerWrites:
         resp = admin_client.post("/api/v1/feedback/", payload, format="json")
         assert resp.status_code == 400
         assert "layers" in resp.data
+
+
+@pytest.mark.django_db
+def test_staff_of_another_organization_cannot_see_or_edit_private_feedback(admin_user):
+    """A Django is_staff flag is not a pass into every organization's feedback."""
+    from tosca_api.apps.organizations.models import Organization
+
+    owner_org, _ = Organization.objects.get_or_create(slug="gq2", defaults={"name": "GQ2"})
+    Organization.objects.get_or_create(slug="dcs", defaults={"name": "DCS"})
+    campaign = Campaign.objects.create(title="GQ2 campaign", created_by=admin_user, organization=owner_org)
+    draft = GeoFeedback.objects.create(
+        campaign=campaign, created_by=admin_user, title="Internal draft",
+        status=GeoFeedback.Status.DRAFT, visibility=GeoFeedback.Visibility.PRIVATE,
+    )
+    staff = User.objects.create_user(username="dcs-staff", password="x", is_staff=True)
+
+    other_org = APIClient()
+    other_org.force_authenticate(user=staff, token={"realm_access": {"roles": ["DJANGO_STAFF", "ROLE_DCS_ADMIN"]}, "organization": ["dcs"]})
+    assert other_org.get(f"/api/v1/feedback/{draft.pk}/").status_code == 404
+    assert all(item["id"] != str(draft.pk) for item in other_org.get("/api/v1/feedback/").json()["results"])
+    assert other_org.patch(f"/api/v1/feedback/{draft.pk}/", {"title": "x"}, format="json").status_code in (403, 404)
+
+    own_org = APIClient()
+    own_org.force_authenticate(user=staff, token={"realm_access": {"roles": ["DJANGO_STAFF", "ROLE_GQ2_ADMIN"]}, "organization": ["gq2"]})
+    assert own_org.get(f"/api/v1/feedback/{draft.pk}/").status_code == 200

@@ -1,9 +1,16 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Q
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.pagination import CursorPagination
 from rest_framework.response import Response
+
+from tosca_api.apps.organizations.permissions import (
+    CampaignScopedPermission,
+    get_request_org_context,
+    validate_campaign_organization,
+)
 
 from .models import FeedbackSubmission, GeoFeedback
 from .serializers import (
@@ -48,9 +55,11 @@ class GeoFeedbackViewSet(viewsets.ModelViewSet):
     """
 
     queryset = GeoFeedback.objects.all()
-    # Admins can do anything, others can only read.
+    # Writes: staff *of the owning campaign's organization* (or platform
+    # exempt) -- CampaignScopedPermission adds the org check that a raw
+    # is_staff test lacked (any org's staff could edit every org's feedback).
     # Note: submission has its own permission logic in the submit action.
-    permission_classes = [IsAdminOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly, CampaignScopedPermission]
     pagination_class = FeedbackCursorPagination
 
     def get_serializer_class(self):
@@ -64,9 +73,11 @@ class GeoFeedbackViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """
-        Filter queryset:
-        - Regular users only see PUBLISHED and PUBLIC feedbacks.
-        - Staff see everything.
+        Filter queryset (same tenant rule as events and stories):
+        - Anonymous / no organization: PUBLISHED and PUBLIC feedback only.
+        - Organization member: that, plus their own organization's
+          unpublished/private feedback.
+        - Platform exempt (DJANGO_SUPERADMIN): everything.
         - Filter by campaign_id query param if provided.
         """
         qs = super().get_queryset()
@@ -78,8 +89,13 @@ class GeoFeedbackViewSet(viewsets.ModelViewSet):
             )
 
         user = self.request.user
-        if not (user and user.is_staff):
+        if not (user and user.is_authenticated):
             qs = qs.published_public()
+        else:
+            _roles, org_slug, exempt = get_request_org_context(self.request)
+            if not exempt:
+                public = Q(pk__in=GeoFeedback.objects.published_public().values("pk"))
+                qs = qs.filter(public | Q(campaign__organization__slug=org_slug)) if org_slug else qs.filter(public)
 
         campaign_id = self.request.query_params.get("campaign_id")
         if campaign_id:
@@ -88,8 +104,18 @@ class GeoFeedbackViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        """Set the creator to the current user."""
+        """Set the creator to the current user; only into the caller's own
+        organization's campaigns."""
+        campaign = serializer.validated_data.get("campaign")
+        if campaign is not None and not validate_campaign_organization(self.request, campaign):
+            raise PermissionDenied("You can only create feedback in your own organization's campaigns.")
         serializer.save(created_by=self.request.user)
+
+    def perform_update(self, serializer):
+        campaign = serializer.validated_data.get("campaign")
+        if campaign is not None and not validate_campaign_organization(self.request, campaign):
+            raise PermissionDenied("You can only move feedback into your own organization's campaigns.")
+        serializer.save()
 
     @action(detail=True, methods=["post"], permission_classes=[permissions.AllowAny])
     def submit(self, request, pk=None):

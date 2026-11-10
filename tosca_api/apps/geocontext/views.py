@@ -35,7 +35,8 @@ from rest_framework import serializers
 from rest_framework import status
 from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.pagination import LimitOffsetPagination
-from rest_framework.permissions import IsAuthenticated
+from django.db.models import Q
+from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
@@ -45,6 +46,8 @@ from tosca_api.apps.core.image_policy import (
     validate_inline_image,
 )
 from tosca_api.apps.core.models import MediaAsset
+from tosca_api.apps.authentication.role_sync import LEVEL_RANK, org_role_level
+from tosca_api.apps.organizations.permissions import get_request_org_context
 
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,24 @@ _MAX_REDIRECTS = 1
 _ALLOWED_REMOTE_SCHEMES = {"http", "https"}
 _BLOCKED_URL_MESSAGE = "Remote URL resolves to a private or internal address."
 
+
+
+class CanAuthorContent(BasePermission):
+    """Editor uploads and the image library are for authors: platform-exempt
+    users, or members holding WRITER/ADMIN in their organization. Any other
+    signed-in user (any account in the realm) may not upload or browse."""
+
+    message = "Only content authors may upload or browse images."
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not (user and user.is_authenticated):
+            return False
+        roles, org_slug, exempt = get_request_org_context(request)
+        if exempt:
+            return True
+        level = org_role_level(roles, org_slug)
+        return level is not None and LEVEL_RANK[level] >= LEVEL_RANK["WRITER"]
 
 class EditorJSUploadThrottle(UserRateThrottle):
     """Rate-limit the (expensive) EditorJS upload endpoints per user."""
@@ -237,7 +258,7 @@ def _suffix_from_name(name: str | None) -> str:
 class EditorJSImageUploadByFileView(APIView):
     """``@editorjs/image`` ``byFile`` endpoint."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CanAuthorContent]
     parser_classes = [MultiPartParser]
     throttle_classes = [EditorJSUploadThrottle]
 
@@ -279,7 +300,7 @@ class EditorJSImageUploadByFileView(APIView):
 class EditorJSImageUploadByUrlView(APIView):
     """``@editorjs/image`` ``byUrl`` endpoint — downloads and rehosts."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CanAuthorContent]
     parser_classes = [JSONParser]
     throttle_classes = [EditorJSUploadThrottle]
 
@@ -345,7 +366,7 @@ class EditorJSImageUploadByUrlView(APIView):
 class EditorJSImageLibraryView(APIView):
     """List previously uploaded EditorJS images for the admin picker."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CanAuthorContent]
     throttle_classes = [EditorJSMediaThrottle]
     pagination_class = EditorJSMediaPagination
 
@@ -358,6 +379,15 @@ class EditorJSImageLibraryView(APIView):
     def get(self, request, *args, **kwargs):
         prefix = f"{_UPLOAD_SUBDIR}/"
         assets = MediaAsset.objects.filter(storage_path__startswith=prefix)
+        # Only the caller's own uploads and their organization's images: the
+        # library hands out working (presigned) links, so another
+        # organization's draft/private images must never be listed.
+        _roles, org_slug, exempt = get_request_org_context(request)
+        if not exempt:
+            visible = Q(uploader=request.user)
+            if org_slug:
+                visible |= Q(owner_org__slug=org_slug) | Q(campaign__organization__slug=org_slug)
+            assets = assets.filter(visible)
         paginator = self.pagination_class()
         page = paginator.paginate_queryset(assets, request, view=self)
         items = list(_list_existing_uploads(request, assets=page))
@@ -435,26 +465,35 @@ def _assert_public_url(url: str) -> None:
 
 def _download_with_caps(url: str) -> Tuple[bytes, str]:
     """Stream-download with SSRF, size, timeout, and redirect caps."""
-    # Validate before connecting so a direct internal address is never dialled.
-    _assert_public_url(url)
-    try:
-        resp = requests.get(
-            url,
-            stream=True,
-            timeout=_DOWNLOAD_TIMEOUT_SECONDS,
-            allow_redirects=True,
-        )
-    except requests.RequestException as exc:
-        raise _DownloadError(f"Download failed: {exc}") from exc
-
-    if len(resp.history) > _MAX_REDIRECTS:
+    # Redirects are followed by hand so that every hop is validated *before*
+    # it is requested: with automatic redirects an intermediate hop to an
+    # internal host would already have been called (blind SSRF) by the time
+    # only the final URL was checked.
+    current = url
+    for _hop in range(_MAX_REDIRECTS + 1):
+        scheme = urlparse(current).scheme
+        if scheme not in _ALLOWED_REMOTE_SCHEMES:
+            raise _DownloadError(f"Redirect target uses disallowed scheme '{scheme}'.")
+        _assert_public_url(current)
+        try:
+            resp = requests.get(
+                current,
+                stream=True,
+                timeout=_DOWNLOAD_TIMEOUT_SECONDS,
+                allow_redirects=False,
+            )
+        except requests.RequestException as exc:
+            logger.info("Remote image download failed: %s", exc)
+            raise _DownloadError("Download failed.") from exc
+        if not resp.is_redirect:
+            break
+        location = resp.headers.get("Location", "")
+        resp.close()
+        if not location:
+            raise _DownloadError("Remote URL redirected without a target.")
+        current = requests.compat.urljoin(current, location)
+    else:
         raise _DownloadError("Too many redirects on remote URL.")
-    final_scheme = urlparse(resp.url).scheme
-    if final_scheme not in _ALLOWED_REMOTE_SCHEMES:
-        raise _DownloadError(f"Redirect target uses disallowed scheme '{final_scheme}'.")
-    # A redirect can point at an internal host even when the first hop was
-    # public; re-validate the final URL the response actually came from.
-    _assert_public_url(resp.url)
     if resp.status_code != 200:
         raise _DownloadError(f"Remote URL returned status {resp.status_code}.")
 

@@ -1,10 +1,13 @@
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.account.adapter import DefaultAccountAdapter
+from allauth.core.exceptions import ImmediateHttpResponse
+from django.http import HttpResponseForbidden
 from django.contrib.auth import get_user_model
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 import logging
 from tosca_api.apps.core.jwt_utils import verify_and_decode_token
+from tosca_api.apps.authentication.identity import link_refusal, user_for_token_claims
 from tosca_api.apps.authentication.role_sync import (
     ExtractedOrg,
     ExtractedRoles,
@@ -54,8 +57,16 @@ class KeycloakTokenAuthentication(BaseAuthentication):
     DRF authentication backend for Keycloak Bearer tokens.
     Validates JWT tokens and syncs roles to Django user permissions.
     For API token authentication from Mobile/Vue/Postman clients.
+
+    Users are identified by the token's ``sub`` (see ``identity.py``), not by
+    ``preferred_username``.
     """
-    
+
+    def authenticate_header(self, request):
+        # Makes DRF answer failed authentication with 401 (+ WWW-Authenticate)
+        # instead of 403, so clients know to refresh the token and retry.
+        return 'Bearer realm="api"'
+
     def authenticate(self, request):
         auth_header = request.headers.get('Authorization')
         if not auth_header or not auth_header.startswith('Bearer '):
@@ -65,19 +76,9 @@ class KeycloakTokenAuthentication(BaseAuthentication):
 
         try:
             decoded_token = verify_and_decode_token(token)
-            username = decoded_token.get('preferred_username')
-            if not username:
-                raise AuthenticationFailed('Token does not contain username')
-
-            # Get or create user
-            user, created = User.objects.get_or_create(
-                username=username,
-                defaults={
-                    'email': decoded_token.get('email', ''),
-                    'first_name': decoded_token.get('given_name', ''),
-                    'last_name': decoded_token.get('family_name', ''),
-                }
-            )
+            user = user_for_token_claims(decoded_token)
+            if not user.is_active:
+                raise AuthenticationFailed('User inactive or deleted.')
 
             # Sync roles from token
             roles = extract_roles_from_token(decoded_token)
@@ -95,7 +96,9 @@ class KeycloakTokenAuthentication(BaseAuthentication):
         except AuthenticationFailed:
             raise
         except Exception as e:
-            raise AuthenticationFailed(f'Authentication failed: {str(e)}')
+            # Never echo internal errors to the client.
+            logger.exception("Bearer authentication failed unexpectedly")
+            raise AuthenticationFailed('Authentication failed.') from e
 
     def _apply_permissions(self, user, roles: ExtractedRoles, org: ExtractedOrg):
         """Apply roles to Django user permissions and attach request-local
@@ -184,8 +187,16 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
                 self._run_login_checks(request, user, roles, org)
             return
         
-        # Not existing - try to find or create user
+        # Not existing - try to find or create user. Only link to an existing
+        # account when that is safe (identity.link_refusal): never to one
+        # linked to another Keycloak user, never to a local password account,
+        # and by email only when Keycloak says the email is verified.
         existing_user = None
+        sub = sociallogin.account.uid
+        email_verified = bool(
+            userinfo.get("email_verified")
+            or (id_token.get("email_verified") if isinstance(id_token, dict) else False)
+        )
         
         # First try by username (Keycloak preferred_username is unique)
         if username:
@@ -199,8 +210,8 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
             except User.DoesNotExist:
                 pass
         
-        # Then try by email
-        if not existing_user and email:
+        # Then try by email (verified emails only)
+        if not existing_user and email and email_verified:
             try:
                 existing_user = User.objects.get(email__iexact=email)
                 logger.info("Connected existing user by email", extra={
@@ -219,6 +230,20 @@ class KeycloakAdapter(DefaultSocialAccountAdapter):
                     'security_risk': True
                 })
         
+        if existing_user is not None:
+            refusal = link_refusal(existing_user, sub)
+            if refusal is not None:
+                logger.error("Refused to link a Keycloak login to an existing user", extra={
+                    'user_id': existing_user.id,
+                    'username': existing_user.username,
+                    'sub': sub,
+                    'reason': refusal,
+                    'security_risk': True,
+                })
+                raise ImmediateHttpResponse(HttpResponseForbidden(
+                    "This account cannot be used with this sign-in. Contact an administrator."
+                ))
+
         if existing_user:
             # Connect social account to existing user
             sociallogin.connect(request, existing_user)

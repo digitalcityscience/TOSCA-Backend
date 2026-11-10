@@ -137,7 +137,8 @@ def test_anon_cannot_write(api_client, dcs_campaign):
     response = api_client.post(
         "/api/v1/stories/", {"title": "Anon Story", "campaign": str(dcs_campaign.id)}
     )
-    assert response.status_code == 403
+    # Anonymous: 401 (sign in), not 403 -- KeycloakTokenAuthentication.authenticate_header.
+    assert response.status_code == 401
 
 
 # ---------------------------------------------------------------------------

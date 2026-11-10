@@ -65,7 +65,11 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
     # stay Django `is_staff`-gated (IsAdminUser), same as before.
     queryset = GeodataEngine.objects.all()
     serializer_class = GeodataEngineSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    # Engines hold GeoServer admin credentials: create/update/delete and the
+    # stateless test_connection (which makes the server call any URL) are
+    # admin-only. The router is not mounted today (see api/urls.py); this
+    # keeps it safe if it ever is.
+    permission_classes = [permissions.IsAdminUser]
 
     def get_queryset(self):
         qs = GeodataEngine.objects.all()
@@ -163,7 +167,7 @@ class GeodataEngineViewSet(viewsets.ModelViewSet):
         except (GeoServerConnectionError, GeodataEngineError) as e:
             return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-    @action(detail=False, methods=['post'], url_path='test_connection', permission_classes=[permissions.IsAuthenticated])
+    @action(detail=False, methods=['post'], url_path='test_connection', permission_classes=[permissions.IsAdminUser])
     def test_connection(self, request):
         """
         POST /api/v1/providers/provider/engines/test_connection/

@@ -112,7 +112,11 @@ def test_s2_editorjs_upload_lands_private_by_default(api_client, uploader, priva
     the upload alias no longer depends on (or leaks through) campaign state
     it doesn't yet know about.
     """
-    api_client.force_authenticate(user=uploader)
+    # Uploading needs an author role (WRITER+) in the uploader's organization.
+    api_client.force_authenticate(
+        user=uploader,
+        token={"realm_access": {"roles": ["ROLE_GQ2_WRITER"]}, "organization": ["gq2"]},
+    )
     response = api_client.post(
         "/api/v1/content/editorjs/upload-by-file/",
         {"image": _png_upload()},
