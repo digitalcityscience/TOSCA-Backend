@@ -50,7 +50,7 @@ def staff_user():
 
 @pytest.fixture
 def campaign(user):
-    return Campaign.objects.create(title="Test Campaign", created_by=user)
+    return Campaign.objects.create(visibility="public", title="Test Campaign", created_by=user)
 
 
 @pytest.fixture
@@ -225,7 +225,7 @@ def test_geostory_filter_by_campaign(api_client, user, campaign):
     )
 
     # Create another campaign with a story
-    other_campaign = Campaign.objects.create(title="Other Campaign", created_by=user)
+    other_campaign = Campaign.objects.create(visibility="public", title="Other Campaign", created_by=user)
     GeoStory.objects.create(
         title="Other Story", campaign=other_campaign, author=user, status=GeoStory.Status.PUBLISHED
     )

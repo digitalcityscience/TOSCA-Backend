@@ -32,7 +32,7 @@ def user():
 
 @pytest.fixture
 def story(user):
-    campaign = Campaign.objects.create(title="Campaign", created_by=user)
+    campaign = Campaign.objects.create(visibility="public", title="Campaign", created_by=user)
     return GeoStory.objects.create(
         title="Story", campaign=campaign, author=user, status=GeoStory.Status.PUBLISHED
     )

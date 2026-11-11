@@ -70,14 +70,23 @@ class HeroImageField(ImageField):
     descriptor_class = HeroImageFileDescriptor
 
 
+# A private campaign keeps everything in it private.
+PUBLIC_CAMPAIGN = "public"
+
+
 class GeoStoryQuerySet(models.QuerySet):
     def published(self):
-        """Stories visible to a reader with no elevated access: published only.
+        """Stories visible to a reader with no elevated access: published, in
+        a public campaign.
 
-        GeoStory has no separate public/private flag (unlike Event and
-        GeoFeedback) — status is the only visibility axis.
+        GeoStory has no public/private flag of its own; a private campaign
+        keeps everything in it private (same rule as media promotion in
+        ``core.media_lifecycle``).
         """
-        return self.filter(status=GeoStory.Status.PUBLISHED)
+        return self.filter(
+            status=GeoStory.Status.PUBLISHED,
+            campaign__visibility=PUBLIC_CAMPAIGN,
+        )
 
 
 class GeoStory(TimeStampedModel):

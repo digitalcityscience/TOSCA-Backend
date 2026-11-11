@@ -36,7 +36,7 @@ from rest_framework import status
 from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.pagination import LimitOffsetPagination
 from django.db.models import Q
-from rest_framework.permissions import BasePermission, IsAuthenticated
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
@@ -46,7 +46,6 @@ from tosca_api.apps.core.image_policy import (
     validate_inline_image,
 )
 from tosca_api.apps.core.models import MediaAsset
-from tosca_api.apps.authentication.role_sync import LEVEL_RANK, org_role_level
 from tosca_api.apps.organizations.permissions import get_request_org_context
 
 
@@ -59,23 +58,6 @@ _ALLOWED_REMOTE_SCHEMES = {"http", "https"}
 _BLOCKED_URL_MESSAGE = "Remote URL resolves to a private or internal address."
 
 
-
-class CanAuthorContent(BasePermission):
-    """Editor uploads and the image library are for authors: platform-exempt
-    users, or members holding WRITER/ADMIN in their organization. Any other
-    signed-in user (any account in the realm) may not upload or browse."""
-
-    message = "Only content authors may upload or browse images."
-
-    def has_permission(self, request, view):
-        user = request.user
-        if not (user and user.is_authenticated):
-            return False
-        roles, org_slug, exempt = get_request_org_context(request)
-        if exempt:
-            return True
-        level = org_role_level(roles, org_slug)
-        return level is not None and LEVEL_RANK[level] >= LEVEL_RANK["WRITER"]
 
 class EditorJSUploadThrottle(UserRateThrottle):
     """Rate-limit the (expensive) EditorJS upload endpoints per user."""
@@ -258,7 +240,7 @@ def _suffix_from_name(name: str | None) -> str:
 class EditorJSImageUploadByFileView(APIView):
     """``@editorjs/image`` ``byFile`` endpoint."""
 
-    permission_classes = [IsAuthenticated, CanAuthorContent]
+    permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser]
     throttle_classes = [EditorJSUploadThrottle]
 
@@ -300,7 +282,7 @@ class EditorJSImageUploadByFileView(APIView):
 class EditorJSImageUploadByUrlView(APIView):
     """``@editorjs/image`` ``byUrl`` endpoint — downloads and rehosts."""
 
-    permission_classes = [IsAuthenticated, CanAuthorContent]
+    permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
     throttle_classes = [EditorJSUploadThrottle]
 
@@ -366,7 +348,7 @@ class EditorJSImageUploadByUrlView(APIView):
 class EditorJSImageLibraryView(APIView):
     """List previously uploaded EditorJS images for the admin picker."""
 
-    permission_classes = [IsAuthenticated, CanAuthorContent]
+    permission_classes = [IsAuthenticated]
     throttle_classes = [EditorJSMediaThrottle]
     pagination_class = EditorJSMediaPagination
 

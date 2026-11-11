@@ -48,11 +48,13 @@ def test_feedback_app_label_is_feedback():
 
 
 def test_geostory_status_enum_and_published_semantics():
-    """A2: GeoStory.status choices + .published() filters to PUBLISHED only."""
+    """A2: GeoStory.status choices + .published() filters to PUBLISHED stories
+    of public campaigns (a private campaign keeps everything in it private)."""
     from tosca_api.apps.geostories.models import GeoStory
 
     assert {c[0] for c in GeoStory.Status.choices} == {"draft", "published", "archived"}
-    assert GeoStory.objects.published().query.where.children[0].rhs == GeoStory.Status.PUBLISHED
+    conditions = {child.rhs for child in GeoStory.objects.published().query.where.children}
+    assert conditions == {GeoStory.Status.PUBLISHED, Campaign.Visibility.PUBLIC}
 
 
 def test_campaign_visibility_value_set():

@@ -43,7 +43,7 @@ def user_client(regular_user):
 
 @pytest.fixture
 def campaign(admin_user):
-    return Campaign.objects.create(title="Test Campaign", created_by=admin_user)
+    return Campaign.objects.create(visibility="public", title="Test Campaign", created_by=admin_user)
 
 
 @pytest.fixture
@@ -308,7 +308,7 @@ def test_staff_of_another_organization_cannot_see_or_edit_private_feedback(admin
 
     owner_org, _ = Organization.objects.get_or_create(slug="gq2", defaults={"name": "GQ2"})
     Organization.objects.get_or_create(slug="dcs", defaults={"name": "DCS"})
-    campaign = Campaign.objects.create(title="GQ2 campaign", created_by=admin_user, organization=owner_org)
+    campaign = Campaign.objects.create(visibility="public", title="GQ2 campaign", created_by=admin_user, organization=owner_org)
     draft = GeoFeedback.objects.create(
         campaign=campaign, created_by=admin_user, title="Internal draft",
         status=GeoFeedback.Status.DRAFT, visibility=GeoFeedback.Visibility.PRIVATE,

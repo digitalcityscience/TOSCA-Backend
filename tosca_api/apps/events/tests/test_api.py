@@ -112,7 +112,7 @@ def staff_user():
 
 @pytest.fixture
 def campaign(user):
-    return Campaign.objects.create(title="API Test Campaign", created_by=user)
+    return Campaign.objects.create(visibility="public", title="API Test Campaign", created_by=user)
 
 
 @pytest.fixture
@@ -380,7 +380,7 @@ def test_events_list_filters_by_published_status(api_client, user, future_event,
 def test_events_list_filter_by_campaign(api_client, user, campaign, future_event):
     """Test filtering by campaign_id."""
     # Create another campaign with event
-    other_campaign = Campaign.objects.create(title="Other Campaign", created_by=user)
+    other_campaign = Campaign.objects.create(visibility="public", title="Other Campaign", created_by=user)
     Event.objects.create(
         campaign=other_campaign,
         title="Other Event",
