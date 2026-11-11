@@ -57,6 +57,8 @@ def _model_data(model: SimulationModel) -> dict:
         "default_parameters": model.default_parameters,
         # Kept as provenance only. The runner FK is deliberately never exported.
         "runner_version": model.runner_version,
+        "visibility": model.visibility,
+        "run_access": model.run_access,
     }
 
 
@@ -171,16 +173,27 @@ def _upsert_model(info: dict, *, organization, user) -> SimulationModel:
     model.default_parameters = info.get("default_parameters") or {}
     model.runner = None
     model.runner_version = info.get("runner_version", "")
+    # Bundles written before model visibility existed were public demo data.
+    visibility = info.get("visibility")
+    model.visibility = (
+        visibility if visibility in SimulationModel.Visibility.values else SimulationModel.Visibility.PUBLIC
+    )
+    if info.get("run_access") in SimulationModel.RunAccess.values:
+        model.run_access = info["run_access"]
     model.status = Status.PUBLISHED
     model.save()
     return model
 
 
-def _apply_run_metadata(run: SimulationRun, info: dict) -> None:
+def _apply_run_metadata(run: SimulationRun, info: dict, *, legacy: bool) -> None:
+    """``legacy``: a bundle from before model visibility, when publishing a run
+    made it public whatever its visibility said."""
     run.title = info.get("title") or run.title
     run.description_content = info.get("description_content") or {"blocks": []}
     visibility = info.get("visibility")
-    if visibility in SimulationRun.Visibility.values:
+    if legacy:
+        run.visibility = SimulationRun.Visibility.PUBLIC
+    elif visibility in SimulationRun.Visibility.values and visibility != SimulationRun.Visibility.LINK:
         run.visibility = visibility
     run.status = Status.PUBLISHED
     run.runner = None
@@ -255,7 +268,7 @@ def import_seed(
                 raise SeedBundleError(
                     f"Existing run {run.key!r} is not published; re-run with --replace."
                 )
-            _apply_run_metadata(run, info)
+            _apply_run_metadata(run, info, legacy="visibility" not in manifest["model"])
             (skipped if result.skipped else imported).append(run)
 
     return SeedImportResult(

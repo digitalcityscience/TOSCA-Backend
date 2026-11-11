@@ -78,6 +78,7 @@ def import_package(
     organization,
     user=None,
     publish: bool = False,
+    visibility: str | None = None,
     replace: bool = False,
     skip_existing: bool = False,
     into_run: SimulationRun | None = None,
@@ -90,7 +91,10 @@ def import_package(
     returns it with ``skipped=True`` (idempotent seeding). ``into_run`` fills a
     run that was started in TOSCA and is waiting for its package (runner jobs);
     the package must be a run of that run's model with that run's key.
-    ``into_comparison`` does the same for a comparison users started. Raises
+    ``into_comparison`` does the same for a comparison users started.
+    ``visibility`` (``public`` / ``organization`` / ``private``) is who reads the
+    new run or comparison once published (default ``organization``); a model
+    the import creates gets ``public`` visibility only when the run is public. Raises
     ``packages.PackageValidationError`` for invalid packages and
     ``PackageImportError`` when a valid package cannot be imported.
     """
@@ -107,7 +111,8 @@ def import_package(
                     skipped=True,
                 )
         importer = _PackageImporter(
-            package, source, organization=organization, user=user, publish=publish
+            package, source, organization=organization, user=user, publish=publish,
+            visibility=visibility or SimulationRun.Visibility.ORGANIZATION,
         )
         if into_run is not None:
             return importer.fill(into_run)
@@ -129,7 +134,10 @@ def _existing_item(package: ValidatedPackage, organization) -> SimulationRun | S
 
 
 class _PackageImporter:
-    def __init__(self, package: ValidatedPackage, source: Path, *, organization, user, publish):
+    def __init__(self, package: ValidatedPackage, source: Path, *, organization, user, publish, visibility):
+        if visibility not in SimulationRun.Visibility.values or visibility == SimulationRun.Visibility.LINK:
+            raise PackageImportError(f"Unknown visibility {visibility!r}.")
+        self.visibility = visibility
         self.package = package
         self.manifest = package.manifest
         self.source = source
@@ -165,6 +173,15 @@ class _PackageImporter:
                     if model.status != Status.PUBLISHED:
                         model.status = Status.PUBLISHED
                         model.save()
+                if (
+                    self.visibility == SimulationRun.Visibility.PUBLIC
+                    and model.visibility != SimulationModel.Visibility.PUBLIC
+                ):
+                    self.warnings.append(
+                        f"The run is visible to anyone, but the model {model.title!r} only to its "
+                        "organization, so only the organization sees the run. Make the model "
+                        "visible to anyone to show it to everyone."
+                    )
                 run.save()
         except Exception:
             self._discard_uploads()
@@ -266,6 +283,7 @@ class _PackageImporter:
                     candidate_run=candidate,
                     bounds=info.get("bounds"),
                     manifest=self.manifest,
+                    visibility=self.visibility,
                     created_by=self.user,
                 )
                 comparison.source_package = self._archive(comparison)
@@ -332,6 +350,11 @@ class _PackageImporter:
                 key=info["key"],
                 title=info["title"],
                 organization=self.organization,
+                visibility=(
+                    SimulationModel.Visibility.PUBLIC
+                    if self.visibility == SimulationRun.Visibility.PUBLIC
+                    else SimulationModel.Visibility.ORGANIZATION
+                ),
                 created_by=self.user,
             )
             return model, True
@@ -382,6 +405,7 @@ class _PackageImporter:
             bounds=info.get("bounds"),
             manifest=self.manifest,
             execution_state=SimulationRun.ExecutionState.IMPORTED,
+            visibility=self.visibility,
             created_by=self.user,
         )
 

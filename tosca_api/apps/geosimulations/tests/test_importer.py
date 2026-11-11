@@ -212,7 +212,7 @@ def test_replacing_a_run_shown_in_a_story_is_refused(dcs, package_dir, cleanup, 
     from tosca_api.apps.campaigns.models import Campaign
     from tosca_api.apps.geostories.models import GeoStory, GeoStoryScene, GeoStorySceneSimulation
 
-    run = import_package(package_dir, organization=dcs, publish=True).run
+    run = import_package(package_dir, organization=dcs, publish=True, visibility="public").run
     author = django_user_model.objects.create_user(username="story-author")
     story = GeoStory.objects.create(
         title="Story", campaign=Campaign.objects.create(title="C", created_by=author), author=author

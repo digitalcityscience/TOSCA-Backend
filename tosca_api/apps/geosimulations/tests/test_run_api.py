@@ -210,6 +210,10 @@ def test_published_runs_are_reused_by_anyone(model, django_user_model):
         execution_state=Execution.SUCCEEDED, status=Status.PUBLISHED
     )
 
+    # Published but still "only the user who started it": bob gets his own run.
+    assert _start(bob, model, parameters={"agents": 20}).status_code == 202
+    SimulationRun.objects.filter(pk=first.data["id"]).update(visibility=Visibility.PUBLIC)
+
     second = _start(bob, model, parameters={"agents": 20})
 
     assert second.status_code == 200 and second.data["id"] == first.data["id"]
@@ -292,7 +296,7 @@ def test_private_runs_are_readable_only_by_their_creator(model, django_user_mode
 
 
 def test_imported_runs_keep_organization_visibility(model, django_user_model):
-    imported = simulation_run(model, key="imported")
+    imported = simulation_run(model, key="imported", visibility=Visibility.ORGANIZATION)
     member, _ = _client(django_user_model, "member", org_slug="dcs", roles=["ROLE_DCS_READER"])
 
     detail = member.get(f"/api/v1/geosimulations/runs/{imported.pk}/")

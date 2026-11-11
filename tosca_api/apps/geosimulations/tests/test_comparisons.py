@@ -60,6 +60,7 @@ def comparison(model, baseline, candidate, **fields) -> SimulationComparison:
         "title": "Queues vs turn-aware queues",
         "baseline_run": baseline,
         "candidate_run": candidate,
+        "visibility": SimulationRun.Visibility.PUBLIC,
     }
     values.update(fields)
     return SimulationComparison.objects.create(**values)
@@ -275,7 +276,9 @@ def published(runs, dcs, tmp_path, cleanup, django_capture_on_commit_callbacks):
     model, baseline, candidate = runs
     write_comparison_package(tmp_path / "package")
     with django_capture_on_commit_callbacks(execute=True):
-        item = import_package(tmp_path / "package", organization=dcs, publish=True).comparison
+        item = import_package(
+            tmp_path / "package", organization=dcs, publish=True, visibility=SimulationRun.Visibility.PUBLIC
+        ).comparison
     return model, baseline, candidate, item
 
 

@@ -19,6 +19,7 @@ from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils.html import format_html
 
+from tosca_api.apps.authentication.role_sync import org_role_level
 from tosca_api.apps.external_catalog.admin import OrganizationOwnedAdminMixin
 from tosca_api.apps.geocontext.widgets import EditorJsWidget
 from tosca_api.apps.organizations.models import Organization
@@ -78,6 +79,20 @@ class PackageImportForm(forms.Form):
     publish = forms.BooleanField(
         required=False, help_text="Publish the run, and its simulation model if it is a draft."
     )
+    visibility = forms.ChoiceField(
+        choices=[
+            (value, SimulationRun.Visibility(value).label)
+            for value in (
+                SimulationRun.Visibility.ORGANIZATION,
+                SimulationRun.Visibility.PUBLIC,
+                SimulationRun.Visibility.PRIVATE,
+            )
+        ],
+        initial=SimulationRun.Visibility.ORGANIZATION,
+        required=False,
+        help_text="Who reads the run or comparison once it is published. Anyone also needs the "
+        "model to be visible to anyone.",
+    )
     replace = forms.BooleanField(
         required=False, help_text="Replace an existing run with the same key, including its files."
     )
@@ -87,7 +102,7 @@ class SimulationRunInline(admin.TabularInline):
     """Read-only run overview on the model page; runs are edited on their own page."""
 
     model = SimulationRun
-    fields = ("title", "status", "execution_state", "time_start", "model_version")
+    fields = ("title", "status", "visibility", "execution_state", "time_start", "model_version")
     readonly_fields = fields
     extra = 0
     can_delete = False
@@ -103,8 +118,8 @@ class SimulationRunInline(admin.TabularInline):
 @admin.register(SimulationModel)
 class SimulationModelAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
     form = SimulationModelAdminForm
-    list_display = ("title", "key", "organization", "status", "run_count", "updated_at")
-    list_filter = ("status", "organization")
+    list_display = ("title", "key", "organization", "status", "visibility", "run_access", "run_count", "updated_at")
+    list_filter = ("status", "visibility", "run_access", "organization")
     search_fields = ("title", "key", "summary")
     raw_id_fields = ("preview_image",)
     inlines = [SimulationRunInline]
@@ -118,7 +133,15 @@ class SimulationModelAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
         "updated_at",
     )
     fieldsets = (
-        (None, {"fields": ("id", "organization", "key", "title", "summary", "status")}),
+        (None, {"fields": ("id", "organization", "key", "title", "summary")}),
+        (
+            "Publishing and access",
+            {
+                "fields": ("status", "visibility", "run_access"),
+                "description": "Status says whether the model is published; Visibility says who "
+                "sees it then. Drafts and archived models are seen only by the organization.",
+            },
+        ),
         ("Description", {"fields": ("description_content", "preview_image")}),
         (
             "Parameters",
@@ -152,7 +175,7 @@ class SimulationModelAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
                 kwargs["queryset"] = SimulationRunner.objects.filter(organization__slug=org_slug)
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
-    @admin.display(description="Runs", ordering="_run_count")
+    @admin.display(description="Runs (all statuses)", ordering="_run_count")
     def run_count(self, obj: SimulationModel) -> int:
         return obj._run_count
 
@@ -199,8 +222,8 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     org_lookup = "model__organization__slug"
 
     form = SimulationRunAdminForm
-    list_display = ("title", "model", "status", "execution_state", "time_start", "created_at")
-    list_filter = ("status", "execution_state", "model")
+    list_display = ("title", "model", "status", "visibility", "execution_state", "time_start", "created_at")
+    list_filter = ("status", "visibility", "execution_state", "model")
     search_fields = ("title", "key", "model__title")
     list_select_related = ("model",)
     inlines = [SimulationOutputInline]
@@ -228,7 +251,16 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         "updated_at",
     )
     fieldsets = (
-        (None, {"fields": ("id", "model", "key", "title", "status", "visibility", "submitted_org")}),
+        (None, {"fields": ("id", "model", "key", "title", "submitted_org")}),
+        (
+            "Publishing and access",
+            {
+                "fields": ("status", "visibility"),
+                "description": "Status says whether the run is published; Visibility says who reads "
+                "it then. Drafts and archived runs are read by the model's organization and the "
+                "user who started them; Only the user who started it stays with that user.",
+            },
+        ),
         ("Description", {"fields": ("description_content",)}),
         (
             "Execution",
@@ -269,9 +301,14 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         return urls + super().get_urls()
 
     def _can_import(self, request) -> bool:
-        return self._is_active_staff(request) and request.user.has_perm(
-            "geosimulations.add_simulationrun"
-        )
+        """Any member of an organization (READER included) may import and publish
+        packages for their organization; platform administrators for any."""
+        if not self._is_active_staff(request):
+            return False
+        roles, org_slug, exempt = get_request_org_context(request)
+        if exempt or request.user.is_superuser:
+            return True
+        return bool(org_slug) and org_role_level(roles, org_slug) is not None
 
     def changelist_view(self, request, extra_context=None):
         extra_context = {**(extra_context or {}), "can_import_packages": self._can_import(request)}
@@ -333,6 +370,7 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
                     organization=organization,
                     user=request.user,
                     publish=form.cleaned_data["publish"],
+                    visibility=form.cleaned_data["visibility"] or SimulationRun.Visibility.ORGANIZATION,
                     replace=form.cleaned_data["replace"],
                 )
             except PackageValidationError as exc:
@@ -376,7 +414,7 @@ class SimulationRunAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
 class SimulationComparisonAdminForm(forms.ModelForm):
     class Meta:
         model = SimulationComparison
-        fields = ["title", "status", "description_content"]
+        fields = ["title", "status", "visibility", "description_content"]
         widgets = {"description_content": EditorJsWidget(profile="description")}
 
 
@@ -387,8 +425,8 @@ class SimulationComparisonAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     org_lookup = "model__organization__slug"
 
     form = SimulationComparisonAdminForm
-    list_display = ("title", "model", "baseline_run", "candidate_run", "status", "created_at")
-    list_filter = ("status", "model")
+    list_display = ("title", "model", "baseline_run", "candidate_run", "status", "visibility", "created_at")
+    list_filter = ("status", "visibility", "model")
     search_fields = ("title", "key", "model__title", "baseline_run__title", "candidate_run__title")
     list_select_related = ("model", "baseline_run", "candidate_run")
     inlines = [SimulationOutputInline]
@@ -406,7 +444,14 @@ class SimulationComparisonAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         "updated_at",
     )
     fieldsets = (
-        (None, {"fields": ("id", "model", "key", "title", "status")}),
+        (None, {"fields": ("id", "model", "key", "title")}),
+        (
+            "Publishing and access",
+            {
+                "fields": ("status", "visibility"),
+                "description": "Same rules as runs. Readers must also be able to read both runs.",
+            },
+        ),
         ("Runs", {"fields": ("baseline_run", "candidate_run", "bounds")}),
         ("Description", {"fields": ("description_content",)}),
         ("Results", {"fields": ("kpi_changes_display",)}),

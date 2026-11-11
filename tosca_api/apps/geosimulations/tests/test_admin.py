@@ -90,6 +90,8 @@ def test_model_add_derives_organization_and_creator():
             "title": "Pedestrian simulation",
             "summary": "",
             "status": Status.DRAFT,
+            "visibility": SimulationModel.Visibility.ORGANIZATION,
+            "run_access": SimulationModel.RunAccess.ORGANIZATION,
             "description_content": json.dumps(DESCRIPTION),
             "default_parameters": "{}",
             "runs-TOTAL_FORMS": "0",
@@ -182,12 +184,15 @@ def _upload(name="package.zip", content=b"PK\x05\x06" + b"\0" * 18):
     return SimpleUploadedFile(name, content, content_type="application/zip")
 
 
-def test_import_button_and_page_need_add_permission(catalog):
+def test_every_organization_member_can_import_packages(catalog):
     reader, _ = _staff_client("dcs-reader", "dcs", level="READER")
     writer, _ = _staff_client("dcs-writer", "dcs")
+    outsider = Client()
+    outsider.force_login(User.objects.create_user(username="no-org", password="x", is_staff=True))
 
-    assert reader.get(reverse(IMPORT_URL)).status_code == 403
-    assert "Import simulation package" not in reader.get(
+    assert outsider.get(reverse(IMPORT_URL)).status_code == 403
+    assert reader.get(reverse(IMPORT_URL)).status_code == 200
+    assert "Import simulation package" in reader.get(
         reverse("admin:geosimulations_simulationrun_changelist")
     ).content.decode()
     assert writer.get(reverse(IMPORT_URL)).status_code == 200

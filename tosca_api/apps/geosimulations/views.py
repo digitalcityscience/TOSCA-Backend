@@ -1,10 +1,17 @@
 """Public read API for GeoSimulations (Task 12.5).
 
-Reads are open. What a caller sees follows the 12.1 visibility rules:
-anonymous readers get published models and runs (a run also needs a published
-model, a comparison its model and both runs published); members additionally
-see their own organization's drafts and archives;
-platform-exempt callers see everything. Anything else is a 404, never a 403.
+Reads are open. Status says whether an item is published; visibility says
+who reads it once it is:
+
+* Models: ``public`` (anyone) or ``organization`` (members of its organization).
+* Runs and comparisons: ``public`` (anyone, if the model is public too),
+  ``organization`` (the model's organization) or ``private`` (only the user who
+  started it); anonymous ``link`` runs are opened by id, never listed.
+* Drafts and archived items: the model's organization (and a run's creator).
+* Platform-exempt callers see everything.
+
+Anything else is a 404, never a 403. Who may *start* runs is the model's
+``run_access`` (see ``SimulationModel.can_start_runs``).
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from tosca_api.apps.authentication.backends import KeycloakTokenAuthentication
+from tosca_api.apps.authentication.role_sync import org_role_level
 from tosca_api.apps.organizations.models import Organization
 from tosca_api.apps.organizations.permissions import get_request_org_context
 
@@ -90,6 +98,31 @@ def _reader_scope(request) -> dict:
         return {"org_slug": None, "exempt": False, "user": None}
     _roles, org_slug, exempt = get_request_org_context(request)
     return {"org_slug": org_slug, "exempt": exempt, "user": user}
+
+
+def can_start_runs(request, model: SimulationModel) -> bool:
+    """The model's ``run_access`` applied to the caller of ``request``."""
+    user = request.user
+    if user and user.is_authenticated:
+        roles, org_slug, exempt = get_request_org_context(request)
+        level = org_role_level(roles, org_slug) if org_slug else None
+    else:
+        user, org_slug, exempt, level = None, None, False, None
+    return model.can_start_runs(user=user, org_level=level, org_slug=org_slug, exempt=exempt)
+
+
+def _run_access_denied(request) -> Response:
+    """``401`` for anonymous callers (signing in may help), ``403`` otherwise."""
+    if not (request.user and request.user.is_authenticated):
+        return Response(
+            {"detail": "Sign in to start runs of this simulation."},
+            status=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": 'Bearer realm="api"'},
+        )
+    return Response(
+        {"detail": "You are not allowed to start runs of this simulation."},
+        status=status.HTTP_403_FORBIDDEN,
+    )
 
 
 @extend_schema_view(
@@ -160,6 +193,8 @@ class SimulationModelViewSet(viewsets.ReadOnlyModelViewSet):
         if (disabled := _runs_disabled()) is not None:
             return disabled
         model = self.get_object()
+        if not can_start_runs(request, model):
+            return _run_access_denied(request)
         submission = RunSubmissionSerializer(data=request.data)
         submission.is_valid(raise_exception=True)
         data = submission.validated_data
@@ -203,6 +238,8 @@ class SimulationModelViewSet(viewsets.ReadOnlyModelViewSet):
         if (disabled := _runs_disabled()) is not None:
             return disabled
         model = self.get_object()
+        if not can_start_runs(request, model):
+            return _run_access_denied(request)
         submission = ComparisonSubmissionSerializer(data=request.data)
         submission.is_valid(raise_exception=True)
         data = submission.validated_data

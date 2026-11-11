@@ -27,7 +27,15 @@ def org(slug: str) -> Organization:
 
 
 def simulation_model(organization, key="hamburg-bike-abm", **fields) -> SimulationModel:
-    values = {"organization": organization, "key": key, "title": "Hamburg bike simulation"}
+    # Visible to anyone and runnable by anyone unless a test says otherwise
+    # (what existing models were migrated to).
+    values = {
+        "organization": organization,
+        "key": key,
+        "title": "Hamburg bike simulation",
+        "visibility": SimulationModel.Visibility.PUBLIC,
+        "run_access": SimulationModel.RunAccess.ANYONE,
+    }
     values.update(fields)
     return SimulationModel.objects.create(**values)
 
@@ -44,6 +52,7 @@ def simulation_run(model, key="turn-queues-n1000-v2", **fields) -> SimulationRun
         "time_end": START + timedelta(hours=3, minutes=14, seconds=29),
         "timezone": "Europe/Berlin",
         "bounds": [9.73, 53.395, 10.325, 53.739],
+        "visibility": SimulationRun.Visibility.PUBLIC,
     }
     values.update(fields)
     return SimulationRun.objects.create(**values)

@@ -113,11 +113,10 @@ class GeoStorySceneSimulationForm(forms.ModelForm):
             # Validate the submitted final state below instead of comparing
             # against rows that may also be changing in this admin request.
             self.instance._skip_stack_order_database_check = True
-        from tosca_api.apps.geosimulations.models import SimulationOutput, SimulationRun, Status
+        from tosca_api.apps.geosimulations.models import SimulationOutput, SimulationRun
 
-        published_runs = SimulationRun.objects.filter(
-            status=Status.PUBLISHED, model__status=Status.PUBLISHED
-        )
+        # Stories are read by anyone, so only runs everyone may read.
+        published_runs = SimulationRun.objects.public()
         self.fields["run"].queryset = published_runs.select_related("model")
         selected_run_id = (
             self.data.get(self.add_prefix("run")) if self.is_bound else self.instance.run_id
