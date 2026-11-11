@@ -373,14 +373,8 @@ class GeoStoryResultPresentation(TimeStampedModel):
     def is_publicly_visible(self) -> bool:
         if not self.output_id:
             return False
-        from tosca_api.apps.geosimulations.models import Status
-
         owner = self.output.owner
-        return bool(
-            owner
-            and owner.status == Status.PUBLISHED
-            and owner.model.status == Status.PUBLISHED
-        )
+        return bool(owner and owner.is_public)
 
     def clean(self) -> None:
         super().clean()
@@ -404,7 +398,9 @@ class GeoStoryResultPresentation(TimeStampedModel):
         if self.output.kind != SimulationOutput.Kind.TABLE:
             errors["output"] = "Story result presentations require a structured table output."
         elif not self.is_publicly_visible:
-            errors["output"] = "Only outputs of published simulations can be shown in a story."
+            errors["output"] = (
+                "Only outputs of published simulations visible to anyone can be shown in a story."
+            )
         elif configuration_valid:
             try:
                 dataset = normalize_dataset(self.output.data, metadata=self.output.metadata)
@@ -906,9 +902,7 @@ class GeoStorySceneSimulation(TimeStampedModel):
 
     @property
     def is_publicly_visible(self) -> bool:
-        from tosca_api.apps.geosimulations.models import Status
-
-        return self.run.status == Status.PUBLISHED and self.run.model.status == Status.PUBLISHED
+        return self.run.is_public
 
     def clean(self) -> None:
         super().clean()
@@ -929,7 +923,9 @@ class GeoStorySceneSimulation(TimeStampedModel):
         from tosca_api.apps.geosimulations.models import SimulationOutput
 
         if not self.is_publicly_visible:
-            errors["run"] = "Only published runs of published simulation models can be shown in a story."
+            errors["run"] = (
+                "Only published runs visible to anyone (of a model visible to anyone) can be shown in a story."
+            )
         duration = self.run.duration_seconds
         start = self.replay_start_s or 0.0
         end = self.replay_end_s if self.replay_end_s is not None else duration

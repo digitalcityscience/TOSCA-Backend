@@ -5,7 +5,6 @@ from django import forms
 from django.contrib import admin
 from django.contrib.admin.options import IS_POPUP_VAR
 from django.core.exceptions import ValidationError
-from django.db.models import Q
 from django.http import HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.template.loader import render_to_string
@@ -16,7 +15,7 @@ from django.utils.safestring import mark_safe
 from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin
 from tosca_api.apps.geocontext.widgets import EditorJsWidget
 from tosca_api.apps.core.editorjs import render_content_media_urls
-from tosca_api.apps.geosimulations.models import SimulationOutput, Status
+from tosca_api.apps.geosimulations.models import SimulationOutput, public_comparison_q, public_run_q
 
 from .forms import (
     GeoStoryResultPresentationForm,
@@ -361,13 +360,7 @@ class GeoStoryResultPresentationAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     def _output_queryset():
         return (
             SimulationOutput.objects.filter(kind=SimulationOutput.Kind.TABLE)
-            .filter(
-                Q(run__status=Status.PUBLISHED, run__model__status=Status.PUBLISHED)
-                | Q(
-                    comparison__status=Status.PUBLISHED,
-                    comparison__model__status=Status.PUBLISHED,
-                )
-            )
+            .filter(public_run_q("run__") | public_comparison_q("comparison__"))
             .select_related("run__model", "comparison__model")
             .order_by("run__title", "comparison__title", "display_order", "title")
         )
@@ -516,7 +509,7 @@ class GeoStorySceneAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         return [preview, simulation_outputs, *super().get_urls()]
 
     def simulation_outputs_view(self, request):
-        from tosca_api.apps.geosimulations.models import SimulationOutput, Status
+        from tosca_api.apps.geosimulations.models import SimulationOutput
 
         outputs = SimulationOutput.objects.none()
         try:
@@ -526,9 +519,8 @@ class GeoStorySceneAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         if run_id:
             outputs = (
                 SimulationOutput.objects.filter(
+                    public_run_q("run__"),
                     run_id=run_id,
-                    run__status=Status.PUBLISHED,
-                    run__model__status=Status.PUBLISHED,
                     kind=SimulationOutput.Kind.VECTOR_LAYER,
                 )
                 .select_related("run", "asset")

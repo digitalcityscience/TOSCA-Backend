@@ -19,6 +19,12 @@ class Command(BaseCommand):
             "--publish", action="store_true", help="Publish the run (and its model if needed) or the comparison"
         )
         parser.add_argument(
+            "--visibility",
+            choices=["public", "organization", "private"],
+            default="organization",
+            help="Who reads it once published: anyone (public model too), the organization, or the importer",
+        )
+        parser.add_argument(
             "--replace", action="store_true", help="Replace an existing run or comparison with the same key"
         )
         parser.add_argument(
@@ -43,6 +49,7 @@ class Command(BaseCommand):
                 organization=organization,
                 user=user,
                 publish=options["publish"],
+                visibility=options["visibility"],
                 replace=options["replace"],
                 skip_existing=options["skip_existing"],
             )

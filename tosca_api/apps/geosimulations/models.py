@@ -44,11 +44,25 @@ SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class Status(models.TextChoices):
-    """Reader visibility, shared by models and runs (same values as GeoStory)."""
+    """Publishing state, shared by models, runs and comparisons (same values as GeoStory).
+
+    Who reads a *published* item is its ``visibility``. Drafts and archived
+    items are read only by the model's organization (and a run's creator).
+    """
 
     DRAFT = "draft", "Draft"
     PUBLISHED = "published", "Published"
     ARCHIVED = "archived", "Archived"
+
+
+STATUS_HELP = (
+    "Draft and archived: only the model's organization (and whoever started it) can read it. "
+    "Published: shown to the audience chosen in Visibility."
+)
+
+
+def _is_signed_in(user) -> bool:
+    return user is not None and getattr(user, "is_authenticated", False)
 
 
 def _clean_description(instance, errors: dict) -> None:
@@ -105,21 +119,54 @@ def validate_sha256(value: str) -> None:
         raise ValidationError("Checksum must look like 'sha256:<64 lowercase hex digits>'.")
 
 
+def public_model_q(prefix: str = "") -> Q:
+    """Models everyone reads: published with ``public`` visibility."""
+    return Q(
+        **{
+            f"{prefix}status": Status.PUBLISHED,
+            f"{prefix}visibility": SimulationModel.Visibility.PUBLIC,
+        }
+    )
+
+
+def public_run_q(prefix: str = "") -> Q:
+    """Runs everyone reads: published, ``public``, of a model everyone reads."""
+    return Q(
+        **{
+            f"{prefix}status": Status.PUBLISHED,
+            f"{prefix}visibility": SimulationRun.Visibility.PUBLIC,
+        }
+    ) & public_model_q(f"{prefix}model__")
+
+
 class SimulationModelQuerySet(models.QuerySet):
-    def published(self):
-        return self.filter(status=Status.PUBLISHED)
+    def public(self):
+        """Models everyone reads (anonymous visitors included)."""
+        return self.filter(public_model_q())
 
     def readable_by(self, *, org_slug: str | None, exempt: bool = False, user=None):
-        """Published models, plus every model of the caller's own organization."""
+        """Public models, plus every model of the caller's own organization
+        (organization-only, draft and archived ones included)."""
         if exempt:
             return self
-        if not org_slug:
-            return self.published()
-        return self.filter(Q(status=Status.PUBLISHED) | Q(organization__slug=org_slug))
+        readable = public_model_q()
+        if org_slug:
+            readable |= Q(organization__slug=org_slug)
+        return self.filter(readable)
 
 
 class SimulationModel(TimeStampedModel):
     """A simulation catalog item, e.g. "Hamburg bicycle agent simulation"."""
+
+    class Visibility(models.TextChoices):
+        PUBLIC = "public", "Anyone"
+        ORGANIZATION = "organization", "Organization members"
+
+    class RunAccess(models.TextChoices):
+        ANYONE = "anyone", "Anyone who can see the model"
+        SIGNED_IN = "signed_in", "Signed-in users who can see the model"
+        ORGANIZATION = "organization", "Members of the model's organization"
+        EDITORS = "editors", "Editors of the model's organization (WRITER or ADMIN)"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     objects = SimulationModelQuerySet.as_manager()
@@ -146,7 +193,24 @@ class SimulationModel(TimeStampedModel):
         related_name="simulation_models",
     )
     status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True
+        max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True,
+        help_text="Draft and archived: only the organization sees the model. "
+        "Published: shown to the audience chosen in Visibility.",
+    )
+    visibility = models.CharField(
+        max_length=20,
+        choices=Visibility.choices,
+        default=Visibility.ORGANIZATION,
+        help_text="Who sees the model once it is published. Its runs can never reach "
+        "a wider audience than the model.",
+    )
+    run_access = models.CharField(
+        "Who can start runs",
+        max_length=20,
+        choices=RunAccess.choices,
+        default=RunAccess.ORGANIZATION,
+        help_text="Who may start runs of this model (needs a runner). Anonymous visitors "
+        "only while GEOSIMULATIONS_ALLOW_ANONYMOUS_RUNS is on.",
     )
     preview_image = models.ForeignKey(
         "core.MediaAsset",
@@ -213,29 +277,58 @@ class SimulationModel(TimeStampedModel):
         self.full_clean()
         super().save(*args, **kwargs)
 
+    @property
+    def is_public(self) -> bool:
+        return self.status == Status.PUBLISHED and self.visibility == self.Visibility.PUBLIC
+
+    def can_start_runs(self, *, user, org_level: str | None, org_slug: str | None, exempt: bool) -> bool:
+        """Whether a caller who can see this model may start runs of it.
+
+        ``org_level`` is the caller's role level (READER/WRITER/ADMIN) in their
+        organization ``org_slug``. Platform-exempt callers always may.
+        """
+        if exempt:
+            return True
+        member = org_slug is not None and org_slug == self.organization.slug and org_level is not None
+        access = self.run_access
+        if access == self.RunAccess.ANYONE:
+            return _is_signed_in(user) or settings.GEOSIMULATIONS_ALLOW_ANONYMOUS_RUNS
+        if access == self.RunAccess.SIGNED_IN:
+            return _is_signed_in(user)
+        if access == self.RunAccess.ORGANIZATION:
+            return _is_signed_in(user) and member
+        if access == self.RunAccess.EDITORS:
+            return _is_signed_in(user) and member and org_level in ("WRITER", "ADMIN")
+        return False
+
 
 class SimulationRunQuerySet(models.QuerySet):
-    def published(self):
-        """Runs a reader with no elevated access sees: run *and* model published."""
-        return self.filter(status=Status.PUBLISHED, model__status=Status.PUBLISHED)
+    def public(self):
+        """Runs everyone reads: published, ``public`` visibility, model public too."""
+        return self.filter(public_run_q())
 
     def readable_by(self, *, org_slug: str | None, exempt: bool = False, user=None):
-        """Published runs, the caller's own runs, and the organization's shared runs.
+        """Runs the caller may find in lists and open.
 
-        A run with ``organization`` visibility (imported runs) is readable by
-        every member of its model's organization; a ``private`` run (runs users
-        start) only by the user who started it, until staff publish it.
-        Unreadable runs never enter the queryset, so detail views answer 404
-        rather than 403 (same rule as GeoStories).
+        * ``public`` runs: everyone once published (and the model is public).
+        * ``organization`` runs: members of the model's organization once published.
+        * Drafts and archived runs (``public``/``organization``): members of the
+          model's organization.
+        * ``private`` runs: only the user who started them, whatever the status.
+        * ``link`` runs (anonymous): never listed; views add them for detail by id.
+
+        The user who started a run always reads it. Unreadable runs never enter
+        the queryset, so detail views answer 404 rather than 403.
         """
         if exempt:
             return self
-        readable = Q(status=Status.PUBLISHED, model__status=Status.PUBLISHED)
+        readable = public_run_q()
         if org_slug:
             readable |= Q(
-                visibility=SimulationRun.Visibility.ORGANIZATION, model__organization__slug=org_slug
+                model__organization__slug=org_slug,
+                visibility__in=[SimulationRun.Visibility.PUBLIC, SimulationRun.Visibility.ORGANIZATION],
             )
-        if user is not None and getattr(user, "is_authenticated", False):
+        if _is_signed_in(user):
             readable |= Q(created_by=user)
         return self.filter(readable)
 
@@ -254,11 +347,13 @@ class SimulationRun(TimeStampedModel):
     ACTIVE_STATES = frozenset({ExecutionState.QUEUED, ExecutionState.RUNNING})
 
     class Visibility(models.TextChoices):
-        ORGANIZATION = "organization", "Organization (members of the model's organization)"
-        PRIVATE = "private", "Private (only the user who started it)"
-        # Anonymous runs (until the frontend has sign-in): readable by anyone who
-        # has the run id, never listed.
+        PUBLIC = "public", "Anyone"
+        ORGANIZATION = "organization", "Organization members"
+        PRIVATE = "private", "Only the user who started it"
+        # Anonymous runs: readable by anyone who has the run id, never listed.
         LINK = "link", "Anyone with the link (anonymous runs, not listed)"
+
+    STARTABLE_VISIBILITIES = (Visibility.PRIVATE, Visibility.ORGANIZATION)
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     objects = SimulationRunQuerySet.as_manager()
@@ -282,13 +377,14 @@ class SimulationRun(TimeStampedModel):
     )
     seed = models.BigIntegerField(null=True, blank=True)
     status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True
+        max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True, help_text=STATUS_HELP
     )
     visibility = models.CharField(
         max_length=20,
         choices=Visibility.choices,
         default=Visibility.ORGANIZATION,
-        help_text="Who reads the run before it is published. Publishing makes it public either way.",
+        help_text="Who reads the run once it is published: anyone (if the model is public too), "
+        "the model's organization, or only the user who started it.",
     )
     execution_state = models.CharField(
         max_length=20, choices=ExecutionState.choices, default=ExecutionState.IMPORTED
@@ -398,6 +494,15 @@ class SimulationRun(TimeStampedModel):
         if errors:
             raise ValidationError(errors)
 
+    @property
+    def is_public(self) -> bool:
+        """Everyone reads it: published, ``public``, and its model is public."""
+        return (
+            self.status == Status.PUBLISHED
+            and self.visibility == self.Visibility.PUBLIC
+            and self.model.is_public
+        )
+
     def save(self, *args, **kwargs) -> None:
         self.title = sanitize_simple(self.title)
         if self.model_id is not None and isinstance(self.parameters, dict):
@@ -409,31 +514,40 @@ class SimulationRun(TimeStampedModel):
         super().save(*args, **kwargs)
 
 
-class SimulationComparisonQuerySet(models.QuerySet):
-    def published(self):
-        """Comparisons a reader sees: the comparison, its model and both runs published."""
-        return self.filter(
-            status=Status.PUBLISHED,
-            model__status=Status.PUBLISHED,
-            baseline_run__status=Status.PUBLISHED,
-            candidate_run__status=Status.PUBLISHED,
+def public_comparison_q(prefix: str = "") -> Q:
+    """Comparisons everyone reads: published, ``public``, model and both runs public."""
+    return (
+        Q(
+            **{
+                f"{prefix}status": Status.PUBLISHED,
+                f"{prefix}visibility": SimulationRun.Visibility.PUBLIC,
+            }
         )
+        & public_model_q(f"{prefix}model__")
+        & public_run_q(f"{prefix}baseline_run__")
+        & public_run_q(f"{prefix}candidate_run__")
+    )
+
+
+class SimulationComparisonQuerySet(models.QuerySet):
+    def public(self):
+        """Comparisons everyone reads: it, its model and both runs public."""
+        return self.filter(public_comparison_q())
 
     def readable_by(self, *, org_slug: str | None, exempt: bool = False, user=None):
-        """Published comparisons, the caller's own, and the organization's shared ones.
+        """Same rules as runs (see ``SimulationRunQuerySet.readable_by``).
 
-        Same visibility rules as runs: ``organization`` comparisons (imported) are
-        read by the model's organization, ``private`` ones only by their creator;
-        anonymous ``link`` comparisons are opened by id (views add them).
+        Views also require both runs to be readable by the caller.
         """
         if exempt:
             return self
-        readable = Q(pk__in=self.published().values("pk"))
+        readable = public_comparison_q()
         if org_slug:
             readable |= Q(
-                visibility=SimulationRun.Visibility.ORGANIZATION, model__organization__slug=org_slug
+                model__organization__slug=org_slug,
+                visibility__in=[SimulationRun.Visibility.PUBLIC, SimulationRun.Visibility.ORGANIZATION],
             )
-        if user is not None and getattr(user, "is_authenticated", False):
+        if _is_signed_in(user):
             readable |= Q(created_by=user)
         return self.filter(readable)
 
@@ -464,13 +578,14 @@ class SimulationComparison(TimeStampedModel):
         SimulationRun, on_delete=models.PROTECT, related_name="comparisons_as_candidate"
     )
     status = models.CharField(
-        max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True
+        max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True, help_text=STATUS_HELP
     )
     visibility = models.CharField(
         max_length=20,
         choices=SimulationRun.Visibility.choices,
         default=SimulationRun.Visibility.ORGANIZATION,
-        help_text="Who reads the comparison before it is published (same rules as runs).",
+        help_text="Who reads the comparison once it is published (same rules as runs). "
+        "Readers also need to be able to read both runs.",
     )
     execution_state = models.CharField(
         max_length=20,
@@ -545,8 +660,29 @@ class SimulationComparison(TimeStampedModel):
             ]
             if unpublished:
                 errors["status"] = "Publish both runs first: " + ", ".join(unpublished) + "."
+            elif self.visibility == SimulationRun.Visibility.PUBLIC:
+                narrower = [
+                    run.title
+                    for run in (self.baseline_run, self.candidate_run)
+                    if run.visibility != SimulationRun.Visibility.PUBLIC
+                ]
+                if narrower:
+                    errors["visibility"] = (
+                        "Readers need both runs: make these runs visible to anyone first: "
+                        + ", ".join(narrower) + "."
+                    )
         if errors:
             raise ValidationError(errors)
+
+    @property
+    def is_public(self) -> bool:
+        return (
+            self.status == Status.PUBLISHED
+            and self.visibility == SimulationRun.Visibility.PUBLIC
+            and self.model.is_public
+            and self.baseline_run.is_public
+            and self.candidate_run.is_public
+        )
 
     def save(self, *args, **kwargs) -> None:
         self.title = sanitize_simple(self.title)

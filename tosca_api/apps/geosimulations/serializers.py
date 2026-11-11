@@ -114,7 +114,17 @@ class SimulationModelListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SimulationModel
-        fields = ["id", "key", "title", "summary", "status", "preview_image_url", "run_count", "updated_at"]
+        fields = [
+            "id",
+            "key",
+            "title",
+            "summary",
+            "status",
+            "visibility",
+            "preview_image_url",
+            "run_count",
+            "updated_at",
+        ]
         read_only_fields = fields
 
     def get_preview_image_url(self, model: SimulationModel) -> str | None:
@@ -129,6 +139,7 @@ class SimulationModelDetailSerializer(SimulationModelListSerializer):
     runs = serializers.SerializerMethodField()
     comparisons = serializers.SerializerMethodField()
     runnable = serializers.SerializerMethodField()
+    can_run = serializers.SerializerMethodField()
 
     class Meta(SimulationModelListSerializer.Meta):
         fields = SimulationModelListSerializer.Meta.fields + [
@@ -136,7 +147,9 @@ class SimulationModelDetailSerializer(SimulationModelListSerializer):
             "organization",
             "parameter_schema",
             "default_parameters",
+            "run_access",
             "runnable",
+            "can_run",
             "runs",
             "comparisons",
         ]
@@ -151,6 +164,19 @@ class SimulationModelDetailSerializer(SimulationModelListSerializer):
         return (
             settings.GEOSIMULATIONS_RUNS_ENABLED and model.runner_id is not None and model.runner.is_active
         )
+
+    def get_can_run(self, model: SimulationModel) -> bool:
+        """This caller may start runs (``runnable`` and the model's ``run_access`` allows them).
+
+        When false while ``runnable`` is true, ``run_access`` tells the frontend
+        why (e.g. ``signed_in``: signing in helps).
+        """
+        request = self.context.get("request")
+        if request is None or not self.get_runnable(model):
+            return False
+        from .views import can_start_runs
+
+        return can_start_runs(request, model)
 
     @extend_schema_field(SimulationRunSummarySerializer(many=True))
     def get_runs(self, model: SimulationModel) -> list[dict]:
@@ -340,7 +366,10 @@ class RunSubmissionSerializer(serializers.Serializer):
     seed = serializers.IntegerField(required=False, allow_null=True, default=None, min_value=0)
     title = serializers.CharField(required=False, allow_blank=True, max_length=255, default="")
     visibility = serializers.ChoiceField(
-        choices=SimulationRun.Visibility.choices, required=False, default=SimulationRun.Visibility.PRIVATE
+        choices=[(value, SimulationRun.Visibility(value).label) for value in SimulationRun.STARTABLE_VISIBILITIES],
+        required=False,
+        default=SimulationRun.Visibility.PRIVATE,
+        help_text="Who reads the run once staff publish it; anonymous runs are always link runs.",
     )
 
 
@@ -352,7 +381,10 @@ class ComparisonSubmissionSerializer(serializers.Serializer):
     seed = serializers.IntegerField(required=False, allow_null=True, default=None, min_value=0)
     title = serializers.CharField(required=False, allow_blank=True, max_length=240, default="")
     visibility = serializers.ChoiceField(
-        choices=SimulationRun.Visibility.choices, required=False, default=SimulationRun.Visibility.PRIVATE
+        choices=[(value, SimulationRun.Visibility(value).label) for value in SimulationRun.STARTABLE_VISIBILITIES],
+        required=False,
+        default=SimulationRun.Visibility.PRIVATE,
+        help_text="Who reads the run once staff publish it; anonymous runs are always link runs.",
     )
 
     def validate(self, attrs):
