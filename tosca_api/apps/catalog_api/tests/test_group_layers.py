@@ -51,7 +51,7 @@ class LayerGroupCatalogTests(TestCase):
             is_default=True,
             created_by=self.user,
         )
-        self.workspace = Workspace.objects.create(
+        self.workspace = Workspace.objects.create(visibility="public", 
             geodata_engine=self.provider,
             name="mobility",
             created_by=self.user,
