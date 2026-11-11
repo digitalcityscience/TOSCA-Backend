@@ -61,7 +61,7 @@ def dcs_org():
 
 @pytest.fixture
 def campaign(organizer, dcs_org):
-    return Campaign.objects.create(
+    return Campaign.objects.create(visibility="public", 
         title="Visibility Campaign", created_by=organizer, organization=dcs_org
     )
 

@@ -20,7 +20,7 @@ def user():
 
 @pytest.fixture
 def campaign(user):
-    return Campaign.objects.create(title="Owned content", created_by=user)
+    return Campaign.objects.create(visibility="public", title="Owned content", created_by=user)
 
 
 @pytest.fixture

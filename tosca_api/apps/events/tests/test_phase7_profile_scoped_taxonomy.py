@@ -59,7 +59,7 @@ def user():
 
 @pytest.fixture
 def campaign(user):
-    return Campaign.objects.create(title="Phase 7", created_by=user)
+    return Campaign.objects.create(visibility="public", title="Phase 7", created_by=user)
 
 
 @pytest.fixture

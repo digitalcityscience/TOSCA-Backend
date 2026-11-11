@@ -25,7 +25,7 @@ def user():
 
 @pytest.fixture
 def campaign(user):
-    return Campaign.objects.create(title="Phase 3", created_by=user)
+    return Campaign.objects.create(visibility="public", title="Phase 3", created_by=user)
 
 
 def _make_event(user, campaign, **overrides) -> Event:

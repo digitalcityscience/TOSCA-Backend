@@ -30,7 +30,7 @@ def superuser():
 
 @pytest.fixture
 def campaign(superuser):
-    return Campaign.objects.create(title="Campaign", created_by=superuser)
+    return Campaign.objects.create(visibility="public", title="Campaign", created_by=superuser)
 
 
 @pytest.fixture

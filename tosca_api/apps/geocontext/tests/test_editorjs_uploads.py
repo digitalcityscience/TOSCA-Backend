@@ -26,8 +26,8 @@ def _upload_file(name: str, data: bytes):
     return SimpleUploadedFile(name, data, content_type="application/octet-stream")
 
 
-# Uploads and the image library are for content authors (WRITER+ in their
-# organization); the token claims come from Keycloak.
+# Token claims of an organization member (from Keycloak). The image library
+# lists only the caller's own and their organization's images.
 AUTHOR_CLAIMS = {"realm_access": {"roles": ["ROLE_GQ2_WRITER"]}, "organization": ["gq2"]}
 
 
@@ -442,12 +442,12 @@ def test_media_library_lists_only_own_and_own_organization_images(tmp_path):
 
 
 @pytest.mark.django_db
-def test_signed_in_user_without_author_role_cannot_upload_or_browse():
+def test_any_signed_in_user_may_upload_but_anonymous_may_not():
     from django.contrib.auth import get_user_model
 
     reader = get_user_model().objects.create(username="reader")
-    client = APIClient()
-    client.force_authenticate(user=reader, token={"realm_access": {"roles": ["ROLE_GQ2_READER"]}, "organization": ["gq2"]})
+    signed_in = APIClient()
+    signed_in.force_authenticate(user=reader, token={"realm_access": {"roles": []}, "organization": ["gq2"]})
 
-    assert client.get("/api/v1/content/editorjs/media/").status_code == 403
-    assert client.post("/api/v1/content/editorjs/upload-by-url/", {"url": "https://x.test/a.png"}, format="json").status_code == 403
+    assert signed_in.get("/api/v1/content/editorjs/media/").status_code == 200
+    assert APIClient().get("/api/v1/content/editorjs/media/").status_code == 401

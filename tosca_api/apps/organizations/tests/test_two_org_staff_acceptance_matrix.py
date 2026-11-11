@@ -91,13 +91,13 @@ def dcs_workspace(dcs_org, engine):
 @pytest.fixture
 def dcs_campaign(dcs_org):
     creator = User.objects.create_user(username="dcs-camp-owner-matrix")
-    return Campaign.objects.create(title="DCS Matrix Campaign", organization=dcs_org, created_by=creator)
+    return Campaign.objects.create(visibility="public", title="DCS Matrix Campaign", organization=dcs_org, created_by=creator)
 
 
 @pytest.fixture
 def hpa_campaign(hpa_org):
     creator = User.objects.create_user(username="hpa-camp-owner-matrix")
-    return Campaign.objects.create(title="HPA Matrix Campaign", organization=hpa_org, created_by=creator)
+    return Campaign.objects.create(visibility="public", title="HPA Matrix Campaign", organization=hpa_org, created_by=creator)
 
 
 @pytest.fixture

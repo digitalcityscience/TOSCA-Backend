@@ -51,14 +51,14 @@ def dcs_user(django_user_model):
 
 @pytest.fixture
 def dcs_campaign(dcs_org, dcs_user):
-    return Campaign.objects.create(
+    return Campaign.objects.create(visibility="public", 
         title="DCS Campaign", organization=dcs_org, created_by=dcs_user
     )
 
 
 @pytest.fixture
 def qg2_campaign(qg2_org, dcs_user):
-    return Campaign.objects.create(
+    return Campaign.objects.create(visibility="public", 
         title="QG2 Campaign", organization=qg2_org, created_by=dcs_user
     )
 
@@ -140,3 +140,24 @@ def test_list_excludes_cross_org_unpublished(
     assert "QG2 Draft" not in titles
     assert "QG2 Archived" not in titles
     assert "QG2 Published" in titles
+
+
+@pytest.mark.django_db
+def test_published_items_of_a_private_campaign_are_not_public():
+    """A private campaign keeps its stories, events and feedback private, even when published."""
+    from django.contrib.auth import get_user_model
+    from rest_framework.test import APIClient
+
+    from tosca_api.apps.campaigns.models import Campaign
+    from tosca_api.apps.geostories.models import GeoStory
+
+    user = get_user_model().objects.create(username="campaign-owner")
+    private = Campaign.objects.create(title="Internal", created_by=user, visibility="private")
+    public = Campaign.objects.create(title="Open", created_by=user, visibility="public")
+    hidden = GeoStory.objects.create(campaign=private, author=user, title="Hidden", status=GeoStory.Status.PUBLISHED)
+    shown = GeoStory.objects.create(campaign=public, author=user, title="Shown", status=GeoStory.Status.PUBLISHED)
+
+    assert set(GeoStory.objects.published()) == {shown}
+    anonymous = APIClient()
+    assert anonymous.get(f"/api/v1/stories/{hidden.pk}/").status_code == 404
+    assert anonymous.get(f"/api/v1/stories/{shown.pk}/").status_code == 200

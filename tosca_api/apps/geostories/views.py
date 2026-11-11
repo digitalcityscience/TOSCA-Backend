@@ -158,7 +158,8 @@ class GeoStoryViewSet(viewsets.ModelViewSet):
         if not org_slug:
             return queryset.published()
         return queryset.filter(
-            Q(status=GeoStory.Status.PUBLISHED) | Q(campaign__organization__slug=org_slug)
+            Q(pk__in=GeoStory.objects.published().values("pk"))
+            | Q(campaign__organization__slug=org_slug)
         )
 
     def perform_create(self, serializer):

@@ -72,13 +72,13 @@ def unentitled_org(db):
 @pytest.fixture
 def dcs_campaign(dcs_org):
     creator = User.objects.create_user(username="dcs-owner-ev")
-    return Campaign.objects.create(title="DCS Campaign", organization=dcs_org, created_by=creator)
+    return Campaign.objects.create(visibility="public", title="DCS Campaign", organization=dcs_org, created_by=creator)
 
 
 @pytest.fixture
 def gq_campaign(gq_org):
     creator = User.objects.create_user(username="gq-owner-ev")
-    return Campaign.objects.create(title="GQ Campaign", organization=gq_org, created_by=creator)
+    return Campaign.objects.create(visibility="public", title="GQ Campaign", organization=gq_org, created_by=creator)
 
 
 def _published_event(campaign, title):
@@ -264,7 +264,7 @@ def test_cross_org_create_rejected(api_client, gq_campaign):
 @pytest.mark.django_db
 def test_entitlement_missing_denies_write(api_client, unentitled_org):
     creator = User.objects.create_user(username="noent-owner-ev")
-    campaign = Campaign.objects.create(
+    campaign = Campaign.objects.create(visibility="public", 
         title="No-entitlement Campaign", organization=unentitled_org, created_by=creator
     )
     event = _published_event(campaign, "Noent Event")

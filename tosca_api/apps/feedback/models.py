@@ -29,9 +29,12 @@ from tosca_api.apps.core.sanitization import sanitize_simple
 
 class GeoFeedbackQuerySet(models.QuerySet):
     def published_public(self):
-        """Feedback visible to an anonymous/non-staff reader: published + public."""
+        """Feedback visible to an anonymous/non-staff reader: published + public,
+        in a public campaign (a private campaign keeps everything in it private)."""
         return self.filter(
-            status=GeoFeedback.Status.PUBLISHED, visibility=GeoFeedback.Visibility.PUBLIC
+            status=GeoFeedback.Status.PUBLISHED,
+            visibility=GeoFeedback.Visibility.PUBLIC,
+            campaign__visibility="public",
         )
 
 

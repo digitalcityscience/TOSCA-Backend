@@ -24,7 +24,7 @@ def organizer():
 
 @pytest.fixture
 def campaign(organizer):
-    return Campaign.objects.create(title="Phase 5", created_by=organizer)
+    return Campaign.objects.create(visibility="public", title="Phase 5", created_by=organizer)
 
 
 @pytest.fixture

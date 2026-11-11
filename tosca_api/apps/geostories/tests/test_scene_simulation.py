@@ -33,7 +33,7 @@ DURATION_S = 3 * 3600 + 14 * 60 + 29  # helpers.simulation_run's window
 @pytest.fixture
 def story():
     user = User.objects.create_user(username="sim-story-author")
-    campaign = Campaign.objects.create(title="Campaign", created_by=user)
+    campaign = Campaign.objects.create(visibility="public", title="Campaign", created_by=user)
     return GeoStory.objects.create(
         title="Cycling to the station", campaign=campaign, author=user, status=GeoStory.Status.PUBLISHED
     )

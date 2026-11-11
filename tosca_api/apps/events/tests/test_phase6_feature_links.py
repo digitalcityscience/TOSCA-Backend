@@ -28,7 +28,7 @@ def user():
 
 @pytest.fixture
 def campaign(user):
-    return Campaign.objects.create(title="Phase 6", created_by=user)
+    return Campaign.objects.create(visibility="public", title="Phase 6", created_by=user)
 
 
 @pytest.fixture

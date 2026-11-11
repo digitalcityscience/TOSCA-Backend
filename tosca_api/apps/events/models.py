@@ -443,8 +443,13 @@ class EventSeriesDate(TimeStampedModel):
 
 class EventQuerySet(models.QuerySet):
     def published_public(self):
-        """Events visible to an anonymous/non-staff reader: published + public."""
-        return self.filter(status=Event.Status.PUBLISHED, visibility=Event.Visibility.PUBLIC)
+        """Events visible to an anonymous/non-staff reader: published + public,
+        in a public campaign (a private campaign keeps everything in it private)."""
+        return self.filter(
+            status=Event.Status.PUBLISHED,
+            visibility=Event.Visibility.PUBLIC,
+            campaign__visibility="public",
+        )
 
 
 class Event(TimeStampedModel):

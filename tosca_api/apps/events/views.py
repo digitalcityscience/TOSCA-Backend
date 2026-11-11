@@ -149,7 +149,7 @@ class EventViewSet(viewsets.ModelViewSet):
         if not org_slug:
             return queryset.published_public()
         return queryset.filter(
-            Q(status=Event.Status.PUBLISHED, visibility=Event.Visibility.PUBLIC)
+            Q(pk__in=Event.objects.published_public().values("pk"))
             | Q(campaign__organization__slug=org_slug)
         )
 
