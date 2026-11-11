@@ -43,19 +43,19 @@ class CatalogV1ApiTestCase(TestCase):
             is_active=False,
             created_by=self.user,
         )
-        self.workspace = Workspace.objects.create(
+        self.workspace = Workspace.objects.create(visibility="public", 
             geodata_engine=self.provider,
             name="mobility",
             description="Mobility workspace",
             created_by=self.user,
         )
-        self.hidden_workspace = Workspace.objects.create(
+        self.hidden_workspace = Workspace.objects.create(visibility="public", 
             geodata_engine=self.provider,
             name="hidden",
             description="Hidden workspace",
             created_by=self.user,
         )
-        self.inactive_workspace = Workspace.objects.create(
+        self.inactive_workspace = Workspace.objects.create(visibility="public", 
             geodata_engine=self.inactive_provider,
             name="inactive",
             description="Inactive workspace",
@@ -234,7 +234,7 @@ class CatalogV1ApiTestCase(TestCase):
             is_default=False,
             created_by=self.user,
         )
-        duplicate_workspace = Workspace.objects.create(
+        duplicate_workspace = Workspace.objects.create(visibility="public", 
             geodata_engine=duplicate_provider,
             name="mobility",
             description="Duplicate mobility workspace",
@@ -821,6 +821,9 @@ class CatalogV1ApiTestCase(TestCase):
         self.assertEqual(sync_result["stores"]["created"], 1)
         self.assertEqual(sync_result["styles"]["created"], 1)
         self.assertEqual(sync_result["layers"]["created"], 1)
+        # Synced workspaces start private (owner organization only); an admin
+        # makes this one public, so the anonymous catalog lists it.
+        Workspace.objects.filter(geodata_engine=self.provider, name="synced_ws").update(visibility="public")
 
         provider_response = self.client.get(reverse("catalog-v1-provider-list"))
         workspace_response = self.client.get(reverse("catalog-v1-provider-workspace-list", kwargs={"provider_id": self.provider.id}))

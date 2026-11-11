@@ -2,6 +2,7 @@ import mimetypes
 
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.urls import reverse
+from django.utils.cache import patch_vary_headers
 from rest_framework.exceptions import NotAcceptable, NotFound
 from rest_framework.permissions import AllowAny
 from rest_framework.renderers import JSONRenderer
@@ -17,10 +18,41 @@ from tosca_api.apps.geodata_providers.models import SpriteAsset
 from .services.v1.group_v1_builder import LayerGroupV1Builder
 from .services.v1.geoserver_v1_builder import GeoServerV1Builder
 from .services.v1.geoserver_remote_service import GeoServerRemoteService
-from .services.v1.visibility_service import CatalogVisibilityService
+from .services.v1.visibility_service import CatalogViewer, CatalogVisibilityService, workspace_visible_to
 
 
-class ProviderListV1View(APIView):
+class CatalogViewMixin:
+    """Catalog answers depend on who asks (see ``CatalogViewer``).
+
+    * ``Vary: Authorization`` on every answer, so no cache hands one caller's
+      catalog to another;
+    * answers for a signed-in caller who sees more than the public catalog
+      are ``Cache-Control: private, no-store``; immutable assets of private
+      items are cached privately only (see ``_immutable_cache``).
+    """
+
+    @property
+    def viewer(self) -> CatalogViewer:
+        viewer = getattr(self.request, "_catalog_viewer", None)
+        if viewer is None:
+            viewer = CatalogViewer.from_request(self.request)
+            self.request._catalog_viewer = viewer
+        return viewer
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        patch_vary_headers(response, ["Authorization"])
+        if not self.viewer.is_anonymous_view and "immutable" not in response.get("Cache-Control", ""):
+            response["Cache-Control"] = "private, no-store"
+        return response
+
+
+def _immutable_cache(*, public: bool) -> str:
+    """Content-hashed assets: shared caches may keep public ones only."""
+    return f"{'public' if public else 'private'}, max-age=31536000, immutable"
+
+
+class ProviderListV1View(CatalogViewMixin, APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
@@ -36,13 +68,14 @@ class ProviderListV1View(APIView):
         return Response(payload)
 
 
-class WorkspaceListV1View(APIView):
+class WorkspaceListV1View(CatalogViewMixin, APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, provider_id):
         try:
             workspaces = CatalogVisibilityService.list_visible_workspaces(
                 provider_id=provider_id,
+                viewer=self.viewer,
             )
         except Exception as exc:
             raise NotFound("Provider not found.") from exc
@@ -54,12 +87,12 @@ class WorkspaceListV1View(APIView):
         return Response(payload)
 
 
-class GlobalLayerListV1View(APIView):
+class GlobalLayerListV1View(CatalogViewMixin, APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, provider_id):
         try:
-            layers = CatalogVisibilityService.list_visible_layers(provider_id=provider_id)
+            layers = CatalogVisibilityService.list_visible_layers(provider_id=provider_id, viewer=self.viewer)
         except Exception as exc:
             raise NotFound("Provider not found.") from exc
         payload = GeoServerV1Builder.build_layer_list(
@@ -67,7 +100,7 @@ class GlobalLayerListV1View(APIView):
             layers=layers,
             provider_id=provider_id,
         )
-        groups = CatalogVisibilityService.list_visible_groups(provider_id=provider_id)
+        groups = CatalogVisibilityService.list_visible_groups(provider_id=provider_id, viewer=self.viewer)
         if groups:
             payload.update(
                 LayerGroupV1Builder.build_group_list(
@@ -79,7 +112,7 @@ class GlobalLayerListV1View(APIView):
         return Response(payload)
 
 
-class WorkspaceLayerListV1View(APIView):
+class WorkspaceLayerListV1View(CatalogViewMixin, APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, workspace_name: str, provider_id):
@@ -87,6 +120,7 @@ class WorkspaceLayerListV1View(APIView):
             CatalogVisibilityService.get_visible_workspace(
                 workspace_name=workspace_name,
                 provider_id=provider_id,
+                viewer=self.viewer,
             )
         except Exception as exc:
             raise NotFound("Workspace not found.") from exc
@@ -94,6 +128,7 @@ class WorkspaceLayerListV1View(APIView):
         layers = CatalogVisibilityService.list_visible_layers(
             workspace_name=workspace_name,
             provider_id=provider_id,
+                viewer=self.viewer,
         )
         payload = GeoServerV1Builder.build_layer_list(
             request=request,
@@ -103,6 +138,7 @@ class WorkspaceLayerListV1View(APIView):
         groups = CatalogVisibilityService.list_visible_groups(
             workspace_name=workspace_name,
             provider_id=provider_id,
+                viewer=self.viewer,
         )
         if groups:
             payload.update(
@@ -115,7 +151,7 @@ class WorkspaceLayerListV1View(APIView):
         return Response(payload)
 
 
-class LayerGroupDetailV1View(APIView):
+class LayerGroupDetailV1View(CatalogViewMixin, APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, workspace_name: str, group_name: str, provider_id):
@@ -124,6 +160,7 @@ class LayerGroupDetailV1View(APIView):
                 workspace_name=workspace_name,
                 group_name=group_name,
                 provider_id=provider_id,
+                viewer=self.viewer,
             )
         except Exception as exc:
             raise NotFound("Layer group not found.") from exc
@@ -136,7 +173,7 @@ class LayerGroupDetailV1View(APIView):
         )
 
 
-class LayerGroupLegendV1View(APIView):
+class LayerGroupLegendV1View(CatalogViewMixin, APIView):
     """Serve the author-curated legend for one visible layer group."""
 
     permission_classes = [AllowAny]
@@ -147,6 +184,7 @@ class LayerGroupLegendV1View(APIView):
                 workspace_name=workspace_name,
                 group_name=group_name,
                 provider_id=provider_id,
+                viewer=self.viewer,
             )
         except Exception as exc:
             raise NotFound("Layer group not found.") from exc
@@ -159,11 +197,13 @@ class LayerGroupLegendV1View(APIView):
         content_type = mimetypes.guess_type(group.legend_image.name)[0] or "image/png"
         response = FileResponse(group.legend_image.file, content_type=content_type)
         response["ETag"] = f'"{group.legend_content_hash}"'
-        response["Cache-Control"] = "public, max-age=31536000, immutable"
+        response["Cache-Control"] = _immutable_cache(
+            public=group.is_public and group.workspace.visibility == "public"
+        )
         return response
 
 
-class LayerInfoV1View(APIView):
+class LayerInfoV1View(CatalogViewMixin, APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, workspace_name: str, layer_name: str, provider_id):
@@ -172,6 +212,7 @@ class LayerInfoV1View(APIView):
                 workspace_name=workspace_name,
                 layer_name=layer_name,
                 provider_id=provider_id,
+                viewer=self.viewer,
             )
         except Exception as exc:
             raise NotFound("Layer not found.") from exc
@@ -186,7 +227,7 @@ class LayerInfoV1View(APIView):
         return Response(payload)
 
 
-class LayerDetailV1View(APIView):
+class LayerDetailV1View(CatalogViewMixin, APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, workspace_name: str, layer_name: str, provider_id):
@@ -195,6 +236,7 @@ class LayerDetailV1View(APIView):
                 workspace_name=workspace_name,
                 layer_name=layer_name,
                 provider_id=provider_id,
+                viewer=self.viewer,
             )
         except Exception as exc:
             raise NotFound("Layer resource not found.") from exc
@@ -208,7 +250,7 @@ class LayerDetailV1View(APIView):
         return Response(payload)
 
 
-class StyleDetailV1View(APIView):
+class StyleDetailV1View(CatalogViewMixin, APIView):
     permission_classes = [AllowAny]
     renderer_classes = [JSONRenderer]
 
@@ -235,6 +277,7 @@ class StyleDetailV1View(APIView):
             styles = StyleQueryService.list_styles(
                 provider_id=provider_id,
                 valid_only=True,
+                visible=workspace_visible_to(self.viewer),
             )
             return Response(styles)
 
@@ -242,6 +285,7 @@ class StyleDetailV1View(APIView):
             style = StyleQueryService.resolve_style_reference(
                 style_ref=style_ref,
                 provider_id=provider_id,
+                visible=workspace_visible_to(self.viewer),
             )
         except Exception as exc:
             raise NotFound("Style not found.") from exc
@@ -272,7 +316,7 @@ class StyleDetailV1View(APIView):
         )
 
 
-class SpriteAssetV1View(APIView):
+class SpriteAssetV1View(CatalogViewMixin, APIView):
     """Serve one resolution/format derived from a MapLibre sprite URL stem."""
 
     permission_classes = [AllowAny]
@@ -340,7 +384,7 @@ class SpriteAssetV1View(APIView):
         return response
 
 
-class SpriteStemV1View(APIView):
+class SpriteStemV1View(CatalogViewMixin, APIView):
     """Named route used only to build the extensionless MapLibre URL stem."""
 
     permission_classes = [AllowAny]

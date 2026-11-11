@@ -1,7 +1,7 @@
 import json
 import uuid
 
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 
 from ...models import LayerStyleAssignment, Style
 
@@ -10,8 +10,19 @@ class StyleQueryService:
     """Read-only query helpers for provider style catalog reads."""
 
     @classmethod
-    def list_styles(cls, *, provider_id=None, workspace_id=None, valid_only=False, include_inactive: bool = False) -> list[dict]:
+    def list_styles(
+        cls,
+        *,
+        provider_id=None,
+        workspace_id=None,
+        valid_only=False,
+        include_inactive: bool = False,
+        visible: Q | None = None,
+    ) -> list[dict]:
+        """``visible`` restricts to styles the caller may see (catalog)."""
         styles = cls._catalog_queryset(include_inactive=include_inactive) if valid_only else cls._base_queryset(include_inactive=include_inactive)
+        if visible is not None:
+            styles = styles.filter(visible)
         if provider_id is not None:
             styles = styles.filter(geodata_engine_id=provider_id)
         if workspace_id is not None:
@@ -56,9 +67,12 @@ class StyleQueryService:
         style_ref: str,
         provider_id=None,
         include_inactive: bool = False,
+        visible: Q | None = None,
     ) -> Style:
         normalized_ref = (style_ref or "").strip()
         queryset = cls._catalog_queryset(include_inactive=include_inactive)
+        if visible is not None:
+            queryset = queryset.filter(visible)
         if provider_id is not None:
             queryset = queryset.filter(geodata_engine_id=provider_id)
         try:
