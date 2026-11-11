@@ -130,13 +130,64 @@ def public_model_q(prefix: str = "") -> Q:
 
 
 def public_run_q(prefix: str = "") -> Q:
-    """Runs everyone reads: published, ``public``, of a model everyone reads."""
+    """Runs everyone reads: published with ``public`` visibility.
+
+    Independent of the model: an organization can share results publicly
+    while the model itself (and starting runs of it) stays organization-only.
+    """
     return Q(
         **{
             f"{prefix}status": Status.PUBLISHED,
             f"{prefix}visibility": SimulationRun.Visibility.PUBLIC,
         }
-    ) & public_model_q(f"{prefix}model__")
+    )
+
+
+def _organization_run_q(prefix: str, *, org_slug: str | None, exempt: bool) -> Q | None:
+    """Published ``organization`` runs of ``org_slug``'s models (any organization when exempt)."""
+    if not exempt and not org_slug:
+        return None
+    q = Q(**{f"{prefix}status": Status.PUBLISHED, f"{prefix}visibility": SimulationRun.Visibility.ORGANIZATION})
+    if not exempt:
+        q &= Q(**{f"{prefix}model__organization__slug": org_slug})
+    return q
+
+
+def story_run_choices_q(prefix: str = "", *, org_slug: str | None = None, exempt: bool = False) -> Q:
+    """Runs an editor may pick for a story: public ones, plus published
+    organization-only runs of their own organization (those are then only
+    accepted in that organization's private campaigns, see ``usable_in_story``)."""
+    q = public_run_q(prefix)
+    organization = _organization_run_q(prefix, org_slug=org_slug, exempt=exempt)
+    return q | organization if organization is not None else q
+
+
+def usable_in_story(owner, campaign) -> bool:
+    """Whether a run's or comparison's results may be shown in a story of ``campaign``.
+
+    * Published and visible to anyone (a comparison: both runs too) → any story,
+      whatever the model's visibility.
+    * Published and organization-only (both runs at least organization) → only
+      stories of a *private* campaign of the model's organization.
+    * Drafts, archived and "only the user who started it" → no story.
+    """
+    runs = [owner] if isinstance(owner, SimulationRun) else [owner.baseline_run, owner.candidate_run]
+    items = [owner, *runs] if not isinstance(owner, SimulationRun) else runs
+    if any(item.status != Status.PUBLISHED for item in items):
+        return False
+    visibilities = {item.visibility for item in items}
+    Visibility = SimulationRun.Visibility
+    if visibilities == {Visibility.PUBLIC}:
+        return True
+    if owner.visibility != Visibility.ORGANIZATION or not visibilities <= {Visibility.PUBLIC, Visibility.ORGANIZATION}:
+        return False
+    from tosca_api.apps.campaigns.models import Campaign
+
+    return bool(
+        campaign is not None
+        and campaign.visibility == Campaign.Visibility.PRIVATE
+        and campaign.organization_id == owner.model.organization_id
+    )
 
 
 class SimulationModelQuerySet(models.QuerySet):
@@ -201,8 +252,8 @@ class SimulationModel(TimeStampedModel):
         max_length=20,
         choices=Visibility.choices,
         default=Visibility.ORGANIZATION,
-        help_text="Who sees the model once it is published. Its runs can never reach "
-        "a wider audience than the model.",
+        help_text="Who sees the model (and can start runs, see below) once it is published. "
+        "Runs published to anyone are public even when the model is organization-only.",
     )
     run_access = models.CharField(
         "Who can start runs",
@@ -383,8 +434,8 @@ class SimulationRun(TimeStampedModel):
         max_length=20,
         choices=Visibility.choices,
         default=Visibility.ORGANIZATION,
-        help_text="Who reads the run once it is published: anyone (if the model is public too), "
-        "the model's organization, or only the user who started it.",
+        help_text="Who reads the run once it is published: anyone (even if the model is "
+        "organization-only), the model's organization, or only the user who started it.",
     )
     execution_state = models.CharField(
         max_length=20, choices=ExecutionState.choices, default=ExecutionState.IMPORTED
@@ -496,12 +547,11 @@ class SimulationRun(TimeStampedModel):
 
     @property
     def is_public(self) -> bool:
-        """Everyone reads it: published, ``public``, and its model is public."""
-        return (
-            self.status == Status.PUBLISHED
-            and self.visibility == self.Visibility.PUBLIC
-            and self.model.is_public
-        )
+        """Everyone reads it: published with ``public`` visibility (whatever the model's)."""
+        return self.status == Status.PUBLISHED and self.visibility == self.Visibility.PUBLIC
+
+    def usable_in_story(self, campaign) -> bool:
+        return usable_in_story(self, campaign)
 
     def save(self, *args, **kwargs) -> None:
         self.title = sanitize_simple(self.title)
@@ -515,7 +565,7 @@ class SimulationRun(TimeStampedModel):
 
 
 def public_comparison_q(prefix: str = "") -> Q:
-    """Comparisons everyone reads: published, ``public``, model and both runs public."""
+    """Comparisons everyone reads: published, ``public``, both runs public (model: any)."""
     return (
         Q(
             **{
@@ -523,10 +573,23 @@ def public_comparison_q(prefix: str = "") -> Q:
                 f"{prefix}visibility": SimulationRun.Visibility.PUBLIC,
             }
         )
-        & public_model_q(f"{prefix}model__")
         & public_run_q(f"{prefix}baseline_run__")
         & public_run_q(f"{prefix}candidate_run__")
     )
+
+
+def story_comparison_choices_q(prefix: str = "", *, org_slug: str | None = None, exempt: bool = False) -> Q:
+    """Comparisons an editor may pick for a story (see ``story_run_choices_q``)."""
+    q = public_comparison_q(prefix)
+    organization = _organization_run_q(prefix, org_slug=org_slug, exempt=exempt)
+    if organization is None:
+        return q
+    shared = [SimulationRun.Visibility.PUBLIC, SimulationRun.Visibility.ORGANIZATION]
+    for side in ("baseline_run", "candidate_run"):
+        organization &= Q(
+            **{f"{prefix}{side}__status": Status.PUBLISHED, f"{prefix}{side}__visibility__in": shared}
+        )
+    return q | organization
 
 
 class SimulationComparisonQuerySet(models.QuerySet):
@@ -679,10 +742,12 @@ class SimulationComparison(TimeStampedModel):
         return (
             self.status == Status.PUBLISHED
             and self.visibility == SimulationRun.Visibility.PUBLIC
-            and self.model.is_public
             and self.baseline_run.is_public
             and self.candidate_run.is_public
         )
+
+    def usable_in_story(self, campaign) -> bool:
+        return usable_in_story(self, campaign)
 
     def save(self, *args, **kwargs) -> None:
         self.title = sanitize_simple(self.title)

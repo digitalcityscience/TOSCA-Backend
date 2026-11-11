@@ -10,7 +10,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from tosca_api.apps.campaigns.models import Campaign
-from tosca_api.apps.geosimulations.models import SimulationOutput, Status
+from tosca_api.apps.geosimulations.models import SimulationOutput, SimulationRun, Status
 from tosca_api.apps.geosimulations.tests.helpers import asset, org, simulation_model, simulation_run
 from tosca_api.apps.geostories.forms import (
     GeoStoryResultPresentationForm,
@@ -101,7 +101,7 @@ def test_only_published_runs_of_published_models(scene, run):
     run.status = Status.DRAFT
     run.save()
 
-    with pytest.raises(ValidationError, match="Only published runs"):
+    with pytest.raises(ValidationError, match="published simulation results only"):
         _simulation(scene, run)
 
 
@@ -367,8 +367,12 @@ def test_scenes_without_a_public_simulation_report_none(story, scene, run):
     assert _scene_payload(story)["simulation"] is None
 
     _simulation(scene, run)
+    # The model going draft does not matter: the run's results are public.
     run.model.status = Status.DRAFT
     run.model.save()
+    assert _scene_payload(story)["simulation"] is not None
+
+    SimulationRun.objects.filter(pk=run.pk).update(visibility=SimulationRun.Visibility.ORGANIZATION)
 
     assert _scene_payload(story)["simulation"] is None
 

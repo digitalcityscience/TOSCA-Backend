@@ -12,10 +12,15 @@ from django.urls import path, reverse
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 
-from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin
+from tosca_api.apps.organizations.permissions import OrgScopedAdminMixin, get_request_org_context
 from tosca_api.apps.geocontext.widgets import EditorJsWidget
 from tosca_api.apps.core.editorjs import render_content_media_urls
-from tosca_api.apps.geosimulations.models import SimulationOutput, public_comparison_q, public_run_q
+from tosca_api.apps.geosimulations.models import (
+    SimulationOutput,
+    story_comparison_choices_q,
+    story_run_choices_q,
+)
+
 
 from .forms import (
     GeoStoryResultPresentationForm,
@@ -31,6 +36,12 @@ from .models import (
     GeoStorySceneSimulation,
 )
 from .scene_editor import basemap_style, preview_view
+
+
+def _editor_scope(request) -> dict:
+    """The editor's organization for the story result pickers."""
+    _roles, org_slug, exempt = get_request_org_context(request)
+    return {"org_slug": org_slug, "exempt": exempt or request.user.is_superuser}
 
 
 class GeoStoryAdminForm(forms.ModelForm):
@@ -343,7 +354,7 @@ class GeoStoryResultPresentationAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         if db_field.name == "output":
-            kwargs["queryset"] = self._output_queryset()
+            kwargs["queryset"] = self._output_queryset(request)
         field = super().formfield_for_foreignkey(db_field, request, **kwargs)
         if db_field.name == "output":
             field.widget.attrs.update(
@@ -357,10 +368,11 @@ class GeoStoryResultPresentationAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         return field
 
     @staticmethod
-    def _output_queryset():
+    def _output_queryset(request):
+        scope = _editor_scope(request)
         return (
             SimulationOutput.objects.filter(kind=SimulationOutput.Kind.TABLE)
-            .filter(public_run_q("run__") | public_comparison_q("comparison__"))
+            .filter(story_run_choices_q("run__", **scope) | story_comparison_choices_q("comparison__", **scope))
             .select_related("run__model", "comparison__model")
             .order_by("run__title", "comparison__title", "display_order", "title")
         )
@@ -375,7 +387,7 @@ class GeoStoryResultPresentationAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         ] + super().get_urls()
 
     def output_schema_view(self, request):
-        output = get_object_or_404(self._output_queryset(), pk=request.GET.get("output"))
+        output = get_object_or_404(self._output_queryset(request), pk=request.GET.get("output"))
         from tosca_api.apps.geosimulations.output_contracts import normalize_dataset
 
         dataset = normalize_dataset(output.data, metadata=output.metadata)
@@ -436,6 +448,15 @@ class GeoStorySceneSimulationInline(admin.StackedInline):
     extra = 0
     max_num = 1
     verbose_name = "Simulation"
+
+    def get_formset(self, request, obj=None, **kwargs):
+        scope = _editor_scope(request)
+        kwargs["form"] = type(
+            "ScopedGeoStorySceneSimulationForm",
+            (self.form,),
+            {"editor_org_slug": scope["org_slug"], "editor_exempt": scope["exempt"]},
+        )
+        return super().get_formset(request, obj, **kwargs)
     verbose_name_plural = "Simulation (shown in the story, not in the preview above)"
 
 
@@ -519,7 +540,7 @@ class GeoStorySceneAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
         if run_id:
             outputs = (
                 SimulationOutput.objects.filter(
-                    public_run_q("run__"),
+                    story_run_choices_q("run__", **_editor_scope(request)),
                     run_id=run_id,
                     kind=SimulationOutput.Kind.VECTOR_LAYER,
                 )

@@ -8,7 +8,7 @@ import pytest
 from django.core.files.storage import storages
 from rest_framework.test import APIClient
 
-from tosca_api.apps.geosimulations.models import SimulationOutput, Status
+from tosca_api.apps.geosimulations.models import SimulationOutput, SimulationRun, Status
 
 from .helpers import asset, org, simulation_model, simulation_run
 
@@ -42,7 +42,10 @@ def catalog():
         "dcs_draft_run": simulation_run(dcs_public, key="draft"),
         "qg2_public_run": simulation_run(qg2_public, key="published", status=Status.PUBLISHED),
         "qg2_draft_run": simulation_run(qg2_public, key="draft"),
-        "qg2_hidden_model_run": simulation_run(qg2_draft, key="published", status=Status.PUBLISHED),
+        # Organization-only results of a draft model (public results would be public).
+        "qg2_hidden_model_run": simulation_run(
+            qg2_draft, key="published", status=Status.PUBLISHED, visibility=SimulationRun.Visibility.ORGANIZATION
+        ),
     }
 
 
