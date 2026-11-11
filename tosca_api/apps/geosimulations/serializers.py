@@ -27,10 +27,22 @@ def _time(run: SimulationRun) -> dict:
 
 
 class _ModelRefSerializer(serializers.ModelSerializer):
+    readable = serializers.SerializerMethodField()
+
     class Meta:
         model = SimulationModel
-        fields = ["id", "key", "title"]
+        fields = ["id", "key", "title", "readable"]
         read_only_fields = fields
+
+    def get_readable(self, model: SimulationModel) -> bool:
+        """The caller may open the model: a public run of an organization-only
+        model is readable while its model (and starting runs) is not."""
+        request = self.context.get("request")
+        if request is None:
+            return model.is_public
+        from .views import _reader_scope
+
+        return SimulationModel.objects.readable_by(**_reader_scope(request)).filter(pk=model.pk).exists()
 
 
 class SimulationRunSummarySerializer(serializers.ModelSerializer):

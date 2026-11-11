@@ -93,8 +93,8 @@ def import_package(
     the package must be a run of that run's model with that run's key.
     ``into_comparison`` does the same for a comparison users started.
     ``visibility`` (``public`` / ``organization`` / ``private``) is who reads the
-    new run or comparison once published (default ``organization``); a model
-    the import creates gets ``public`` visibility only when the run is public. Raises
+    new run or comparison once published (default ``organization``), independent
+    of the model's; a model the import creates is organization-only. Raises
     ``packages.PackageValidationError`` for invalid packages and
     ``PackageImportError`` when a valid package cannot be imported.
     """
@@ -173,15 +173,6 @@ class _PackageImporter:
                     if model.status != Status.PUBLISHED:
                         model.status = Status.PUBLISHED
                         model.save()
-                if (
-                    self.visibility == SimulationRun.Visibility.PUBLIC
-                    and model.visibility != SimulationModel.Visibility.PUBLIC
-                ):
-                    self.warnings.append(
-                        f"The run is visible to anyone, but the model {model.title!r} only to its "
-                        "organization, so only the organization sees the run. Make the model "
-                        "visible to anyone to show it to everyone."
-                    )
                 run.save()
         except Exception:
             self._discard_uploads()
@@ -350,11 +341,9 @@ class _PackageImporter:
                 key=info["key"],
                 title=info["title"],
                 organization=self.organization,
-                visibility=(
-                    SimulationModel.Visibility.PUBLIC
-                    if self.visibility == SimulationRun.Visibility.PUBLIC
-                    else SimulationModel.Visibility.ORGANIZATION
-                ),
+                # Sharing results never exposes the model (or starting runs of it);
+                # staff make the model public on purpose.
+                visibility=SimulationModel.Visibility.ORGANIZATION,
                 created_by=self.user,
             )
             return model, True

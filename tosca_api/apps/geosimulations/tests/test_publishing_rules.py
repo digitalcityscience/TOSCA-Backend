@@ -87,19 +87,24 @@ def test_link_runs_open_by_id_but_are_never_listed(readers):
     assert "anonymous" not in _listed(client)
 
 
-def test_organization_models_hide_themselves_and_their_public_runs(readers):
+def test_public_results_of_an_organization_model_are_public(readers):
+    """Share results without the model: the model (and running it) stays organization-only."""
     model = simulation_model(org("dcs"), status=Status.PUBLISHED, visibility=SimulationModel.Visibility.ORGANIZATION)
     run = simulation_run(model, key="public-run", status=Status.PUBLISHED, visibility=Visibility.PUBLIC)
+    simulation_run(model, key="org-run", status=Status.PUBLISHED, visibility=Visibility.ORGANIZATION)
 
     for name in ("anonymous", "outsider"):
         client = readers[name][0]
         assert client.get(f"{MODELS}{model.pk}/").status_code == 404
-        assert client.get(f"{RUNS}{run.pk}/").status_code == 404
-        assert _listed(client) == set()
+        assert client.post(f"{MODELS}{model.pk}/runs/", {}, format="json").status_code in (401, 404)
+        detail = client.get(f"{RUNS}{run.pk}/")
+        assert detail.status_code == 200 and detail.data["model"]["readable"] is False
+        assert _listed(client) == {"public-run"}
     member = readers["member"][0]
     assert member.get(f"{MODELS}{model.pk}/").status_code == 200
-    assert _listed(member) == {"public-run"}
-    assert not run.is_public
+    assert member.get(f"{RUNS}{run.pk}/").data["model"]["readable"] is True
+    assert _listed(member) == {"public-run", "org-run"}
+    assert run.is_public
 
 
 def test_draft_models_are_seen_only_by_their_organization(readers):
@@ -216,20 +221,93 @@ def test_public_comparisons_need_public_runs():
         )
 
 
-def test_stories_only_embed_runs_everyone_reads(django_user_model):
+def _scene(django_user_model, *, organization, visibility, name):
     from tosca_api.apps.campaigns.models import Campaign
-    from tosca_api.apps.geostories.models import GeoStory, GeoStoryScene, GeoStorySceneSimulation
+    from tosca_api.apps.geostories.models import GeoStory, GeoStoryScene
 
-    model = simulation_model(org("dcs"), status=Status.PUBLISHED)
-    run = simulation_run(model, status=Status.PUBLISHED, visibility=Visibility.ORGANIZATION)
-    author = django_user_model.objects.create_user(username="author")
-    story = GeoStory.objects.create(
-        title="Story", campaign=Campaign.objects.create(title="C", created_by=author), author=author
+    author = django_user_model.objects.filter(username="author").first() or django_user_model.objects.create_user(
+        username="author"
     )
-    scene = GeoStoryScene.objects.create(geostory=story, title="Scene")
+    campaign = Campaign.objects.create(
+        title=name, created_by=author, organization=organization, visibility=visibility
+    )
+    story = GeoStory.objects.create(title=name, campaign=campaign, author=author)
+    return GeoStoryScene.objects.create(geostory=story, title="Scene")
 
-    with pytest.raises(ValidationError, match="visible to anyone"):
-        GeoStorySceneSimulation.objects.create(scene=scene, run=run)
+
+@pytest.mark.parametrize(
+    ("status", "visibility", "allowed"),
+    [
+        # (published?, visibility) -> {public dcs story, private dcs story, private qg2 story}
+        (Status.PUBLISHED, Visibility.PUBLIC, {"public": True, "private": True, "other_private": True}),
+        (Status.PUBLISHED, Visibility.ORGANIZATION, {"public": False, "private": True, "other_private": False}),
+        (Status.PUBLISHED, Visibility.PRIVATE, {"public": False, "private": False, "other_private": False}),
+        (Status.DRAFT, Visibility.PUBLIC, {"public": False, "private": False, "other_private": False}),
+        (Status.DRAFT, Visibility.ORGANIZATION, {"public": False, "private": False, "other_private": False}),
+    ],
+)
+def test_stories_follow_the_results_audience(django_user_model, status, visibility, allowed):
+    from tosca_api.apps.campaigns.models import Campaign
+    from tosca_api.apps.geostories.models import GeoStorySceneSimulation
+
+    dcs, qg2 = org("dcs"), org("qg2")
+    # The model is organization-only: public results are shareable anyway.
+    model = simulation_model(dcs, status=Status.PUBLISHED, visibility=SimulationModel.Visibility.ORGANIZATION)
+    run = simulation_run(model, status=status, visibility=visibility)
+    scenes = {
+        "public": _scene(django_user_model, organization=dcs, visibility=Campaign.Visibility.PUBLIC, name="public"),
+        "private": _scene(django_user_model, organization=dcs, visibility=Campaign.Visibility.PRIVATE, name="private"),
+        "other_private": _scene(
+            django_user_model, organization=qg2, visibility=Campaign.Visibility.PRIVATE, name="other"
+        ),
+    }
+
+    result = {}
+    for name, scene in scenes.items():
+        try:
+            GeoStorySceneSimulation.objects.create(scene=scene, run=run, show_replay=False)
+            result[name] = True
+        except ValidationError as exc:
+            assert "private campaign of the same organization" in str(exc)
+            result[name] = False
+
+    assert result == allowed
+
+
+def test_organization_results_drop_out_when_the_campaign_goes_public(django_user_model):
+    from tosca_api.apps.campaigns.models import Campaign
+    from tosca_api.apps.geostories.models import GeoStorySceneSimulation
+
+    dcs = org("dcs")
+    model = simulation_model(dcs, status=Status.PUBLISHED)
+    run = simulation_run(model, status=Status.PUBLISHED, visibility=Visibility.ORGANIZATION)
+    scene = _scene(django_user_model, organization=dcs, visibility=Campaign.Visibility.PRIVATE, name="private")
+    simulation = GeoStorySceneSimulation.objects.create(scene=scene, run=run, show_replay=False)
+    assert simulation.is_shown_in_story
+
+    Campaign.objects.filter(pk=scene.geostory.campaign_id).update(visibility=Campaign.Visibility.PUBLIC)
+    simulation = GeoStorySceneSimulation.objects.select_related("scene__geostory__campaign").get(pk=simulation.pk)
+
+    assert not simulation.is_shown_in_story
+
+
+def test_story_run_picker_offers_own_organization_results_only():
+    from tosca_api.apps.geosimulations.models import story_run_choices_q
+
+    dcs_model = simulation_model(org("dcs"), status=Status.PUBLISHED)
+    qg2_model = simulation_model(org("qg2"), key="qg2-model", status=Status.PUBLISHED)
+    simulation_run(dcs_model, key="dcs-public", status=Status.PUBLISHED)
+    simulation_run(dcs_model, key="dcs-org", status=Status.PUBLISHED, visibility=Visibility.ORGANIZATION)
+    simulation_run(dcs_model, key="dcs-private", status=Status.PUBLISHED, visibility=Visibility.PRIVATE)
+    simulation_run(qg2_model, key="qg2-org", status=Status.PUBLISHED, visibility=Visibility.ORGANIZATION)
+
+    def keys(**scope):
+        return set(SimulationRun.objects.filter(story_run_choices_q(**scope)).values_list("key", flat=True))
+
+    assert keys() == {"dcs-public"}
+    assert keys(org_slug="dcs") == {"dcs-public", "dcs-org"}
+    assert keys(org_slug="qg2") == {"dcs-public", "qg2-org"}
+    assert keys(exempt=True) == {"dcs-public", "dcs-org", "qg2-org"}
 
 
 def test_migration_keeps_published_items_public():

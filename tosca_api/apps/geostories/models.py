@@ -320,6 +320,13 @@ class GeoStory(TimeStampedModel):
         return self.StorageAlias.DEFAULT
 
 
+STORY_RESULTS_RULE = (
+    "Stories show published simulation results only: results visible to anyone fit every "
+    "story; organization-only results only stories of a private campaign of the same "
+    "organization. Results only their creator may read never fit."
+)
+
+
 class GeoStoryResultPresentation(TimeStampedModel):
     """A validated view of one structured simulation output embedded in a story."""
 
@@ -370,11 +377,13 @@ class GeoStoryResultPresentation(TimeStampedModel):
         return {**(self.configuration or {}), "type": self.view_type, "version": 1}
 
     @property
-    def is_publicly_visible(self) -> bool:
-        if not self.output_id:
+    def is_shown_in_story(self) -> bool:
+        """The output's run/comparison may appear in this story (see
+        ``geosimulations.models.usable_in_story``); checked again on every read."""
+        if not self.output_id or not self.story_id:
             return False
         owner = self.output.owner
-        return bool(owner and owner.is_public)
+        return bool(owner and owner.usable_in_story(self.story.campaign))
 
     def clean(self) -> None:
         super().clean()
@@ -397,10 +406,8 @@ class GeoStoryResultPresentation(TimeStampedModel):
             configuration_valid = False
         if self.output.kind != SimulationOutput.Kind.TABLE:
             errors["output"] = "Story result presentations require a structured table output."
-        elif not self.is_publicly_visible:
-            errors["output"] = (
-                "Only outputs of published simulations visible to anyone can be shown in a story."
-            )
+        elif not self.is_shown_in_story:
+            errors["output"] = STORY_RESULTS_RULE
         elif configuration_valid:
             try:
                 dataset = normalize_dataset(self.output.data, metadata=self.output.metadata)
@@ -901,8 +908,9 @@ class GeoStorySceneSimulation(TimeStampedModel):
         return f"{self.scene} - {self.run}"
 
     @property
-    def is_publicly_visible(self) -> bool:
-        return self.run.is_public
+    def is_shown_in_story(self) -> bool:
+        """See ``GeoStoryResultPresentation.is_shown_in_story``."""
+        return self.run.usable_in_story(self.scene.geostory.campaign)
 
     def clean(self) -> None:
         super().clean()
@@ -922,10 +930,8 @@ class GeoStorySceneSimulation(TimeStampedModel):
             return
         from tosca_api.apps.geosimulations.models import SimulationOutput
 
-        if not self.is_publicly_visible:
-            errors["run"] = (
-                "Only published runs visible to anyone (of a model visible to anyone) can be shown in a story."
-            )
+        if not self.is_shown_in_story:
+            errors["run"] = STORY_RESULTS_RULE
         duration = self.run.duration_seconds
         start = self.replay_start_s or 0.0
         end = self.replay_end_s if self.replay_end_s is not None else duration

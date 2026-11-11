@@ -28,10 +28,15 @@ def catalog():
         "runs": {
             "dcs-public/published": simulation_run(dcs_public, key="published", status=Status.PUBLISHED),
             "dcs-public/draft": simulation_run(dcs_public, key="draft"),
-            "dcs-draft/published": simulation_run(dcs_draft, key="published", status=Status.PUBLISHED),
+            # Organization-only results of draft models (public results would be public).
+            "dcs-draft/published": simulation_run(
+                dcs_draft, key="published", status=Status.PUBLISHED, visibility=SimulationRun.Visibility.ORGANIZATION
+            ),
             "qg2-public/published": simulation_run(qg2_public, key="published", status=Status.PUBLISHED),
             "qg2-public/archived": simulation_run(qg2_public, key="archived", status=Status.ARCHIVED),
-            "qg2-draft/published": simulation_run(qg2_draft, key="published", status=Status.PUBLISHED),
+            "qg2-draft/published": simulation_run(
+                qg2_draft, key="published", status=Status.PUBLISHED, visibility=SimulationRun.Visibility.ORGANIZATION
+            ),
         },
     }
 
@@ -46,7 +51,7 @@ def _run_keys(queryset):
 
 def test_anonymous_readers_see_only_published_models_and_runs(catalog):
     assert _model_keys(SimulationModel.objects.public()) == {"dcs-public", "qg2-public"}
-    # A published run under a draft model stays hidden.
+    # Organization-only results stay hidden from anonymous readers.
     assert _run_keys(SimulationRun.objects.public()) == {
         "dcs-public/published",
         "qg2-public/published",

@@ -171,7 +171,7 @@ class GeoStorySceneSerializer(serializers.ModelSerializer):
             simulation = obj.simulation
         except ObjectDoesNotExist:
             return None
-        if not simulation.is_publicly_visible:
+        if not simulation.is_shown_in_story:
             return None
         from tosca_api.apps.geosimulations.models import SimulationOutput
         from tosca_api.apps.geosimulations.serializers import SimulationOutputSerializer
@@ -328,10 +328,11 @@ class GeoStoryDetailSerializer(serializers.ModelSerializer):
             str(item.pk): item
             for item in obj.result_presentations.select_related(
                 "output__asset",
+                "story__campaign",
                 "output__run__model",
                 "output__comparison__model",
             )
-            if item.is_publicly_visible
+            if item.is_shown_in_story
         }
         context = {"request": self.context.get("request"), "now": timezone.now()}
         for block in content.get("blocks", []):
