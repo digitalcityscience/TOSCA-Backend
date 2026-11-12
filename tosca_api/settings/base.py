@@ -70,6 +70,16 @@ GEOSIMULATIONS_WORKER = {
     "max_dispatch_attempts": 3,
 }
 
+# Basemap of the GeoStory scene editor (Django admin): the same in-house basemap
+# service as the frontend (VITE_INHOUSE_MAP_BASE_URL / VITE_INHOUSE_MAP_API_KEY,
+# style styles/osm-bright.json). The key is a browser key: it ends up in the
+# admin page. The service only answers allowed browser origins, so the admin's
+# origin (e.g. http://localhost:8000) must be on its allow list. Without a base
+# URL the editor falls back to OpenStreetMap raster tiles.
+BASEMAP_BASE_URL = env("BASEMAP_BASE_URL", default="")
+BASEMAP_API_KEY = env("BASEMAP_API_KEY", default="")
+BASEMAP_STYLE_PATH = env("BASEMAP_STYLE_PATH", default="styles/osm-bright.json")
+
 # Runs users start: how many may be active (queued or running) at once and how many
 # may start per 24 hours, per user and per organization. Platform-exempt users
 # (staff with platform access) are not limited.

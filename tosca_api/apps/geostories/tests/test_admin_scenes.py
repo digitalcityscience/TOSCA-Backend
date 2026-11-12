@@ -243,7 +243,8 @@ def test_scene_editor_page_ships_map_and_config(client, story):
     assert "geostories/vendor/maplibre-gl/maplibre-gl.css" in content
     assert 'id="scene-editor-config"' in content
     assert response.context["scene_editor_config"]["previewUrl"] == PREVIEW_URL
-    assert response.context["scene_editor_config"]["basemap"]["version"] == 8
+    basemap = response.context["scene_editor_config"]["basemap"]
+    assert isinstance(basemap, (dict, str)) and basemap
 
 
 @pytest.mark.django_db
@@ -253,6 +254,29 @@ def test_scene_editor_basemap_is_configurable(client, story, settings):
     response = client.get(f"{ADD_URL}?geostory={story.pk}")
 
     assert response.context["scene_editor_config"]["basemap"] == "https://tiles.example.com/style.json"
+
+
+@pytest.mark.django_db
+def test_scene_editor_uses_the_basemap_service(client, story, settings):
+    settings.BASEMAP_BASE_URL = "https://basemap.example.com/"
+    settings.BASEMAP_API_KEY = "browser key"
+    settings.BASEMAP_STYLE_PATH = "styles/osm-bright.json"
+
+    response = client.get(f"{ADD_URL}?geostory={story.pk}")
+
+    assert (
+        response.context["scene_editor_config"]["basemap"]
+        == "https://basemap.example.com/styles/osm-bright.json?key=browser+key"
+    )
+
+
+@pytest.mark.django_db
+def test_scene_editor_falls_back_to_openstreetmap(client, story, settings):
+    settings.BASEMAP_BASE_URL = ""
+
+    response = client.get(f"{ADD_URL}?geostory={story.pk}")
+
+    assert response.context["scene_editor_config"]["basemap"]["sources"]["osm"]["type"] == "raster"
 
 
 @pytest.mark.django_db

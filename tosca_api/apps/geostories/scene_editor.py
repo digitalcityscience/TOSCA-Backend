@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -16,8 +17,8 @@ from .scene_manifest import build_legend_for, build_map, build_render_layers_for
 
 MAX_PREVIEW_LAYERS = 50
 
-# OpenStreetMap raster tiles are fine for low-volume admin previews; deployments
-# can point GEOSTORY_SCENE_EDITOR_BASEMAP at their own MapLibre style instead.
+# Fallback when no basemap service is configured (BASEMAP_BASE_URL): OpenStreetMap
+# raster tiles are fine for low-volume admin previews.
 DEFAULT_BASEMAP = {
     "version": 8,
     "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
@@ -43,8 +44,26 @@ PREVIEW_FIELDS = (
 )
 
 
-def basemap_style():
-    return getattr(settings, "GEOSTORY_SCENE_EDITOR_BASEMAP", DEFAULT_BASEMAP)
+def basemap_style() -> dict | str:
+    """The scene editor's MapLibre style: a style document or a style URL.
+
+    ``GEOSTORY_SCENE_EDITOR_BASEMAP`` (a style document or URL) wins; otherwise
+    the in-house basemap service (``BASEMAP_BASE_URL`` + ``BASEMAP_STYLE_PATH``,
+    with ``BASEMAP_API_KEY`` as ``key``), the same style the frontend uses;
+    otherwise OpenStreetMap raster tiles.
+    """
+    explicit = getattr(settings, "GEOSTORY_SCENE_EDITOR_BASEMAP", None)
+    if explicit:
+        return explicit
+    base_url = (getattr(settings, "BASEMAP_BASE_URL", "") or "").strip().rstrip("/")
+    if not base_url:
+        return DEFAULT_BASEMAP
+    path = (getattr(settings, "BASEMAP_STYLE_PATH", "") or "styles/osm-bright.json").lstrip("/")
+    url = f"{base_url}/{path}"
+    key = (getattr(settings, "BASEMAP_API_KEY", "") or "").strip()
+    if key:
+        url += ("&" if "?" in url else "?") + urlencode({"key": key})
+    return url
 
 
 def _uuid(value) -> uuid.UUID | None:
