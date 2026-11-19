@@ -12,8 +12,17 @@ def keep_published_items_public(apps, schema_editor):
     SimulationComparison = apps.get_model("geosimulations", "SimulationComparison")
     SimulationModel.objects.filter(status="published").update(visibility="public")
     SimulationModel.objects.update(run_access="anyone")
-    for model in (SimulationRun, SimulationComparison):
-        model.objects.filter(status="published").exclude(visibility="link").update(visibility="public")
+    # Only what anonymous readers saw before: a published run also needed a
+    # published model; a comparison its model and both runs published too.
+    SimulationRun.objects.filter(status="published", model__status="published").exclude(
+        visibility="link"
+    ).update(visibility="public")
+    SimulationComparison.objects.filter(
+        status="published",
+        model__status="published",
+        baseline_run__status="published",
+        candidate_run__status="published",
+    ).exclude(visibility="link").update(visibility="public")
 
 
 class Migration(migrations.Migration):
@@ -31,7 +40,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='simulationmodel',
             name='visibility',
-            field=models.CharField(choices=[('public', 'Anyone'), ('organization', 'Organization members')], default='organization', help_text='Who sees the model once it is published. Its runs can never reach a wider audience than the model.', max_length=20),
+            field=models.CharField(choices=[('public', 'Anyone'), ('organization', 'Organization members')], default='organization', help_text='Who sees the model (and can start runs, see below) once it is published. Runs published to anyone are public even when the model is organization-only.', max_length=20),
         ),
         migrations.AlterField(
             model_name='simulationcomparison',
@@ -56,7 +65,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='simulationrun',
             name='visibility',
-            field=models.CharField(choices=[('public', 'Anyone'), ('organization', 'Organization members'), ('private', 'Only the user who started it'), ('link', 'Anyone with the link (anonymous runs, not listed)')], default='organization', help_text="Who reads the run once it is published: anyone (if the model is public too), the model's organization, or only the user who started it.", max_length=20),
+            field=models.CharField(choices=[('public', 'Anyone'), ('organization', 'Organization members'), ('private', 'Only the user who started it'), ('link', 'Anyone with the link (anonymous runs, not listed)')], default='organization', help_text="Who reads the run once it is published: anyone (even if the model is organization-only), the model's organization, or only the user who started it.", max_length=20),
         ),
         migrations.RunPython(keep_published_items_public, migrations.RunPython.noop),
     ]

@@ -14,7 +14,7 @@ pytestmark = pytest.mark.django_db
 
 
 def claims(sub="sub-1", username="alice", **extra):
-    return {"sub": sub, "preferred_username": username, "iss": "https://kc.test/realms/ngcn-prod", **extra}
+    return {"sub": sub, "preferred_username": username, "iss": "https://kc.test/realms/example-realm", **extra}
 
 
 def test_first_token_creates_a_user_without_password_and_links_it():
@@ -40,13 +40,25 @@ def test_a_local_password_account_is_never_taken_over():
 def test_same_username_from_another_realm_is_not_merged():
     user_for_token_claims(claims(sub="tosca-dev-kose", username="kose"))
     with pytest.raises(AuthenticationFailed):
-        user_for_token_claims(claims(sub="ngcn-prod-kose", username="kose"))
+        user_for_token_claims(claims(sub="example-realm-kose", username="kose"))
 
 
 def test_existing_keycloak_user_without_link_is_linked_once():
     legacy = User.objects.create(username="bob")  # created by the old bearer code: empty password
     assert user_for_token_claims(claims(sub="bob-sub", username="bob")) == legacy
     assert SocialAccount.objects.filter(user=legacy, uid="bob-sub").exists()
+
+
+def test_parallel_first_requests_share_one_user(monkeypatch):
+    from tosca_api.apps.authentication import identity
+
+    winner = user_for_token_claims(claims())
+    real_lookup = identity._linked_account
+    lookups = iter([None])  # this request looked before the parallel one committed
+    monkeypatch.setattr(identity, "_linked_account", lambda sub: next(lookups, None) or real_lookup(sub))
+
+    assert user_for_token_claims(claims()) == winner
+    assert SocialAccount.objects.filter(uid="sub-1").count() == 1
 
 
 def test_failed_authentication_answers_401():

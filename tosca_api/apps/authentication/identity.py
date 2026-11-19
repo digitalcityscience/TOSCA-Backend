@@ -1,8 +1,8 @@
 """Which Django user a Keycloak identity is.
 
 A Keycloak user is identified by ``sub`` (stable, unique per realm), never by
-``preferred_username`` or email: usernames repeat across realms (the app moved
-from ``tosca-dev`` to ``ngcn-prod``) and users can change both in Keycloak.
+``preferred_username`` or email: usernames repeat across realms (for example
+when the app moves to a new realm) and users can change both in Keycloak.
 The link is the allauth ``SocialAccount`` row (provider ``keycloak``,
 ``uid`` = ``sub``) that the browser/admin login already creates.
 
@@ -19,6 +19,7 @@ import logging
 
 from allauth.socialaccount.models import SocialAccount
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError, transaction
 from rest_framework.exceptions import AuthenticationFailed
 
 logger = logging.getLogger(__name__)
@@ -50,11 +51,7 @@ def user_for_token_claims(claims: dict):
     if not sub:
         raise AuthenticationFailed("Invalid or expired token.")
 
-    account = (
-        SocialAccount.objects.select_related("user")
-        .filter(provider=KEYCLOAK_PROVIDER, uid=sub)
-        .first()
-    )
+    account = _linked_account(sub)
     if account is not None:
         return account.user
 
@@ -62,6 +59,24 @@ def user_for_token_claims(claims: dict):
         logger.warning("Keycloak token without preferred_username", extra={"sub": sub})
         raise AuthenticationFailed("Invalid or expired token.")
 
+    try:
+        # User and link appear together, so a parallel request sees both or neither.
+        with transaction.atomic():
+            return _link_new_identity(claims, sub, username)
+    except IntegrityError:
+        # The app's first requests after login arrive in parallel: another one
+        # created the user/link meanwhile. Use theirs.
+        account = _linked_account(sub)
+        if account is None:
+            raise
+        return account.user
+
+
+def _linked_account(sub: str):
+    return SocialAccount.objects.select_related("user").filter(provider=KEYCLOAK_PROVIDER, uid=sub).first()
+
+
+def _link_new_identity(claims: dict, sub: str, username: str):
     user = User.objects.filter(username=username).first()
     if user is None:
         user = User(
