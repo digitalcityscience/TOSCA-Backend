@@ -355,13 +355,13 @@ class SimulationModel(TimeStampedModel):
 
 class SimulationRunQuerySet(models.QuerySet):
     def public(self):
-        """Runs everyone reads: published, ``public`` visibility, model public too."""
+        """Runs everyone reads: published, ``public`` visibility (whatever the model's)."""
         return self.filter(public_run_q())
 
     def readable_by(self, *, org_slug: str | None, exempt: bool = False, user=None):
         """Runs the caller may find in lists and open.
 
-        * ``public`` runs: everyone once published (and the model is public).
+        * ``public`` runs: everyone once published (even if the model is organization-only).
         * ``organization`` runs: members of the model's organization once published.
         * Drafts and archived runs (``public``/``organization``): members of the
           model's organization.
@@ -594,7 +594,7 @@ def story_comparison_choices_q(prefix: str = "", *, org_slug: str | None = None,
 
 class SimulationComparisonQuerySet(models.QuerySet):
     def public(self):
-        """Comparisons everyone reads: it, its model and both runs public."""
+        """Comparisons everyone reads: it and both runs public (whatever the model's)."""
         return self.filter(public_comparison_q())
 
     def readable_by(self, *, org_slug: str | None, exempt: bool = False, user=None):

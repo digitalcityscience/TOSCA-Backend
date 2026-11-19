@@ -4,7 +4,7 @@ Reads are open. Status says whether an item is published; visibility says
 who reads it once it is:
 
 * Models: ``public`` (anyone) or ``organization`` (members of its organization).
-* Runs and comparisons: ``public`` (anyone, if the model is public too),
+* Runs and comparisons: ``public`` (anyone, even if the model is organization-only),
   ``organization`` (the model's organization) or ``private`` (only the user who
   started it); anonymous ``link`` runs are opened by id, never listed.
 * Drafts and archived items: the model's organization (and a run's creator).
