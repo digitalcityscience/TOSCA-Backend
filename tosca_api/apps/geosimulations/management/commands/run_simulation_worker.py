@@ -7,6 +7,7 @@ database-queue worker; a Celery + Redis worker is planned to replace the loop,
 keeping the job functions in ``geosimulations.jobs``.
 """
 
+import logging
 import signal
 import time
 
@@ -15,6 +16,8 @@ from django.core.management.base import BaseCommand
 from django.db import close_old_connections, connection
 
 from tosca_api.apps.geosimulations import jobs, retention
+
+logger = logging.getLogger(__name__)
 
 PURGE_EVERY_SECONDS = 3600
 
@@ -54,9 +57,13 @@ class Command(BaseCommand):
             job = jobs.claim_next_job(worker_id)
             if job is not None:
                 self.stdout.write(f"{job.pk}: {job.state} ({job.owner.key})")
-                jobs.process_job(job)
-                job.refresh_from_db()
-                self.stdout.write(f"{job.pk}: → {job.state}")
+                try:
+                    jobs.process_job(job)
+                    job.refresh_from_db()
+                    self.stdout.write(f"{job.pk}: → {job.state}")
+                except Exception:
+                    # Never let one job kill the worker process.
+                    logger.exception("Simulation job %s failed unexpectedly.", job.pk)
                 continue
             if options["once"]:
                 break

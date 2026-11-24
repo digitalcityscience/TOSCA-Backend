@@ -18,12 +18,13 @@ Runs from the admin (background thread, like "Load catalog") or from
 from __future__ import annotations
 
 import logging
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
 from django.db import close_old_connections, connection, transaction
 from django.utils import timezone
+
+from tosca_api.apps.core.task_backend import run_in_background
 
 from . import harvest, remote
 from .models import CategoryItem, ExternalService
@@ -135,7 +136,10 @@ def start_in_background(item_ids) -> int:
 
 
 def _spawn(item_ids) -> None:
-    threading.Thread(target=_background, args=(item_ids,), name="external-catalog-check", daemon=True).start()
+    run_in_background(
+        _background, "tosca_api.apps.external_catalog.tasks.check_items", item_ids,
+        name="external-catalog-check",
+    )
 
 
 def _background(item_ids) -> None:

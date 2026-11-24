@@ -484,7 +484,10 @@ class SimulationRunnerAdminForm(forms.ModelForm):
 
     class Meta:
         model = SimulationRunner
-        fields = ["organization", "name", "base_url", "is_active", "max_concurrent_jobs", "timeout_minutes"]
+        fields = [
+            "organization", "name", "base_url", "protocol", "result_hosts", "is_active", "max_concurrent_jobs",
+            "timeout_minutes",
+        ]
 
     def save(self, commit=True):
         runner = super().save(commit=False)
@@ -502,8 +505,8 @@ class SimulationRunnerAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
     """External services that execute runs started in TOSCA."""
 
     form = SimulationRunnerAdminForm
-    list_display = ("name", "base_url", "organization", "is_active", "max_concurrent_jobs", "has_token")
-    list_filter = ("is_active", "organization")
+    list_display = ("name", "base_url", "protocol", "organization", "is_active", "max_concurrent_jobs", "has_token")
+    list_filter = ("is_active", "protocol", "organization")
     search_fields = ("name", "base_url")
     actions = ["check_health", "sync_models"]
 
@@ -527,10 +530,14 @@ class SimulationRunnerAdmin(OrganizationOwnedAdminMixin, admin.ModelAdmin):
     def sync_models(self, request, queryset):
         import requests
 
+        from . import ogc_runner
+
         for runner in queryset:
             try:
                 models = jobs.sync_runner_models(runner)
-            except (requests.RequestException, ValueError) as exc:
+            except (
+                requests.RequestException, ValueError, ogc_runner.RunnerError, ogc_runner.TemporaryRunnerError
+            ) as exc:
                 self.message_user(request, f"{runner.name}: {exc}", messages.ERROR)
                 continue
             names = ", ".join(f"{model.key} {model.runner_version}" for model in models) or "no matching models"
@@ -555,7 +562,7 @@ class SimulationJobAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     readonly_fields = (
         "id", "run", "comparison", "runner", "state", "attempts", "runner_job_id", "upload_path", "message", "error",
         "available_at", "locked_by", "locked_at", "dispatched_at", "started_at", "last_callback_at",
-        "finished_at", "created_at", "updated_at",
+        "finished_at", "status_url", "missed_polls", "created_at", "updated_at",
     )
     fields = readonly_fields
 

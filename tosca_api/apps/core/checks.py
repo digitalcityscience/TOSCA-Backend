@@ -130,3 +130,48 @@ def check_production_media_uses_s3(app_configs, **kwargs):
             )
         ]
     return []
+
+
+@register()
+def check_task_backend(app_configs, **kwargs):
+    """``TOSCA_TASK_BACKEND`` is a known value and "celery" has what it needs."""
+    from importlib.util import find_spec
+
+    from tosca_api.apps.core.task_backend import BACKENDS, CELERY
+
+    backend = getattr(settings, "TOSCA_TASK_BACKEND", "database")
+    if backend not in BACKENDS:
+        return [
+            Error(
+                f"TOSCA_TASK_BACKEND={backend!r} is not a known task backend.",
+                hint=f"Use one of: {', '.join(BACKENDS)}.",
+                id="tosca.settings.E020",
+            )
+        ]
+    errors = []
+    if getattr(settings, "REDIS_URL", "") and find_spec("redis") is None:
+        errors.append(
+            Error(
+                "REDIS_URL is set but the redis package is not installed.",
+                hint="Install the optional extra (uv sync --extra celery), or unset REDIS_URL.",
+                id="tosca.settings.E023",
+            )
+        )
+    if backend == CELERY:
+        if find_spec("celery") is None:
+            errors.append(
+                Error(
+                    "TOSCA_TASK_BACKEND is 'celery' but celery is not installed.",
+                    hint="Install the optional extra: uv sync --extra celery.",
+                    id="tosca.settings.E021",
+                )
+            )
+        if not getattr(settings, "REDIS_URL", ""):
+            errors.append(
+                Error(
+                    "TOSCA_TASK_BACKEND is 'celery' but REDIS_URL is empty.",
+                    hint="Set REDIS_URL (the Celery broker), or use TOSCA_TASK_BACKEND=database.",
+                    id="tosca.settings.E022",
+                )
+            )
+    return errors

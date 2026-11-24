@@ -12,12 +12,13 @@ because the admin may be served by several processes.
 from __future__ import annotations
 
 import logging
-import threading
 from datetime import timedelta
 
 from django.db import close_old_connections, connection, transaction
 from django.db.models import F, Q
 from django.utils import timezone
+
+from tosca_api.apps.core.task_backend import run_in_background
 
 from . import remote
 from .models import CategoryItem, ExternalService, ServiceSource
@@ -122,7 +123,10 @@ def start_in_background(service: ExternalService) -> bool:
 
 
 def _spawn(service_pk) -> None:
-    threading.Thread(target=_background, args=(service_pk,), name="external-catalog-load", daemon=True).start()
+    run_in_background(
+        _background, "tosca_api.apps.external_catalog.tasks.harvest_service", service_pk,
+        name="external-catalog-load",
+    )
 
 
 def _background(service_pk) -> None:

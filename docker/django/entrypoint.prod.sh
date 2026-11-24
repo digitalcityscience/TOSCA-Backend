@@ -30,6 +30,8 @@ run_as_appuser /venv/bin/python manage.py check --deploy
 if [ "${RUN_MIGRATIONS_ON_STARTUP:-false}" = "true" ]; then
   echo "📦 Running database migrations..."
   run_as_appuser /venv/bin/python manage.py migrate --noinput
+  echo "🗃️ Creating the cache table..."
+  run_as_appuser /venv/bin/python manage.py createcachetable
 fi
 
 if [ "${CONFIGURE_STORAGE_CORS_ON_STARTUP:-false}" = "true" ]; then

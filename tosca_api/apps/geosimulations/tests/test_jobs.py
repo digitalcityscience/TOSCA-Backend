@@ -13,7 +13,9 @@ import pytest
 import requests
 from django.core.files.storage import storages
 from django.core.management import call_command
+from django.db import connection
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -349,6 +351,97 @@ def test_an_abandoned_import_is_claimed_again(model):
 
     assert claimed.pk == run.job.pk and claimed.locked_by == "new-worker"
     assert claimed.state == State.IMPORTING
+
+
+def test_a_claimed_pending_job_is_not_handed_to_another_worker(model):
+    first = jobs.submit_run(model, {"agents": 1})
+    second = jobs.submit_run(model, {"agents": 2})
+
+    claimed = jobs.claim_next_job("worker-a")
+    other = jobs.claim_next_job("worker-b")
+
+    assert claimed.pk == first.job.pk and claimed.locked_by == "worker-a"
+    assert other.pk == second.job.pk and other.locked_by == "worker-b"
+    assert jobs.claim_next_job("worker-c") is None
+
+
+def test_a_stale_lock_is_reclaimed(model):
+    run = jobs.submit_run(model, {"agents": 1})
+    SimulationJob.objects.filter(pk=run.job.pk).update(
+        locked_by="busy-worker", locked_at=timezone.now() - timedelta(minutes=5)
+    )
+    assert jobs.claim_next_job("new-worker") is None
+
+    SimulationJob.objects.filter(pk=run.job.pk).update(locked_at=timezone.now() - timedelta(hours=1))
+    claimed = jobs.claim_next_job("new-worker")
+
+    assert claimed.pk == run.job.pk and claimed.locked_by == "new-worker"
+    assert claimed.state == State.PENDING
+
+
+@pytest.fixture
+def fake_upload_url():
+    with patch(
+        "tosca_api.apps.geosimulations.jobs.storage.presigned_upload_url",
+        return_value="http://storage.test/package.zip",
+    ):
+        yield
+
+
+def test_dispatch_locks_the_runner_while_counting(model, fake_upload_url):
+    run = jobs.submit_run(model, {"agents": 1})
+    fake = FakeRunner()
+
+    with CaptureQueriesContext(connection) as queries:
+        job = _dispatch(run.job, fake)
+
+    runner_table = SimulationRunner._meta.db_table
+    assert any(
+        runner_table in query["sql"] and "FOR NO KEY UPDATE" in query["sql"] for query in queries.captured_queries
+    )
+    assert (job.state, job.locked_by, job.locked_at) == (State.DISPATCHED, "", None)
+
+
+def test_finished_dispatches_release_the_lock(model, fake_upload_url):
+    busy = jobs.submit_run(model, {"agents": 1})
+    _dispatch(busy.job, FakeRunner())
+    waiting = jobs.submit_run(model, {"agents": 2})
+    job = _dispatch(waiting.job, FakeRunner())
+    assert (job.state, job.locked_by, job.locked_at) == (State.PENDING, "", None)
+
+    SimulationJob.objects.filter(pk=busy.job.pk).update(state=State.SUCCEEDED)
+    SimulationJob.objects.filter(pk=job.pk).update(available_at=timezone.now())
+    job = _dispatch(job, FakeRunner(fail=requests.ConnectionError("runner down")))
+    assert (job.state, job.locked_by, job.locked_at) == (State.PENDING, "", None)
+
+
+def test_an_unexpected_dispatch_error_counts_as_a_failed_attempt(model, fake_upload_url):
+    run = jobs.submit_run(model, {"agents": 1})
+
+    with patch.object(jobs, "job_payload", side_effect=KeyError("surprise")):
+        job = _dispatch(run.job, FakeRunner())  # process_job does not raise
+        assert (job.state, job.attempts, job.locked_by, job.locked_at) == (State.PENDING, 1, "", None)
+        assert "Unexpected error (KeyError)" in job.error and job.available_at > timezone.now()
+
+        for _ in range(2):
+            SimulationJob.objects.filter(pk=job.pk).update(available_at=timezone.now())
+            job = _dispatch(job, FakeRunner())
+
+    run.refresh_from_db()
+    assert (job.state, job.attempts, job.locked_at) == (State.FAILED, 3, None)
+    assert run.execution_state == Execution.FAILED
+
+
+def test_an_unexpected_error_leaves_a_job_another_worker_holds_alone(model):
+    run = jobs.submit_run(model, {"agents": 1})
+    claimed = jobs.claim_next_job("test-worker")
+    SimulationJob.objects.filter(pk=claimed.pk).update(locked_by="other-worker")
+
+    with patch.object(jobs, "dispatch", side_effect=RuntimeError("boom")):
+        jobs.process_job(claimed)
+
+    job = SimulationJob.objects.get(pk=run.job.pk)
+    assert (job.state, job.attempts, job.locked_by) == (State.PENDING, 0, "other-worker")
 
 
 def test_failed_jobs_can_be_retried(model):

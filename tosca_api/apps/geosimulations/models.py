@@ -22,6 +22,7 @@ import hashlib
 import json
 import re
 import uuid
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
@@ -288,6 +289,30 @@ class SimulationModel(TimeStampedModel):
         max_length=50,
         blank=True,
         help_text="Model version the runner reports (synced from its /models); recorded on started runs.",
+    )
+    # Set by the runner sync for OGC API – Processes runners (``ogc_runner.py``).
+    transfer_mode = models.CharField(
+        max_length=10,
+        choices=[("push", "Push (runner uploads to TOSCA)"), ("pull", "Pull (TOSCA downloads the result)")],
+        default="push",
+        help_text="How the package reaches TOSCA: push if the process declares tosca_upload, else pull.",
+    )
+    accepts_seed = models.BooleanField(
+        default=True, help_text="The runner honours a seed (OGC: the process declares tosca_seed)."
+    )
+    package_output = models.CharField(
+        max_length=100, blank=True, help_text="OGC process output that carries the package (pull)."
+    )
+    package_transmission = models.CharField(
+        max_length=10,
+        choices=[("value", "By value"), ("reference", "By reference")],
+        default="value",
+        help_text="How the runner delivers the package output (pull): by reference if it offers it.",
+    )
+    process_inputs = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Inputs the OGC process declares, with their maxOccurs (set by the runner sync).",
     )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -967,6 +992,21 @@ class SimulationOutput(TimeStampedModel):
         super().save(*args, **kwargs)
 
 
+_RESULT_HOSTS_FORMAT = 'A list of host names or host:port, e.g. ["results.example.org", "files.example.org:8443"].'
+_HOST_LABEL = re.compile(r"^[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?$")
+# The last label of any IPv4 spelling a resolver accepts (127.0.0.1, 127.1,
+# 2130706433, 0x7f.1) is a number; real top-level domains never are.
+_NUMERIC_LABEL = re.compile(r"^(0x[0-9a-f]*|[0-9]+)$")
+
+
+def _is_host_name(name: str) -> bool:
+    return 0 < len(name) <= 253 and all(_HOST_LABEL.match(label) for label in name.split("."))
+
+
+def _is_ip_literal(name: str) -> bool:
+    return bool(_NUMERIC_LABEL.match(name.rsplit(".", 1)[-1]))
+
+
 class SimulationRunner(TimeStampedModel):
     """An HTTP service that runs simulations for TOSCA.
 
@@ -974,7 +1014,13 @@ class SimulationRunner(TimeStampedModel):
     ``POST``s a job to ``{base_url}/jobs`` with the bearer ``token``; the runner
     uploads the result package to a presigned URL and reports back to the job's
     callback URL. One runner can serve several models (``SimulationModel.runner``).
+    An ``ogc-api-processes`` runner is an OGC API – Processes server instead
+    (``ogc_runner.py``): TOSCA executes processes and polls their jobs.
     """
+
+    class Protocol(models.TextChoices):
+        TOSCA_V1 = "tosca-v1", "TOSCA runner (POST /jobs, callbacks)"
+        OGC_API_PROCESSES = "ogc-api-processes", "OGC API – Processes 1.0 (polling)"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid7, editable=False)
     organization = models.ForeignKey(
@@ -986,6 +1032,15 @@ class SimulationRunner(TimeStampedModel):
         max_length=500,
         validators=[validate_service_url],
         help_text="Runner root URL as TOSCA's worker reaches it, e.g. http://bike-runner:8080.",
+    )
+    protocol = models.CharField(max_length=30, choices=Protocol.choices, default=Protocol.TOSCA_V1)
+    result_hosts = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            'OGC runners: other host names TOSCA may download results from, e.g. ["results.example.org"]. '
+            "The runner's token is never sent there."
+        ),
     )
     token_encrypted = models.TextField(
         blank=True, help_text="Bearer token TOSCA sends to the runner (stored encrypted)."
@@ -1005,6 +1060,30 @@ class SimulationRunner(TimeStampedModel):
 
     def __str__(self) -> str:
         return self.name
+
+    @property
+    def is_ogc(self) -> bool:
+        return self.protocol == self.Protocol.OGC_API_PROCESSES
+
+    def clean(self) -> None:
+        super().clean()
+        hosts = self.result_hosts
+        if not isinstance(hosts, list) or not all(isinstance(host, str) for host in hosts):
+            raise ValidationError({"result_hosts": _RESULT_HOSTS_FORMAT})
+        hosts = [host.strip().lower() for host in hosts]
+        try:
+            plain_http = urlsplit(self.base_url or "").scheme.lower() == "http"
+        except ValueError:
+            plain_http = False
+        for host in hosts:
+            name, sep, port = host.partition(":")
+            if (sep and not (port.isdigit() and 0 < int(port) < 65536)) or not _is_host_name(name):
+                raise ValidationError({"result_hosts": _RESULT_HOSTS_FORMAT})
+            if not plain_http and (_is_ip_literal(name) or name == "localhost" or name.endswith(".localhost")):
+                raise ValidationError(
+                    {"result_hosts": "IP addresses and localhost are allowed only for a runner reached over http."}
+                )
+        self.result_hosts = hosts
 
     def set_token(self, token: str) -> None:
         from tosca_api.apps.geodata_providers.encryption import encrypt_value
@@ -1072,6 +1151,12 @@ class SimulationJob(TimeStampedModel):
     started_at = models.DateTimeField(null=True, blank=True)
     last_callback_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
+    status_url = models.CharField(
+        max_length=1000, blank=True, help_text="OGC runners: the job's status URL, polled by the worker."
+    )
+    missed_polls = models.PositiveSmallIntegerField(
+        default=0, help_text="OGC runners: consecutive polls that found the job unknown (404)."
+    )
 
     class Meta:
         ordering = ["-created_at"]

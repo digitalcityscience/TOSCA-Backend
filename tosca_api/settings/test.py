@@ -54,6 +54,8 @@ PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
 # Test-specific settings
+# The reused test database has no cache table; keep tests on per-process memory.
+CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 CELERY_TASK_ALWAYS_EAGER = True
 DEBUG = False
 ALLOWED_HOSTS = ['testserver']  # Allow Django test client

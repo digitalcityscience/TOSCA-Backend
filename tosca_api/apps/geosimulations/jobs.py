@@ -11,6 +11,10 @@ A started run has one ``SimulationJob``. Its life::
 loop, plus ``fail_stale_jobs()``. The functions hold all the logic, so a later
 Celery + Redis worker only replaces that loop. The run mirrors the job in
 ``execution_state`` (queued → running → succeeded / failed).
+
+Jobs of ``ogc-api-processes`` runners take the same states, but nothing calls
+back: the worker claims dispatched / running jobs again when ``available_at``
+passed and polls the runner (``poll_job``, HTTP in ``ogc_runner.py``).
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import re
 import secrets
 import socket
 import tempfile
@@ -37,9 +42,9 @@ from jsonschema import Draft202012Validator
 
 from tosca_api.apps.core.models import MediaAsset
 
-from . import storage
+from . import ogc_runner, storage
 from .importer import PackageImportError, import_package
-from .models import SimulationComparison, SimulationJob, SimulationModel, SimulationRun
+from .models import SimulationComparison, SimulationJob, SimulationModel, SimulationRun, SimulationRunner
 from .packages import PackageValidationError
 
 logger = logging.getLogger(__name__)
@@ -49,6 +54,8 @@ PACKAGE_CONTENT_TYPE = "application/zip"
 RETRY_DELAYS = (timedelta(seconds=30), timedelta(minutes=2), timedelta(minutes=10))
 BUSY_RUNNER_DELAY = timedelta(seconds=30)
 WAITING_POLL = timedelta(seconds=10)
+POLL_MIN_SECONDS, POLL_MAX_SECONDS = 5, 60
+MAX_MISSED_POLLS = 3
 
 State = SimulationJob.State
 ExecutionState = SimulationRun.ExecutionState
@@ -64,6 +71,10 @@ class RunSubmissionError(Exception):
 
 class RunnerUnavailable(RunSubmissionError):
     """The model has no active runner, so runs cannot be started."""
+
+
+class ComparisonsUnsupported(RunnerUnavailable):
+    """The model's runner cannot compute comparisons (OGC API – Processes runners)."""
 
 
 class QuotaExceeded(RunSubmissionError):
@@ -116,10 +127,12 @@ def resolve_parameters(model: SimulationModel, parameters: dict) -> dict:
     return resolved
 
 
-def _require_runner(model: SimulationModel):
+def _require_runner(model: SimulationModel, seed: int | None = None):
     runner = model.runner
     if runner is None or not runner.is_active:
         raise RunnerUnavailable(f"Simulation model {model.key!r} has no active runner.")
+    if seed is not None and runner.is_ogc and not model.accepts_seed:
+        raise RunSubmissionError(f"Simulation model {model.key!r} does not accept a seed.")
     return runner
 
 
@@ -135,7 +148,7 @@ def submit_run(
     submitter_key: str = "",
 ) -> SimulationRun:
     """Create a queued run and its pending job; the worker sends it to the model's runner."""
-    runner = _require_runner(model)
+    runner = _require_runner(model, seed)
     resolved = resolve_parameters(model, parameters)
     started = timezone.now()
     with transaction.atomic():
@@ -241,7 +254,7 @@ def start_run(
     """
     if user is None:
         visibility = SimulationRun.Visibility.LINK
-    _require_runner(model)
+    _require_runner(model, seed)
     resolved = resolve_parameters(model, parameters)
     if readable_runs is not None:
         existing = find_reusable_run(readable_runs, model, resolved, seed)
@@ -290,7 +303,9 @@ def start_comparison(
     an existing readable comparison of the pair is returned. The comparison's
     job waits until both runs succeeded, then the runner computes it.
     """
-    runner = _require_runner(model)
+    runner = _require_runner(model, seed)
+    if runner.is_ogc:
+        raise ComparisonsUnsupported(f"Simulation model {model.key!r} does not support comparisons.")
     if user is None:
         visibility = SimulationRun.Visibility.LINK
     sides = {
@@ -351,7 +366,12 @@ def start_comparison(
 
 
 def sync_runner_models(runner) -> list[SimulationModel]:
-    """Copy parameter schema, defaults and version from ``{base_url}/models`` to the runner's models."""
+    """Copy parameter schema, defaults and version from ``{base_url}/models`` to the runner's models.
+
+    OGC runners: from ``/processes/{model key}`` instead (``ogc_runner.model_fields``).
+    """
+    if runner.is_ogc:
+        return _sync_ogc_models(runner)
     response = requests.get(
         f"{runner.base_url}/models",
         headers={"Authorization": f"Bearer {runner.get_token()}"},
@@ -373,6 +393,24 @@ def sync_runner_models(runner) -> list[SimulationModel]:
     return updated
 
 
+def _sync_ogc_models(runner) -> list[SimulationModel]:
+    # Every process is checked before any model changes.
+    found = []
+    for model in SimulationModel.objects.filter(runner=runner):
+        description = ogc_runner.describe_process(runner, model.key)
+        if description is None:
+            continue
+        try:
+            found.append((model, ogc_runner.model_fields(description)))
+        except ogc_runner.RunnerError as exc:
+            raise ogc_runner.RunnerError(f"Process {model.key!r}: {exc}") from None
+    for model, fields in found:
+        for name, value in fields.items():
+            setattr(model, name, value)
+        model.save()
+    return [model for model, _ in found]
+
+
 # -- worker queue ---------------------------------------------------------------
 
 
@@ -380,17 +418,29 @@ def claim_next_job(worker_id: str) -> SimulationJob | None:
     """Lock the next job the worker should act on, or ``None``.
 
     Pending jobs are dispatched, uploaded jobs imported, waiting comparison jobs
-    checked. An import whose worker died (lock older than
-    ``lock_timeout_seconds``) is claimed again.
+    checked, jobs at an OGC runner polled. A job another worker holds is
+    skipped until its lock is older than ``lock_timeout_seconds``; then that
+    worker is taken to be dead and the job (an import too) is claimed again.
     """
     now = timezone.now()
     stale_lock = now - timedelta(seconds=_worker_settings()["lock_timeout_seconds"])
+    unlocked = Q(locked_at__isnull=True) | Q(locked_at__lt=stale_lock)
+    # A subquery, not a join: a join would lock the runner row as well.
+    ogc_runners = SimulationRunner.objects.filter(protocol=SimulationRunner.Protocol.OGC_API_PROCESSES)
     with transaction.atomic():
         job = (
             SimulationJob.objects.select_for_update(skip_locked=True)
             .filter(
-                Q(state__in=[State.WAITING, State.PENDING, State.UPLOADED], available_at__lte=now)
+                (Q(state__in=[State.WAITING, State.PENDING, State.UPLOADED], available_at__lte=now) & unlocked)
                 | Q(state=State.IMPORTING, locked_at__lt=stale_lock)
+                | (
+                    Q(
+                        state__in=SimulationJob.AT_RUNNER_STATES,
+                        runner_id__in=ogc_runners.values("pk"),
+                        available_at__lte=now,
+                    )
+                    & unlocked
+                )
             )
             .order_by("available_at", "created_at")
             .first()
@@ -405,12 +455,20 @@ def claim_next_job(worker_id: str) -> SimulationJob | None:
 
 
 def process_job(job: SimulationJob) -> None:
-    if job.state == State.WAITING:
-        check_waiting(job)
-    elif job.state == State.PENDING:
-        dispatch(job)
+    """Act on a claimed job; never raises for dispatch, polling or import problems."""
+    if job.state in (State.WAITING, State.PENDING):
+        try:
+            if job.state == State.WAITING:
+                check_waiting(job)
+            else:
+                dispatch(job)
+        except Exception as exc:  # one bad job must not stop the worker or a drain
+            logger.exception("Dispatching simulation job %s failed unexpectedly", job.pk)
+            _count_failed_dispatch(job, exc)
     elif job.state == State.IMPORTING:
         import_uploaded_package(job)
+    elif job.state in SimulationJob.AT_RUNNER_STATES and job.runner.is_ogc:
+        poll_job(job)
 
 
 def default_worker_id() -> str:
@@ -435,6 +493,16 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _upload_target(upload_url: str, runner) -> dict:
+    expires_at = timezone.now() + timedelta(minutes=runner.timeout_minutes)
+    return {
+        "url": upload_url,
+        "method": "PUT",
+        "headers": {"Content-Type": PACKAGE_CONTENT_TYPE},
+        "expires_at": expires_at.isoformat(),
+    }
+
+
 def job_payload(job: SimulationJob, *, callback_token: str, upload_url: str) -> dict:
     """What a runner receives (``POST {base_url}/jobs``).
 
@@ -443,7 +511,6 @@ def job_payload(job: SimulationJob, *, callback_token: str, upload_url: str) -> 
     parameters and seed).
     """
     owner, runner = job.owner, job.runner
-    expires_at = timezone.now() + timedelta(minutes=runner.timeout_minutes)
     if job.comparison_id:
         subject = {
             "kind": "comparison",
@@ -464,53 +531,98 @@ def job_payload(job: SimulationJob, *, callback_token: str, upload_url: str) -> 
         "job_id": str(job.pk),
         "model": {"key": owner.model.key},
         **subject,
-        "upload": {
-            "url": upload_url,
-            "method": "PUT",
-            "headers": {"Content-Type": PACKAGE_CONTENT_TYPE},
-            "expires_at": expires_at.isoformat(),
-        },
+        "upload": _upload_target(upload_url, runner),
         "callback": {"url": callback_url(job), "token": callback_token},
     }
 
 
 def dispatch(job: SimulationJob) -> None:
     """Send a pending job to its runner; retry later on failure, fail after the last attempt."""
-    runner = job.runner
-    busy = SimulationJob.objects.filter(runner=runner, state__in=SimulationJob.AT_RUNNER_STATES).count()
-    if busy >= runner.max_concurrent_jobs:
-        _release(job, available_at=timezone.now() + BUSY_RUNNER_DELAY)
+    # The runner row stays locked from the count to the saved state change, so
+    # workers dispatching to one runner take turns and cannot exceed
+    # ``max_concurrent_jobs``. The lock is held across the POST (at most
+    # ``dispatch_timeout_seconds``); NO KEY UPDATE still lets new jobs reference
+    # the runner meanwhile.
+    with transaction.atomic():
+        runner = SimulationRunner.objects.select_for_update(no_key=True).get(pk=job.runner_id)
+        job.runner = runner
+        busy = SimulationJob.objects.filter(runner=runner, state__in=SimulationJob.AT_RUNNER_STATES).count()
+        if busy >= runner.max_concurrent_jobs:
+            _release(job, available_at=timezone.now() + BUSY_RUNNER_DELAY)
+            return
+        if not runner.is_active:
+            _fail(job, f"Runner {runner.name!r} is not active.")
+            return
+        if runner.is_ogc:
+            _dispatch_ogc(job, runner)
+            return
+        token = secrets.token_urlsafe(32)
+        try:
+            upload_url = storage.presigned_upload_url(
+                UPLOAD_ALIAS,
+                upload_path(job),
+                content_type=PACKAGE_CONTENT_TYPE,
+                expires_in=runner.timeout_minutes * 60,
+            )
+            payload = job_payload(job, callback_token=token, upload_url=upload_url)
+            response = requests.post(
+                f"{runner.base_url}/jobs",
+                json=payload,
+                headers={"Authorization": f"Bearer {runner.get_token()}"},
+                timeout=_worker_settings()["dispatch_timeout_seconds"],
+            )
+            response.raise_for_status()
+            runner_job_id = str((response.json() or {}).get("job_id", ""))[:255]
+        except (requests.RequestException, ValueError, ImproperlyConfigured, storage.UploadUrlUnavailable) as exc:
+            _retry_dispatch(job, exc)
+            return
+        now = timezone.now()
+        job.state = State.DISPATCHED
+        job.attempts += 1
+        job.runner_job_id = runner_job_id
+        job.callback_token_hash = _hash_token(token)
+        job.upload_path = upload_path(job)
+        job.dispatched_at = now
+        job.error = ""
+        job.locked_by, job.locked_at = "", None
+        job.save()
+
+
+def _dispatch_ogc(job: SimulationJob, runner) -> None:
+    """Execute the run's process at an OGC runner; the answer must be ``201`` with a job location."""
+    if job.comparison_id:
+        _fail(job, "OGC API – Processes runners do not compute comparisons.")
         return
-    if not runner.is_active:
-        _fail(job, f"Runner {runner.name!r} is not active.")
-        return
-    token = secrets.token_urlsafe(32)
+    model = job.run.model
     try:
-        upload_url = storage.presigned_upload_url(
-            UPLOAD_ALIAS,
-            upload_path(job),
-            content_type=PACKAGE_CONTENT_TYPE,
-            expires_in=runner.timeout_minutes * 60,
-        )
-        payload = job_payload(job, callback_token=token, upload_url=upload_url)
-        response = requests.post(
-            f"{runner.base_url}/jobs",
-            json=payload,
-            headers={"Authorization": f"Bearer {runner.get_token()}"},
-            timeout=_worker_settings()["dispatch_timeout_seconds"],
-        )
-        response.raise_for_status()
-        runner_job_id = str((response.json() or {}).get("job_id", ""))[:255]
-    except (requests.RequestException, ValueError, ImproperlyConfigured, storage.UploadUrlUnavailable) as exc:
+        upload = None
+        if model.transfer_mode == "push":
+            upload_url = storage.presigned_upload_url(
+                UPLOAD_ALIAS,
+                upload_path(job),
+                content_type=PACKAGE_CONTENT_TYPE,
+                expires_in=runner.timeout_minutes * 60,
+            )
+            upload = _upload_target(upload_url, runner)
+        status_url, runner_job_id = ogc_runner.execute(job, ogc_runner.execute_request(job, upload=upload))
+    except ogc_runner.RunnerError as exc:
+        # The process may have run: sending it again could run it twice.
+        job.attempts += 1
+        _fail(job, f"Dispatch to {runner.name!r} failed: {exc}")
+        return
+    except (ogc_runner.TemporaryRunnerError, ImproperlyConfigured, storage.UploadUrlUnavailable) as exc:
         _retry_dispatch(job, exc)
         return
     now = timezone.now()
     job.state = State.DISPATCHED
     job.attempts += 1
     job.runner_job_id = runner_job_id
-    job.callback_token_hash = _hash_token(token)
+    job.status_url = status_url
+    job.missed_polls = 0
+    job.callback_token_hash = ""
     job.upload_path = upload_path(job)
     job.dispatched_at = now
+    job.available_at = now + timedelta(seconds=POLL_MIN_SECONDS)
     job.error = ""
     job.locked_by, job.locked_at = "", None
     job.save()
@@ -519,13 +631,35 @@ def dispatch(job: SimulationJob) -> None:
 def _retry_dispatch(job: SimulationJob, exc: Exception) -> None:
     job.attempts += 1
     message = f"Dispatch to {job.runner.name!r} failed: {exc}"
-    logger.warning("Simulation job %s: %s", job.pk, message)
+    logger.warning("Simulation job %s: %s", job.pk, _without_signatures(message))
     if job.attempts >= _worker_settings()["max_dispatch_attempts"]:
         _fail(job, message)
         return
     delay = RETRY_DELAYS[min(job.attempts - 1, len(RETRY_DELAYS) - 1)]
-    job.error = message
+    job.error = public_error(message)
     _release(job, available_at=timezone.now() + delay)
+
+
+def _count_failed_dispatch(job: SimulationJob, exc: Exception) -> None:
+    """After an unexpected error (its transaction rolled back): one failed attempt, lock cleared.
+
+    Goes through ``_retry_dispatch``, so the job fails for good after
+    ``max_dispatch_attempts``. Only acts while the job is still waiting for
+    dispatch and locked by this worker.
+    """
+    try:
+        with transaction.atomic():
+            current = (
+                SimulationJob.objects.select_for_update(of=("self",))
+                .select_related("run", "comparison", "runner")
+                .filter(pk=job.pk, state__in=[State.WAITING, State.PENDING], locked_by=job.locked_by)
+                .first()
+            )
+            if current is None:
+                return
+            _retry_dispatch(current, RuntimeError(f"Unexpected error ({exc.__class__.__name__})."))
+    except Exception:
+        logger.exception("Could not record the failed dispatch of simulation job %s", job.pk)
 
 
 def _release(job: SimulationJob, *, available_at) -> None:
@@ -534,7 +668,32 @@ def _release(job: SimulationJob, *, available_at) -> None:
     job.save()
 
 
+_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s'\"<>]+", re.IGNORECASE)
+_REQUEST_DETAIL = re.compile(r"\b(host|url)(=|: )('[^']*'|\S+)", re.IGNORECASE)
+_QUERY = re.compile(r"\?[^\s'\"<>]*=[^\s'\"<>]*")
+
+
+def public_error(text: str) -> str:
+    """``text`` without links, query strings or request hosts, as owners and link viewers see it.
+
+    Runner messages and HTTP errors can carry signed download links and
+    internal host names; the full text goes to the server log only.
+    """
+    text = _URL.sub("[link removed]", text)
+    text = _REQUEST_DETAIL.sub(lambda match: f"{match[1]}{match[2]}[removed]", text)
+    return _QUERY.sub("", text)
+
+
+def _without_signatures(text: str) -> str:
+    """For logs: links keep host and path, but no query string (signatures, tokens)."""
+    return _QUERY.sub("?[query removed]", text)
+
+
 def _fail(job: SimulationJob, error: str) -> None:
+    shown = public_error(error)
+    if shown != error:
+        logger.warning("Simulation job %s failed: %s", job.pk, _without_signatures(error))
+    error = shown
     now = timezone.now()
     job.state = State.FAILED
     job.error = error
@@ -566,6 +725,143 @@ def check_waiting(job: SimulationJob) -> None:
     _release(job, available_at=timezone.now() + WAITING_POLL)
 
 
+# -- polling (OGC runners) ----------------------------------------------------------
+
+
+def _next_poll(job: SimulationJob):
+    """Back-off: a fifth of the job's age at the runner, between 5 and 60 seconds."""
+    now = timezone.now()
+    age = (now - (job.dispatched_at or now)).total_seconds()
+    return now + timedelta(seconds=min(POLL_MAX_SECONDS, max(POLL_MIN_SECONDS, age / 5)))
+
+
+def poll_job(job: SimulationJob) -> None:
+    """Ask an OGC runner for the job's status and move the job on; never raises."""
+    try:
+        _poll(job)
+    except Exception:  # one bad job must not stop the worker
+        logger.exception("Polling simulation job %s failed", job.pk)
+        _finish_poll(job)
+
+
+def _poll(job: SimulationJob) -> None:
+    try:
+        info = ogc_runner.job_status(job)
+    except ogc_runner.JobUnknown:
+        job.missed_polls += 1
+        if job.missed_polls >= MAX_MISSED_POLLS:
+            _finish_poll(job, fail="The runner no longer knows the job.")
+        else:
+            _finish_poll(job)
+        return
+    except (ogc_runner.TemporaryRunnerError, ogc_runner.RunnerError) as exc:
+        logger.info("Simulation job %s: status poll failed, asking again later: %s", job.pk, exc)
+        _finish_poll(job)
+        return
+    job.missed_polls = 0
+    status = info.get("status")
+    raw_message = info.get("message")
+    message = public_error(raw_message)[:500] if isinstance(raw_message, str) else None
+    if status == "accepted":
+        _finish_poll(job, state=State.DISPATCHED, message=message)
+    elif status == "running":
+        _finish_poll(job, state=State.RUNNING, message=message)
+    elif status == "successful":
+        _collect_package(job, message)
+    elif status == "failed":
+        reported = raw_message.strip()[:5000] if isinstance(raw_message, str) else ""
+        _finish_poll(job, fail=reported or "The runner reported a failure.", message=message)
+    elif status == "dismissed":
+        _finish_poll(job, fail="The job was dismissed at the runner.", message=message)
+    else:
+        logger.warning("Simulation job %s: ignoring unknown runner status %r", job.pk, str(status)[:50])
+        _finish_poll(job, message=message)
+
+
+def _collect_package(job: SimulationJob, message: str | None) -> None:
+    """A successful job's package into TOSCA storage: push checks it arrived, pull downloads it."""
+    if job.run.model.transfer_mode == "push":
+        if storages[UPLOAD_ALIAS].exists(job.upload_path):
+            _finish_poll(job, state=State.UPLOADED, message=message)
+        else:
+            _finish_poll(job, fail="The runner reported success but uploaded no package.", message=message)
+        return
+    name = upload_path(job)
+    try:
+        with tempfile.TemporaryDirectory(prefix="geosim-pull-") as staging:
+            package = Path(staging) / "package.zip"
+            ogc_runner.fetch_package(job, package)
+            if storages[UPLOAD_ALIAS].exists(name):
+                storage.delete(UPLOAD_ALIAS, name)
+            name = storage.upload_file(UPLOAD_ALIAS, name, package, content_type=PACKAGE_CONTENT_TYPE)
+    except ogc_runner.TemporaryRunnerError as exc:
+        logger.info("Simulation job %s: package download failed, trying again later: %s", job.pk, exc)
+        _finish_poll(job, message=message)
+        return
+    except ogc_runner.RunnerError as exc:
+        _finish_poll(job, fail=f"Could not download the package: {exc}", message=message)
+        return
+    if not _finish_poll(job, state=State.UPLOADED, message=message, uploaded=name):
+        _discard_package(job, name)
+
+
+def _discard_package(job: SimulationJob, name: str) -> None:
+    """Remove a package stored for a job that moved on meanwhile; best effort.
+
+    Kept when the job is waiting for import of that very object (another
+    worker that reclaimed the job stored it there too).
+    """
+    try:
+        now = SimulationJob.objects.filter(pk=job.pk).values_list("state", "upload_path").first()
+        if now is not None and now[0] in (State.UPLOADED, State.IMPORTING) and now[1] == name:
+            return
+        storage.delete(UPLOAD_ALIAS, name)
+    except Exception:
+        logger.exception("Could not remove the package of simulation job %s, which moved on meanwhile", job.pk)
+
+
+def _finish_poll(
+    job: SimulationJob, *, state=None, fail: str = "", message: str | None = None, uploaded=None
+) -> bool:
+    """Apply a poll's outcome unless the job moved on meanwhile (timeout, another worker); clear the lock.
+
+    Returns whether the outcome was applied.
+    """
+    with transaction.atomic():
+        current = (
+            SimulationJob.objects.select_for_update(of=("self",))
+            .select_related("run", "comparison")
+            .filter(pk=job.pk, state__in=SimulationJob.AT_RUNNER_STATES, locked_by=job.locked_by)
+            .first()
+        )
+        if current is None:
+            return False
+        current.missed_polls = job.missed_polls
+        if message is not None:
+            current.message = message
+        if fail:
+            _fail(current, fail)
+            return True
+        now = timezone.now()
+        owner = current.owner
+        if state == State.RUNNING and current.state != State.RUNNING:
+            current.started_at = current.started_at or now
+            owner.execution_state = ExecutionState.RUNNING
+            owner.save()
+        if state == State.UPLOADED:
+            current.upload_path = uploaded or current.upload_path
+            current.available_at = now
+            owner.execution_state = ExecutionState.RUNNING
+            owner.save()
+        else:
+            current.available_at = _next_poll(current)
+        if state is not None:
+            current.state = state
+        current.locked_by, current.locked_at = "", None
+        current.save()
+    return True
+
+
 # -- callbacks --------------------------------------------------------------------
 
 
@@ -587,11 +883,12 @@ def handle_callback(job_id, token: str, report: dict) -> SimulationJob:
         job = (
             # Lock the job row only: run and comparison are outer joins now.
             SimulationJob.objects.select_for_update(of=("self",))
-            .select_related("run", "comparison")
+            .select_related("run", "comparison", "runner")
             .filter(pk=job_id)
             .first()
         )
-        if job is None:
+        # OGC runners never call this endpoint; their jobs move by polling only.
+        if job is None or job.runner.is_ogc:
             raise CallbackRejected
         check_callback_token(job, token)
         now = timezone.now()
@@ -695,6 +992,7 @@ def retry_job(job: SimulationJob) -> None:
     job.error = ""
     job.message = ""
     job.callback_token_hash = ""
+    job.status_url, job.missed_polls = "", 0
     job.available_at = timezone.now()
     job.dispatched_at = job.started_at = job.finished_at = None
     job.save()

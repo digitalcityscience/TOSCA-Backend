@@ -46,6 +46,12 @@ dev = [
     "pre-commit>=4.0.0",
 ]
 
+# Optional task backend: TOSCA_TASK_BACKEND=celery (see docs/implementation/geosimulations-queue-and-ogc-plan.md).
+celery = [
+    "celery>=5.5.0",
+    "redis>=5.2.0",
+]
+
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"

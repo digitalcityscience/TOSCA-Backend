@@ -73,11 +73,14 @@ services:
     build:
       context: .
       dockerfile: docker/django/Dockerfile.prod
+      args:
+        # Set to "--extra celery" when TOSCA_TASK_BACKEND=celery.
+        UV_EXTRAS: ${UV_EXTRAS:-}
     image: ${DJANGO_IMAGE:-tosca-django-api:prod}
     container_name: tosca-django
     env_file:
       - ${ENV_FILE}
-    environment:
+    environment: &django-environment
       ENV: prod
       ENV_TYPE: production
       DJANGO_SETTINGS_MODULE: tosca_api.settings.${ENV_TYPE}
@@ -131,6 +134,9 @@ services:
       GUNICORN_THREADS: ${GUNICORN_THREADS:-2}
       GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
       RUN_SETUP_DEFAULT_ENGINE: ${RUN_SETUP_DEFAULT_ENGINE:-true}
+      # Optional Celery + Redis (profile "celery"); empty means database mode.
+      TOSCA_TASK_BACKEND: ${TOSCA_TASK_BACKEND:-database}
+      REDIS_URL: ${REDIS_URL:-}
     volumes:
       # Shared upload volume. Django writes files here; Nginx/web containers serve them read-only.
       - media_files:/app/media
@@ -210,7 +216,76 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # --- Optional: Celery + Redis task backend (TOSCA_TASK_BACKEND=celery) ------
+  # Start with: docker compose --profile celery ... up -d
+  # Needs: TOSCA_TASK_BACKEND=celery, UV_EXTRAS="--extra celery" at build time,
+  # REDIS_PASSWORD and REDIS_URL=redis://:<REDIS_PASSWORD>@redis:6379/0.
+  # Redis serves broker and cache (volatile-lru evicts only cache keys), is on the
+  # internal network only and publishes no host port.
+  redis:
+    profiles: ["celery"]
+    image: redis:7-alpine
+    container_name: tosca-prod-redis
+    # Refuses to start without a password.
+    command:
+      - sh
+      - -c
+      - >-
+        test -n "$$REDIS_PASSWORD" || { echo "REDIS_PASSWORD is required" >&2; exit 1; };
+        exec redis-server --requirepass "$$REDIS_PASSWORD"
+        --maxmemory "$$REDIS_MAXMEMORY" --maxmemory-policy volatile-lru --appendonly yes
+    volumes:
+      - prod_redis_data:/data
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-256mb}
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  celery-worker:
+    profiles: ["celery"]
+    image: ${DJANGO_IMAGE:-tosca-django-api:prod}
+    container_name: tosca-prod-celery-worker
+    env_file:
+      - ${ENV_FILE}
+    environment: *django-environment
+    user: "10001:10001"
+    working_dir: /app
+    entrypoint: []
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    # Celery defaults to one process per CPU core; keep it small unless needed.
+    command: ["/venv/bin/celery", "-A", "tosca_api", "worker", "-l", "info", "--concurrency", "${CELERY_WORKER_CONCURRENCY:-2}"]
+    restart: unless-stopped
+
+  # Exactly one beat container: it schedules geosim.drain and geosim.purge.
+  celery-beat:
+    profiles: ["celery"]
+    image: ${DJANGO_IMAGE:-tosca-django-api:prod}
+    container_name: tosca-prod-celery-beat
+    env_file:
+      - ${ENV_FILE}
+    environment: *django-environment
+    user: "10001:10001"
+    working_dir: /app
+    entrypoint: []
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    command: ["/venv/bin/celery", "-A", "tosca_api", "beat", "-l", "info", "-s", "/tmp/celerybeat-schedule"]
+    restart: unless-stopped
+
 volumes:
+  prod_redis_data:
   # PostgreSQL persistent data volume.
   prod_pg_data:
   # GeoServer persistent data volume for the GHCR production image.

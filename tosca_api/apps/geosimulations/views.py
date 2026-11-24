@@ -26,25 +26,12 @@ from rest_framework.authentication import TokenAuthentication
 from rest_framework.decorators import action
 from rest_framework.pagination import CursorPagination
 from rest_framework.permissions import AllowAny, BasePermission
-from rest_framework.throttling import BaseThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from tosca_api.apps.authentication.backends import KeycloakTokenAuthentication
-from tosca_api.apps.authentication.role_sync import org_role_level
-from tosca_api.apps.organizations.models import Organization
-from tosca_api.apps.organizations.permissions import get_request_org_context
-
-from .jobs import (
-    CallbackRejected,
-    QuotaExceeded,
-    RunnerUnavailable,
-    RunSubmissionError,
-    handle_callback,
-    start_comparison,
-    start_run,
-    submitter_key_for,
-)
+from . import policy
+from .jobs import CallbackRejected, QuotaExceeded, RunnerUnavailable, RunSubmissionError, handle_callback
 from .models import SimulationComparison, SimulationModel, SimulationOutput, SimulationRun
 from .serializers import (
     ComparisonSubmissionSerializer,
@@ -78,37 +65,17 @@ class CanStartRuns(BasePermission):
         return bool(user and user.is_authenticated) or settings.GEOSIMULATIONS_ALLOW_ANONYMOUS_RUNS
 
 
-def _runs_disabled() -> Response | None:
-    """``404`` while starting runs is switched off (``GEOSIMULATIONS_RUNS_ENABLED``)."""
-    if settings.GEOSIMULATIONS_RUNS_ENABLED:
-        return None
+def _runs_disabled() -> Response:
     return Response({"detail": "Starting simulation runs is not enabled."}, status=status.HTTP_404_NOT_FOUND)
 
 
-def _link_readable(queryset):
-    """Readable runs plus anonymous ``link`` runs, which anyone with the id may open."""
-    return SimulationRun.objects.filter(
-        Q(pk__in=queryset.values("pk")) | Q(visibility=SimulationRun.Visibility.LINK)
-    )
-
-
 def _reader_scope(request) -> dict:
-    user = request.user
-    if not (user and user.is_authenticated):
-        return {"org_slug": None, "exempt": False, "user": None}
-    _roles, org_slug, exempt = get_request_org_context(request)
-    return {"org_slug": org_slug, "exempt": exempt, "user": user}
+    return policy.Caller.from_request(request).reader_scope
 
 
 def can_start_runs(request, model: SimulationModel) -> bool:
     """The model's ``run_access`` applied to the caller of ``request``."""
-    user = request.user
-    if user and user.is_authenticated:
-        roles, org_slug, exempt = get_request_org_context(request)
-        level = org_role_level(roles, org_slug) if org_slug else None
-    else:
-        user, org_slug, exempt, level = None, None, False, None
-    return model.can_start_runs(user=user, org_level=level, org_slug=org_slug, exempt=exempt)
+    return policy.may_start_runs(policy.Caller.from_request(request), model)
 
 
 def _run_access_denied(request) -> Response:
@@ -122,6 +89,13 @@ def _run_access_denied(request) -> Response:
     return Response(
         {"detail": "You are not allowed to start runs of this simulation."},
         status=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _visibility_not_allowed() -> Response:
+    return Response(
+        {"visibility": ["Only members of the model's organization can share runs with it."]},
+        status=status.HTTP_400_BAD_REQUEST,
     )
 
 
@@ -190,26 +164,26 @@ class SimulationModelViewSet(viewsets.ReadOnlyModelViewSet):
         has no runner, ``429`` a quota is reached (``Retry-After`` header).
         Anonymous visitors (while allowed) get ``link`` runs: readable by id, never listed.
         """
-        if (disabled := _runs_disabled()) is not None:
-            return disabled
+        if not policy.runs_enabled():
+            return _runs_disabled()
         model = self.get_object()
-        if not can_start_runs(request, model):
+        caller = policy.Caller.from_request(request)
+        if not policy.may_start_runs(caller, model):
             return _run_access_denied(request)
         submission = RunSubmissionSerializer(data=request.data)
         submission.is_valid(raise_exception=True)
         data = submission.validated_data
-        context = _submission_context(request, model, data["visibility"])
-        if isinstance(context, Response):
-            return context
         try:
-            result = start_run(
+            result = policy.start_run(
+                caller,
                 model,
-                data["parameters"],
+                parameters=data["parameters"],
                 seed=data["seed"],
-                title=data["title"] or None,
+                title=data["title"],
                 visibility=data["visibility"],
-                **context,
             )
+        except policy.VisibilityNotAllowed:
+            return _visibility_not_allowed()
         except RunSubmissionError as exc:
             return _submission_error(exc)
         body = SimulationRunSummarySerializer(result.run, context=self.get_serializer_context()).data
@@ -235,57 +209,33 @@ class SimulationModelViewSet(viewsets.ReadOnlyModelViewSet):
         ``202`` new comparison (its runs start now, the comparison follows),
         ``200`` with ``reused: true`` for an identical readable comparison; errors as for runs.
         """
-        if (disabled := _runs_disabled()) is not None:
-            return disabled
+        if not policy.runs_enabled():
+            return _runs_disabled()
         model = self.get_object()
-        if not can_start_runs(request, model):
+        caller = policy.Caller.from_request(request)
+        if not policy.may_start_runs(caller, model):
             return _run_access_denied(request)
         submission = ComparisonSubmissionSerializer(data=request.data)
         submission.is_valid(raise_exception=True)
         data = submission.validated_data
-        context = _submission_context(request, model, data["visibility"])
-        if isinstance(context, Response):
-            return context
-        scope = _reader_scope(request)
         try:
-            result = start_comparison(
+            result = policy.start_comparison(
+                caller,
                 model,
-                data["baseline"],
-                data["candidate"],
-                readable_comparisons=_readable_comparisons(scope, by_id=True),
+                baseline=data["baseline"],
+                candidate=data["candidate"],
                 seed=data["seed"],
-                title=data["title"] or None,
+                title=data["title"],
                 visibility=data["visibility"],
-                **context,
+                readable_comparisons=_readable_comparisons(caller.reader_scope, by_id=True),
             )
+        except policy.VisibilityNotAllowed:
+            return _visibility_not_allowed()
         except RunSubmissionError as exc:
             return _submission_error(exc)
         body = SimulationComparisonSummarySerializer(result.comparison, context=self.get_serializer_context()).data
         body["reused"] = result.reused
         return Response(body, status=status.HTTP_200_OK if result.reused else status.HTTP_202_ACCEPTED)
-
-
-def _submission_context(request, model, visibility: str) -> dict | Response:
-    """Caller details for ``start_run`` / ``start_comparison``, or a 400 response."""
-    scope = _reader_scope(request)
-    org_slug = scope["org_slug"]
-    if (
-        visibility == SimulationRun.Visibility.ORGANIZATION
-        and not scope["exempt"]
-        and org_slug != model.organization.slug
-    ):
-        return Response(
-            {"visibility": ["Only members of the model's organization can share runs with it."]},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    anonymous = scope["user"] is None
-    return {
-        "user": scope["user"],
-        "organization": Organization.objects.filter(slug=org_slug).first() if org_slug else None,
-        "readable_runs": _link_readable(SimulationRun.objects.readable_by(**scope)),
-        "exempt": scope["exempt"],
-        "submitter_key": submitter_key_for(BaseThrottle().get_ident(request)) if anonymous else "",
-    }
 
 
 def _submission_error(exc: RunSubmissionError) -> Response:
@@ -308,7 +258,7 @@ def _readable_comparisons(scope: dict, *, by_id: bool = False):
     readable_runs = SimulationRun.objects.readable_by(**scope)
     comparisons = SimulationComparison.objects.readable_by(**scope)
     if by_id:
-        readable_runs = _link_readable(readable_runs)
+        readable_runs = policy.link_readable(readable_runs)
         comparisons = SimulationComparison.objects.filter(
             Q(pk__in=comparisons.values("pk")) | Q(visibility=SimulationRun.Visibility.LINK)
         )
@@ -338,7 +288,7 @@ class SimulationRunViewSet(viewsets.ReadOnlyModelViewSet):
         readable = SimulationRun.objects.readable_by(**_reader_scope(self.request))
         if self.action == "retrieve":
             # Anonymous runs are opened by id; lists never show them.
-            readable = _link_readable(readable)
+            readable = policy.link_readable(readable)
         queryset = readable.select_related("model")
         model_id = self.request.query_params.get("model")
         if model_id:

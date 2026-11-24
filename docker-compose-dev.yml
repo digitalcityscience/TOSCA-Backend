@@ -147,6 +147,9 @@ services:
       MEDIA_DERIVATIVE_PREFIX: ${MEDIA_DERIVATIVE_PREFIX:-media/derivatives/}
       # Simulation runners on this Docker network report back here (GeoSimulations).
       GEOSIMULATIONS_CALLBACK_BASE_URL: ${GEOSIMULATIONS_CALLBACK_BASE_URL:-http://django:8000}
+      # Optional Celery + Redis (profile "celery"); empty means database mode.
+      TOSCA_TASK_BACKEND: ${TOSCA_TASK_BACKEND:-database}
+      REDIS_URL: ${REDIS_URL:-}
     volumes:
       - .:/app
     ports:
@@ -185,7 +188,79 @@ services:
     command: ["bash", "-lc", "uv run python manage.py run_simulation_worker"]
     restart: unless-stopped
 
+  # --- Optional: Celery + Redis task backend (TOSCA_TASK_BACKEND=celery) ------
+  # Start with: docker compose --profile celery ... up -d
+  # Needs in the env file: TOSCA_TASK_BACKEND=celery, REDIS_PASSWORD and
+  # REDIS_URL=redis://:<REDIS_PASSWORD>@redis:6379/0
+  # Redis serves broker and cache, so only cache keys (which have a TTL) may be
+  # evicted: volatile-lru. No host port is published.
+  redis:
+    profiles: ["celery"]
+    image: redis:7-alpine
+    container_name: tosca-redis
+    # Refuses to start without a password.
+    command:
+      - sh
+      - -c
+      - >-
+        test -n "$$REDIS_PASSWORD" || { echo "REDIS_PASSWORD is required" >&2; exit 1; };
+        exec redis-server --requirepass "$$REDIS_PASSWORD"
+        --maxmemory "$$REDIS_MAXMEMORY" --maxmemory-policy volatile-lru --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-256mb}
+    restart: unless-stopped
+
+  celery-worker:
+    profiles: ["celery"]
+    build:
+      context: .
+      dockerfile: docker/django/Dockerfile
+    container_name: tosca-celery-worker
+    env_file:
+      - ${ENV_FILE}
+    environment: *django-environment
+    volumes:
+      - .:/app
+    depends_on:
+      django:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    working_dir: /app
+    command: ["bash", "-lc", "uv run --extra celery celery -A tosca_api worker -l info --concurrency ${CELERY_WORKER_CONCURRENCY:-2}"]
+    restart: unless-stopped
+
+  # Exactly one beat container: it schedules geosim.drain and geosim.purge.
+  celery-beat:
+    profiles: ["celery"]
+    build:
+      context: .
+      dockerfile: docker/django/Dockerfile
+    container_name: tosca-celery-beat
+    env_file:
+      - ${ENV_FILE}
+    environment: *django-environment
+    volumes:
+      - .:/app
+    depends_on:
+      django:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    working_dir: /app
+    command: ["bash", "-lc", "uv run --extra celery celery -A tosca_api beat -l info -s /tmp/celerybeat-schedule"]
+    restart: unless-stopped
+
 volumes:
+  redis_data:
   pg_data:
   geoserver_data:
   garage_meta:

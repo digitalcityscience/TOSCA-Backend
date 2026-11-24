@@ -70,6 +70,49 @@ GEOSIMULATIONS_WORKER = {
     "max_dispatch_attempts": 3,
 }
 
+# --- Redis, cache and background task backend (all optional) ----------------
+# Without REDIS_URL the shared cache is a database table (python manage.py
+# createcachetable) and nothing else is needed. REDIS_URL switches the cache to
+# Redis and is the Celery broker when TOSCA_TASK_BACKEND="celery".
+# Use a password, e.g. redis://:<password>@redis:6379/0 (rediss:// for managed Redis).
+REDIS_URL = env("REDIS_URL", default="")
+
+if REDIS_URL:
+    CACHES = {"default": {"BACKEND": "django.core.cache.backends.redis.RedisCache", "LOCATION": REDIS_URL}}
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "tosca_cache",
+        }
+    }
+
+# "database": Postgres queue + worker command, catalog jobs in threads (default).
+# "celery": Celery worker and beat on Redis; needs the `celery` extra and REDIS_URL.
+TOSCA_TASK_BACKEND = env("TOSCA_TASK_BACKEND", default="database")
+
+# Celery settings are only used in celery mode (tosca_api/celery.py).
+# Postgres stays the source of truth: tasks carry ids only and store no results.
+CELERY_BROKER_URL = REDIS_URL or None
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_TASK_ACKS_LATE = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_TASK_TIME_LIMIT = env.int("CELERY_TASK_TIME_LIMIT", default=3600)
+# Must exceed the longest task, or Redis redelivers a task that is still running.
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "visibility_timeout": env.int("CELERY_VISIBILITY_TIMEOUT", default=7200),
+}
+CELERY_BEAT_SCHEDULE = {
+    "geosim-drain": {
+        "task": "geosim.drain",
+        "schedule": float(GEOSIMULATIONS_WORKER["poll_seconds"]),
+        "options": {"expires": float(GEOSIMULATIONS_WORKER["poll_seconds"])},
+    },
+    "geosim-purge": {"task": "geosim.purge", "schedule": 3600.0},
+}
+
 # Basemap of the GeoStory scene editor (Django admin): the same in-house basemap
 # service as the frontend (VITE_INHOUSE_MAP_BASE_URL / VITE_INHOUSE_MAP_API_KEY,
 # style styles/osm-bright.json). The key is a browser key: it ends up in the
@@ -93,6 +136,10 @@ GEOSIMULATIONS_RUNS_ENABLED = env.bool("GEOSIMULATIONS_RUNS_ENABLED", default=Fa
 # (DRF's client identity, honouring NUM_PROXIES) and all together; a comparison
 # starts two runs, so the per-address limit allows a pair.
 GEOSIMULATIONS_ALLOW_ANONYMOUS_RUNS = env.bool("GEOSIMULATIONS_ALLOW_ANONYMOUS_RUNS", default=True)
+# OGC API – Processes facade for external clients (/api/v1/ogcapi/): Keycloak Bearer
+# tokens only, plus the role below on top of each model's run_access. Off by default.
+GEOSIMULATIONS_OGC_API_ENABLED = env.bool("GEOSIMULATIONS_OGC_API_ENABLED", default=False)
+GEOSIMULATIONS_OGC_API_ROLE = env("GEOSIMULATIONS_OGC_API_ROLE", default="simulation-api")
 GEOSIMULATIONS_QUOTAS = {
     "anonymous_active": env.int("GEOSIMULATIONS_QUOTA_ANONYMOUS_ACTIVE", default=2),
     "anonymous_daily": env.int("GEOSIMULATIONS_QUOTA_ANONYMOUS_DAILY", default=6),
@@ -504,6 +551,9 @@ REST_FRAMEWORK = {
         # (validation + storage round-trips) than listing the picker.
         "editorjs_upload": env("THROTTLE_EDITORJS_UPLOAD", default="30/minute"),
         "editorjs_media": env("THROTTLE_EDITORJS_MEDIA", default="120/minute"),
+        # OGC API – Processes facade, per user: starting runs vs. every other call.
+        "ogc_execute": env("THROTTLE_OGC_EXECUTE", default="30/minute"),
+        "ogc_status": env("THROTTLE_OGC_STATUS", default="120/minute"),
     },
 }
 

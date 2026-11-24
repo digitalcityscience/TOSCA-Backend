@@ -440,6 +440,7 @@ django-migrate: which-env
 		echo "Running: migrate (all apps)"; \
 		docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py migrate; \
 	fi
+	@docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) exec django uv run python manage.py createcachetable
 
 # Create new Django migrations
 # Usage: make django-makemigrations

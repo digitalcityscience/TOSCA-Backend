@@ -30,7 +30,9 @@ COPY static ./static
 # before `uv sync` resolves it.
 COPY vendor ./vendor
 
-RUN uv sync --frozen --no-dev
+# Optional extras, e.g. UV_EXTRAS="--extra celery" for TOSCA_TASK_BACKEND=celery.
+ARG UV_EXTRAS=""
+RUN uv sync --frozen --no-dev ${UV_EXTRAS}
 
 RUN useradd -m -r -u 10001 appuser \
     && chown -R appuser:appuser /app /venv

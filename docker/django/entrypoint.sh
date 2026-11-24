@@ -13,15 +13,22 @@ fi
 echo "✅ pyproject.toml found"
 echo "🔄 Syncing dependencies with uv..."
 
+# Celery + Redis are optional: only installed in celery mode.
+CELERY_EXTRA=""
+if [ "${TOSCA_TASK_BACKEND:-database}" = "celery" ]; then
+  CELERY_EXTRA="--extra celery"
+fi
 if [[ "$DJANGO_SETTINGS_MODULE" == *"development"* ]]; then
   echo "➡ Installing DEV dependencies"
-  uv sync --frozen --extra dev
+  uv sync --frozen --extra dev $CELERY_EXTRA
 else
   echo "➡ Installing PROD dependencies"
-  uv sync --frozen
+  uv sync --frozen $CELERY_EXTRA
 fi
 echo "� Running migrations..."
 uv run python manage.py migrate --noinput
+echo "🗃️ Creating the cache table..."
+uv run python manage.py createcachetable
 
 if [ "${CONFIGURE_STORAGE_CORS_ON_STARTUP:-false}" = "true" ]; then
   echo "🌐 Configuring browser access to S3 media..."
