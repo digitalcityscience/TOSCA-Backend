@@ -1,5 +1,16 @@
 # TOSCA Django API
 
+[![CI](https://github.com/digitalcityscience/TOSCA-Backend/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/digitalcityscience/TOSCA-Backend/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/digitalcityscience/TOSCA-Backend?sort=semver)](https://github.com/digitalcityscience/TOSCA-Backend/releases)
+[![Image](https://img.shields.io/badge/image-ghcr.io%2Fdigitalcityscience%2Ftosca--backend-blue?logo=docker)](https://github.com/digitalcityscience/TOSCA-Backend/pkgs/container/tosca-backend)
+[![License: MIT](https://img.shields.io/github/license/digitalcityscience/TOSCA-Backend)](LICENSE)
+
+The backend of the [TOSCA platform](https://github.com/digitalcityscience/TOSCA).
+To install TOSCA, start there ([Run TOSCA](https://github.com/digitalcityscience/TOSCA#run-tosca));
+to work on the backend inside the whole platform, see
+[Develop TOSCA](https://github.com/digitalcityscience/TOSCA#develop-tosca).
+This repository's own development stack is described below.
+
 TOSCA is a modular Django API backend. It contains the Django admin and API
 surface for geodata provider management, catalog data, campaigns, events,
 feedback, geocontext, geostories, feature links, and authentication.
@@ -359,3 +370,35 @@ make initialize-project
 ```
 
 This deletes local data. Use it only when you really want a fresh stack.
+
+## Versions and releases
+
+The backend uses [Semantic Versioning](https://semver.org/). A release is a Git
+tag `vX.Y.Z` (or `vX.Y.Z-rc.N` for a pre-release) on a commit of `main`.
+
+| Workflow | Runs on | Does |
+|---|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | pull requests, pushes to `main` | secret scan, production image build, ruff, pytest against PostGIS and Garage, production-mode [smoke test](scripts/ci/run.sh) of the image — pushes nothing |
+| [`release.yml`](.github/workflows/release.yml) | a `v*` tag | checks the tag, builds amd64 and arm64 once, runs the tests and smoke test on that build, pushes it as `tosca-backend:X.Y.Z`, creates the GitHub Release |
+
+The same checks run locally against any image built from
+`docker/django/Dockerfile.prod`:
+
+```bash
+docker build -f docker/django/Dockerfile.prod -t tosca-backend:dev .
+scripts/ci/run.sh lint  tosca-backend:dev
+scripts/ci/run.sh test  tosca-backend:dev
+scripts/ci/run.sh smoke tosca-backend:dev
+```
+
+To release:
+
+1. Through a pull request to `main`, set `version` in `pyproject.toml` and add a
+   `## [X.Y.Z]` section to [CHANGELOG.md](CHANGELOG.md).
+2. Tag the merged commit and push the tag:
+   `git tag -a vX.Y.Z -m "tosca-backend X.Y.Z" && git push origin vX.Y.Z`.
+
+A published version is never overwritten: the release workflow stops if the
+image tag already exists. `/api/version` reports the version and commit of the
+running image.
+
