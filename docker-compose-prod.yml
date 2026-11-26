@@ -77,7 +77,7 @@ services:
     container_name: tosca-django
     env_file:
       - ${ENV_FILE}
-    environment:
+    environment: &django-environment
       ENV: prod
       ENV_TYPE: production
       DJANGO_SETTINGS_MODULE: tosca_api.settings.${ENV_TYPE}
@@ -159,6 +159,45 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s
+    restart: unless-stopped
+
+  # MCP server for AI assistants (ChatGPT / Claude custom connectors) plus the
+  # WebSocket the frontend's "Connect AI assistant" uses. Opt-in:
+  #   docker compose --profile mcp ... up -d mcp
+  # Same image and settings as the API, own process. It MUST stay at one worker:
+  # pairing state is kept in memory (no Redis). The public proxy needs the routes
+  # in docker/nginx/mcp.conf.example. See docs/development/mcp-server.md.
+  mcp:
+    profiles: ["mcp"]
+    image: ${DJANGO_IMAGE:-tosca-django-api:prod}
+    container_name: tosca-mcp
+    # The image's own entrypoint (migrations, then drop to appuser) is not used here.
+    user: "10001:10001"
+    env_file:
+      - ${ENV_FILE}
+    environment: *django-environment
+    volumes:
+      - prod_django_logs:/app/logs
+    depends_on:
+      django:
+        condition: service_healthy
+    # No migrations or collectstatic here: the django service owns them.
+    entrypoint:
+      - /venv/bin/uvicorn
+      - tosca_api.apps.mcp_server.asgi:application
+      - --host=0.0.0.0
+      - --port=8001
+      - --workers=1
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+      - --ws-max-size=8388608
+    command: []
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8001/mcp-healthz >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   # SPA web container. Use WEB_IMAGE for a production image that already contains the built SPA.

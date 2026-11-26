@@ -1,0 +1,52 @@
+# Routes for the optional MCP service (compose profile "mcp").
+#
+# NOT loaded by default. To enable: start the mcp service, then paste these
+# locations into the `server { ... }` block of docker/nginx/prod.conf (above
+# `location / { ... }`) and reload nginx.
+#
+# They use a variable upstream with Docker's DNS resolver on purpose: with a
+# fixed `upstream mcp_backend { server mcp:8001; }` nginx refuses to start
+# whenever the mcp container is not running.
+
+    # MCP endpoint (Streamable HTTP). Tool calls that drive the map can take up
+    # to about a minute.
+    location = /mcp {
+        resolver 127.0.0.11 valid=10s;
+        set $mcp_upstream http://mcp:8001;
+        proxy_pass $mcp_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_read_timeout 120s;
+    }
+
+    # OAuth protected-resource metadata (RFC 9728): tells ChatGPT/Claude that
+    # Keycloak is the authorization server.
+    location = /.well-known/oauth-protected-resource/mcp {
+        resolver 127.0.0.11 valid=10s;
+        set $mcp_upstream http://mcp:8001;
+        proxy_pass $mcp_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Map bridge: WebSocket from the user's TOSCA tab. The server pings every
+    # 20 s, so 75 s without traffic means the connection is gone.
+    location = /mcp-bridge/ws {
+        resolver 127.0.0.11 valid=10s;
+        set $mcp_upstream http://mcp:8001;
+        proxy_pass $mcp_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 75s;
+        proxy_send_timeout 75s;
+    }

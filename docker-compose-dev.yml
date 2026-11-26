@@ -185,6 +185,36 @@ services:
     command: ["bash", "-lc", "uv run python manage.py run_simulation_worker"]
     restart: unless-stopped
 
+  # MCP server for AI assistants (ChatGPT / Claude custom connectors) plus the
+  # WebSocket the frontend's "Connect AI assistant" uses. Opt-in:
+  #   docker compose --profile mcp ... up -d mcp
+  # One process with one worker: pairing state is kept in memory (no Redis).
+  # See docs/development/mcp-server.md.
+  mcp:
+    profiles: ["mcp"]
+    build:
+      context: .
+      dockerfile: docker/django/Dockerfile
+    container_name: tosca-mcp
+    env_file:
+      - ${ENV_FILE}
+    environment: *django-environment
+    volumes:
+      - .:/app
+    ports:
+      - "${MCP_PORT:-8001}:8001"
+    depends_on:
+      django:
+        condition: service_started
+    working_dir: /app
+    command:
+      - bash
+      - -lc
+      - >-
+        uv run uvicorn tosca_api.apps.mcp_server.asgi:application
+        --host 0.0.0.0 --port 8001 --ws-max-size 8388608
+    restart: unless-stopped
+
 volumes:
   pg_data:
   geoserver_data:
