@@ -6,6 +6,13 @@ All notable changes to the TOSCA backend. The project uses
 
 ## [Unreleased]
 
+### Changed
+- `geoserver-rest` is installed from Git at a pinned commit of
+  `orttak/geoserver-rest` instead of the `vendor/geoserver-rest` submodule
+  (same code, `10bef2c`). Dependabot could not resolve the dependencies
+  because it does not check out submodules, so every update it tried failed.
+  The images now install `git` for this.
+
 ## [1.0.0] - 2026-11-26
 
 First release published to GHCR as a versioned image. The code is the

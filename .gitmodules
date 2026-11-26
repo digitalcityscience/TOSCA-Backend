@@ -1,3 +1,0 @@
-[submodule "vendor/geoserver-rest"]
-	path = vendor/geoserver-rest
-	url = https://github.com/orttak/geoserver-rest.git

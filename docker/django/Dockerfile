@@ -11,6 +11,7 @@ ENV UV_VENV_CLEAR=1
 # System dependencies for GeoDjango
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+    git \
     gdal-bin \
     libgdal-dev \
     libgeos-dev \

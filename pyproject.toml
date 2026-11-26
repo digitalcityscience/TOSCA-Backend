@@ -60,10 +60,6 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-# The geoserver-rest submodule lives under vendor/ specifically so it's
-# outside tosca_api/ and doesn't need excluding here — but exclude it
-# explicitly too in case ruff is ever pointed at the repo root.
-exclude = ["vendor"]
 
 [tool.setuptools.packages.find]
 include = ["tosca_api*"]
@@ -74,7 +70,8 @@ exclude = ["docker*"]
 python-preference = "managed"
 
 [tool.uv.sources]
-geoserver-rest = { path = "vendor/geoserver-rest", editable = true }
+# Pinned to a commit of the fork; to update, change rev and run `uv lock`.
+geoserver-rest = { git = "https://github.com/orttak/geoserver-rest.git", rev = "10bef2ce0b8bd6918ab1a4bc4d6bf5673eb964bd" }
 
 [dependency-groups]
 dev = [
