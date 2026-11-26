@@ -35,6 +35,9 @@ dependencies = [
     "whitenoise>=6.7.0",
     "gunicorn>=22.0.0",
     "jsonschema>=4.26.0",
+    "mcp>=2.3,<3",
+    "uvicorn>=0.54",
+    "websockets>=17",
 ]
 
 [project.optional-dependencies]

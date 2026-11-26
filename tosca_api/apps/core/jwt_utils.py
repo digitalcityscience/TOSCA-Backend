@@ -50,10 +50,14 @@ def _refuse(reason: str, exc: Exception | None = None) -> AuthenticationFailed:
     return AuthenticationFailed("Invalid or expired token.")
 
 
-def verify_and_decode_token(token: str):
+def verify_and_decode_token(token: str, *, audiences: list[str] | None = None):
     """Verify a Keycloak access token (signature, issuer, audience, expiry) and
     return its claims. Raises ``AuthenticationFailed`` with a generic message;
-    the reason is logged."""
+    the reason is logged.
+
+    ``audiences`` replaces ``settings.ALLOWED_TOKEN_AUDIENCES`` for callers with
+    their own audience (the MCP server, see ``apps/mcp_server``)."""
+    allowed = settings.ALLOWED_TOKEN_AUDIENCES if audiences is None else audiences
     try:
         signing_key = _jwks_client().get_signing_key_from_jwt(token)
     except (PyJWKClientError, jwt.DecodeError) as exc:
@@ -72,7 +76,7 @@ def verify_and_decode_token(token: str):
             return jwt.decode(
                 token,
                 signing_key.key,
-                audience=settings.ALLOWED_TOKEN_AUDIENCES,
+                audience=allowed,
                 options={"require": REQUIRED_CLAIMS},
                 **common,
             )
@@ -83,7 +87,7 @@ def verify_and_decode_token(token: str):
             # allowed client (azp). PyJWT cannot check aud then, so skip it.
             unverified = jwt.decode(token, options={"verify_signature": False})
             azp = unverified.get("azp")
-            if not azp or azp not in settings.ALLOWED_TOKEN_AUDIENCES:
+            if not azp or azp not in allowed:
                 raise _refuse(
                     f"audience/azp not allowed (aud={unverified.get('aud')!r}, azp={azp!r})"
                 ) from exc

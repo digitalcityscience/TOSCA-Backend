@@ -585,6 +585,34 @@ JWT_LEEWAY_SECONDS = env.int("JWT_LEEWAY_SECONDS", default=30)
 # fetched again (an unknown key id after rotation refetches at once).
 KEYCLOAK_JWKS_CACHE_SECONDS = env.int("KEYCLOAK_JWKS_CACHE_SECONDS", default=3600)
 
+# -------------------------------------------------
+# MCP server (tosca_api/apps/mcp_server)
+# -------------------------------------------------
+# Runs as its own ASGI process (tosca_api.apps.mcp_server.asgi), next to the
+# gunicorn API. It reuses the Keycloak token verification above; nothing here
+# changes how the API itself authenticates.
+#
+# Public URL of the MCP endpoint, exactly as users type it into ChatGPT/Claude.
+# It is the OAuth resource identifier (RFC 9728) and must end in the path the
+# process serves ("/mcp").
+MCP_PUBLIC_URL = env("MCP_PUBLIC_URL", default="http://localhost:8001/mcp").rstrip("/")
+# Audiences accepted on MCP access tokens. Production: one entry, the value a
+# Keycloak audience mapper puts into tokens for the MCP client (MCP_PUBLIC_URL).
+MCP_TOKEN_AUDIENCES = env.list("MCP_TOKEN_AUDIENCES", default=ALLOWED_TOKEN_AUDIENCES)
+# OAuth scopes announced to MCP clients (and required on the token when set).
+MCP_REQUIRED_SCOPES = env.list("MCP_REQUIRED_SCOPES", default=[])
+# Lowest organization role that may use MCP: READER, WRITER or ADMIN.
+MCP_MIN_ROLE_LEVEL = env("MCP_MIN_ROLE_LEVEL", default="READER")
+# Host/Origin headers accepted on the MCP endpoint. Empty hosts = no check
+# (local development). Requests without an Origin header always pass.
+MCP_ALLOWED_HOSTS = env.list("MCP_ALLOWED_HOSTS", default=[])
+MCP_ALLOWED_ORIGINS = env.list("MCP_ALLOWED_ORIGINS", default=[])
+# Browser origins that may open the map bridge WebSocket (the TOSCA frontend).
+MCP_BRIDGE_ALLOWED_ORIGINS = env.list("MCP_BRIDGE_ALLOWED_ORIGINS", default=CORS_ALLOWED_ORIGINS)
+# Pairing code lifetime and how long a dropped browser tab may reconnect.
+MCP_PAIRING_CODE_TTL_SECONDS = env.int("MCP_PAIRING_CODE_TTL_SECONDS", default=300)
+MCP_BRIDGE_RESUME_SECONDS = env.int("MCP_BRIDGE_RESUME_SECONDS", default=120)
+
 SOCIALACCOUNT_PROVIDERS = {
     "openid_connect": {
         "APPS": [

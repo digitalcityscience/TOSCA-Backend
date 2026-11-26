@@ -122,6 +122,18 @@ def test_azp_fallback():
     assert payload["azp"] == "test-aud"
 
 @patch("tosca_api.apps.core.jwt_utils.PyJWKClient", FakeJWKClient)
+def test_caller_can_require_its_own_audience():
+    # The MCP server accepts only tokens issued for it, not every API token.
+    mcp_token = make_token({"aud": ["account", "https://tosca.example/mcp"]})
+    assert verify_and_decode_token(mcp_token, audiences=["https://tosca.example/mcp"])["sub"] == "user1"
+    with pytest.raises(AuthenticationFailed):
+        verify_and_decode_token(make_token(), audiences=["https://tosca.example/mcp"])
+    # azp of an API client does not count for another audience list either.
+    with pytest.raises(AuthenticationFailed):
+        verify_and_decode_token(make_token({"aud": None, "azp": "test-aud"}), audiences=["https://tosca.example/mcp"])
+
+
+@patch("tosca_api.apps.core.jwt_utils.PyJWKClient", FakeJWKClient)
 def test_small_clock_difference_is_tolerated(settings):
     # Keycloak's clock is a few seconds ahead: iat lies in the future.
     settings.JWT_LEEWAY_SECONDS = 30
