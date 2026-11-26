@@ -1,0 +1,20 @@
+# Garage configuration for the throwaway S3 service of scripts/ci/test.sh.
+# Same as the TOSCA platform's config/garage/garage.toml.
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+replication_factor = 1
+compression_level = 2
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "garage:3901"
+
+[s3_api]
+# Must equal S3_REGION_NAME of the backend; requests signed for another region
+# are rejected.
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+
+[admin]
+# Reachable only inside the Compose network; the port is not published.
+api_bind_addr = "[::]:3903"
