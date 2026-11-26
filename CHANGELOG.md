@@ -6,6 +6,11 @@ All notable changes to the TOSCA backend. The project uses
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-26
+
+First release published to GHCR as a versioned image. The code is the
+backend that runs the NGCN installation of the TOSCA platform.
+
 ### Added
 - `manage.py init_storage`: creates the missing media buckets with the
   application's own S3 key and applies the storage CORS rules. Safe to run on
