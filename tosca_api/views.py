@@ -5,6 +5,7 @@ from django.db import Error as DatabaseError
 from django.db import connections
 from django.http import JsonResponse
 from django.shortcuts import render
+from django.views.decorators.http import require_safe
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ def readyz(request):
     return JsonResponse({'status': 'ok'})
 
 
+@require_safe
 def version(request):
     """
     What is running: the backend release and commit baked into the image at
