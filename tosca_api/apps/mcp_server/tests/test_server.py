@@ -279,6 +279,21 @@ class MapBridgeTests(McpServerTestCase):
             self.assertEqual(tab.receive_json()["code"], "unauthorized")
             self.assertTrue(self.call(client, "get_map_state")["isError"])
 
+    def test_filter_values_reach_the_map_as_the_user_would_type_them(self):
+        with self.app() as client:
+            tab = self.open_tab(client)
+            self._connect(client, tab)
+            for value, expected in ((1960, "1960"), (5.0, "5"), (0.5, "0.5"), ("Altona", "Altona"), ("5", "5")):
+                thread = threading.Thread(target=self.call, args=(client, "add_attribute_filter", {
+                    "layer_id": "a", "attribute": "x", "operator": "==", "value": value,
+                }))
+                thread.start()
+                command = tab.receive_json()
+                tab.send_json({"type": "tosca:result", "requestId": command["requestId"], "ok": True, "value": {}})
+                thread.join(timeout=10)
+                self.assertEqual(command["params"]["value"], expected)
+                self.assertEqual(command["params"]["relation"], "AND")
+
     def test_every_map_tool_sends_a_listed_command(self):
         """The tools cannot send anything outside MAP_COMMANDS."""
         calls = {

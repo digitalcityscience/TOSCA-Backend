@@ -50,6 +50,13 @@ LayerId = Annotated[str, Field(description="Id of a layer on the map, from get_m
 Operator = Literal["==", "!=", ">", ">=", "<", "<=", "in"]
 
 
+def filter_value(value: str | int | float) -> str:
+    """The filter value as the text the filter panel would hold (5, not 5.0)."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 async def send_map_command(method: str, params: dict[str, Any]) -> Any:
     if method not in MAP_COMMANDS:
         raise ToolError(f"Unknown map command: {method}")
@@ -253,7 +260,7 @@ def register(server: MCPServer) -> None:
         layer_id: LayerId,
         attribute: Annotated[str, Field(description="Attribute name from get_layer_attributes.")],
         operator: Operator,
-        value: Annotated[str | float, Field(description="Value to compare with.")],
+        value: Annotated[str | int | float, Field(description="Value to compare with.")],
         relation: Annotated[
             Literal["AND", "OR"], Field(description="How this layer's filters are combined.")
         ] = "AND",
@@ -262,7 +269,7 @@ def register(server: MCPServer) -> None:
             "layerId": layer_id,
             "attribute": attribute,
             "operator": operator,
-            "value": str(value),
+            "value": filter_value(value),
             "relation": relation,
         })
 
