@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -414,31 +414,12 @@ wheels = [
 [[package]]
 name = "geoserver-rest"
 version = "2.10.0"
-source = { editable = "vendor/geoserver-rest" }
+source = { git = "https://github.com/orttak/geoserver-rest.git?rev=10bef2ce0b8bd6918ab1a4bc4d6bf5673eb964bd#10bef2ce0b8bd6918ab1a4bc4d6bf5673eb964bd" }
 dependencies = [
     { name = "pygments" },
     { name = "requests" },
     { name = "xmltodict" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "black", marker = "extra == 'dev'" },
-    { name = "flake8", marker = "extra == 'dev'" },
-    { name = "gdal", marker = "extra == 'all'" },
-    { name = "gdal", marker = "extra == 'style'" },
-    { name = "matplotlib", marker = "extra == 'all'" },
-    { name = "matplotlib", marker = "extra == 'style'" },
-    { name = "pre-commit", marker = "extra == 'dev'" },
-    { name = "pygments" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "requests" },
-    { name = "seaborn", marker = "extra == 'all'" },
-    { name = "seaborn", marker = "extra == 'style'" },
-    { name = "sphinx", marker = "extra == 'dev'", specifier = ">=1.7" },
-    { name = "xmltodict" },
-]
-provides-extras = ["dev", "style", "all"]
 
 [[package]]
 name = "greenlet"
@@ -1208,7 +1189,7 @@ requires-dist = [
     { name = "djangorestframework", specifier = ">=3.15.0" },
     { name = "djangorestframework-gis", specifier = ">=1.2.0" },
     { name = "drf-spectacular", specifier = ">=0.29.0" },
-    { name = "geoserver-rest", editable = "vendor/geoserver-rest" },
+    { name = "geoserver-rest", git = "https://github.com/orttak/geoserver-rest.git?rev=10bef2ce0b8bd6918ab1a4bc4d6bf5673eb964bd" },
     { name = "gunicorn", specifier = ">=22.0.0" },
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11.0" },

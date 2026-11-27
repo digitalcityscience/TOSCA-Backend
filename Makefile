@@ -578,8 +578,6 @@ IMAGE ?= tosca-backend:dev
 
 # Same Dockerfile and build arguments as .github/workflows/ci.yml.
 image:
-	@[ -n "$$(ls -A vendor/geoserver-rest 2>/dev/null)" ] || { \
-		echo "$(COLOR_RED)❌ vendor/geoserver-rest is empty. Run: git submodule update --init --recursive$(COLOR_RESET)"; exit 1; }
 	DOCKER_BUILDKIT=1 docker build -f docker/django/Dockerfile.prod \
 	  --build-arg VERSION=local-$$(git rev-parse --short HEAD) \
 	  --build-arg REVISION=$$(git rev-parse HEAD)$$([ -z "$$(git status --porcelain)" ] || echo -dirty) \

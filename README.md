@@ -337,7 +337,8 @@ above, and executable deployment scripts. The deployment repository must use
 the published SHA image in its production Compose configuration.
 
 The image installs locked production dependencies during `docker build`,
-including the `vendor/geoserver-rest` submodule. Startup does not sync Python
+including `geoserver-rest`, which comes from Git at the commit pinned in
+`pyproject.toml`. Startup does not sync Python
 dependencies unless `RUN_UV_SYNC_ON_STARTUP=true`. For the transition period,
 `RUN_MIGRATIONS_ON_STARTUP=true` and `RUN_COLLECTSTATIC_ON_STARTUP=true` keep
 the current startup behavior; each can be set to `false` when its deployment
