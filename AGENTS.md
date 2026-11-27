@@ -1,3 +1,14 @@
+## Environment files
+
+One naming rule in every TOSCA repository; follow it in code, scripts and docs:
+
+- Committed templates: `.env.development.example`, `.env.production.example`
+  (placeholders only, same variables in both; add a new variable to both).
+- Local copies, never committed: `.env.development`, `.env.production`,
+  created with `cp .env.<mode>.example .env.<mode>`.
+- `ENV=dev` reads `.env.development`, `ENV=prod` reads `.env.production`.
+- Do not create or refer to `.env`, `.env.dev`, `.env.prod` or `.env.example`.
+
 ## Code Exploration Policy
 
 Always use jCodemunch-MCP tools for code navigation. Never fall back to Read, Grep, Glob, or Bash for code exploration.

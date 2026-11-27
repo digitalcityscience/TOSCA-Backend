@@ -30,7 +30,7 @@ the most common cause of errors such as missing columns in admin pages.
 Create the dev environment file, select it, then initialize the project:
 
 ```bash
-cp .env.example .env.dev
+cp .env.development.example .env.development
 make set-env ENV=dev
 make which-env
 make initialize-project
@@ -116,7 +116,7 @@ If the admin raises a database error like `column ... does not exist`, first
 check migration state and apply pending migrations:
 
 ```bash
-docker compose --env-file .env.dev -f docker-compose-dev.yml exec django \
+docker compose --env-file .env.development -f docker-compose-dev.yml exec django \
   uv run python manage.py showmigrations geodata_providers
 
 make django-migrate
@@ -154,28 +154,37 @@ make which-env
 Production:
 
 ```bash
-cp .env.example .env.prod
+cp .env.production.example .env.production
 make set-env ENV=prod
 make which-env
 ```
 
 Environment resolution:
 
-- `dev` uses `.env.dev` and `docker-compose-dev.yml`
-- `prod` uses `.env.prod` and `docker-compose-prod.yml`
+- `dev` uses `.env.development` and `docker-compose-dev.yml`
+- `prod` uses `.env.production` and `docker-compose-prod.yml`
 
 Keep `ENV`, `ENV_TYPE`, `ENV_FILE`, ports, passwords, and public URLs aligned in
 the selected env file.
 
 ## Secrets and Env Files
 
-Only `.env.example` is committed, and it holds placeholders only (every
-credential is `CHANGE_ME_...`). `.env`, `.env.dev`, `.env.prod`, and
-`.env.test` are gitignored deliberately — none of them should ever be
-committed, since they carry real (even if dev-only) credentials.
+Environment files follow one rule in every TOSCA repository: the committed
+template is `.env.<mode>.example`, your copy is `.env.<mode>`, and the mode is
+written out in full.
+
+| Template (committed) | Your copy (never committed) | Used by |
+|---|---|---|
+| `.env.development.example` | `.env.development` | `ENV=dev`, `docker-compose-dev.yml` |
+| `.env.production.example` | `.env.production` | `ENV=prod`, `docker-compose-prod.yml` |
+
+There is no plain `.env`, `.env.dev`, `.env.prod` or `.env.example`. The
+templates hold placeholders only (every credential is `CHANGE_ME_...`) and
+define the same variables; a test keeps them in step, so add a new variable to
+both.
 
 A pre-commit hook enforces this: it blocks committing any `.env*` file other
-than `.env.example`. Set it up once per clone:
+than the two templates. Set it up once per clone:
 
 ```bash
 uv sync --group dev
@@ -395,8 +404,13 @@ To release:
 
 1. Through a pull request to `main`, set `version` in `pyproject.toml` and add a
    `## [X.Y.Z]` section to [CHANGELOG.md](CHANGELOG.md).
-2. Tag the merged commit and push the tag:
-   `git tag -a vX.Y.Z -m "tosca-backend X.Y.Z" && git push origin vX.Y.Z`.
+2. On the merged `main`, run `make release VERSION=X.Y.Z`. It checks that the
+   checkout is clean and exactly `origin/main` and that `pyproject.toml` and
+   the changelog name this version, then creates the tag `vX.Y.Z` and pushes it.
+
+`make image` builds the production image on your machine with the same
+Dockerfile and build arguments as CI (`IMAGE=name:tag` to choose the tag).
+Neither command needs an environment file.
 
 A published version is never overwritten: the release workflow stops if the
 image tag already exists. `/api/version` reports the version and commit of the

@@ -186,10 +186,10 @@ Full spec in `docs/development/UI-UX_Rules.md`. Key rules:
 
 ## 11. SETTINGS
 
-- Environment loaded from `.env.dev` or `.env.prod` via `django-environ`
+- Environment loaded from `.env.development` or `.env.production` via `django-environ`
 - Console-specific setting to add: `INTERNAL_API_BASE_URL = env("INTERNAL_API_BASE_URL", default="http://localhost:8000/api")`
 - GeoServer URL available via `GeodataEngine.base_url` (not a settings key)
-- Default GIS schema: `env("GIS_SCHEMA")` from `.env.dev`
+- Default GIS schema: `env("GIS_SCHEMA")` from `.env.development`
 
 ---
 

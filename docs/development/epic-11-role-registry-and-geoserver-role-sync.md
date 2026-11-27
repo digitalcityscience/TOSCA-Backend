@@ -151,7 +151,7 @@ registry, so it is not selectable/visible in the Role Service UI. This is a
 - `KEYCLOAK_SERVER_URL=https://auth2.dcs.hcu-hamburg.de/`, realm `tosca-dev`,
   login client `django-dev` (+ `KEYCLOAK_CLIENT_SECRET`). Settings in
   `tosca_api/settings/base.py`.
-- `.env.example` also carries `KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD`
+- `.env.*.example` also carries `KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD`
   placeholders (password-grant fallback).
 
 ---
@@ -480,7 +480,7 @@ We confirmed the clean auth path end-to-end **before** writing any product
 code. This is the exact probe; keep it as the reference for the Phase-1
 Admin-API client.
 
-**What it does:** loads `.env.dev`, does a `client_credentials` token request
+**What it does:** loads `.env.development`, does a `client_credentials` token request
 against `django-dev`, then `GET /admin/realms/tosca-dev/roles`.
 
 ```python
@@ -496,7 +496,7 @@ def load_env(path):
             env[k.strip()] = v.strip().strip('"').strip("'")
     return env
 
-env    = load_env(".env.dev")
+env    = load_env(".env.development")
 base   = env["KEYCLOAK_SERVER_URL"].rstrip("/")
 realm  = env["KEYCLOAK_REALM"]
 cid    = env["KEYCLOAK_CLIENT_ID"]

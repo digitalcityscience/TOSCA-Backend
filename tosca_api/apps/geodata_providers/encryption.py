@@ -14,7 +14,7 @@ def get_encryption_key() -> bytes:
     Return the Fernet encryption key as bytes.
 
     Reads from settings.FIELD_ENCRYPTION_KEY which is populated by the
-    FIELD_ENCRYPTION_KEY environment variable (set in .env.dev / .env.prod).
+    FIELD_ENCRYPTION_KEY environment variable (set in .env.development / .env.production).
 
     Raises ImproperlyConfigured if the key is missing — never silently
     generates a throwaway key, which would make every decrypt silently fail.
@@ -25,7 +25,7 @@ def get_encryption_key() -> bytes:
             "FIELD_ENCRYPTION_KEY is not set. "
             "Generate one with: "
             "uv run python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\" "
-            "and add it to your .env file."
+            "and add it to .env.development or .env.production."
         )
     if isinstance(key, str):
         return key.encode()

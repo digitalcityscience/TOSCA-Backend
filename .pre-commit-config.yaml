@@ -4,8 +4,9 @@ repos:
       - id: no-env-files
         name: Block committing real .env files
         description: >
-          Only .env.example may be committed. .env/.env.dev/.env.prod/.env.test
-          carry live credentials and must never be staged.
+          Only .env.development.example and .env.production.example may be
+          committed. .env.development and .env.production carry live credentials
+          and must never be staged.
         entry: python scripts/check_no_env_files.py
         language: system
         pass_filenames: true
