@@ -332,6 +332,26 @@ class MapBridgeTests(McpServerTestCase):
             command, _ = self._round_trip(client, tab, "get_map_state", {})
             self.assertEqual(command["method"], "getMapState")
 
+    def test_fetched_features_reach_the_map_without_passing_through_the_model(self):
+        from tosca_api.apps.mcp_server.principal import principal_from_claims
+        from tosca_api.apps.mcp_server.tools.external_data import keep
+
+        feature = {"type": "Feature", "properties": {"name": "Altona"},
+                   "geometry": {"type": "Point", "coordinates": [9.9, 53.55]}}
+        ref = keep(principal_from_claims(RITA), {"features": [feature], "source": "s", "dataset": "d",
+                                                 "collection": "c", "complete": True})
+        with self.app() as client:
+            tab = self.open_tab(client)
+            self._connect(client, tab)
+            command, result = self._round_trip(client, tab, "show_fetched_features", {"ref": ref, "title": "Altona"})
+            self.assertFalse(result["isError"])
+            self.assertEqual(command["method"], "addGeoJsonLayer")
+            self.assertEqual(command["params"], {
+                "title": "Altona", "geojson": {"type": "FeatureCollection", "features": [feature]},
+            })
+            # Another user cannot use the reference.
+            self.assertTrue(self.call(client, "show_fetched_features", {"ref": ref, "title": "x"}, "omar-token")["isError"])
+
     def test_every_map_command_is_a_tool_that_sends_it(self):
         """One tool per entry of map_commands.json, and nothing outside it is ever sent."""
         point = {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [9.9, 53.5]}}
@@ -343,7 +363,7 @@ class MapBridgeTests(McpServerTestCase):
             "addCatalogLayer": {"providerId": "p", "workspace": "w", "layerName": "n"},
             "addGeoJsonLayer": {"title": "t", "geojson": {"type": "FeatureCollection", "features": [point]}},
             "removeLayer": {"layerId": "a"},
-            "setLayerVisibility": {"layerId": "a", "visible": False},
+            "setLayerVisibility": {"layerId": "a", "visible": False, "memberId": "m1"},
             "setLayerOpacity": {"layerId": "a", "opacity": 0.2},
             "getLayerAttributes": {"layerId": "a"},
             "addAttributeFilter": {"layerId": "a", "attribute": "year", "operator": ">=", "value": 1960},
@@ -370,6 +390,8 @@ class MapBridgeTests(McpServerTestCase):
             "setTerrain": {"enabled": True},
             "identifyAt": {"longitude": 9.99, "latitude": 53.55},
             "getDrawnFeatures": {},
+            "getSelectedFeatures": {},
+            "loadOgcLayer": {"layerId": "a", "action": "all"},
             "setOgcLayerQuery": {
                 "layerId": "a", "properties": ["name"],
                 "conditions": [{"attribute": "pupils", "operator": "gte", "value": "300"}],

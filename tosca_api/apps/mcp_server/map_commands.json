@@ -223,7 +223,7 @@
     {
       "name": "setLayerVisibility",
       "title": "Show or hide a layer",
-      "description": "Set whether a layer on the map is visible.",
+      "description": "Set whether a layer on the map is visible. For a layer group, `memberId` shows or hides one member only (get_map_state lists a group's members).",
       "params": {
         "type": "object",
         "properties": {
@@ -234,6 +234,11 @@
           },
           "visible": {
             "type": "boolean"
+          },
+          "memberId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of one member of a layer group, from get_map_state."
           }
         },
         "required": [
@@ -411,7 +416,7 @@
     {
       "name": "getMapState",
       "title": "Read the map",
-      "description": "What the user's TOSCA map shows right now: the view (center, zoom, bounds) and every layer with its id, title, visibility, opacity and filters, including layers the user added by hand. Read it again instead of relying on an earlier answer.",
+      "description": "What the user's TOSCA map shows right now: the view (center, zoom, bounds) and every layer with its id, title, visibility, opacity and filters, including layers the user added by hand; catalog layers also name their source (providerId, workspace, name, active style). Read it again instead of relying on an earlier answer.",
       "params": {
         "type": "object",
         "properties": {},
@@ -664,6 +669,19 @@
       },
       "effect": "read",
       "timeoutSeconds": 15
+    },
+    {
+      "name": "getSelectedFeatures",
+      "title": "What the user clicked",
+      "description": "The features at the places the user last clicked on the map (newest first, up to five clicks since the assistant connected), with the attributes the click popup showed. Use it for \"this building\" or \"what I clicked\": `latest` is the current one.",
+      "params": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "effect": "read",
+      "timeoutSeconds": 10
     },
     {
       "name": "getDrawnFeatures",
@@ -972,6 +990,36 @@
         },
         "required": [
           "layerId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "loadOgcLayer",
+      "title": "Load all features of an OGC API layer",
+      "description": "For an OGC API layer: `all` loads every feature that matches its query (not only those in view; can be slow for large collections, answers with the progress after about 45 seconds), `stop` stops such a load, `reload` loads the layer again (e.g. after an error).",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "all",
+              "stop",
+              "reload"
+            ]
+          }
+        },
+        "required": [
+          "layerId",
+          "action"
         ],
         "additionalProperties": false
       },

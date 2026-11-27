@@ -42,8 +42,9 @@ MAX_GEOJSON_BYTES = 1_000_000
 MAX_GEOJSON_FEATURES = 5_000
 MAX_REPORTED_ERRORS = 5
 
-# Annotations follow the command's `effect`. No command stores data or reaches
-# outside the user's own tab, hence never destructive and never open-world.
+# Annotations follow the command's `effect`. No map command stores data or
+# reaches outside the user's own tab, hence never destructive and never
+# open-world. (Write tools that store data are in publishing.py / geostories.py.)
 ANNOTATIONS: dict[str, ToolAnnotations] = {
     "read": ToolAnnotations(read_only_hint=True, open_world_hint=False),
     "view": ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False),
@@ -51,8 +52,9 @@ ANNOTATIONS: dict[str, ToolAnnotations] = {
 }
 CHANGES_VIEW = ANNOTATIONS["view"]
 
-# Commands the hand-written tools need from the file.
-REQUIRED_COMMANDS = ("getMapState",)
+# Commands the hand-written tools need from the file (connect_map, add_scene_from_map,
+# show_fetched_features).
+REQUIRED_COMMANDS = ("getMapState", "addGeoJsonLayer")
 
 
 # -- server-side rules ---------------------------------------------------------

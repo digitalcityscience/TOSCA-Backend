@@ -1,11 +1,20 @@
 # MCP server
 
 Lets an AI assistant (ChatGPT, Claude) work with TOSCA for a signed-in user:
-look up the catalog, and drive the map that is open in the user's browser.
+look up the catalog, drive the map that is open in the user's browser, publish
+layers, change styles, write geostories and read external data.
 
-Scope of this first version: MCP endpoint, read-only catalog tools, map tools.
-Out of scope: multi-user sessions, shared map state, write tools (publishing,
-styles, geostories), fetching external data.
+Out of scope: multi-user sessions and shared map state (collaborative mode),
+uploading data (TOSCA has no upload yet), and the app modules listed under
+"Coverage".
+
+> **OPEN: authorization of the write tools is not decided.** Who (which role,
+> in which organization) may publish, change styles or write geostories
+> through the assistant has not been decided yet. Until it is, see
+> [Write tools](#write-tools): every write passes one function,
+> `authorization.authorize`, which today only applies the organization
+> boundary the REST API already has. The role rules are added there before the
+> server is made public.
 
 Code: `tosca_api/apps/mcp_server/` (backend), `src/mcp/` and
 `src/store/aiBridge.ts` (frontend).
@@ -277,7 +286,14 @@ The full message list is in the docstring of `bridge_ws.py`.
 | Tool | Does |
 |---|---|
 | `whoami` | account, organization, role of this connection |
-| `list_geostories` | geostories the user may open (same visibility as `GET /api/v1/stories/`), for `open_geostory` |
+| `list_geostories`, `describe_geostory` | geostories the user may open (same visibility as `GET /api/v1/stories/`), for `open_geostory`; text and scenes of one |
+| `list_campaigns`, `create_geostory`, `update_geostory` | write geostories in the organization's campaigns (see [Write tools](#write-tools)) |
+| `add_scene`, `update_scene`, `delete_scene`, `add_scene_from_map` | map scenes of a geostory; `add_scene_from_map` saves the user's current view and visible catalog layers |
+| `list_editable_layers`, `list_publishable_tables` | the organization's layers in every state; tables of its PostGIS stores |
+| `publish_layer`, `unpublish_layer`, `update_layer` | publish an existing layer, the same table under a new name, or a table; unpublish; title / description |
+| `describe_style`, `update_style`, `set_layer_default_style` | read a style's content, replace it (validated, uploaded to GeoServer), choose a layer's default style |
+| `publish_layer_group`, `unpublish_layer_group` | publication of an existing layer group (members are put together in the admin) |
+| `fetch_ogc_features`, `get_fetched_features`, `show_fetched_features` | read an OGC API collection of a registered source on the server, page through it, put it on the map without the model sending the GeoJSON |
 | `list_workspaces`, `search_layers`, `describe_layer` | catalog lookup (paged search; attributes, extent, styles) |
 | `list_sources`, `search_sources`, `describe_source_item` | further data catalogs (see "Catalog sources") |
 | `connect_map`, `disconnect_map` | pair with / leave the user's tab |
@@ -288,7 +304,9 @@ The full message list is in the docstring of `bridge_ws.py`.
 | `add_ogc_collection`, `set_ogc_layer_query`, `reset_ogc_layer_query` | external OGC API Features collections and their server-side query |
 | `list_sensor_things_layers`, `add_sensor_things_layer` | external SensorThings layers (live values) |
 | `open_geostory` | open a geostory; it replaces the map |
-| `set_layer_visibility`, `set_layer_opacity`, `move_layer`, `set_layer_style`, `set_layer_color`, `set_layer_time` | layer display (style ids in `get_map_state`) |
+| `get_selected_features` | what the user clicked on the map (newest first, up to five clicks since connecting), as the click popup showed it |
+| `load_ogc_layer` | OGC API layer: load all matching features, stop that, or reload |
+| `set_layer_visibility`, `set_layer_opacity`, `move_layer`, `set_layer_style`, `set_layer_color`, `set_layer_time` | layer display (style ids in `get_map_state`; `set_layer_visibility` with `memberId` for one member of a layer group) |
 | `get_layer_legend`, `identify_at`, `get_drawn_features` | legend, what is drawn at a point in view, the user's drawings |
 | `create_buffer` | buffer polygon layer around a GeoJSON layer; can be the area of `apply_geometry_filter` |
 | `get_layer_attributes`, `get_layer_features` | read a layer (features: catalog layers as drawn in the current view after their filters, GeoJSON layers in full; paged, max 1 MB per page) |
@@ -317,6 +335,75 @@ what the browser receives (`layerId`, `providerId`, `layerName`, ...).
 
 All tools have typed inputs and `readOnlyHint` annotations. Map-changing tools
 are marked as not read-only: they change only what the user's own tab shows.
+
+## Write tools
+
+Code: `tools/publishing.py` (layers, styles, groups), `tools/geostories.py`
+(stories and scenes), `authorization.py`.
+
+**Same code as the admin and the REST API.** The tools are thin wrappers:
+
+| Tool | Calls |
+|---|---|
+| `publish_layer` | `LayerService.publish_existing_layer`, or `LayerService.publish_postgis` (+ the workspace sync the admin's publish page runs) |
+| `unpublish_layer` | `LayerService.unpublish_layer` |
+| `update_layer` | `LayerUpdateService.apply` |
+| `update_style` | `StyleService.update_content` (`StyleValidationService`, then upload). `StyleService` is new: the admin's `StyleAdmin` now uses it too, so the upload steps live in one place |
+| `set_layer_default_style` | `LayerStyleAssignment` rows (the old default stays as alternate) |
+| `publish_layer_group` / `unpublish_layer_group` | `LayerGroupService.reconcile_publication` |
+| geostory and scene tools | the models; their `clean` / `save` hold the rules (sanitizing, Editor.js, scene anchors, public + published scene layers, style checks) |
+
+**Which records.** Write tools look targets up among the caller's own
+organization's workspaces, layers, styles, groups and campaigns (all of them
+for platform admins). Another organization's record is "not found". Global
+styles (no workspace) are shared by every organization; only platform admins
+change them.
+
+**Authorization (OPEN).** Every write tool calls
+`authorization.authorize(principal, action, workspace=… | campaign=…)` with a
+named `WriteAction`. Today it enforces only the organization boundary the REST
+API already has (`validate_workspace_organization`,
+`validate_campaign_organization`). There is **no role ladder yet**: any user who
+passes the MCP gate (`MCP_MIN_ROLE_LEVEL`) may write in their own organization.
+The rules ("which role may do which action") are to be decided and then written
+in that one function; no tool needs to change.
+
+**Accounts.** `created_by` / `author` need the Django user of the Keycloak
+identity. The MCP server never creates users, so a user who has never signed in
+to the TOSCA web app gets "sign in to the TOSCA web app once".
+
+**Geostory text and scenes.** A story's text is an Editor.js document; a map
+scene is shown while the reader is at its `mapScene` anchor, and the first
+scene also before the first anchor. `add_scene` / `add_scene_from_map` append
+the anchor (from the second scene on) at the end of the text, after an optional
+`text_before`. `delete_scene` removes the anchor with the scene.
+`add_scene_from_map` reads `get_map_state`: camera, and the visible catalog
+layers with style and opacity (`catalog.providerId` / `style` in the map state);
+drawings, GeoJSON and external layers cannot be scene layers and are reported
+as skipped.
+
+## External data on the server
+
+`fetch_ogc_features` reads a collection of a registered `ogc-api-features`
+source (`catalog_sources/`), never a URL from the model: dataset and collection
+must be in the source's own listing, all reads go through the guarded client of
+`external_catalog.remote` (registered host, public addresses, time and size
+limits), `next` links are followed only on the source's host, at most 10 000
+features / 20 MB. The result is kept for an hour in the Django cache, under the
+calling user's `sub`; the model gets a `ref` and a summary (count, extent,
+attributes with examples, five features). `show_fetched_features` sends the kept
+GeoJSON to the tab as `addGeoJsonLayer` (at most 5 MB), so large data never
+passes through the conversation.
+
+## Coverage
+
+The frontend keeps the measure: `src/mcp/coverage.ts` places every action of
+the map stores as reachable through a command, internal, or deliberately not
+for the assistant (with the reason), and `coverage.test.ts` fails when a store
+gets a new action or a new store file appears. Not offered yet: simulations
+(and simulation results in geostory scenes), urban stories, Hamburg Riders,
+events, participation, 3D tiles (no catalog entry yet). Server-side work is
+covered by the tools above.
 
 ## Catalog sources
 
@@ -402,17 +489,19 @@ reachable from the internet over HTTPS, and Keycloak must be reachable too.
 - **Tenants:** every catalog answer goes through `CatalogVisibilityService`
   with the caller's organization. Map commands run in the user's browser with
   the user's own session, so they can load only what the user could load.
-- **No open proxy:** there is no tool that fetches a URL, so the server cannot
-  be used to reach internal addresses. (`fetch_ogc_features` from the plan is
-  not part of this version; when it comes it must be limited to the curated
-  external services.)
+- **No open proxy:** no tool takes a URL. `fetch_ogc_features` reads only the
+  registered sources, through the guarded client (see "External data on the
+  server").
 - **Fixed command list:** the browser runs only named commands with validated
   parameters; unknown names are refused on both sides.
-- **Prompt injection:** layer titles, descriptions and attribute values are
-  written by other people and reach the model as tool output. The server
-  instructions tell the model to treat them as data. Because no tool writes
-  data or reaches other systems, the worst a hostile text can do is change what
-  the user's own map shows. Keep this in mind before adding write tools.
+- **Prompt injection:** layer titles, descriptions, attribute values and
+  external data are written by other people and reach the model as tool output.
+  The server instructions tell the model to treat them as data. Write tools
+  exist now: a hostile text could try to make the model publish, unpublish or
+  change a style or story of the user's own organization. Their descriptions
+  ask the model to confirm with the user first, they are annotated (`destructive`
+  for unpublishing and deleting), and the role rules in `authorization.authorize`
+  (OPEN) are the place to narrow them further.
 - **Answers carry no secrets:** no store credentials, no internal GeoServer
   addresses (tested).
 
@@ -445,5 +534,7 @@ Not verified, needs the real services:
   `MCP_ALLOWED_ORIGINS`);
 - which ChatGPT plans may call the map tools (they are not read-only; OpenAI
   documents write tools for Business/Enterprise only);
-- the production container and proxy routes (written, not run);
-- the user interface in a browser with a real login.
+- the production container and proxy routes (written, not run).
+
+The map connection and the map tools were used by the user in the browser with a
+real login (2026-11-27).
