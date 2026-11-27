@@ -88,7 +88,7 @@ tosca-web-api/
 │   ├── Dockerfile
 │   └── docker-compose.yml
 │
-├── .env.example
+├── .env.*.example
 ├── .gitignore
 ├── pyproject.toml
 ├── uv.lock
@@ -174,7 +174,7 @@ source dcs-api/bin/activate
 uv sync
 
 # Database setup
-cp .env.example .env
+cp .env.development.example .env.development
 uv run python manage.py migrate
 uv run python manage.py runserver
 ```

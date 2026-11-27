@@ -14,11 +14,10 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 BASE_DIR = ROOT_DIR / "tosca_api"
 
 # -------------------------------------------------
-# ENV selection (.env.dev / .env.prod) with fallback
+# ENV selection: dev reads .env.development, prod reads .env.production
 # -------------------------------------------------
 ENV = os.getenv("ENV", "dev")  # dev | prod
-ENV_FILE = ROOT_DIR / f".env.{ENV}"
-FALLBACK_ENV_FILE = ROOT_DIR / ".env"
+ENV_FILE = ROOT_DIR / (".env.production" if ENV == "prod" else ".env.development")
 
 # -------------------------------------------------
 # django-environ setup
@@ -31,13 +30,8 @@ env = environ.Env(
 
 if ENV_FILE.exists():
     env.read_env(os.fspath(ENV_FILE))
-elif FALLBACK_ENV_FILE.exists():
-    # Backward-compatible: allow single .env if .env.dev/.env.prod not created yet
-    env.read_env(os.fspath(FALLBACK_ENV_FILE))
-else:
-    # Environment variables may already be injected by Docker/Kubernetes runtime.
-    # In that case, proceed without reading a local .env file.
-    pass
+# Otherwise the variables are already in the environment (Docker, CI); there
+# is no plain `.env` fallback.
 
 # -------------------------------------------------
 # Core

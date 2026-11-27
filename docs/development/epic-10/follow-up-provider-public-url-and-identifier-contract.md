@@ -30,7 +30,7 @@ just for routing.
   by public catalog consumers.
 - The public catalog provider response exposes `id`, display `name`, and
   `base_url`, where `base_url` is populated from `GeodataEngine.public_url`.
-- `.env.example` documents `GEOSERVER_PUBLIC_URL`; local development can fall
+- `.env.*.example` documents `GEOSERVER_PUBLIC_URL`; local development can fall
   back to `http://localhost:{GEOSERVER_PORT}/geoserver` when the setting is not
   configured.
 
@@ -52,7 +52,7 @@ Likely touch points:
 - `tosca_api/apps/geodata_providers/services/queries/provider_query_service.py`
 - `tosca_api/apps/catalog_api/views.py`
 - provider/catalog tests
-- `.env.example`, `.env.dev`, and relevant README/development docs
+- `.env.*.example`, `.env.development`, and relevant README/development docs
 
 ## Requirements
 

@@ -310,7 +310,7 @@ token.realm_access.roles = [ROLE_DCS_WRITER, ...]   +  default_organization=dcs
 
 **B — GeoServer OIDC (hafif kalıntı)**
 - [ ] B1. Çalışan OIDC auth filter config'ini repoya al (commit + provision script), auth2/`tosca-dev` realm'ine repoint. JDBC break-glass `ADMIN`/`GROUP_ADMIN` değişmez.
-- [ ] B2. auth2 config switch: `.env.dev` + `base.py` + `.env.example` (bkz. §12).
+- [ ] B2. auth2 config switch: `.env.development` + `base.py` + `.env.*.example` (bkz. §12).
 
 ### Mikro-kararlar
 1. Seed org slug = `dcs` (mevcut veri dcs'e düşer).
@@ -327,26 +327,26 @@ token.realm_access.roles = [ROLE_DCS_WRITER, ...]   +  default_organization=dcs
 
 ### Değişecek yerler
 
-- [ ] `.env.dev`
+- [ ] `.env.development`
   - `KEYCLOAK_SERVER_URL=https://auth.dcs.hcu-hamburg.de/` → `auth2...`
   - `KEYCLOAK_JWKS_URL=https://auth.dcs.hcu-hamburg.de/realms/<realm>/...` → `auth2...`
   - `KEYCLOAK_ISSUER=https://auth.dcs.hcu-hamburg.de/realms/<realm>` → `auth2...`
 - [ ] `tosca_api/settings/base.py:275` — `default="https://auth.dcs.hcu-hamburg.de/"` → `auth2...`
-- [ ] `.env.example:189/195/196` — tutarlılık için güncelle
-- [ ] `.env.prod` (repoda yok, deploy tarafında) — aynı üç değişken
+- [ ] `.env.*.example:189/195/196` — tutarlılık için güncelle
+- [ ] `.env.production` (repoda yok, deploy tarafında) — aynı üç değişken
 
 ### Doğrulanmış / karar
 
 - ✅ **Realm adı `prod-realm` → `tosca-dev` DEĞİŞİYOR** (auth2'de realm = `tosca-dev`).
-  Yani `.env.dev` + `base.py` + `.env.example`'daki tüm `realms/prod-realm/...` → `realms/tosca-dev/...`.
+  Yani `.env.development` + `base.py` + `.env.*.example`'daki tüm `realms/prod-realm/...` → `realms/tosca-dev/...`.
 - ✅ Django client adı `django-dev` **aynı kalıyor**.
 - ✅ **GeoServer OIDC login zaten çalışıyor** (Keycloak ile giriş + realm rolleriyle kullanıcı tanıma). Part B = çalışan filter config'i commit/provision + auth2'ye repoint; sıfırdan değil.
 
 ### Doğrulanacak
 
-- [ ] Django client `django-dev` public mi confidential mı? (`.env.dev`'deki `KEYCLOAK_CLIENT_SECRET` vs base.py `"secret": ""` çelişkisi)
+- [ ] Django client `django-dev` public mi confidential mı? (`.env.development`'deki `KEYCLOAK_CLIENT_SECRET` vs base.py `"secret": ""` çelişkisi)
 - [ ] `default_organization` + `ROLE_<SLUG>_*` + `realm_access.roles` mapper'ları auth2/tosca-dev'de token'a düşüyor mu? (canlı token ile doğrula)
 
 ### İlgili
-- GeoServer OIDC plugin `.env.dev`: `COMMUNITY_PLUGINS=sec-oauth2-openid-connect` (zaten var).
+- GeoServer OIDC plugin `.env.development`: `COMMUNITY_PLUGINS=sec-oauth2-openid-connect` (zaten var).
 - GeoServer OIDC auth filter'ın `issuer`/`jwks`/`client` ayarları da auth2'ye çevrilecek (Parça B).

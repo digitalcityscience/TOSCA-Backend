@@ -32,8 +32,8 @@ tosca_api/
 
 ### Settings Module Selection
 Use `ENV` variable to select environment file:
-- `ENV=dev` → uses `.env.dev` → loads `tosca_api.settings.development`
-- `ENV=prod` → uses `.env.prod` → loads `tosca_api.settings.production`
+- `ENV=dev` → uses `.env.development` → loads `tosca_api.settings.development`
+- `ENV=prod` → uses `.env.production` → loads `tosca_api.settings.production`
 - Tests always use `tosca_api.settings.test` (configured in pytest.ini)
 
 ### Database Schema Architecture
@@ -192,7 +192,7 @@ Default: `permissions.IsAuthenticated` for all DRF views. Override per-view if n
 Ensure you're using the correct settings module. Check `DJANGO_SETTINGS_MODULE` environment variable or use `--settings` flag.
 
 ### Database Connection Errors
-Verify `.env.dev` contains correct `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_API_USER`, `PG_API_PASSWORD`. For Docker: `make down && make up` to restart services.
+Verify `.env.development` contains correct `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_API_USER`, `PG_API_PASSWORD`. For Docker: `make down && make up` to restart services.
 
 ### JWT Verification Failures
 Check that `KEYCLOAK_JWKS_URL` and `KEYCLOAK_ISSUER` in settings match your Keycloak realm configuration. Verify token audience matches `ALLOWED_TOKEN_AUDIENCES`.

@@ -66,7 +66,7 @@ cab9fe6 feat(storage): add configurable S3 backend foundation
 - `uv.lock`
 - `tosca_api/settings/base.py`
 - `docker-compose-prod.yml`
-- `.env.example`
+- `.env.*.example`
 - `tosca_api/apps/core/tests/test_storage_settings.py`
 
 ### Eklenen dependency'ler
@@ -374,7 +374,7 @@ S3_ADDRESSING_STYLE=path
 Gerçek local acceptance akışı:
 
 ```sh
-ENV_FILE=.env.dev ./scripts/verify_garage_s3.sh
+ENV_FILE=.env.development ./scripts/verify_garage_s3.sh
 ```
 
 Bu script Django `default_storage` üzerinden byte upload eder, Garage restart sonrasında aynı object'i okur ve SHA-256 eşleşmesini kontrol eder.
@@ -433,7 +433,7 @@ Bu bölüm, dokümanda yazan her ana gereksinimi doğrudan bir kontrol ve gözle
 | S3/Garage backend settings ile seçilebilmeli | Container içinde `DJANGO_STORAGE_BACKEND=s3` ile Django startup smoke testi | `storages.backends.s3.S3Storage`, Garage endpoint, bucket, path-style ve S3v4 options yüklendi. Passed. |
 | S3 bucket olmadan unsafe startup engellenmeli | `test_storage_settings.py::test_s3_requires_a_bucket_name` | `ImproperlyConfigured` üretildi. Passed. |
 | Packaging dependency'leri lockfile'a dahil olmalı | Container içinde `uv sync --frozen` | `boto3`, `botocore`, `django-storages`, `s3transfer` kuruldu. Passed. |
-| Production Compose S3 environment değerlerini iletmeli | `ENV_FILE=.env.example docker compose -f docker-compose-prod.yml config --quiet` | Compose config başarıyla oluşturuldu. Passed. |
+| Production Compose S3 environment değerlerini iletmeli | `ENV_FILE=.env.production.example docker compose -f docker-compose-prod.yml config --quiet` | Compose config başarıyla oluşturuldu. Passed. |
 | EditorJS file upload public response contract'ını korumalı | Gerçek PostGIS-backed `test_upload_by_file_stores_original_bytes_and_returns_editorjs_contract` | HTTP 200, `success=1`, URL/mime/width/height ve original bytes doğrulandı. Passed. |
 | Upload metadata DB'ye yazılmalı | Aynı public upload testi içinde `MediaAsset.objects.get(...)` | `storage_path`, `original_name`, `mime`, width, height ve byte size doğrulandı. Passed. |
 | EditorJS URL upload çalışmalı | Gerçek `test_upload_by_url_downloads_rehosts_and_preserves_bytes` | HTTP 200, EditorJS contract ve rehost edilen bytes doğrulandı. Passed. |
@@ -445,7 +445,7 @@ Bu bölüm, dokümanda yazan her ana gereksinimi doğrudan bir kontrol ve gözle
 | Migration model ile uyumlu olmalı | `manage.py makemigrations core --check --dry-run` | `No changes detected in app 'core'`. Passed. |
 | Applied migration state eksiksiz olmalı | `manage.py migrate --check` | Pending migration bulunmadı. Passed. |
 | Changed Python code lint edilebilir olmalı | Container içinde Ruff | `All checks passed!`. Passed. |
-| Local Garage Compose stack'i ve persistent volumes | `ENV_FILE=.env.dev ./scripts/verify_garage_s3.sh` | 52 filesystem regression testi, Compose config ve shell syntax kontrolleri geçti. Live Garage akışı private/public alias upload-read ve restart persistence doğruladı. Passed. |
+| Local Garage Compose stack'i ve persistent volumes | `ENV_FILE=.env.development ./scripts/verify_garage_s3.sh` | 52 filesystem regression testi, Compose config ve shell syntax kontrolleri geçti. Live Garage akışı private/public alias upload-read ve restart persistence doğruladı. Passed. |
 | Private ve public Garage bucket alias'ları | `scripts/garage_e2e.py` üzerinden `default_storage` ve `storages["media_public"]` | Her iki bucket'a upload edildi, Garage restart sonrasında her iki object byte-for-byte okundu. Passed. |
 | Implementation documentation takip edilebilir olmalı | Dosya existence, line count, opening metadata ve commit doğrulaması | İstenen dosya mevcut, 421+ satır, branch/commit/test/limitation bölümleri içeriyor ve `d6ec700` ile commit edildi. Passed. |
 
@@ -487,7 +487,7 @@ Yapılan:
 ### Throttling (önceki §7'de "production rate değerleri tamamlanmalı" idi)
 
 - Çıplak `UserRateThrottle` yerine scope'lu sınıflar: `editorjs_upload` ve `editorjs_media`.
-- `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]` env-configurable defaults ile eklendi (`THROTTLE_EDITORJS_UPLOAD=30/minute`, `THROTTLE_EDITORJS_MEDIA=120/minute`). `.env.example` ve prod compose güncellendi.
+- `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]` env-configurable defaults ile eklendi (`THROTTLE_EDITORJS_UPLOAD=30/minute`, `THROTTLE_EDITORJS_MEDIA=120/minute`). `.env.*.example` ve prod compose güncellendi.
 
 ### Bilinçli kapsam dışı bırakılanlar
 
