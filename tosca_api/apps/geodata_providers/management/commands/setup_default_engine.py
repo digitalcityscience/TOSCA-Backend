@@ -1,6 +1,6 @@
 """
 Management command to setup default GeodataEngine from environment variables
-Reads from Django settings which loads .env.dev or .env.prod based on ENV_TYPE
+Reads from Django settings which loads .env.development or .env.production based on ENV_TYPE
 """
 import requests
 from django.core.management.base import BaseCommand
@@ -10,7 +10,7 @@ from tosca_api.apps.geodata_providers.models import GeodataEngine
 
 
 class Command(BaseCommand):
-    help = 'Setup default GeodataEngine from environment variables (.env.dev/.env.prod)'
+    help = 'Setup default GeodataEngine from environment variables (.env.development/.env.production)'
 
     def add_arguments(self, parser):
         parser.add_argument(

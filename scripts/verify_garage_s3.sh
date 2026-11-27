@@ -2,7 +2,7 @@
 set -eu
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose-dev.yml}"
-ENV_FILE="${ENV_FILE:-.env.dev}"
+ENV_FILE="${ENV_FILE:-.env.development}"
 DJANGO_STORAGE_BACKEND="${DJANGO_STORAGE_BACKEND:-s3}"
 S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-http://garage:3900}"
 S3_REGION_NAME="${S3_REGION_NAME:-garage}"

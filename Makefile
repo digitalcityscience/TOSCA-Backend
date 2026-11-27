@@ -1,4 +1,4 @@
-.PHONY: help set-env which-env initialize-project jdbc-settings-activation build up down restart logs rebuild rmvolumes \
+.PHONY: help set-env which-env image release initialize-project jdbc-settings-activation build up down restart logs rebuild rmvolumes \
 	django-restart django-logs django-cmd django-shell django-migrate django-makemigrations \
 	django-test django-test-unit django-test-integration test-geoserver \
 	django-createsuperuser uv-sync uv-install uv-add uv-lock ps clean \
@@ -13,7 +13,10 @@ ENV_CONFIG := .make.env
 
 ENV ?= dev
 
-ENV_FILE := .env.$(ENV)
+# ENV=dev reads .env.development, ENV=prod reads .env.production. Create the
+# file from its committed template: cp .env.development.example .env.development
+ENV_NAME := $(if $(filter prod,$(ENV)),production,development)
+ENV_FILE := .env.$(ENV_NAME)
 COMPOSE_FILE := docker-compose-$(ENV).yml
 DEV_COMPOSE_FILE := docker-compose-dev.yml
 PROD_COMPOSE_FILE_PRIMARY := docker-compose-prod.yml
@@ -39,19 +42,33 @@ endif
 # -------------------------------------------------
 # Load env file
 # -------------------------------------------------
-ifeq ($(filter set-env,$(MAKECMDGOALS)),)
+# `make set-env`, `make image`, `make release` and `make help` need no env file.
+NO_ENV_GOALS := set-env image release help
+ifeq ($(MAKECMDGOALS),)
+  NEEDS_ENV := yes
+else ifneq ($(filter-out $(NO_ENV_GOALS),$(MAKECMDGOALS)),)
+  NEEDS_ENV := yes
+endif
+
+ifdef NEEDS_ENV
 ifneq ("$(wildcard $(ENV_FILE))","")
   include $(ENV_FILE)
   export $(shell sed -n 's/^\s*\([A-Za-z_][A-Za-z0-9_]*\)\s*=.*/\1/p' $(ENV_FILE))
+  # The compose files read ${ENV_FILE}; it is always the file selected here,
+  # whatever an older copy of the file itself still says.
+  override ENV_FILE := .env.$(ENV_NAME)
+  export ENV_FILE
+else ifneq ("$(wildcard .env.$(ENV))","")
+  $(error ❌ Missing $(ENV_FILE). Environment files are now named with the full mode: mv .env.$(ENV) $(ENV_FILE))
 else
-  $(error ❌ Missing $(ENV_FILE))
+  $(error ❌ Missing $(ENV_FILE). Create it: cp $(ENV_FILE).example $(ENV_FILE))
 endif
 endif
 
 # -------------------------------------------------
 # Check compose file
 # -------------------------------------------------
-ifeq ($(filter set-env,$(MAKECMDGOALS)),)
+ifdef NEEDS_ENV
 ifneq ("$(wildcard $(COMPOSE_FILE))","")
 else
   $(error ❌ Missing $(COMPOSE_FILE))
@@ -127,6 +144,11 @@ help:
 	@echo "  make set-env ENV=dev    - Persist dev environment for future make commands"
 	@echo "  make set-env ENV=prod   - Persist prod environment for future make commands"
 	@echo "  make which-env          - Show active environment and compose file"
+	@echo "  dev reads .env.development, prod reads .env.production (copy the matching .example file)"
+	@echo ""
+	@echo "$(COLOR_GREEN)Image and release (no env file needed):$(COLOR_RESET)"
+	@echo "  make image [IMAGE=name:tag]   - Build the production image as CI does (default tosca-backend:dev)"
+	@echo "  make release VERSION=X.Y.Z    - Tag main as vX.Y.Z and push the tag; CI publishes the image"
 	@echo "$(COLOR_GREEN)Environment:$(COLOR_RESET) ENV=$(ENV) | ENV_FILE=$(ENV_FILE) | COMPOSE_FILE=$(COMPOSE_FILE)"
 	@echo ""
 	@echo "  make test                     # Run pytest suite excluding integration tests"
@@ -162,8 +184,8 @@ set-env:
 		echo "$(COLOR_RED)❌ Invalid ENV=$(ENV). Allowed values: dev, prod$(COLOR_RESET)"; \
 		exit 1; \
 	fi
-	@if [ ! -f ".env.$(ENV)" ]; then \
-		echo "$(COLOR_RED)❌ Missing .env.$(ENV)$(COLOR_RESET)"; \
+	@if [ ! -f "$(ENV_FILE)" ]; then \
+		echo "$(COLOR_RED)❌ Missing $(ENV_FILE). Create it: cp $(ENV_FILE).example $(ENV_FILE)$(COLOR_RESET)"; \
 		exit 1; \
 	fi
 	@if [ ! -f "$(COMPOSE_FILE)" ]; then \
@@ -548,3 +570,19 @@ seed-geosimulations: which-env
 # Allow arguments to be passed to certain commands
 %:
 	@:
+
+# -------------------------------------------------
+# Image and release (no env file needed)
+# -------------------------------------------------
+IMAGE ?= tosca-backend:dev
+
+# Same Dockerfile and build arguments as .github/workflows/ci.yml.
+image:
+	DOCKER_BUILDKIT=1 docker build -f docker/django/Dockerfile.prod \
+	  --build-arg VERSION=local-$$(git rev-parse --short HEAD) \
+	  --build-arg REVISION=$$(git rev-parse HEAD)$$([ -z "$$(git status --porcelain)" ] || echo -dirty) \
+	  -t $(IMAGE) .
+	@echo "Built $(IMAGE). Check it with: scripts/ci/run.sh test $(IMAGE) && scripts/ci/run.sh smoke $(IMAGE)"
+
+release:
+	@scripts/release.sh "$(VERSION)"

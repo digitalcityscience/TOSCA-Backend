@@ -9,10 +9,10 @@ dist/
 build/
 
 # Environments
+# Environment files: only the *.example templates are committed.
 .env
-.env.dev
-.env.prod
-.env.test
+.env.*
+!.env.*.example
 .venv/
 dcs-api/
 

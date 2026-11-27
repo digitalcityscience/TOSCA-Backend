@@ -202,7 +202,7 @@ Tasks:
   - apply private/public prefixes
   - prevent overwrites
   - build public URLs from `MEDIA_PUBLIC_BASE_URL`
-- Update `.env.example`, README, and production docs.
+- Update `.env.*.example`, README, and production docs.
 
 Suggested shape:
 
@@ -355,7 +355,7 @@ Expected files:
 - `tosca_api/apps/core/image_derivatives.py`
 - `tosca_api/apps/geostories/serializers.py`
 - `tosca_api/apps/core/views.py`
-- `.env.example`
+- `.env.*.example`
 - `README.md`
 - `docker-compose-prod.yml`
 

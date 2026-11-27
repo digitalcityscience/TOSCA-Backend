@@ -6,7 +6,20 @@ All notable changes to the TOSCA backend. The project uses
 
 ## [Unreleased]
 
+### Added
+- `make release VERSION=X.Y.Z` tags `main` and pushes the tag after checking
+  it is releasable; `make image` builds the production image locally as CI
+  does. Neither needs an environment file.
+
 ### Changed
+- Environment files are named `.env.<mode>` with the mode written out, as in
+  every TOSCA repository: the templates are `.env.development.example` and
+  `.env.production.example` (was one `.env.example`), the local copies
+  `.env.development` and `.env.production` (were `.env.dev`, `.env.prod`).
+  Rename existing local files; `make` says so when it finds an old name.
+  `ENV=dev|prod` is unchanged.
+- The settings no longer fall back to a plain `.env` file.
+- The pre-commit hook allows only the two templates.
 - `geoserver-rest` is installed from Git at a pinned commit of
   `orttak/geoserver-rest` instead of the `vendor/geoserver-rest` submodule
   (same code, `10bef2c`). Dependabot could not resolve the dependencies

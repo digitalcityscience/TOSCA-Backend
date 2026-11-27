@@ -217,7 +217,7 @@ coordination needed.
 | 1 | 23 | Shared visibility queryset helpers | Report fix | — | Required — ✅ |
 | 1 | 24 | Move vendored `geoserver-rest` out of app boundary | Report fix | — | Required — ✅ |
 | 1 | 25 | DB connection pooling + statement timeout | Report fix | — | Required — ✅ |
-| 1 | 27 | Remove committed `.env.dev` credentials | Report fix | — | Required — ✅ |
+| 1 | 27 | Remove committed `.env.development` credentials | Report fix | — | Required — ✅ |
 | 1 | 30 | Audit `geocontext` for N+1 queries | Report fix | — | Required — ✅ |
 | 1 | 32 | Geometry validity checks on submissions | Report fix | — | Required — ✅ |
 | 1 | 33 | Data retention/cleanup job for feedback | Report fix | — | Required |
@@ -509,24 +509,24 @@ the configured timeout; connection reuse is observable under
 
 ---
 
-### Issue 27: Remove committed `.env.dev` credentials
+### Issue 27: Remove committed `.env.development` credentials
 
 **Status: ✅ Done.**
 
 **Track:** Report fix. **Depends on:** none. **Priority:** required, trivial.
 
-**Explanation:** `.env.dev` is committed with real-looking test credentials
+**Explanation:** `.env.development` is committed with real-looking test credentials
 (GeoServer admin password, Keycloak client secret, DB password).
 
-**Implementation:** move values into `.env.example` as placeholders, or
-explicitly document `.env.dev` as intentional/dev-only; add a pre-commit
+**Implementation:** move values into `.env.*.example` as placeholders, or
+explicitly document `.env.development` as intentional/dev-only; add a pre-commit
 check blocking any other `.env*` file from being committed.
 
-**Test Cases:** pre-commit hook rejects a staged `.env.local` or `.env.prod`
+**Test Cases:** pre-commit hook rejects a staged `.env.local` or `.env.production`
 file in a test scenario.
 
 **Acceptance Criteria:**
-- [ ] `.env.dev` handling is deliberate and documented either way.
+- [ ] `.env.development` handling is deliberate and documented either way.
 - [ ] Pre-commit check exists for other `.env*` files.
 
 ---
@@ -842,7 +842,7 @@ setting, with filesystem remaining the default for local dev and tests.
 - Configure `STORAGES` conditionally based on `DJANGO_STORAGE_BACKEND`.
 - Add a small custom storage class only if Django's storage API can't
   express private/public prefix handling or overwrite prevention directly.
-- Update `.env.example` and README with the new variables.
+- Update `.env.*.example` and README with the new variables.
 
 **Test Cases**
 
@@ -857,7 +857,7 @@ setting, with filesystem remaining the default for local dev and tests.
 - [ ] Both backends boot successfully.
 - [ ] Existing tests using `override_settings(MEDIA_ROOT=..., MEDIA_URL=...)`
       still pass or are adapted.
-- [ ] `.env.example`/README document every new variable.
+- [ ] `.env.*.example`/README document every new variable.
 
 ---
 
@@ -1528,7 +1528,7 @@ in ACL doc §5.1 — implement against that table, not an ad-hoc mapping.
 - [ ] Login syncs Keycloak group membership into Django `Membership` rows.
 - [ ] Revoked Keycloak group membership is reflected in Django within one
       login cycle.
-- [ ] `KEYCLOAK_AUTO_CREATE_ORGANIZATIONS` setting documented in `.env.example`.
+- [ ] `KEYCLOAK_AUTO_CREATE_ORGANIZATIONS` setting documented in `.env.*.example`.
 - [ ] Sync logic covered by tests using mocked Keycloak claims (no live
       Keycloak needed for the unit suite).
 
