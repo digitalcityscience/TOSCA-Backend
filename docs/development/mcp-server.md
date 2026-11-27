@@ -368,7 +368,7 @@ New protocols (STAC / Portolan catalogs, STAC API) need an adapter in
 ## Run locally
 
 ```bash
-docker compose --profile mcp -f docker-compose-dev.yml --env-file .env.dev up -d mcp
+ENV_FILE=.env.development docker compose --profile mcp -f docker-compose-dev.yml --env-file .env.development up -d mcp
 # or without Docker:
 uvicorn tosca_api.apps.mcp_server.asgi:application --port 8001 --ws-max-size 8388608
 ```
@@ -386,8 +386,8 @@ Tests: `tosca_api/apps/mcp_server/tests/`.
 
 Opt-in, nothing changes until it is switched on:
 
-1. `.env.prod`: `MCP_PUBLIC_URL`, `MCP_TOKEN_AUDIENCES`, `MCP_ALLOWED_HOSTS`,
-   `MCP_BRIDGE_ALLOWED_ORIGINS` (see `.env.example`).
+1. `.env.production`: `MCP_PUBLIC_URL`, `MCP_TOKEN_AUDIENCES`, `MCP_ALLOWED_HOSTS`,
+   `MCP_BRIDGE_ALLOWED_ORIGINS`, `MCP_SOURCE_NGCN_URL` (see `.env.production.example`).
 2. `docker compose --profile mcp … up -d mcp`.
 3. Add the three locations of `docker/nginx/mcp.conf.example` to the public
    proxy (`/mcp`, `/.well-known/oauth-protected-resource/mcp`,
