@@ -9,7 +9,6 @@ from django.forms.models import BaseInlineFormSet, ModelChoiceIteratorValue
 from django.http import HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect
 from django.utils.html import format_html, format_html_join
-from django.utils import timezone
 from django.contrib import messages
 from django.db import transaction
 from django.db.models import Count, F, Max, Q
@@ -57,6 +56,7 @@ from .services.commands.geodata_engine_service import GeodataEngineService
 from .services.commands.layer_group_service import LayerGroupService
 from .services.commands.layer_service import LayerService
 from .services.commands.store_service import StoreService
+from .services.commands.style_service import StyleService
 from .services.commands.style_validation_service import StyleValidationService
 from .services.commands.workspace_service import WorkspaceService
 from tosca_api.apps.core.editorjs import validate_description_document
@@ -1874,59 +1874,21 @@ class StyleAdmin(OrgScopedAdminMixin, admin.ModelAdmin):
     remote_error_display.short_description = 'Remote error'
 
     def _sync_remote_if_supported(self, request, obj):
-        if obj.geodata_engine.engine_type != 'geoserver':
-            obj.remote_state = 'UNSUPPORTED'
-            obj.remote_error = 'Remote style sync is not supported by this provider type.'
-            obj.sync_state = 'UNKNOWN'
-            obj.last_sync_error = obj.remote_error
-            obj.save(update_fields=['remote_state', 'remote_error', 'sync_state', 'last_sync_error', 'updated_at'])
+        result = StyleService.sync_remote(obj)
+        if not result['supported']:
             self.message_user(
                 request,
                 'Style validated and saved locally. Remote style sync is unsupported for this provider.',
                 messages.INFO,
             )
-            return
-
-        client = EngineClientFactory.create_client(obj.geodata_engine)
-        result = client.upload_style(
-            name=obj.name,
-            content=obj.file_content,
-            style_format=obj.format,
-            workspace=obj.workspace.name if obj.workspace else None,
-            overwrite=True,
-        )
-        if result.get('success'):
-            now = timezone.now()
-            obj.remote_state = 'SYNCED'
-            obj.remote_error = ''
-            obj.remote_uploaded_at = now
-            obj.remote_verified_at = now
-            obj.sync_state = 'SYNCED'
-            obj.last_sync_at = now
-            obj.last_sync_error = ''
-            obj.remote_identifier = obj.qualified_name
-            obj.save(update_fields=[
-                'remote_state', 'remote_error', 'remote_uploaded_at',
-                'remote_verified_at', 'sync_state', 'last_sync_at',
-                'last_sync_error', 'remote_identifier', 'updated_at',
-            ])
-            self.message_user(request, 'Style uploaded to GeoServer and verified.', messages.SUCCESS)
-            return
-
-        obj.remote_state = 'FAILED'
-        obj.remote_error = result.get('error') or result.get('message', 'Remote sync failed.')
-        obj.sync_state = 'FAILED'
-        obj.last_sync_at = timezone.now()
-        obj.last_sync_error = obj.remote_error
-        obj.save(update_fields=[
-            'remote_state', 'remote_error', 'sync_state', 'last_sync_at',
-            'last_sync_error', 'updated_at',
-        ])
-        self.message_user(
-            request,
-            f"Style saved locally, but GeoServer sync failed: {obj.remote_error}",
-            messages.ERROR,
-        )
+        elif result['success']:
+            self.message_user(request, result['message'], messages.SUCCESS)
+        else:
+            self.message_user(
+                request,
+                f"Style saved locally, but GeoServer sync failed: {obj.remote_error}",
+                messages.ERROR,
+            )
 
     def _ensure_local_style_content(self, obj):
         if obj.file_content or obj.geodata_engine.engine_type != 'geoserver':
