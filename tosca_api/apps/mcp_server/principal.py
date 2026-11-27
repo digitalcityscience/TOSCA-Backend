@@ -28,6 +28,7 @@ from tosca_api.apps.authentication.role_sync import (
     ORG_CHECK_EXEMPT_ROLES,
     extract_org_from_token,
     extract_roles_from_token,
+    normalize_org_roles,
     org_role_level,
 )
 from tosca_api.apps.catalog_api.services.v1.visibility_service import CatalogViewer
@@ -48,6 +49,9 @@ class McpPrincipal:
     exempt: bool
     """Holds DJANGO_SUPERADMIN (sees every organization, as in the API)."""
     client_id: str = ""
+    org_roles: tuple[tuple[str, str], ...] = ()
+    """Every ``ROLE_<ORG>_<LEVEL>`` of the token as (org, highest level),
+    independent of the organization claim."""
 
     @property
     def viewer(self) -> CatalogViewer:
@@ -61,7 +65,14 @@ class McpPrincipal:
 
     @property
     def may_use_mcp(self) -> bool:
-        return self.has_level(settings.MCP_MIN_ROLE_LEVEL)
+        """At least ``MCP_MIN_ROLE_LEVEL`` in some organization, read from the
+        role name. Tokens without an organization claim pass too; what such a
+        caller sees in the catalog still follows the claim, as in the API
+        (no claim: public layers only)."""
+        required = LEVEL_RANK[settings.MCP_MIN_ROLE_LEVEL]
+        return self.has_level(settings.MCP_MIN_ROLE_LEVEL) or any(
+            LEVEL_RANK[level] >= required for _org, level in self.org_roles
+        )
 
 
 def principal_from_claims(claims: dict) -> McpPrincipal:
@@ -75,6 +86,7 @@ def principal_from_claims(claims: dict) -> McpPrincipal:
         level=org_role_level(roles, org_slug),
         exempt=bool(roles & ORG_CHECK_EXEMPT_ROLES),
         client_id=str(claims.get("azp") or ""),
+        org_roles=tuple(sorted(normalize_org_roles(roles).items())),
     )
 
 

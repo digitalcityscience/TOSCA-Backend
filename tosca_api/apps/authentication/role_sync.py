@@ -90,6 +90,11 @@ class ExtractedOrg:
     ``present`` mirrors ``ExtractedRoles.authoritative``: it is True only when the
     ``default_organization`` claim was actually found, so callers can tell "no
     org assigned" apart from "claim missing from this payload".
+
+    Without the claim, ``default_slug`` falls back to the organization of the
+    user's roles when they hold ``ROLE_<ORG>_*`` roles for exactly one org
+    (``present`` stays False, ``sources`` is ``["roles"]``). No org row is ever
+    created from such a slug.
     """
 
     default_slug: str | None
@@ -347,8 +352,19 @@ def _extract_org_from_payloads(payloads):
             })
             return ExtractedOrg(default_slug=slug, present=True, sources=[source])
 
+    # No claim: the org is the one in the user's role names, when there is
+    # exactly one. Several orgs and no claim stay unresolved (fail closed).
+    role_orgs = normalize_org_roles(_extract_roles_from_payloads(payloads).roles)
+    if len(role_orgs) == 1:
+        slug = next(iter(role_orgs))
+        logger.info("Default organization taken from role names", extra={
+            "default_organization": slug,
+        })
+        return ExtractedOrg(default_slug=slug, present=False, sources=["roles"])
+
     logger.info("No default_organization claim found in Keycloak data", extra={
         "sources_checked": [s for s, _ in payloads],
+        "role_orgs": sorted(role_orgs),
     })
     return ExtractedOrg(default_slug=None, present=False, sources=[])
 

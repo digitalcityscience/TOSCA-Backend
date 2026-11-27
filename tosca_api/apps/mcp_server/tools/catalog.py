@@ -168,6 +168,7 @@ def register(server: MCPServer) -> None:
             "username": principal.username,
             "organization": principal.org_slug,
             "role": principal.level,
+            "roles_by_organization": dict(principal.org_roles),
             "platform_admin": principal.exempt,
         }
 

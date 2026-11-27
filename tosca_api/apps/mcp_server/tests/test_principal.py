@@ -36,11 +36,33 @@ class PrincipalFromClaimsTests(SimpleTestCase):
     def test_highest_role_counts(self):
         self.assertEqual(principal_from_claims(WRITER).level, "WRITER")
 
-    def test_no_role_or_role_in_another_organization_is_refused(self):
-        for claims in (NO_ROLE, OTHER_ORG_ROLE):
-            principal = principal_from_claims(claims)
-            self.assertIsNone(principal.level)
-            self.assertFalse(principal.may_use_mcp)
+    def test_without_any_organization_role_is_refused(self):
+        principal = principal_from_claims(NO_ROLE)
+        self.assertIsNone(principal.level)
+        self.assertFalse(principal.may_use_mcp)
+
+    def test_role_in_another_organization_passes_but_sees_only_the_claimed_one(self):
+        principal = principal_from_claims(OTHER_ORG_ROLE)
+        self.assertTrue(principal.may_use_mcp)
+        self.assertIsNone(principal.level)
+        self.assertEqual(principal.viewer.org_slug, "dcs")
+
+    def test_reader_role_without_organization_claim_takes_org_from_role(self):
+        # The ngcn-prod "web" client sends roles but no organization claim.
+        claims = {**READER, "realm_access": {"roles": ["ROLE_NGCN_READER"]}}
+        del claims["default_organization"]
+        principal = principal_from_claims(claims)
+        self.assertTrue(principal.may_use_mcp)
+        self.assertEqual(principal.org_roles, (("ngcn", "READER"),))
+        self.assertEqual(principal.viewer.org_slug, "ngcn")
+        self.assertEqual(principal.level, "READER")
+
+    def test_roles_in_several_orgs_without_claim_see_public_only(self):
+        claims = {**READER, "realm_access": {"roles": ["ROLE_NGCN_READER", "ROLE_DCS_WRITER"]}}
+        del claims["default_organization"]
+        principal = principal_from_claims(claims)
+        self.assertTrue(principal.may_use_mcp)
+        self.assertIsNone(principal.viewer.org_slug)
 
     def test_platform_admin_passes_without_an_organization(self):
         principal = principal_from_claims(PLATFORM_ADMIN)

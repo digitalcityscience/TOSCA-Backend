@@ -33,6 +33,36 @@ def test_extract_org_from_token_absent_claim_is_not_present():
     assert org.default_slug is None
 
 
+def test_extract_org_from_token_falls_back_to_single_role_org():
+    org = extract_org_from_token({"realm_access": {"roles": ["offline_access", "ROLE_NGCN_READER"]}})
+
+    assert org.present is False
+    assert org.default_slug == "ngcn"
+    assert org.sources == ["roles"]
+
+
+def test_extract_org_from_token_several_role_orgs_stay_unresolved():
+    org = extract_org_from_token({"realm_access": {"roles": ["ROLE_NGCN_READER", "ROLE_DCS_WRITER"]}})
+
+    assert org.default_slug is None
+
+
+def test_extract_org_from_token_claim_wins_over_roles():
+    org = extract_org_from_token({
+        "default_organization": "dcs",
+        "realm_access": {"roles": ["ROLE_NGCN_READER"]},
+    })
+
+    assert org.present is True
+    assert org.default_slug == "dcs"
+
+
+def test_extract_org_from_token_project_roles_do_not_count():
+    org = extract_org_from_token({"realm_access": {"roles": ["ROLE_NGCN_READER", "ROLE_DCS_TOSCA_WRITER"]}})
+
+    assert org.default_slug == "ngcn"
+
+
 # ---------------------------------------------------------------------------
 # extract_roles_from_token
 # ---------------------------------------------------------------------------
