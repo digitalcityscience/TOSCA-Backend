@@ -1,0 +1,13 @@
+{
+  "id": "ngcn",
+  "title": "NGCN TOSCA catalog",
+  "description": "Layers published on the NGCN TOSCA platform of HafenCity University Hamburg: administrative areas, buildings, green spaces, mobility and other urban data of Hamburg.",
+  "url": "${MCP_SOURCE_NGCN_URL}",
+  "protocol": "tosca-catalog",
+  "extent": { "bbox": [8.41, 53.39, 10.35, 53.97] },
+  "keywords": ["hamburg", "urban data", "buildings", "mobility", "administrative areas"],
+  "providers": [
+    { "name": "HafenCity University Hamburg", "roles": ["producer", "host"] }
+  ],
+  "priority": 1
+}

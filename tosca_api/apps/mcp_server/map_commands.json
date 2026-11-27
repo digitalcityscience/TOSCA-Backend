@@ -1,0 +1,1015 @@
+{
+  "format": 1,
+  "source": "TOSCA-2 src/mcp/commandCatalog.ts (npm run mcp:export); do not edit by hand",
+  "commands": [
+    {
+      "name": "addCatalogLayer",
+      "title": "Add a catalog layer to the map",
+      "description": "Show a TOSCA catalog layer on the user's map, with its catalog style. A vector layer comes as vector tiles and takes attribute and area filters; a raster layer is an image and takes no filters. Take providerId, workspace and layerName from search_layers (its provider_id, workspace and name). Returns the new layer's id on the map.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "providerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "provider_id from search_layers."
+          },
+          "workspace": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Workspace name from search_layers."
+          },
+          "layerName": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Layer name from search_layers (not the title)."
+          },
+          "time": {
+            "type": "string",
+            "minLength": 4,
+            "description": "Time-enabled raster layers only: ISO 8601 time or \"default\"; leave out for the server's default."
+          }
+        },
+        "required": [
+          "providerId",
+          "workspace",
+          "layerName"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "add",
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "addCatalogLayerGroup",
+      "title": "Add a catalog layer group to the map",
+      "description": "Show a TOSCA catalog layer group: several layers shown as one entry in the layer list. Take providerId and workspace from search_layers and the group's name.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "providerId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspace": {
+            "type": "string",
+            "minLength": 1
+          },
+          "groupName": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "providerId",
+          "workspace",
+          "groupName"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "add",
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "addOgcCollection",
+      "title": "Add an OGC API collection to the map",
+      "description": "Show a collection of an external OGC API Features service (e.g. Hamburg's) on the map, as TOSCA's data panel does. From search_sources / describe_source_item: serviceId = the source id, datasetId = the item_id (may be empty), collectionId = one of the item's collections with geojson true. The browser loads it as GeoJSON: all features when small, otherwise the features in view. The map moves to the data.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "serviceId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "External service id."
+          },
+          "datasetId": {
+            "type": "string",
+            "description": "Dataset id within the service; empty for a single API."
+          },
+          "collectionId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "serviceId",
+          "collectionId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "add",
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "addSensorThingsLayer",
+      "title": "Add a SensorThings layer to the map",
+      "description": "Show live sensor data of an external SensorThings service on the map; values update live where the service offers it. Take serviceId, serviceName and layerName from search_sources (its `show_on_map`) or from list_sensor_things_layers.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "serviceId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "External service id."
+          },
+          "serviceName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "layerName": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "serviceId",
+          "serviceName",
+          "layerName"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "add",
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "listSensorThingsLayers",
+      "title": "List the layers of a SensorThings service",
+      "description": "The layers (serviceName, layerName, number of sensors) an external SensorThings service offers, for add_sensor_things_layer. The first call for a service can take a while.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "serviceId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "External service id."
+          }
+        },
+        "required": [
+          "serviceId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "read",
+      "timeoutSeconds": 120
+    },
+    {
+      "name": "addGeoJsonLayer",
+      "title": "Add GeoJSON to the map",
+      "description": "Show small GeoJSON data (WGS84) as a new layer, e.g. a few points or one outline you computed. The layer exists only in the user's browser tab. All features must be of one geometry family (points, lines or polygons). Polygon layers can be the area of apply_geometry_filter. At most 5000 features and about 1 MB; for catalog data use add_catalog_layer.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "Layer title shown in the layer list."
+          },
+          "geojson": {
+            "type": "object",
+            "description": "A GeoJSON FeatureCollection in WGS84."
+          }
+        },
+        "required": [
+          "title",
+          "geojson"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "add",
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "openGeostory",
+      "title": "Run a geostory",
+      "description": "Open a geostory on the user's map; it replaces the current map and its layers. Take the id from list_geostories. After that the user reads the story themselves.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "storyId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "storyId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "add",
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "removeLayer",
+      "title": "Remove a layer from the map",
+      "description": "Remove a layer from the user's map (the catalog data itself is not touched).",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 15
+    },
+    {
+      "name": "setLayerVisibility",
+      "title": "Show or hide a layer",
+      "description": "Set whether a layer on the map is visible.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "visible": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "layerId",
+          "visible"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "setLayerOpacity",
+      "title": "Set layer opacity",
+      "description": "Set the opacity of a layer on the map, from 0 (transparent) to 1 (opaque).",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "opacity": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "layerId",
+          "opacity"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "moveLayer",
+      "title": "Change the layer order",
+      "description": "Move a layer in the layer list and drawing order; position 0 is the top of the list, drawn above the others. get_map_state lists the layers.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "layerId",
+          "position"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "setLayerStyle",
+      "title": "Choose a layer style",
+      "description": "Switch a catalog layer to another of its published styles; get_map_state lists a layer's `styles` (id and title) when it has more than one.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "styleId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "layerId",
+          "styleId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 15
+    },
+    {
+      "name": "setLayerColor",
+      "title": "Change a layer's colour",
+      "description": "Set the fill or outline colour of a layer, as a hex colour like #2a9d8f, as the colour picker in the layer list does. Not possible when the colour depends on the data (classes) or the style draws the layer in several parts; use set_layer_style then.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "part": {
+            "type": "string",
+            "enum": [
+              "fill",
+              "outline"
+            ]
+          },
+          "color": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 7,
+            "description": "#rgb or #rrggbb."
+          }
+        },
+        "required": [
+          "layerId",
+          "part",
+          "color"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "setLayerTime",
+      "title": "Choose the time of a time-enabled layer",
+      "description": "Show a time-enabled catalog raster layer at another time (ISO 8601, a start/end range, or \"default\"). A time the layer does not offer is refused with the list of its times.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "time": {
+            "type": "string",
+            "minLength": 4,
+            "description": "ISO 8601 time, start/end range, or \"default\"."
+          }
+        },
+        "required": [
+          "layerId",
+          "time"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 15
+    },
+    {
+      "name": "getLayerLegend",
+      "title": "Read a layer's legend",
+      "description": "The legend of a layer on the map, as TOSCA's layer panel shows it: entries with labels and colours, or the URL of a legend image.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "read",
+      "timeoutSeconds": 15
+    },
+    {
+      "name": "getMapState",
+      "title": "Read the map",
+      "description": "What the user's TOSCA map shows right now: the view (center, zoom, bounds) and every layer with its id, title, visibility, opacity and filters, including layers the user added by hand. Read it again instead of relying on an earlier answer.",
+      "params": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "effect": "read",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "setView",
+      "title": "Move the map",
+      "description": "Fly the map to a point (WGS84), optionally turned (bearing) and tilted (pitch). Zoom 0 is the world, 12 a city, 16 a street.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "center": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[longitude, latitude]."
+          },
+          "zoom": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 22,
+            "description": "Leave out to keep the zoom."
+          },
+          "bearing": {
+            "type": "number",
+            "minimum": -360,
+            "maximum": 360,
+            "description": "Compass direction at the top in degrees (0 = north); leave out to keep it."
+          },
+          "pitch": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 85,
+            "description": "Tilt in degrees (0 = straight down); leave out to keep it."
+          }
+        },
+        "required": [
+          "center"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "fitBounds",
+      "title": "Fit the map to an extent",
+      "description": "Show a WGS84 bounding box, e.g. a district or a layer's extent.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "bounds": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 4,
+            "maxItems": 4,
+            "description": "WGS84 [west, south, east, north]."
+          }
+        },
+        "required": [
+          "bounds"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "zoomToLayer",
+      "title": "Zoom to a layer",
+      "description": "Fit the map to the extent of a layer that is on the map.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "zoomToFeatures",
+      "title": "Zoom to matching features",
+      "description": "Fit the map to the features of a layer that match a condition, e.g. the district bezirk_name == Altona. The layer must be on the map and visible. Catalog layers are searched in the map tiles the browser has loaded; if nothing matches there, the map shows the layer's whole extent once and searches again.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "attribute": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Attribute name from get_layer_attributes."
+          },
+          "value": {
+            "type": "string",
+            "description": "Value the attribute must equal (text compared ignoring case)."
+          }
+        },
+        "required": [
+          "layerId",
+          "attribute",
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 30
+    },
+    {
+      "name": "setBasemap",
+      "title": "Change the basemap",
+      "description": "Switch the background map; get_map_state lists the `basemaps` with their ids. The layers stay.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "basemapId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "basemapId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "setTerrain",
+      "title": "Turn 3D terrain on or off",
+      "description": "Show the terrain relief in 3D, or flat. Tilt the map with set_view's pitch to see it.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "getLayerAttributes",
+      "title": "List a map layer's attributes",
+      "description": "Attributes of a layer on the map that can be used in filters, with their type ('text' or 'number'). Call it before add_attribute_filter.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "read",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "getLayerFeatures",
+      "title": "Read a layer's features",
+      "description": "The features of a layer on the map with their attributes, page by page, read from what the browser holds (nothing is downloaded). Catalog layers (vector tiles): only the features drawn in the current map view, after the layer's filters (`scope` \"view\"); move the map first to read another area. GeoJSON layers (drawn, buffer, added GeoJSON): all features (`scope` \"all\"). `total` counts the features in that scope.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Features per page (default 50)."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Features to skip (default 0)."
+          },
+          "withGeometry": {
+            "type": "boolean",
+            "description": "Include geometries (off by default)."
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "read",
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "identifyAt",
+      "title": "What is at a point",
+      "description": "The features drawn at a WGS84 point of the current map view, with the attributes the click popup shows. The point must be in view; values of raster (image) layers are not read.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "longitude": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180
+          },
+          "latitude": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90
+          }
+        },
+        "required": [
+          "longitude",
+          "latitude"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "read",
+      "timeoutSeconds": 15
+    },
+    {
+      "name": "getDrawnFeatures",
+      "title": "Read what the user drew",
+      "description": "What the user has drawn: the drawing in progress (not saved yet) and the saved drawings, buffers and GeoJSON layers on the map, as GeoJSON. A polygon layer among them can be the area of apply_geometry_filter.",
+      "params": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "effect": "read",
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "addAttributeFilter",
+      "title": "Filter a layer by attribute",
+      "description": "Show only the features of a map layer that match a condition, e.g. year >= 1960. Number attributes take ==, !=, >, >=, <, <=; text attributes take ==, != and in (ignoring case). Several filters on one layer are combined with `relation`. The filter also appears in TOSCA's filter panel. Works on catalog vector layers; OGC API layers use set_ogc_layer_query.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "attribute": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Attribute name from get_layer_attributes."
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "==",
+              "!=",
+              ">",
+              ">=",
+              "<",
+              "<=",
+              "in"
+            ]
+          },
+          "value": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "Value to compare with."
+          },
+          "relation": {
+            "type": "string",
+            "enum": [
+              "AND",
+              "OR"
+            ],
+            "description": "How this layer's attribute filters are combined; leave out to keep the current choice."
+          }
+        },
+        "required": [
+          "layerId",
+          "attribute",
+          "operator",
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 15
+    },
+    {
+      "name": "removeAttributeFilter",
+      "title": "Remove an attribute filter",
+      "description": "Remove one filter from a map layer, identified by its attribute and operator (see get_map_state).",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "attribute": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "==",
+              "!=",
+              ">",
+              ">=",
+              "<",
+              "<=",
+              "in"
+            ]
+          }
+        },
+        "required": [
+          "layerId",
+          "attribute",
+          "operator"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 15
+    },
+    {
+      "name": "setFilterRelation",
+      "title": "Combine a layer's filters with AND or OR",
+      "description": "Set whether a feature must match all of a layer's attribute filters (AND) or any of them (OR), as the AND / OR choice in TOSCA's filter panel. An area filter always applies on top.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "relation": {
+            "type": "string",
+            "enum": [
+              "AND",
+              "OR"
+            ]
+          }
+        },
+        "required": [
+          "layerId",
+          "relation"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 15
+    },
+    {
+      "name": "clearLayerFilters",
+      "title": "Remove all filters of a layer",
+      "description": "Remove every attribute and geometry filter of a layer on the map.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 15
+    },
+    {
+      "name": "applyGeometryFilter",
+      "title": "Filter a layer by an area",
+      "description": "Show only the features of a catalog vector layer that lie within an area, in the browser as TOSCA's geometry filter panel does. The area is a GeoJSON polygon layer on the map: one the user drew, or one you added with add_geo_json_layer (e.g. a 100 m buffer polygon you computed around a place). Give either `areaLayerId` (the whole layer) or `areaMatch` (only its features with attribute == value), not both. Catalog layers cannot be the area: on the map they exist only as vector tiles, which cut and simplify geometries. The map moves to the area first: only features drawn there count, so the target layer must be visible at that zoom. The target layer needs a gid or id attribute. Replaces the layer's current area filter; attribute filters stay and apply as well.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "areaLayerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "GeoJSON polygon layer on the map that is the area."
+          },
+          "areaMatch": {
+            "type": "object",
+            "properties": {
+              "layerId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Id of a layer on the map, from get_map_state (not its title)."
+              },
+              "attribute": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Attribute name from get_layer_attributes."
+              },
+              "value": {
+                "type": "string",
+                "description": "Value the attribute must equal (text compared ignoring case)."
+              }
+            },
+            "required": [
+              "layerId",
+              "attribute",
+              "value"
+            ],
+            "additionalProperties": false,
+            "description": "Features of a GeoJSON polygon layer on the map that are the area."
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 30
+    },
+    {
+      "name": "removeGeometryFilter",
+      "title": "Remove an area filter",
+      "description": "Remove the geometry filter of a layer on the map.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 15
+    },
+    {
+      "name": "setOgcLayerQuery",
+      "title": "Query an OGC API layer on the server",
+      "description": "Ask the OGC API service of a layer added with add_ogc_collection for only the features that match all conditions, and optionally only some attributes, as the layer's query panel does. Text attributes take eq, neq, contains; numbers eq, neq, lt, lte, gt, gte; booleans eq with \"true\" or \"false\". The browser reloads the layer with the answer.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Attributes to load; empty loads all."
+          },
+          "conditions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "attribute": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "operator": {
+                  "type": "string",
+                  "enum": [
+                    "eq",
+                    "neq",
+                    "contains",
+                    "lt",
+                    "lte",
+                    "gt",
+                    "gte"
+                  ]
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "attribute",
+                "operator",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "resetOgcLayerQuery",
+      "title": "Reset an OGC API layer query",
+      "description": "Load an OGC API layer again without conditions and with every attribute.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          }
+        },
+        "required": [
+          "layerId"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "view",
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "createBuffer",
+      "title": "Create a buffer",
+      "description": "Draw a buffer of a given distance around the features of a layer whose data is in the browser (drawings, GeoJSON or OGC API layers; not catalog layers) and add it as a polygon layer, which can then be the area of apply_geometry_filter.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "layerId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Id of a layer on the map, from get_map_state (not its title)."
+          },
+          "meters": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 50000
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        },
+        "required": [
+          "layerId",
+          "meters",
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "add",
+      "timeoutSeconds": 60
+    }
+  ]
+}

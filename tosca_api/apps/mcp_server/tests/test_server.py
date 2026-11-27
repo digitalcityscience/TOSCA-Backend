@@ -1,16 +1,20 @@
 """The MCP endpoint and the map bridge, end to end over HTTP and WebSocket."""
 
+import asyncio
 import threading
 from contextlib import contextmanager
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
+from mcp.server.mcpserver import MCPServer
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from tosca_api.apps.mcp_server import bridge
 from tosca_api.apps.mcp_server.server import BRIDGE_PATH, build_app
-from tosca_api.apps.mcp_server.tools.map import MAP_COMMANDS
+from tosca_api.apps.mcp_server.map_commands import load_map_commands
+from tosca_api.apps.mcp_server.tools import register_tools
+from tosca_api.apps.mcp_server.tools.map import ANNOTATIONS
 
 ORIGIN = "https://tosca.example"
 RITA = {
@@ -129,7 +133,8 @@ class McpEndpointTests(McpServerTestCase):
         self.assertFalse(result["isError"])
         self.assertEqual(
             result["structuredContent"],
-            {"username": "rita", "organization": "dcs", "role": "READER", "platform_admin": False},
+            {"username": "rita", "organization": "dcs", "role": "READER",
+             "roles_by_organization": {"dcs": "READER"}, "platform_admin": False},
         )
 
     def test_user_without_a_role_is_refused_by_every_tool(self):
@@ -141,7 +146,7 @@ class McpEndpointTests(McpServerTestCase):
 
     def test_invalid_arguments_are_refused_before_the_map_is_asked(self):
         with self.app() as client:
-            result = self.call(client, "set_layer_opacity", {"layer_id": "x", "opacity": 7})
+            result = self.call(client, "set_layer_opacity", {"layerId": "x", "opacity": 7})
         self.assertTrue(result["isError"])
 
     @override_settings(MCP_ALLOWED_HOSTS=["tosca.example"], MCP_ALLOWED_ORIGINS=["https://claude.ai"])
@@ -202,7 +207,7 @@ class MapBridgeTests(McpServerTestCase):
 
             outcome = {}
             thread = threading.Thread(target=lambda: outcome.update(result=self.call(
-                client, "set_layer_opacity", {"layer_id": "bicycle", "opacity": 0.5})))
+                client, "set_layer_opacity", {"layerId": "bicycle", "opacity": 0.5})))
             thread.start()
             command = tab.receive_json()
             self.assertEqual(command["method"], "setLayerOpacity")
@@ -219,7 +224,7 @@ class MapBridgeTests(McpServerTestCase):
             self._connect(client, tab)
             outcome = {}
             thread = threading.Thread(target=lambda: outcome.update(result=self.call(
-                client, "remove_layer", {"layer_id": "nope"})))
+                client, "remove_layer", {"layerId": "nope"})))
             thread.start()
             command = tab.receive_json()
             tab.send_json({"type": "tosca:result", "requestId": command["requestId"], "ok": False,
@@ -279,47 +284,132 @@ class MapBridgeTests(McpServerTestCase):
             self.assertEqual(tab.receive_json()["code"], "unauthorized")
             self.assertTrue(self.call(client, "get_map_state")["isError"])
 
-    def test_filter_values_reach_the_map_as_the_user_would_type_them(self):
+    def _round_trip(self, client, tab, name, arguments):
+        """Call a map tool, answer its command from the tab, return (command sent, tool result)."""
+        outcome = {}
+        thread = threading.Thread(target=lambda: outcome.update(result=self.call(client, name, arguments)))
+        thread.start()
+        command = tab.receive_json()
+        tab.send_json({"type": "tosca:result", "requestId": command["requestId"], "ok": True, "value": {}})
+        thread.join(timeout=10)
+        return command, outcome["result"]
+
+    def test_arguments_reach_the_map_as_given(self):
         with self.app() as client:
             tab = self.open_tab(client)
             self._connect(client, tab)
-            for value, expected in ((1960, "1960"), (5.0, "5"), (0.5, "0.5"), ("Altona", "Altona"), ("5", "5")):
-                thread = threading.Thread(target=self.call, args=(client, "add_attribute_filter", {
-                    "layer_id": "a", "attribute": "x", "operator": "==", "value": value,
-                }))
-                thread.start()
-                command = tab.receive_json()
-                tab.send_json({"type": "tosca:result", "requestId": command["requestId"], "ok": True, "value": {}})
-                thread.join(timeout=10)
-                self.assertEqual(command["params"]["value"], expected)
-                self.assertEqual(command["params"]["relation"], "AND")
+            for value in (1960, 0.5, "Altona", "5"):
+                command, _ = self._round_trip(client, tab, "add_attribute_filter", {
+                    "layerId": "a", "attribute": "x", "operator": "==", "value": value,
+                })
+                self.assertEqual(command["params"], {"layerId": "a", "attribute": "x", "operator": "==", "value": value})
 
-    def test_every_map_tool_sends_a_listed_command(self):
-        """The tools cannot send anything outside MAP_COMMANDS."""
-        calls = {
-            "get_map_state": {},
-            "set_map_view": {"longitude": 9.93, "latitude": 53.55, "zoom": 13},
-            "fit_map_bounds": {"west": 9.8, "south": 53.5, "east": 10.0, "north": 53.6},
-            "zoom_to_layer": {"layer_id": "a"},
-            "add_catalog_layer": {"provider_id": "p", "workspace": "w", "name": "n"},
-            "add_geojson_layer": {"title": "t", "geojson": {"type": "FeatureCollection", "features": [
-                {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [9.9, 53.5]}}]}},
-            "remove_layer": {"layer_id": "a"},
-            "set_layer_visibility": {"layer_id": "a", "visible": False},
-            "set_layer_opacity": {"layer_id": "a", "opacity": 0.2},
-            "get_layer_attributes": {"layer_id": "a"},
-            "add_attribute_filter": {"layer_id": "a", "attribute": "year", "operator": ">=", "value": 1960},
-            "remove_attribute_filter": {"layer_id": "a", "attribute": "year", "operator": ">="},
+    def test_json_text_for_non_text_parameters_is_parsed(self):
+        with self.app() as client:
+            tab = self.open_tab(client)
+            self._connect(client, tab)
+            command, result = self._round_trip(client, tab, "set_layer_opacity", {"layerId": "a", "opacity": "0.5"})
+            self.assertFalse(result["isError"])
+            self.assertEqual(command["params"], {"layerId": "a", "opacity": 0.5})
+
+    def test_bad_arguments_never_reach_the_map(self):
+        point = {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [9.9, 53.5]}}
+        refused = {
+            "set_layer_opacity": {"layerId": "a", "opacity": 7},
+            "set_layer_visibility": {"layerId": "a"},
+            "zoom_to_layer": {"layerId": "a", "extra": 1},
+            "add_attribute_filter": {"layerId": "a", "attribute": "x", "operator": "~", "value": "1"},
+            "add_geo_json_layer": {"title": "t", "geojson": {"type": "FeatureCollection", "features": [point] * 5001}},
         }
+        with self.app() as client:
+            tab = self.open_tab(client)
+            self._connect(client, tab)
+            for name, arguments in refused.items():
+                with self.subTest(tool=name):
+                    result = self.call(client, name, arguments)
+                    self.assertTrue(result["isError"])
+            # The tab got nothing in between: the next command it sees is this one.
+            command, _ = self._round_trip(client, tab, "get_map_state", {})
+            self.assertEqual(command["method"], "getMapState")
+
+    def test_every_map_command_is_a_tool_that_sends_it(self):
+        """One tool per entry of map_commands.json, and nothing outside it is ever sent."""
+        point = {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [9.9, 53.5]}}
+        samples = {
+            "getMapState": {},
+            "setView": {"center": [9.93, 53.55], "zoom": 13},
+            "fitBounds": {"bounds": [9.8, 53.5, 10.0, 53.6]},
+            "zoomToLayer": {"layerId": "a"},
+            "addCatalogLayer": {"providerId": "p", "workspace": "w", "layerName": "n"},
+            "addGeoJsonLayer": {"title": "t", "geojson": {"type": "FeatureCollection", "features": [point]}},
+            "removeLayer": {"layerId": "a"},
+            "setLayerVisibility": {"layerId": "a", "visible": False},
+            "setLayerOpacity": {"layerId": "a", "opacity": 0.2},
+            "getLayerAttributes": {"layerId": "a"},
+            "addAttributeFilter": {"layerId": "a", "attribute": "year", "operator": ">=", "value": 1960},
+            "removeAttributeFilter": {"layerId": "a", "attribute": "year", "operator": ">="},
+            "setFilterRelation": {"layerId": "a", "relation": "OR"},
+            "clearLayerFilters": {"layerId": "a"},
+            "applyGeometryFilter": {
+                "layerId": "a", "areaMatch": {"layerId": "d", "attribute": "bezirk_name", "value": "Altona"},
+            },
+            "removeGeometryFilter": {"layerId": "a"},
+            "getLayerFeatures": {"layerId": "a", "limit": 10, "offset": 0, "withGeometry": False},
+            "zoomToFeatures": {"layerId": "d", "attribute": "bezirk_name", "value": "Altona"},
+            "addCatalogLayerGroup": {"providerId": "p", "workspace": "w", "groupName": "g"},
+            "addOgcCollection": {"serviceId": "hamburg-ogc", "datasetId": "", "collectionId": "schools"},
+            "addSensorThingsLayer": {"serviceId": "s", "serviceName": "Air", "layerName": "PM10"},
+            "listSensorThingsLayers": {"serviceId": "s"},
+            "openGeostory": {"storyId": "0190a1b2-0000-7000-8000-000000000001"},
+            "moveLayer": {"layerId": "a", "position": 0},
+            "setLayerStyle": {"layerId": "a", "styleId": "b"},
+            "setLayerColor": {"layerId": "a", "part": "fill", "color": "#2a9d8f"},
+            "setLayerTime": {"layerId": "a", "time": "2024-07-01"},
+            "getLayerLegend": {"layerId": "a"},
+            "setBasemap": {"basemapId": "satellite"},
+            "setTerrain": {"enabled": True},
+            "identifyAt": {"longitude": 9.99, "latitude": 53.55},
+            "getDrawnFeatures": {},
+            "setOgcLayerQuery": {
+                "layerId": "a", "properties": ["name"],
+                "conditions": [{"attribute": "pupils", "operator": "gte", "value": "300"}],
+            },
+            "resetOgcLayerQuery": {"layerId": "a"},
+            "createBuffer": {"layerId": "a", "meters": 100, "title": "Rathaus 100 m"},
+        }
+        commands = load_map_commands()
+        # A new command in the file needs a sample here.
+        self.assertEqual(set(samples), set(commands))
         sent = set()
         with self.app() as client:
             tab = self.open_tab(client)
             self._connect(client, tab)
-            for name, arguments in calls.items():
-                thread = threading.Thread(target=self.call, args=(client, name, arguments))
-                thread.start()
-                command = tab.receive_json()
+            for name, arguments in samples.items():
+                command, result = self._round_trip(client, tab, commands[name].tool_name, arguments)
+                self.assertFalse(result["isError"], (name, result))
+                self.assertEqual(command["params"], arguments)
                 sent.add(command["method"])
-                tab.send_json({"type": "tosca:result", "requestId": command["requestId"], "ok": True, "value": {}})
-                thread.join(timeout=10)
-        self.assertEqual(sent, set(MAP_COMMANDS))
+        self.assertEqual(sent, set(commands))
+
+
+class ToolListTests(McpServerTestCase):
+    def test_tools_list_matches_map_commands_json(self):
+        commands = load_map_commands()
+        with self.app() as client:
+            tools = {tool["name"]: tool for tool in self.rpc(client, "tools/list").json()["result"]["tools"]}
+        for command in commands.values():
+            with self.subTest(command=command.name):
+                tool = tools[command.tool_name]
+                self.assertEqual(tool["inputSchema"], command.params)
+                self.assertEqual(tool["description"], command.description)
+                self.assertEqual(tool["title"], command.title)
+                self.assertEqual(
+                    tool["annotations"], ANNOTATIONS[command.effect].model_dump(by_alias=True, exclude_none=True)
+                )
+        # No command shares a name with a hand-written tool (the SDK would keep one and only warn).
+        bare = MCPServer(name="names-only")
+        register_tools(bare, commands)
+        hand_written = {tool.name for tool in asyncio.run(bare.list_tools())}
+        self.assertTrue({"connect_map", "disconnect_map"} <= hand_written)
+        self.assertFalse(hand_written & {command.tool_name for command in commands.values()})
+        self.assertEqual(len(tools), len(hand_written) + len(commands))

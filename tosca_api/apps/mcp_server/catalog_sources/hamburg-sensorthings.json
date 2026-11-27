@@ -1,0 +1,14 @@
+{
+  "id": "hamburg-sensorthings",
+  "title": "Hamburg SensorThings",
+  "description": "Live sensor data of the City of Hamburg's Urban Data Platform (OGC SensorThings API): traffic and bicycle counts, parking, e-charging stations, environment and weather sensors.",
+  "url": "https://iot.hamburg.de",
+  "protocol": "sensorthings",
+  "extent": { "bbox": [8.41, 53.39, 10.35, 53.97] },
+  "license": "dl-de/by-2.0",
+  "keywords": ["hamburg", "sensors", "live", "traffic", "bicycle counts", "parking", "e-charging", "environment"],
+  "providers": [
+    { "name": "Urban Data Platform Hamburg", "roles": ["producer", "licensor", "host"] }
+  ],
+  "priority": 3
+}

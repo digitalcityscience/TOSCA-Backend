@@ -1,0 +1,4 @@
+- One search hit is a layer: a `serviceName` / `layerName` pair that groups many sensors (datastreams), e.g. all charging points.
+- About 45 layers in a few services: bicycle counts (`HamburgerRadzaehlnetz`, `Rad_Infrarotdetektoren`), StadtRad bike sharing, car traffic (`Verkehrsmengenerfassung`, `Kfz_Infrarotdetektoren`), e-charging (`E-Ladestationen`), energy data, Transmove.
+- Names are German compound words: search with word parts, e.g. `rad` (bicycle), `kfz` or `verkehr` (traffic), `lade` (charging), `energie`. An empty query lists every layer.
+- `show_on_map` adds the layer with `add_sensor_things_layer`; its values then update live in the user's map.

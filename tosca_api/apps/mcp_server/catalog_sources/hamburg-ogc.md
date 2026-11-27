@@ -1,0 +1,4 @@
+- Titles and descriptions are German: search with German words (`Gebäude`, `Bebauungsplan`, `Baum`, `Radweg`).
+- One search hit is a dataset (one OGC API). `describe_source_item` lists its collections; only collections with `geojson: true` can be read as GeoJSON from `items_url` (add `&limit=` to page).
+- Licence differs per dataset (mostly Datenlizenz Deutschland – Namensnennung 2.0); read it on the dataset's landing page.
+- `describe_source_item` gives each GeoJSON collection a `show_on_map` for `add_ogc_collection`.

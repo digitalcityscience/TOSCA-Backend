@@ -1,0 +1,3 @@
+- Another TOSCA instance (the public NGCN platform). Without sign-in it lists public layers only.
+- Search matches the workspace and layer names (e.g. `HAMBURG-BUILDINGS`, `hamburg_bezirke`); layer names are often German, so also try German words (`bezirke`, `gebaeude`).
+- `show_on_map` works when the user's TOSCA map loads its catalog from this platform; otherwise only describe the layer.

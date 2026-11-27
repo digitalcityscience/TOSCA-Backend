@@ -1,0 +1,13 @@
+{
+  "id": "hamburg-ogc",
+  "title": "Hamburg OGC API",
+  "description": "Open geodata of the City of Hamburg: several hundred datasets (cadastre, buildings incl. 3D, planning, environment, transport) as OGC API Features.",
+  "url": "https://api.hamburg.de/datasets/v1",
+  "protocol": "ogc-api-features",
+  "extent": { "bbox": [8.41, 53.39, 10.35, 53.97] },
+  "keywords": ["hamburg", "open data", "geodata", "buildings", "cadastre", "planning", "environment"],
+  "providers": [
+    { "name": "Freie und Hansestadt Hamburg", "roles": ["producer", "licensor", "host"] }
+  ],
+  "priority": 2
+}
